@@ -762,7 +762,7 @@ class Optimizer:
         for c in report.front if criteria.is_pareto else []:
             run.save_diff(f"front/{views[c].number}-{c}", views[c].diff(), views[c].changed_values())
         agent_cost: dict[SplitName, Usage] = {split: Usage.zero() for split in SPLIT_NAMES}
-        judge_cost = retry_cost = Usage.zero()
+        judge_cost = retry_cost = benchmark_cost = Usage.zero()
         # Every saved trial, as `spent` counts them: after a resume, a killed iteration's trials too.
         for saved in run._trials.values():
             agent_cost[saved["split"]] = agent_cost[saved["split"]] + Usage.model_validate(saved["usage"])
@@ -772,6 +772,10 @@ class Optimizer:
                 retry_cost = (
                     retry_cost + Usage.model_validate(attempt["usage"]) + Usage.model_validate(attempt["judge_usage"])
                 )
+            # Absent from trials saved before benchmark usage was recorded.
+            for spent in (saved, *saved["previous_attempts"]):
+                if spent.get("benchmark_usage") is not None:
+                    benchmark_cost = benchmark_cost + Usage.model_validate(spent["benchmark_usage"])
         result = OptimizationResult(
             run_id=run.root.name,
             run_dir=run.root,
@@ -790,6 +794,7 @@ class Optimizer:
             search_cost=self._search_cost,
             judge_cost=judge_cost,
             retry_cost=retry_cost,
+            benchmark_cost=benchmark_cost,
             reports=_reports(self._records, cases=self._cases, evaluators=self._evaluators, split=self._case_split),
             rows=self._rows(views, finalists, report),
         )

@@ -160,6 +160,10 @@ class OptimizationResult(BaseModel):
         search_cost: Total proposer usage.
         judge_cost: Judge usage per trial's last attempt, as `agent_cost` counts the agent's.
         retry_cost: Agent and judge usage in earlier attempts (`TrialRecord.previous_attempts`).
+        benchmark_cost: Usage of the other agents in the rollouts (`TrialRecord.benchmark_usage`: a
+            simulated user, an agent the environment built), in every attempt; never counted in
+            `agent_cost` or `retry_cost`. Zero when the agents can't be told apart (the `build_task` path, a
+            factory that returned something else).
         reports: Candidate id -> split -> the `EvaluationReport` `Experiment` would have returned for those
             trials (every run's rows, each tagged with `run_index`; failed trials as `Experiment`'s score-0
             rows), for every candidate and split it has trials on. Display only: nothing in the run reads it.
@@ -185,6 +189,7 @@ class OptimizationResult(BaseModel):
     search_cost: Usage
     judge_cost: Usage
     retry_cost: Usage
+    benchmark_cost: Usage = Field(default_factory=Usage.zero)
     # Left out of the repr: every trial's rows and evaluation data, hundreds of kilobytes on a real run.
     reports: dict[str, dict[SplitName, EvaluationReport]] = Field(repr=False)
     rows: dict[Grain, list[dict[str, Any]]] = Field(repr=False)
@@ -291,7 +296,7 @@ class OptimizationResult(BaseModel):
             "",
             f"Agent tokens: {cost['train'].tokens} train (the search), {cost['validation'].tokens} validation, "
             f"{cost['test'].tokens} test. Proposers {self.search_cost.tokens}, judges {self.judge_cost.tokens}, "
-            f"earlier attempts {self.retry_cost.tokens}.",
+            f"earlier attempts {self.retry_cost.tokens}, other agents in the rollouts {self.benchmark_cost.tokens}.",
         ]
         flagged = [m for m, d in self.effects.get("metrics", {}).items() if d.get("diagnostics", {}).get("flagged")]
         if self.effects.get("reason"):

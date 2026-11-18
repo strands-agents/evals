@@ -39,9 +39,11 @@ from strands_evals.optimization import (
     tunable,
 )
 from strands_evals.types import EvaluationOutput
+from tests.strands_evals.optimization.scripted_model import ScriptedModel
 
 EXACT = "Give the exact answer."
 JUDGE_TOKENS = 40
+USER_TOKENS = 1000
 
 
 class World(Model):
@@ -188,6 +190,55 @@ def test_the_judges_usage_is_kept_apart_from_the_agents(tmp_path):
         "validation": ["scripted-world"],
         "test": ["scripted-world"],
     }
+
+
+# a conversation with a simulated user, under a token limit
+
+
+async def conversation(agent_factory, case):
+    """The agent answers, then a simulated user (an agent the benchmark builds, not the factory) replies."""
+    answer = str(await agent_factory().invoke_async(case.input))
+    usage = {"inputTokens": USER_TOKENS - 20, "outputTokens": 20, "totalTokens": USER_TOKENS}
+    user = Agent(model=ScriptedModel(["thanks"], model_id="scripted-user", usage=usage), callback_handler=None)
+    await user.invoke_async(answer)
+    return {"output": answer}
+
+
+def test_a_simulated_users_tokens_are_reported_apart_and_never_count_against_the_limit(tmp_path):
+    _, result = _run(tmp_path, rollout_fn=conversation)
+    trials = [e["record"] for e in _events(result.run_dir) if e["event"] == "trial"]
+    assert all(t["usage"]["models"] == ["scripted-world"] for t in trials)
+    assert all(t["benchmark_usage"]["models"] == ["scripted-user"] for t in trials)
+    assert result.benchmark_cost.tokens == USER_TOKENS * len(trials)
+    # The user's 1,000 tokens alone would break the 450-token limit; the candidate's own calls can meet it.
+    assert result.improved and result.best.values["manager"] == "summary"
+    assert f"other agents in the rollouts {result.benchmark_cost.tokens}." in result.summary()
+    older_result = {key: value for key, value in result.to_dict().items() if key != "benchmark_cost"}
+    assert OptimizationResult.from_dict(older_result).benchmark_cost.tokens == 0  # a result.json from before
+
+    # A run whose trials were saved before benchmark usage was recorded resumes and counts none for them.
+    lines = (result.run_dir / "events.jsonl").read_text().splitlines()
+    events = [json.loads(line) for line in lines]
+    for event in events:
+        if event["event"] == "trial":
+            del event["record"]["benchmark_usage"]
+    names = [event["event"] for event in events]
+    cut = next(i for i, n in enumerate(names) if i > names.index("iteration_end") and n == "score") + 1
+    older = tmp_path / "older" / result.run_dir.name
+    shutil.copytree(result.run_dir, older)
+    (older / "events.jsonl").write_text("".join(json.dumps(event) + "\n" for event in events[:cut]))
+
+    resumed = Optimizer.resume(
+        older,
+        experiment=_experiment(),
+        factory=manager_agent,
+        rollout_fn=conversation,
+        objective=Maximize("Correct"),
+        constraints=[AtMost("tokens", 450)],
+    ).run()
+    new = [e["record"] for e in _events(older) if e["event"] == "trial" and "benchmark_usage" in e["record"]]
+    assert 0 < len(new) < len(trials)
+    assert resumed.benchmark_cost.tokens == USER_TOKENS * len(new)
 
 
 # text, through a file, to a reviewable diff

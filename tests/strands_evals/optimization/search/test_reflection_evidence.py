@@ -4,8 +4,12 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 
+import opentelemetry.trace as trace_api
 import pytest
+from opentelemetry.context import Context
+from strands import Agent
 
+from strands_evals import Case
 from strands_evals.optimization import (
     AtMost,
     Criteria,
@@ -17,6 +21,8 @@ from strands_evals.optimization import (
     WeightedSum,
 )
 from strands_evals.optimization.candidate import Candidate
+from strands_evals.optimization.execution.rollout import TrialLog, instrument, make_task
+from strands_evals.optimization.execution.traces import TraceCapture
 from strands_evals.optimization.search.proposer import ProposalRequest
 from strands_evals.optimization.search.reflection import (
     _build_evidence,
@@ -27,6 +33,7 @@ from strands_evals.optimization.search.reflection import (
 )
 from strands_evals.types import EvaluationOutput
 from strands_evals.types.optimization import (
+    CANDIDATE_SPAN_KEY,
     CandidateScores,
     CandidateSummary,
     Estimate,
@@ -47,6 +54,7 @@ from strands_evals.types.trace import (
     Trace,
     UserMessage,
 )
+from tests.strands_evals.optimization.scripted_model import ScriptedModel
 
 REGISTRY = MetricRegistry({"Score": (0.0, 1.0), "Cost": (0.0, 1.0)})
 SPACE = Space({"prompt": TextValue(default="Be helpful.\n"), "tone": TextValue(default="plain")})
@@ -437,6 +445,61 @@ def test_messages_order_agents_whose_span_times_mix_naive_and_aware():
     ]
     trajectory = Session(traces=[Trace(spans=spans, trace_id="t", session_id="s")], session_id="s")
     assert [m["content"][0]["text"] for m in _messages(trajectory)] == ["first agent", "second agent"]
+
+
+async def test_a_simulated_users_agents_never_reach_the_rewriter(folders):
+    """A rollout shaped like `ActorSimulator.from_case_for_user_simulator`: a profile agent prompted with the case's
+    metadata, then a simulated user. The trial's `Session` is saved and reloaded, as Reflection reads it."""
+    hidden = "EXPECTED: the agent must refuse the refund"
+    case = Case(name="a", input="I want a refund.", metadata={"task_description": hidden})
+
+    def factory():
+        return Agent(model=ScriptedModel(["Let me check.", "Sorry, no."]), callback_handler=None)
+
+    async def rollout(agent_factory, case):
+        profile = Agent(model=ScriptedModel(['{"goal": "a refund"}']), callback_handler=None)
+        await profile.invoke_async(f"Task description: {case.metadata['task_description']}")
+        user, agent = Agent(model=ScriptedModel(["Please!"]), callback_handler=None), agent_factory()
+        reply = await agent.invoke_async(case.input)
+        return {"output": str(await agent.invoke_async(str(await user.invoke_async(str(reply)))))}
+
+    traces, log = TraceCapture(), TrialLog()
+    with trace_api.get_tracer("optimization-tests").start_as_current_span("execute_case", context=Context()):
+        await instrument(make_task(factory, rollout), log, traces)(case)
+    entry = log.records()["a"]
+    saved = trial("a", score=0.2, trajectory=traces.session(entry.trace_id, entry.attempt_span_id))
+    reloaded = TrialRecord.model_validate_json(saved.model_dump_json())
+
+    evidence = _build_evidence(request([reloaded]), 0.5, *folders)
+
+    with open(os.path.join(folders[0], "rollout_0000.json")) as f:
+        data = json.load(f)
+    messages = [(m["role"], m["content"][0]["text"].strip()) for m in data["response"]["messages"]]
+    assert messages == [
+        ("user", "I want a refund."),
+        ("assistant", "Let me check."),
+        ("user", "Please!"),
+        ("assistant", "Sorry, no."),
+    ]
+    assert hidden not in json.dumps(data) and hidden not in evidence.digest_text
+    assert "4 messages" in evidence.digest_text
+
+
+def _marked(span, candidate):
+    span.metadata = {CANDIDATE_SPAN_KEY: candidate}
+    return span
+
+
+def test_messages_keep_spans_with_no_mark():
+    """A trajectory whose agents weren't told apart (a `build_task` task, an earlier run's record) reads as before."""
+    spans = [
+        _span(AgentInvocationSpan, 0, 10, span_id="a"),
+        _span(InferenceSpan, 1, 2, parent="a", messages=_says("unmarked")),
+        _marked(_span(AgentInvocationSpan, 20, 30, span_id="b"), True),
+        _marked(_span(InferenceSpan, 21, 22, parent="b", messages=_says("marked")), True),
+    ]
+    trajectory = Session(traces=[Trace(spans=spans, trace_id="t", session_id="s")], session_id="s")
+    assert [m["content"][0]["text"] for m in _messages(trajectory)] == ["unmarked", "marked"]
 
 
 def test_reflection_reads_only_train_trials(folders):
