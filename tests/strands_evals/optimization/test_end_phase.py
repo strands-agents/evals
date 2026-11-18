@@ -177,7 +177,7 @@ def test_pick_ships_the_feasible_finalist_with_the_highest_objective():
         criteria=criteria,
         rule=Mean(),
     )
-    assert report.champion_id == "a"
+    assert report.selected_id == "a"
     assert report.objectives["a"] == 0.9 and report.objectives["0"] == 0.6
     assert report.problem is None
     assert "a highest on validation" in report.reason
@@ -200,7 +200,7 @@ def test_pick_ships_the_baseline_when_no_finalist_meets_the_constraint():
         criteria=criteria,
         rule=Mean(),
     )
-    assert report.champion_id == "0" and "<= 0.5" in report.infeasible["a"]
+    assert report.selected_id == "0" and "<= 0.5" in report.infeasible["a"]
     assert "baseline" in report.reason
 
 
@@ -219,7 +219,7 @@ def test_pick_reports_fewer_than_two_eligible_through_problem():
         rule=Mean(),
         problem="fewer than 2 eligible candidates",
     )
-    assert report.champion_id == "0" and report.problem.startswith("fewer than 2")
+    assert report.selected_id == "0" and report.problem.startswith("fewer than 2")
     assert "not eligible on validation" in report.infeasible["a"]
     # no finalist from the search isn't the message here: a finalist was chosen, it just can't be picked.
     assert "a" not in report.objectives or report.objectives["a"] is None
@@ -240,7 +240,7 @@ def test_pick_tie_goes_to_the_candidate_with_the_most_trials_before_the_earlier(
         criteria=criteria,
         rule=Mean(),
     )
-    assert report.champion_id == "a"
+    assert report.selected_id == "a"
 
 
 def test_pick_tie_without_trial_counts_goes_to_the_baseline():
@@ -258,7 +258,7 @@ def test_pick_tie_without_trial_counts_goes_to_the_baseline():
         criteria=criteria,
         rule=Mean(),
     )
-    assert report.champion_id == "0"
+    assert report.selected_id == "0"
 
 
 def test_pick_under_pareto_a_gain_tie_with_another_trade_off_ships_the_baseline():
@@ -293,7 +293,7 @@ def test_pick_under_pareto_a_gain_tie_with_another_trade_off_ships_the_baseline(
     )
     assert report.objectives["0"] == report.objectives["a"]
     assert set(report.front) == {"0", "a"}
-    assert report.champion_id == "0"
+    assert report.selected_id == "0"
 
 
 def test_pick_with_no_finalist_ships_the_baseline():
@@ -309,5 +309,5 @@ def test_pick_with_no_finalist_ships_the_baseline():
         criteria=criteria,
         rule=Mean(),
     )
-    assert report.champion_id == "0"
+    assert report.selected_id == "0"
     assert report.reason.startswith("no finalist from the search")

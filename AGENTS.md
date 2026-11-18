@@ -142,7 +142,7 @@ strands-evals/
 │   │   ├── search/                           # Proposer, Block / Search / schedules, TPE, Reflection, Thompson
 │   │   ├── selection/                        # Selection, TopRanked (picks the parent)
 │   │   ├── setup/                            # Split, Budget
-│   │   ├── end_phase.py                      # FinalPick: finalists on validation, champion (and Pareto front) vs baseline on test
+│   │   ├── end_phase.py                      # FinalPick: finalists on validation, the selected candidate (and Pareto front) vs baseline on test
 │   │   ├── record/                           # Run directory, events.jsonl, resume
 │   │   ├── optimizer.py / result.py
 │   │   ├── prompt_templates/reflection/

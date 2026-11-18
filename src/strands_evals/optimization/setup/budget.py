@@ -35,7 +35,7 @@ class BudgetTracker:
     runs and `test_reserve` = 2 x |test| x runs. The search can spend neither, and validation can't spend
     the test share. Under a `Pareto` objective `max(n_finalists, PARETO_MIN_FINALISTS)` (`end_phase.py`)
     replaces `n_finalists`, and `test_reserve` = (that + 1) x |test| x runs (every front member is tested); a
-    test report that can't afford every member tests the champion and the baseline first, then each other
+    test report that can't afford every member tests the selected candidate and the baseline first, then each other
     member in ranking order that still fits (one that doesn't is skipped). The optimizer computes both reserves
     and passes them in, so this module imports no constant.
     """
