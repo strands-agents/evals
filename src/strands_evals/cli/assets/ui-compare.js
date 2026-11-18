@@ -12,7 +12,6 @@ const GRID_ROWS = 60;                     // the grid draws this many rows; its 
 
 const cmpKey = r => `${r.name}\u0000${evaluatorName(r)}`;
 const cmpNo = i => `#${i + 1}`;
-const verdictOf = r => (r.na ? 'na' : r.pass ? 'pass' : 'fail');
 
 /** How the rows two reports share moved from `before` to `after`, matched by case and evaluator. */
 function compareRows(before, after) {
@@ -75,26 +74,18 @@ const cmpDelta = (to, from) => {
 
 function compareSummary() {
   return CMP.map((c, i) => {
-    const judged = c.rows.filter(r => !r.na);
-    const passing = judged.filter(r => r.pass).length;
+    const n = verdictCounts(c.rows);
     const before = i ? CMP[i - 1].meta.overall_score : null;
     return `<tr><td class="mono">${cmpNo(i)}</td><td>${openLink('report', c.meta.path)}`
       + `<br><span class="path">${when(c.at / 1000)}${c.dated ? '' : ' · by file time'}</span></td>`
       + `<td>${scoreBar(c.meta.overall_score)}</td><td>${cmpDelta(c.meta.overall_score, before) || '<span class="path">—</span>'}</td>`
-      + `<td class="n">${c.rows.length}</td><td class="n">${passing}</td><td class="n">${judged.length - passing}</td></tr>`;
+      + `<td class="n">${c.rows.length}</td><td class="n">${n.pass}</td><td class="n">${n.fail}</td></tr>`;
   }).join('');
 }
 
 /** Each evaluator's mean over the rows it applied to, report by report: `{ names, means }`. */
 function evaluatorMeans() {
-  const means = CMP.map(c => {
-    const by = new Map();
-    for (const r of c.rows) {
-      if (r.na || typeof r.score !== 'number') continue;
-      by.set(evaluatorName(r), (by.get(evaluatorName(r)) || []).concat(r.score));
-    }
-    return new Map([...by].map(([name, scores]) => [name, scores.reduce((a, b) => a + b, 0) / scores.length]));
-  });
+  const means = CMP.map(c => new Map([...scoresByEvaluator(c.rows)].map(([name, scores]) => [name, mean(scores)])));
   return { names: [...new Set(means.flatMap(m => [...m.keys()]))], means };
 }
 
@@ -114,12 +105,13 @@ function compareEvaluators() {
 function compareGrid() {
   const held = CMP.map(c => new Map(c.rows.map(r => [cmpKey(r), r])));
   const keys = [...new Set(held.flatMap(m => [...m.keys()]))];
-  const several = new Set(keys.map(k => k.split('\u0000')[1])).size > 1;
+  const rowAt = k => held.find(m => m.has(k)).get(k);
+  const several = new Set(keys.map(k => evaluatorName(rowAt(k)))).size > 1;
+  const label = k => (several ? rowTitle(rowAt(k)) : rowAt(k).name);
   const changed = k => new Set(held.map(m => (m.has(k) ? verdictOf(m.get(k)) : 'gap'))).size > 1;
   const moved = keys.filter(changed);
   const drawn = moved.concat(keys.filter(k => !changed(k))).slice(0, GRID_ROWS);
-  const label = k => { const [name, evaluator] = k.split('\u0000'); return several ? `${name} · ${evaluator}` : name; };
-  const focusable = drawn.length * CMP.length <= 80;
+  const tabbable = drawn.length * CMP.length <= TAB_MARKS;
   $('cmp-grid-cap').textContent = `${moved.length} of ${plural(keys.length, 'row')} changed verdict or `
     + `${moved.length === 1 ? 'is' : 'are'} missing from a report, and come first. A gap means that report does not hold the row.`
     + (keys.length > drawn.length ? ` The first ${drawn.length} are drawn.` : '');
@@ -127,9 +119,8 @@ function compareGrid() {
     const row = held[c].get(drawn[r]);
     return row && {
       cls: verdictOf(row),
-      tip: `${row.name} · ${evaluatorName(row)} · ${cmpNo(c)} ${CMP[c].meta.path} · `
-        + (row.na ? 'not applicable' : `score ${fmt(row.score)} · ${row.pass ? 'pass' : 'fail'}`),
-      attrs: ` data-cmp-row="${c}:${row.i}"${focusable ? ' tabindex="0"' : ''}`,
+      tip: `${rowTitle(row)} · ${cmpNo(c)} ${CMP[c].meta.path} · ${verdictText(row)}`,
+      attrs: rowLink(row, tabbable, CMP[c].meta.path),
     };
   });
 }
@@ -158,9 +149,9 @@ function compareEnds() {
     label: m.row.name,
     sub: several ? evaluatorName(m.row) : '',
     from: m.from, to: m.to,
-    tip: `${m.row.name} · ${evaluatorName(m.row)} · ${fmt(m.from)} to ${fmt(m.to)}`
+    tip: `${rowTitle(m.row)} · ${fmt(m.from)} to ${fmt(m.to)}`
       + (m.flip ? ` · now ${m.flip === 'fixed' ? 'passes' : 'fails'}` : ''),
-    attrs: ` data-cmp-row="${last}:${m.row.i}" tabindex="0"`,
+    attrs: rowLink(m.row, true, CMP[last].meta.path),
   })), { axis: 'score' }) : '';
   $('cmp-ends-legend').innerHTML = [
     shared ? `<span><i class="up"></i>${c.fixed} now pass</span>` : '',
@@ -213,16 +204,6 @@ $('cmp-with').onchange = e => {
 $('pagehead').addEventListener('click', e => {
   const remove = e.target.closest('[data-cmp-remove]');
   if (remove) openCompare(CMP.map(c => c.meta.path).filter(path => path !== remove.dataset.cmpRemove));
-});
-
-/* A mark opens that row in the report it belongs to. */
-$('v-compare').addEventListener('click', async e => {
-  const mark = e.target.closest('[data-cmp-row]');
-  if (!mark) return;
-  const [at, row] = mark.dataset.cmpRow.split(':').map(Number);
-  await openReport(CMP[at].meta.path);
-  /* A report that would not open leaves the page on a list. */
-  if (currentView() === 'report') openReportRow(row);
 });
 
 /* ── picking reports in the list ── */

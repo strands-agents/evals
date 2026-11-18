@@ -8,6 +8,8 @@ const W = 640, H = 244, PAD = { t: 26, r: 16, b: 46, l: 48 };
 const IN_W = W - PAD.l - PAD.r, IN_H = H - PAD.t - PAD.b;
 const FLOOR = PAD.t + IN_H;
 
+const mean = values => values.reduce((a, b) => a + b, 0) / values.length;
+
 const svg = inner => `<svg viewBox="0 0 ${W} ${H}" role="img">`
   + `<rect class="plot" x="${PAD.l}" y="${PAD.t}" width="${IN_W}" height="${IN_H}"/>${inner}</svg>`;
 
@@ -100,19 +102,16 @@ function flag(px, py, label) {
 
 /* ── charts that are a list of labelled rows over one shared scale ──
    Drawn at the width of the card they sit in, so their type comes out at the page's size. */
-const ROW_W = { half: 430, wide: 900 };   // when the page is not laid out
+const ROW_W = 900;                        // when the page is not laid out
 const ROWP = { row: 22, head: 24, lab: 176, right: 18 };
 const CHART_ROWS = 30;                    // a row chart lists this many; its caption says how many it left out
 
-/** The width to draw a row chart at: the inside of its card, `half` for a card that shares its row.
-    Read off the content column, because the card itself may be hidden while it is drawn. */
-function rowWidth(half) {
+/** The width to draw a row chart at: the inside of its card. Read off the content column, because
+    the card itself may be hidden while it is drawn. */
+function rowWidth() {
   const main = app.querySelector('main'), style = getComputedStyle(main);
   const column = main.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
-  if (!(column > 0)) return half ? ROW_W.half : ROW_W.wide;
-  const squeezed = app.dataset.guide === 'on' && matchMedia('(max-width: 1500px)').matches;
-  const shared = half && !squeezed && matchMedia('(min-width: 1081px)').matches;
-  return Math.max(280, Math.round((shared ? (column - 22) / 2 : column) - 54));
+  return column > 0 ? Math.max(280, Math.round(column - 54)) : ROW_W;
 }
 /* The label column gives way on a narrow card. */
 const labOf = width => Math.min(ROWP.lab, Math.round(width * 0.38));
@@ -133,7 +132,8 @@ const rowSvg = (width, height, inner) =>
 
 /* `rows` carry `label` and an optional `sub`. Returns the scale, each row's centre, and `frame`,
    which closes the SVG around the marks. */
-function rowPlot(rows, lo, hi, { axis, width = rowWidth() } = {}) {
+function rowPlot(rows, lo, hi, { axis } = {}) {
+  const width = rowWidth();
   const t = niceTicks(lo, hi, width < 600 ? 4 : 5);
   const left = labOf(width), right = width - ROWP.right;
   const span = (t.hi - t.lo) || 1;
@@ -189,7 +189,8 @@ function barRows(rows, opts) {
 
 /** A histogram on each row: `{ label, sub, values }`. Every row counts on one scale, so heights compare
     between rows; the tick is the row's mean. */
-function histRows(rows, opts, bins = 20) {
+function histRows(rows, opts) {
+  const bins = 20;
   const all = rows.flatMap(r => r.values);
   const p = rowPlot(rows, Math.min(...all), Math.max(...all), opts);
   const span = (p.hi - p.lo) || 1, width = (p.right - p.left) / bins;
@@ -201,23 +202,24 @@ function histRows(rows, opts, bins = 20) {
   const most = Math.max(1, ...counted.flat());
   return p.frame(rows.map((r, i) => {
     const base = p.y(i) + ROWP.row / 2 - 2;
-    const mean = r.values.reduce((a, b) => a + b, 0) / (r.values.length || 1);
-    return counted[i].map((n, b) => {
+    const bars = counted[i].map((n, b) => {
       if (!n) return '';
       const tall = Math.max(2, (n / most) * (ROWP.row - 5));
       const from = p.lo + (b / bins) * span, to = p.lo + ((b + 1) / bins) * span;
       return `<rect class="hbin" x="${p.left + b * width + 0.5}" y="${base - tall}" width="${width - 1}" height="${tall}">`
         + `<title>${esc(`${r.label} · ${fine(from)} to ${fine(to)} · ${plural(n, 'row')}`)}</title></rect>`;
-    }).join('') + (r.values.length
-      ? `<line class="hmean" x1="${p.x(mean)}" y1="${base - ROWP.row + 5}" x2="${p.x(mean)}" y2="${base + 2}">`
-        + `<title>${esc(`${r.label} · mean ${fine(mean)} over ${plural(r.values.length, 'row')}`)}</title></line>`
-      : '');
+    }).join('');
+    if (!r.values.length) return bars;
+    const average = mean(r.values), at = p.x(average);
+    return bars + `<line class="hmean" x1="${at}" y1="${base - ROWP.row + 5}" x2="${at}" y2="${base + 2}">`
+      + `<title>${esc(`${r.label} · mean ${fine(average)} over ${plural(r.values.length, 'row')}`)}</title></line>`;
   }).join(''));
 }
 
 /** A grid of cells. `rows` and `cols` are labels; `cell(r, c)` returns `{ cls, tip, attrs }`, or null
     for a gap. Column labels are written only while there is room for them. */
-function heatmap(rows, cols, cell, width = rowWidth()) {
+function heatmap(rows, cols, cell) {
+  const width = rowWidth();
   const left = labOf(width), top = 4;
   const wide = (width - ROWP.right - left) / Math.max(1, cols.length);
   const gap = wide > 6 ? 1.5 : 0, labelled = wide >= 22;

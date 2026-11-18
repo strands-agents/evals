@@ -34,22 +34,22 @@ const toolResult = (text, status) =>
     ? ` · <b class="warn">${esc(status)}</b>` : ''}</span><pre>${clip(text, 700)}</pre></div>`;
 
 /* Two block vocabularies: the Strands blocks a rollout records (`toolUse`, `toolResult`,
-   `reasoningContent`) and the `content_type` ones a recorded session's spans carry. */
+   `reasoningContent`) and the `content_type` ones a recorded session's spans carry.
+   A tool result in either is read as `[text, status]`, the status null when the call succeeded. */
+const strandsResult = r => [
+  (r.content || []).map(c => blockText(c && typeof c === 'object'
+    ? ('json' in c ? c.json : typeof c.text === 'string' ? c.text : c) : c)).join('\n'),
+  r.status && r.status !== 'success' ? r.status : null,
+];
+const recordedResult = r => [typeof r.error === 'string' ? r.error : blockText(r.content), r.error ? 'error' : null];
+
 function contentBlock(b) {
   if (b == null || typeof b !== 'object') return `<div class="say">${clip(b)}</div>`;
   if (typeof b.text === 'string') return `<div class="say">${clip(b.text)}</div>`;
   if (b.toolUse) return toolCall(b.toolUse.name, b.toolUse.input);
   if (b.content_type === 'tool_use') return toolCall(b.name, b.arguments);
-  if (b.toolResult) {
-    const parts = (b.toolResult.content || []).map(c => blockText(c && typeof c === 'object'
-      ? ('json' in c ? c.json : typeof c.text === 'string' ? c.text : c) : c));
-    const status = b.toolResult.status && b.toolResult.status !== 'success' ? b.toolResult.status : null;
-    return toolResult(parts.join('\n'), status);
-  }
-  if (b.content_type === 'tool_result') {
-    return toolResult(typeof b.error === 'string' ? b.error : blockText(b.content),
-      b.error ? 'error' : null);
-  }
+  if (b.toolResult) return toolResult(...strandsResult(b.toolResult));
+  if (b.content_type === 'tool_result') return toolResult(...recordedResult(b));
   if (b.reasoningContent) {
     return `<div class="say think">${clip(((b.reasoningContent.reasoningText || {}).text) || '')}</div>`;
   }
@@ -87,10 +87,8 @@ function spanCard(s, i) {
   }
   if (kind === 'execute_tool') {
     const call = s.tool_call || {};
-    const res = s.tool_result || {};
     return `<div class="msg">${head('tool')}${toolCall(call.name, call.arguments)}`
-      + toolResult(typeof res.error === 'string' ? res.error : blockText(res.content),
-        res.error ? 'error' : null) + '</div>';
+      + toolResult(...recordedResult(s.tool_result || {})) + '</div>';
   }
   if (kind === 'invoke_agent') {
     const say = (label, text) => (text
@@ -116,8 +114,8 @@ const spanStart = s => Date.parse(((s && s.span_info) || {}).start_time);
 const spanEnd = s => Date.parse(((s && s.span_info) || {}).end_time);
 
 /** What a trace says it cost: `{ seconds, tokens, modelCalls, toolCalls }`, each null where it is not
-    recorded, or null when `doc` is not a trace. A session times its spans; a message list counts tokens.
-    A session's time is what its traces took, added up: the wait between two traces is nobody's cost. */
+    recorded, or null when `doc` is not a trace. A session's seconds are what its traces took, added up:
+    the wait between two traces is nobody's cost. */
 function traceStats(doc) {
   const traces = sessionTraces(doc);
   if (traces) {
@@ -143,11 +141,12 @@ function traceStats(doc) {
   };
 }
 
+const secondsText = seconds => `${nice(seconds)}s`;
 /** `2 model calls · 1 tool call · 4.2s · 3.1k tokens`, leaving out what was not recorded. */
 const costText = stats => !stats ? '' : [
   stats.modelCalls ? plural(stats.modelCalls, 'model call') : '',
   stats.toolCalls ? plural(stats.toolCalls, 'tool call') : '',
-  stats.seconds != null ? `${nice(stats.seconds)}s` : '',
+  stats.seconds != null ? secondsText(stats.seconds) : '',
   stats.tokens != null ? `${compact(stats.tokens)} tokens` : '',
 ].filter(Boolean).join(' · ');
 const spansCost = spans => costText(traceStats({ traces: [{ spans }] }));
@@ -178,7 +177,7 @@ function traceTurns(spans) {
 }
 
 /** One trace of a session. `first` is where its spans stand in the session's count, and `of` how many
-    traces the session holds. Anything drawn once per trace, such as a timeline, belongs here. */
+    traces the session holds. */
 function traceSection(trace, at, of, first) {
   const number = new Map(trace.spans.map((s, i) => [s, first + i]));
   const cards = spans => spans.map(s => spanCard(s, number.get(s))).join('');
@@ -196,16 +195,19 @@ function traceSection(trace, at, of, first) {
     + '</section>';
 }
 
+/** A document as it was written, one disclosure away. */
+const rawView = (doc, label) => `<details class="raw"><summary>${esc(label)}</summary>`
+  + `<pre class="out">${esc(JSON.stringify(doc, null, 1).slice(0, 200000))}</pre></details>`;
+
 /* Two shapes: a strands-evals `Session` (traces of spans) or a list of Strands messages. Read
    off the document, not the pointer's `format`, because the two can disagree. */
 function traceView(doc, rawLabel = 'the file as written') {
-  const raw = `<details class="raw"><summary>${esc(rawLabel)}</summary>`
-    + `<pre class="out">${esc(JSON.stringify(doc, null, 1).slice(0, 200000))}</pre></details>`;
+  const raw = rawView(doc, rawLabel);
   const cost = costText(traceStats(doc));
   const sum = cost ? `<div class="tr-sum">${esc(cost)}</div>` : '';
   const traces = sessionTraces(doc);
   if (traces) {
-    const spans = traces.reduce((n, tr) => n + tr.spans.length, 0);
+    const spans = sessionSpans(doc).length;
     if (!spans) {
       return '<div class="empty">This session was recorded with no spans in it.</div>' + raw;
     }
