@@ -133,7 +133,7 @@ class RedTeamReport(EvaluationReport):
             test_passes=list(report.test_passes),
             reasons=list(report.reasons),
             detailed_results=detailed_results,
-            run=report.run,
+            run_info=report.run_info,
         )
 
     def attack_results(self) -> list[AttackResult]:

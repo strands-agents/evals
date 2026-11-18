@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from botocore.exceptions import ClientError
+from pydantic import ConfigDict
 from strands import tool as strands_tool
 from strands.models.model import Model
 from strands.types.exceptions import ContextWindowOverflowException, EventLoopException, ModelThrottledException
@@ -280,8 +281,15 @@ def test_experiment_run_evaluations_records_the_run(mock_evaluator, simple_task)
     second = experiment.run_evaluations(simple_task)
     after = datetime.now(timezone.utc)
 
-    assert first.run.run_id != second.run.run_id
-    assert before <= first.run.started_at <= first.run.ended_at <= second.run.started_at <= second.run.ended_at <= after
+    assert first.run_info.run_id != second.run_info.run_id
+    assert (
+        before
+        <= first.run_info.start_time
+        <= first.run_info.end_time
+        <= second.run_info.start_time
+        <= second.run_info.end_time
+        <= after
+    )
 
 
 def test_experiment_run_evaluations_records_one_run_across_evaluators(simple_task):
@@ -293,8 +301,24 @@ def test_experiment_run_evaluations_records_one_run_across_evaluators(simple_tas
     report = experiment.run_evaluations(simple_task)
 
     assert len({row["evaluator"] for row in report.cases}) == 2
-    assert report.run.run_id
-    assert report.run.started_at <= report.run.ended_at
+    assert report.run_info.run_id
+    assert report.run_info.start_time <= report.run_info.end_time
+
+
+def test_experiment_run_evaluations_records_the_run_on_a_frozen_report(mock_evaluator, simple_task):
+    """A report class that cannot be assigned to still gets its run."""
+
+    class FrozenReport(EvaluationReport):
+        model_config = ConfigDict(frozen=True)
+
+    experiment = Experiment(
+        cases=[Case(name="a", input="x", expected_output="x")], evaluators=[mock_evaluator], report_cls=FrozenReport
+    )
+
+    report = experiment.run_evaluations(simple_task)
+
+    assert isinstance(report, FrozenReport)
+    assert report.run_info.run_id
 
 
 def test_experiment_run_evaluations_task_executed_once():

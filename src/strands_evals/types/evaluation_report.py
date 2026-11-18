@@ -16,15 +16,15 @@ class RunInfo(BaseModel):
 
     Attributes:
         run_id: Unique to one `run_evaluations` call, so two reports of one experiment can be told apart.
-        started_at: When the run began. Timezone-aware; `Experiment` records it in UTC.
-        ended_at: When the run finished evaluating its last case. Timezone-aware, as above.
+        start_time: When the run began. Timezone-aware; `Experiment` records it in UTC.
+        end_time: When the run finished evaluating its last case. Timezone-aware, as above.
     """
 
     run_id: str
-    started_at: AwareDatetime
-    ended_at: AwareDatetime
+    start_time: AwareDatetime
+    end_time: AwareDatetime
 
-    @field_serializer("started_at", "ended_at")
+    @field_serializer("start_time", "end_time")
     def _as_iso(self, value: datetime) -> str:
         # `EvaluationReport.to_dict` dumps in python mode and `to_file` hands that to `json`.
         return value.isoformat()
@@ -41,7 +41,7 @@ class EvaluationReport(BaseModel):
             the evaluator that produced that row.
         test_passes: A list of booleans indicating whether the test pass or fail.
         reasons: A list of reason for each test case.
-        run: Which run produced the report, and when. None for a report built by hand, merged by
+        run_info: Which run produced the report, and when. None for a report built by hand, merged by
             `flatten`, or written before this field existed.
     """
 
@@ -53,7 +53,7 @@ class EvaluationReport(BaseModel):
     detailed_results: list[list[EvaluationOutput]] = []
     diagnoses: list[dict | None] = []
     recommendations: list[str | None] = []
-    run: RunInfo | None = None
+    run_info: RunInfo | None = None
 
     @staticmethod
     def is_applicable(outputs: list[EvaluationOutput]) -> bool:
@@ -101,7 +101,7 @@ class EvaluationReport(BaseModel):
 
         The base `Experiment` already returns a flattened report; this helper exists for callers
         that built reports separately (e.g., across multiple experiments) and want to merge them.
-        Each row's `evaluator` tag is preserved as-is. The result has no `run`: a merged report is
+        Each row's `evaluator` tag is preserved as-is. The result has no `run_info`: a merged report is
         not the product of one run.
         """
         if not reports:

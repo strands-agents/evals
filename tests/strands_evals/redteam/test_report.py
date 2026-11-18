@@ -67,10 +67,10 @@ def _empty_report() -> RedTeamReport:
 
 class TestFromEvaluationReport:
     def test_keeps_the_run_of_the_report_it_wraps(self):
-        run = RunInfo(run_id="run-1", started_at=datetime.now(timezone.utc), ended_at=datetime.now(timezone.utc))
-        base = EvaluationReport(overall_score=0.0, scores=[], cases=[], test_passes=[], run=run)
+        run = RunInfo(run_id="run-1", start_time=datetime.now(timezone.utc), end_time=datetime.now(timezone.utc))
+        base = EvaluationReport(overall_score=0.0, scores=[], cases=[], test_passes=[], run_info=run)
 
-        assert RedTeamReport.from_evaluation_report(base).run == run
+        assert RedTeamReport.from_evaluation_report(base).run_info == run
 
     def test_empty_report(self):
         empty = EvaluationReport(overall_score=0.0, scores=[], cases=[], test_passes=[])
