@@ -26,6 +26,7 @@ const suites = [
   'lenses.mjs',
   'sessions.mjs',
   'markdown.mjs',
+  'editor.mjs',
 ];
 let failed = 0;
 
