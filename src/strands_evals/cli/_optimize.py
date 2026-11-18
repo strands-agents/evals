@@ -59,6 +59,9 @@ else:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 CLI_FILE = "cli.json"
+# Bump SCHEMA_VERSION for a field that changes what runs (an older CLI ignoring it would resume a different run), so
+# an older CLI refuses the file; a field that only records something stays at the same version, and an older CLI
+# ignores it with a warning (`load_inputs`).
 SCHEMA_VERSION = 1
 
 _CONSTRAINT = re.compile(r"^\s*(?P<metric>[^<>=\s][^<>=]*?)\s*(?P<op><=|>=)\s*(?P<bound>\S+)\s*$")
@@ -405,7 +408,9 @@ def load_final_pick(spec: str) -> FinalPick:
 
 def check_config_unchanged(inputs: Inputs) -> None:
     """Refuse to resume a `--config` run whose config file changed since the run: a change to a key that isn't
-    tuned would otherwise mix trials of two agents (a tuned key's change is caught by `Optimizer.resume`).
+    tuned would otherwise mix trials of two agents (a tuned key's change is caught by `Optimizer.resume`). Only the
+    config file itself is hashed, not folders it names (skills, memory); a tuned skill's `SKILL.md` is checked by
+    `Optimizer.resume` with the space.
 
     Raises:
         ValueError: The config file is gone, or its sha256 isn't the one `cli.json` recorded.
@@ -419,7 +424,7 @@ def check_config_unchanged(inputs: Inputs) -> None:
         raise ValueError(f"--config {config} no longer exists; restore it to resume, or start a new run")
     if _harness.file_sha256(config) != inputs.config_sha256:
         raise ValueError(
-            f"--config {config} changed since the run, so resumed trials would run a different agent; "
+            f"the config file {config} changed since the run, so resumed trials would run a different agent; "
             "restore it to resume, or start a new run"
         )
 
@@ -470,6 +475,13 @@ _ROUTE_KEYS = {
 }
 _AGENT_KEYS = frozenset(key for keys in _ROUTE_KEYS.values() for key in keys)
 _PATH_KEYS = ("experiment", "config", "base_dir")
+# Flags that exclude each other: given on the command line, one replaces the file's value of the other.
+_EXCLUSIVE = (
+    ("search", "reflection_model"),
+    ("reflection_model", "search"),
+    ("final_pick", "n_finalists"),
+    ("n_finalists", "final_pick"),
+)
 _HOOK_KEYS = (
     "agent",
     "build_task",
@@ -495,12 +507,14 @@ def apply_run_file(path: Path, parser: argparse.ArgumentParser, args: argparse.N
     `--agent`, then `build_task`, `space`, `config`, `tune`, `tune_instructions`, `rollout`, `environment`).
     `objective`, `constraint`, and `tune` take the flag's strings or named `[key.NAME]` tables (not one `[key]`,
     `[[key]]`, or inline tables); a table's fields are `{maximize | minimize = METRIC, weight?, scale?}`,
-    `{metric = METRIC, at_most | at_least = X}`, `{path = PATH, choices?}`, and each becomes the flag's spec. A
+    `{metric = METRIC, at_most | at_least = X}`, `{path = PATH, choices? | int? | float?}`, and each becomes the
+    flag's spec. A
     flag on the command line replaces the file's value (for a repeatable flag, its whole list). A route flag on the
     command line
     (`--agent`, `--build-task` / `--space`, `--config`) chooses the route: the file's agent keys that don't fit it
     are dropped, those that do are kept (with `--agent`: `rollout`, `environment`; with `--build-task`: the other
-    of `build_task` / `space`; with `--config`: `tune`, `tune_instructions`, `rollout`). Paths
+    of `build_task` / `space`; with `--config`: `tune`, `tune_instructions`, `rollout`). Likewise a flag that excludes
+    another replaces the file's value of it (`--search` / `reflection_model`, `--final-pick` / `n_finalists`). Paths
     (`experiment`, `config`, `base_dir`) and path-form `MODULE:ATTR`s resolve against the file's folder; dotted
     modules import from the working directory, as on the command line.
 
@@ -532,6 +546,9 @@ def apply_run_file(path: Path, parser: argparse.ArgumentParser, args: argparse.N
         raise ValueError(f'run file {path} has no experiment = "<experiment.json>" (or pass --experiment)')
     base = path.resolve().parent
     on_command_line = {action.dest for action in actions.values() if getattr(args, action.dest) != action.default}
+    for flag, exclusive in _EXCLUSIVE:  # a flag given here replaces the file's value of the flag it excludes
+        if flag in on_command_line:
+            data.pop(exclusive, None)
     route = _command_line_route(on_command_line)
     if route is not None:  # the command line chose the route: drop the file's agent keys that don't fit it
         data = {key: value for key, value in data.items() if key not in _AGENT_KEYS or key in _ROUTE_KEYS[route]}
@@ -666,14 +683,24 @@ def _constraint_spec(where: str, entry: dict[str, Any]) -> str:
 
 
 def _tune_spec(where: str, entry: dict[str, Any]) -> str:
-    """`{path = PATH, choices?}` -> `PATH` (a text field) or `PATH=JSON_LIST` (a choice)."""
+    """`{path = PATH}` -> `PATH` (a text field); with `choices = [...]` -> `PATH=JSON_LIST` (a choice); with
+    `int = [LO, HI]` / `float = [LO, HI]` -> `PATH=int:LO..HI` / `PATH=float:LO..HI` (a number)."""
     if not isinstance(entry.get("path"), str):
         raise ValueError(f'{where} needs path = "PATH"')
-    if "choices" not in entry:
+    given = [name for name in ("choices", "int", "float") if name in entry]
+    if len(given) > 1:
+        raise ValueError(f"{where}: give one of choices, int, float (got {', '.join(given)})")
+    if not given:
         return str(entry["path"])
-    if not isinstance(entry["choices"], list):
-        raise ValueError(f"{where}: choices must be a list")
-    return f"{entry['path']}={json.dumps(entry['choices'])}"
+    if given[0] == "choices":
+        if not isinstance(entry["choices"], list):
+            raise ValueError(f"{where}: choices must be a list")
+        return f"{entry['path']}={json.dumps(entry['choices'])}"
+    bounds = entry[given[0]]
+    numbers = isinstance(bounds, list) and len(bounds) == 2
+    if not numbers or any(isinstance(b, bool) or not isinstance(b, (int, float)) for b in bounds):
+        raise ValueError(f"{where}: {given[0]} must be [LO, HI], two numbers")
+    return f"{entry['path']}={given[0]}:{bounds[0]}..{bounds[1]}"
 
 
 def _one_of(where: str, entry: dict[str, Any], names: tuple[str, ...], kind: Any, placeholder: str) -> str:
@@ -704,7 +731,7 @@ _TOML_HINTS = (
 _TABLES: dict[str, tuple[str, ...]] = {
     "objective": ("maximize", "minimize", "weight", "scale"),
     "constraint": ("metric", "at_most", "at_least"),
-    "tune": ("path", "choices"),
+    "tune": ("path", "choices", "int", "float"),
 }
 _TABLE_SPECS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "objective": _objective_spec,

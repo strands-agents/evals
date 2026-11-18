@@ -845,8 +845,46 @@ def test_resume_overrides_a_killed_run_and_warns_on_a_finished_one(experiment_pa
     capsys.readouterr()
     assert main(["--json", "optimize", "resume", str(killed), "--max-workers", "8", "--max-rollouts", "400"]) == 0
     assert "change nothing" not in capsys.readouterr().err
-    assert main(["--json", "optimize", "resume", str(root), "--max-rollouts", "400"]) == 0
+    events = [json.loads(line) for line in (killed / "events.jsonl").read_text().splitlines()]
+    (resumed,) = [event for event in events if event["event"] == "resume"]
+    assert resumed["budget"]["max_rollouts"] == 400  # the override reached the run
+    # a finished run only prints its result: an override that wouldn't fit the spend is ignored, not an error
+    assert main(["--json", "optimize", "resume", str(root), "--max-rollouts", "1"]) == 0
     assert "the run has finished, so --max-rollouts change nothing" in capsys.readouterr().err
+
+
+def test_a_finished_config_run_prints_its_result_after_the_config_changed(
+    experiment_path, tmp_path, monkeypatch, capsys, scripted_text_proposer
+):
+    config = _write_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    assert main(_config_args(experiment_path, config, tmp_path)) == 0
+    root = _only_run(tmp_path)
+    config.write_text(config.read_text() + "\n")  # a byte changed; no trial runs for a finished run
+    capsys.readouterr()
+    assert main(["--json", "optimize", "resume", str(root)]) == 0
+    assert json.loads(capsys.readouterr().out)["run_id"] == root.name
+
+
+@pytest.mark.parametrize(
+    ("file_key", "flag"),
+    [
+        ('reflection_model = "some-model"\n', ["--search", f"{AGENTS}:search"]),
+        ("n_finalists = 3\n", ["--final-pick", f"{AGENTS}:final_pick"]),
+    ],
+)
+def test_a_flag_replaces_the_file_value_it_excludes(experiment_path, tmp_path, capsys, hooks, file_key, flag):
+    path = _write_run_file(tmp_path, RUN_FILE + file_key)
+    assert main(["--json", "optimize", "run", str(path), *flag]) == 0, capsys.readouterr().err
+
+
+def test_ctrl_c_before_the_run_starts(experiment_path, tmp_path, monkeypatch, capsys):
+    def interrupted(inputs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(_optimize_module(), "load_experiment", interrupted)
+    assert main(_run_args(experiment_path, tmp_path)) == 130
+    assert "interrupted before the run started; nothing was spent" in capsys.readouterr().err
 
 
 def test_resume_a_config_run(experiment_path, tmp_path, monkeypatch, capsys):
@@ -1035,3 +1073,80 @@ def test_an_uppercase_toml_suffix_is_a_run_file(experiment_path, tmp_path, capsy
     path = tmp_path / "OPTIMIZE.TOML"
     path.write_text(RUN_FILE)
     assert main(["--json", "optimize", "run", str(path)]) == 0
+
+
+DEPTH = "builtinTools.subagent.maxDepth"
+
+
+def _depth_config(folder: Path) -> Path:
+    """A config whose only built-in tool is the subagent one, with a numeric setting to tune."""
+    return _write_config(folder, builtinTools={"*": False, "subagent": {"maxDepth": 1}})
+
+
+@pytest.mark.parametrize("form", ["flag", "table"])
+def test_an_int_range_tunes_a_config_number(experiment_path, tmp_path, monkeypatch, capsys, form):
+    config = _depth_config(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    if form == "flag":
+        args = _config_args(experiment_path, config, tmp_path, "--no-tune-instructions", "--tune", f"{DEPTH}=int:0..3")
+    else:
+        body = (
+            SETTINGS
+            + 'objective = ["maximize:Correct"]\n\n[agent]\nconfig = "agent.json"\ntune_instructions = false\n\n'
+            + f'[agent.tune.depth]\npath = "{DEPTH}"\nint = [0, 3]\n'
+        )
+        args = ["--json", "optimize", "run", str(_write_run_file(tmp_path, body))]
+    assert main(args) == 0, capsys.readouterr().err
+    root = _only_run(tmp_path)
+    assert json.loads((root / "cli.json").read_text())["tune"] == [f"{DEPTH}=int:0..3"]
+    (entry,) = json.loads((root / "run.json").read_text())["space"]
+    assert (entry["kind"], entry["min_value"], entry["max_value"], entry["default"]) == ("int", 0, 3, 1)
+
+
+def test_a_float_range_declares_a_float_around_the_config_value(tmp_path):
+    from strands_evals.cli import _harness
+    from strands_evals.optimization import Float
+
+    config = _write_config(tmp_path, contextManager={"ratio": 0.5})
+    markers, tuned = _harness.declare(config, ["contextManager.ratio=float:0.1..0.9"], tune_instructions=False)
+    marker = markers["contextManager_ratio"]
+    assert isinstance(marker, Float) and (marker.min_value, marker.max_value, marker.default) == (0.1, 0.9, 0.5)
+    assert tuned[0].kind == "number" and tuned[0].path == ("contextManager", "ratio")
+
+
+@pytest.mark.parametrize(
+    ("tune", "config", "message"),
+    [
+        (
+            f"{DEPTH}=int:0..3",
+            {"builtinTools": {"*": False, "subagent": {"maxDepth": 5}}},
+            "must be an integer in 0..3",
+        ),
+        ("contextManager.ratio=int:0..3", {"contextManager": {"ratio": 0.5}}, "must be an integer"),
+        ("instructions=int:0..3", {}, "must be an integer"),
+        (f"{DEPTH}=int:3..1", {}, "LO < HI"),
+        (f"{DEPTH}=int:a..b", {}, "two ints"),
+        (f"{DEPTH}=float:0.1", {}, "two floats"),
+        ("contextManager.ratio=float:0.1..0.4", {"contextManager": {"ratio": 0.5}}, "must be a number in 0.1..0.4"),
+    ],
+)
+def test_a_bad_range_is_a_usage_error(experiment_path, tmp_path, capsys, tune, config, message):
+    path = _write_config(tmp_path, **config)
+    assert main(_config_args(experiment_path, path, tmp_path, "--tune", tune)) == 2
+    assert message in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ("int = [0, 3]\nchoices = [0, 1]\n", "give one of choices, int, float"),
+        ("int = [0]\n", "int must be [LO, HI], two numbers"),
+        ('float = ["a", "b"]\n', "float must be [LO, HI], two numbers"),
+    ],
+)
+def test_a_bad_range_table_is_a_usage_error(experiment_path, tmp_path, capsys, fields, message):
+    body = SETTINGS + 'objective = ["maximize:Correct"]\n\n[agent]\nconfig = "agent.json"\n\n'
+    body += f'[agent.tune.depth]\npath = "{DEPTH}"\n' + fields
+    _depth_config(tmp_path)
+    assert main(["optimize", "run", str(_write_run_file(tmp_path, body))]) == 2
+    assert message in capsys.readouterr().err

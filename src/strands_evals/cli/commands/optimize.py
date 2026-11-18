@@ -59,6 +59,21 @@ def _given(args: argparse.Namespace, *names: str) -> dict[str, Any]:
     return {name: getattr(args, name) for name in names if getattr(args, name) is not None}
 
 
+def _before_start(subcommand: Any) -> Any:
+    """Wrap a subcommand so Ctrl-C before the run starts (imports, loading the experiment and hooks) exits 130
+    with one line instead of a traceback; nothing has been spent then."""
+
+    def guarded(args: argparse.Namespace) -> int:
+        try:
+            return int(subcommand(args))
+        except KeyboardInterrupt:
+            print("strands-evals optimize: interrupted before the run started; nothing was spent", file=sys.stderr)  # noqa: T201
+            return EXIT_INTERRUPTED
+
+    guarded.__doc__ = subcommand.__doc__
+    return guarded
+
+
 def _run(args: argparse.Namespace) -> int:
     """`optimize run`: read a run file if given, check the flags, build the `Optimizer`, run it, and print the
     result; `cli.json` is written as soon as the run folder exists. Returns the exit code (2 on bad input, 3 when
@@ -201,10 +216,12 @@ def _resume(args: argparse.Namespace) -> int:
     debug = getattr(args, "debug", False)
 
     run_dir = Path(args.run_dir).resolve()
+    finished = (run_dir / "result.json").is_file()  # runs no trial: it only prints its result again
     try:
         saved = _optimize.read_run_json(run_dir)
         inputs = _optimize.load_inputs(run_dir)
-        _optimize.check_config_unchanged(inputs)
+        if not finished:
+            _optimize.check_config_unchanged(inputs)
     except ValueError as error:
         emit_error(str(error), debug=debug, exc=error)
         return EXIT_BAD_INPUT
@@ -218,7 +235,7 @@ def _resume(args: argparse.Namespace) -> int:
         )
         if value is not None
     ]
-    if overrides and (run_dir / "result.json").is_file():
+    if overrides and finished:
         print(  # noqa: T201
             f"strands-evals optimize: the run has finished, so {', '.join(overrides)} change nothing; "
             "start a new run to search more",
@@ -227,11 +244,12 @@ def _resume(args: argparse.Namespace) -> int:
     with _optimize.working_directory(saved["workdir"]):
         try:
             budget = None
-            if args.max_rollouts is not None or args.max_iterations is not None:
+            if not finished and (args.max_rollouts is not None or args.max_iterations is not None):
                 given = _given(args, "max_rollouts", "max_iterations")
                 budget = Budget(**{**saved["budget"], **given})
+            max_workers = None if finished else args.max_workers
             optimizer = Optimizer.resume(
-                run_dir, **_optimize.agent_arguments(inputs), budget=budget, max_workers=args.max_workers
+                run_dir, **_optimize.agent_arguments(inputs), budget=budget, max_workers=max_workers
             )
         except (TypeError, ValueError) as error:
             emit_error(str(error), debug=debug, exc=error)
@@ -291,12 +309,13 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
     )
     parser.add_argument(
         "--tune",
-        metavar="PATH[=JSON_LIST]",
+        metavar="PATH[=JSON_LIST | =int:LO..HI | =float:LO..HI]",
         action="append",
         default=None,
         help=(
             "with --config, repeatable: a dotted config path to tune, as text (e.g. 'description', or "
-            "'skills' for its skill folder) or, with =JSON_LIST, as a choice (e.g. 'effort=[\"low\",\"high\"]')"
+            "'skills' for its skill folder), with =JSON_LIST as a choice (e.g. 'effort=[\"low\",\"high\"]'), or "
+            "with =int:LO..HI / =float:LO..HI as a number in a range (e.g. 'builtinTools.subagent.maxDepth=int:0..3')"
         ),
     )
     parser.add_argument(
@@ -421,7 +440,7 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
     )
     settings.add_argument("--base-dir", metavar="DIR", default=None, help="parent of run folders")
     settings.add_argument("--name", default=None, help="prefix of the run folder's name")
-    parser.set_defaults(func=_run, run_parser=parser)
+    parser.set_defaults(func=_before_start(_run), run_parser=parser)
 
 
 def add_subparser(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentParser) -> argparse.ArgumentParser:
@@ -451,5 +470,5 @@ def add_subparser(subparsers: argparse._SubParsersAction, parent: argparse.Argum
     resume.add_argument(
         "--max-workers", type=int, default=None, metavar="N", help="parallel trials (default: the run's)"
     )
-    resume.set_defaults(func=_resume)
+    resume.set_defaults(func=_before_start(_resume))
     return parser

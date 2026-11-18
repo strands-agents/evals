@@ -29,7 +29,7 @@ from strands_harness import (
 from strands_harness.defaults import DEFAULT_MEMORY_DIR
 
 from ..case import Case
-from ..optimization import BuildContext, JsonField, Marker, OneOf, RolloutFn, SkillLibrary
+from ..optimization import BuildContext, Float, Int, JsonField, Marker, OneOf, RolloutFn, SkillLibrary
 from ..optimization.execution.rollout import _call
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,16 @@ class Tuned:
 
     name: str
     path: tuple[str | int, ...]
-    kind: Literal["text", "skills", "choice"]
+    kind: Literal["text", "skills", "choice", "number"]
+
+
+@dataclass(frozen=True)
+class _Range:
+    """A `--tune PATH=int:LO..HI` / `float:LO..HI` range."""
+
+    kind: Literal["int", "float"]
+    low: float
+    high: float
 
 
 def harness_version() -> str:
@@ -73,17 +82,19 @@ def declare(
 
     Args:
         config_path: The portable config (JSON).
-        tune: The `--tune` specs: `PATH` (a text field, or `skills`) or `PATH=JSON_LIST` (a choice).
+        tune: The `--tune` specs: `PATH` (a text field, or `skills`), `PATH=JSON_LIST` (a choice), or
+            `PATH=int:LO..HI` / `PATH=float:LO..HI` (a number in an inclusive range).
         tune_instructions: Whether `instructions` is tuned without a `--tune` naming it (`--no-tune-instructions`).
 
     Returns:
-        `(markers, tuned)`: the space, declared name -> marker (`JsonField`, `SkillLibrary`, or `OneOf`), and for
+        `(markers, tuned)`: the space, declared name -> marker (`JsonField`, `SkillLibrary`, `OneOf`, `Int`, or
+        `Float`), and for
         each name where its value goes in the config (`Tuned`: name, path, kind), which `build_task` reads.
 
     Raises:
         ValueError: A path the config doesn't have, a text path that isn't a string, a bad choice list or one
-            missing the config's current value, `skills` not given as one path, two paths with one name, or
-            nothing to tune.
+            missing the config's current value, a bad range or one the config's value is outside of (or not a
+            number of that type), `skills` not given as one path, two paths with one name, or nothing to tune.
     """
     raw = read_config(config_path)
     current = define_harness_agent_config(copy.deepcopy(raw))  # defaults merged: a choice may be left at one
@@ -94,13 +105,15 @@ def declare(
         raise ValueError("--no-tune-instructions with no --tune: nothing is left to tune")
     markers: dict[str, Marker] = {}
     tuned: list[Tuned] = []
-    kind: Literal["text", "skills", "choice"]
+    kind: Literal["text", "skills", "choice", "number"]
     for text, options in specs:
         path = _path(text)
         name = text.replace(".", "_")
         if name in markers:
             raise ValueError(f"--tune {text}: another --tune path is also named {name!r}")
-        if options is not None:
+        if isinstance(options, _Range):
+            markers[name], kind = _number(text, options, _get(current, path, text)), "number"
+        elif options is not None:
             value = _get(current, path, text)
             if value not in options:
                 raise ValueError(f"--tune {text}: the config's value {value!r} must be one of the options")
@@ -120,7 +133,8 @@ def declare(
             value = _get(raw, path, text)
             if not isinstance(value, str):
                 raise ValueError(
-                    f"--tune {text} is a {type(value).__name__}, not text: give --tune {text}=JSON_LIST for a choice"
+                    f"--tune {text} is a {type(value).__name__}, not text: give --tune {text}=JSON_LIST for a "
+                    f"choice, or {text}=int:LO..HI / {text}=float:LO..HI for a number"
                 )
             markers[name], kind = JsonField(config_path, _pointer(path)), "text"
         tuned.append(Tuned(name, path, kind))
@@ -215,13 +229,42 @@ def _fresh_state(config: dict[str, Any], base_dir: Path, folder: Path) -> dict[s
     return trial
 
 
-def _split(spec: str) -> tuple[str, list[Any] | None]:
-    """`PATH` or `PATH=JSON_LIST`."""
+def _number(text: str, bounds: _Range, value: Any) -> Int | Float:
+    """`Int` / `Float` over `bounds`, its default the config's `value`, which must be a number of that type inside."""
+    numeric = not isinstance(value, bool) and isinstance(value, int if bounds.kind == "int" else (int, float))
+    if not numeric or not bounds.low <= value <= bounds.high:
+        what = "an integer" if bounds.kind == "int" else "a number"
+        raise ValueError(
+            f"--tune {text}: the config's value {value!r} must be {what} in {bounds.low:g}..{bounds.high:g}"
+        )
+    if bounds.kind == "int":
+        return Int(int(bounds.low), int(bounds.high), default=value)
+    return Float(bounds.low, bounds.high, default=float(value))
+
+
+def _range(path: str, raw: str) -> _Range:
+    """`int:LO..HI` or `float:LO..HI` (inclusive, LO < HI)."""
+    kind, _, bounds = raw.partition(":")
+    low, sep, high = bounds.partition("..")
+    try:
+        parse = int if kind == "int" else float
+        lo, hi = parse(low), parse(high)
+    except ValueError as error:
+        raise ValueError(f"--tune {path}: a range is {kind}:LO..HI with two {kind}s (got '{raw}')") from error
+    if not sep or lo >= hi:
+        raise ValueError(f"--tune {path}: a range is {kind}:LO..HI with LO < HI (got '{raw}')")
+    return _Range("int" if kind == "int" else "float", lo, hi)
+
+
+def _split(spec: str) -> tuple[str, list[Any] | _Range | None]:
+    """`PATH`, `PATH=JSON_LIST`, or `PATH=int:LO..HI` / `PATH=float:LO..HI`."""
     path, sep, raw = spec.partition("=")
     if not path:
-        raise ValueError(f"--tune must be PATH or PATH=JSON_LIST (got '{spec}')")
+        raise ValueError(f"--tune must be PATH, PATH=JSON_LIST, or PATH=int:LO..HI / float:LO..HI (got '{spec}')")
     if not sep:
         return path, None
+    if raw.startswith(("int:", "float:")):
+        return path, _range(path, raw)
     try:
         options = json.loads(raw)
     except ValueError as error:
