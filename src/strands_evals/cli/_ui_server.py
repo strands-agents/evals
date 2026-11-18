@@ -588,7 +588,7 @@ class UIHandler(BaseHTTPRequestHandler):
             },
         )
 
-    def _get_page(self, query: dict[str, list[str]]) -> None:
+    def _get_page(self, query: dict[str, list[str]], status: HTTPStatus = HTTPStatus.OK) -> None:
         """Serve the page to a request that has the token or the cookie.
 
         The printed link is answered with the cookie and a redirect to the same address without the token,
@@ -610,7 +610,7 @@ class UIHandler(BaseHTTPRequestHandler):
         slot = TOKEN_SLOT.replace('""', f'"{html.escape(self.config.token, quote=True)}"')
         page = self.config.page().replace(TOKEN_SLOT, slot, 1)
         policy = {"Content-Security-Policy": self.config.content_security_policy()}
-        self._send(HTTPStatus.OK, page.encode("utf-8"), html_type, headers=policy)
+        self._send(status, page.encode("utf-8"), html_type, headers=policy)
 
     _GET_ROUTES: dict[str, Callable[[UIHandler, dict[str, list[str]]], None]] = {
         "/api/config": _get_config,
@@ -629,6 +629,11 @@ class UIHandler(BaseHTTPRequestHandler):
 
         if is_page and self._host_is_admitted():
             self._get_page(query)
+            return
+        # A browser holding the cookie, at an address the page does not have, gets the page, which says so.
+        stray = form is None and parsed.path not in self._GET_ROUTES and not f"{parsed.path}/".startswith("/api/")
+        if stray and self._has_page_cookie() and self._host_is_admitted():
+            self._get_page({}, HTTPStatus.NOT_FOUND)
             return
         refusal = self._refusal(query)
         if refusal:
