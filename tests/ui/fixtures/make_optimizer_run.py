@@ -285,6 +285,67 @@ AS_MESSAGE_LIST = ("c0", "train_case_02", "train")
 LEFT_UNWRITTEN = ("c6", "val_case_02", "validation")
 
 
+# What each case asks, the short answer, and what a better-instructed agent adds to it.
+CONVERSATIONS = [
+    ("Where is my order NW-104233?", "Order NW-104233 was delivered on 2 October.", "It was left at the front desk."),
+    (
+        "Can I still return the rain jacket I bought?",
+        "Yes, you can return it.",
+        "Returns are open for 30 days from delivery.",
+    ),
+    ("I was charged twice for order NW-104871.", "I see two charges on NW-104871.", "I have refunded the duplicate."),
+    ("My tent arrived with a torn seam.", "I am sorry about the tent.", "A replacement ships today, free of charge."),
+    ("How do I change the delivery address?", "I can change it before the order ships.", "Which order is it for?"),
+    (
+        "Cancel order NW-105002, please.",
+        "Order NW-105002 is cancelled.",
+        "The refund reaches your card in 3 to 5 days.",
+    ),
+    ("Do you ship to Canada?", "Yes, we ship to Canada.", "Delivery takes 6 to 9 working days."),
+    (
+        "The discount code TRAIL10 is not working.",
+        "TRAIL10 expired last week.",
+        "I have applied the same 10% to your basket.",
+    ),
+    (
+        "When will the boots in NW-105344 be back in stock?",
+        "They are due back on 18 November.",
+        "I can email you then.",
+    ),
+    (
+        "I never got a confirmation email.",
+        "I have sent the confirmation again.",
+        "It went to the address on the order.",
+    ),
+    ("Can I exchange a size M for a size L?", "Yes, you can exchange it.", "I have emailed a prepaid return label."),
+    ("My refund for NW-103990 has not arrived.", "The refund was issued on 4 November.", "Banks can take 5 days."),
+    ("Is the stove covered by a warranty?", "Yes, for two years.", "Yours runs until March 2028."),
+    (
+        "I want to speak to a person.",
+        "I am passing you to a colleague.",
+        "They will have this conversation in front of them.",
+    ),
+    ("What is your price-match policy?", "We match any authorised retailer.", "Send a link within 14 days of buying."),
+]
+# The baseline and the candidate that asks a clarifying question first answer in one short sentence.
+CURT = {"c0", "c2"}
+
+
+def conversation(case: str) -> tuple[str, str, str]:
+    return CONVERSATIONS[(TRAIN + VALIDATION + TEST).index(case)]
+
+
+def answer(cid: str, case: str) -> str:
+    _, short, more = conversation(case)
+    return short if cid in CURT else f"{short} {more}"
+
+
+def order_of(case: str) -> str:
+    """The order a case names, or a stand-in when it names none."""
+    named = [word.strip("?.,") for word in conversation(case)[0].split() if word.startswith("NW-")]
+    return named[0] if named else "NW-104233"
+
+
 def transcript(cid: str, case: str, split: str, output: str | None = None) -> dict[str, str] | None:
     """The `{hash, format}` pointer for one trial, registering the document it points at.
 
@@ -306,12 +367,12 @@ def session(digest: str, cid: str, case: str, output: str | None) -> dict:
     result as though the model had said it out loud.
     """
     sid = digest[:32]
-    asked = f"Where is my order? ({case})"
+    asked = conversation(case)[0]
     spans = [
         {
             "span_type": "invoke_agent",
             "span_info": {"span_id": digest[32:48], "session_id": sid, "trace_id": sid},
-            "system_prompt": f"<the system prompt {cid} was built with>",
+            "system_prompt": compose_values().get(cid, BASELINE_VALUES)["system_prompt"],
             "user_prompt": asked,
             "agent_response": output,
         },
@@ -329,7 +390,7 @@ def session(digest: str, cid: str, case: str, output: str | None) -> dict:
         {
             "span_type": "execute_tool",
             "span_info": {"span_id": digest[16:32], "session_id": sid, "trace_id": sid},
-            "tool_call": {"name": "lookup_order", "arguments": {"order_id": "NW-000000"}},
+            "tool_call": {"name": "lookup_order", "arguments": {"order_id": order_of(case)}},
             "tool_result": (
                 {"content": '{"output": "delivered 2026-10-02"}', "error": None}
                 if output
@@ -347,12 +408,12 @@ def message_list(cid: str, case: str, output: str | None) -> list[dict]:
     the same place, which is the whole reason the page cannot read one shape as the other.
     """
     return [
-        {"role": "user", "content": [{"text": f"Where is my order? ({case})"}]},
+        {"role": "user", "content": [{"text": conversation(case)[0]}]},
         {
             "role": "assistant",
             "content": [
                 {"reasoningContent": {"reasoningText": {"text": "No order id in the message, so ask for it."}}},
-                {"toolUse": {"toolUseId": "tu-1", "name": "lookup_order", "input": {"order_id": "NW-000000"}}},
+                {"toolUse": {"toolUseId": "tu-1", "name": "lookup_order", "input": {"order_id": order_of(case)}}},
             ],
             "metadata": {"usage": {"inputTokens": 2345, "outputTokens": 1005, "cacheReadInputTokens": 1800}},
         },
@@ -369,7 +430,7 @@ def message_list(cid: str, case: str, output: str | None) -> list[dict]:
                 }
             ],
         },
-        {"role": "assistant", "content": [{"text": output or f"<no answer from {cid}>"}]},
+        {"role": "assistant", "content": [{"text": output or "I could not complete that."}]},
     ]
 
 
@@ -721,7 +782,7 @@ def main() -> None:
                 status = FAILED_TRIALS.get((cid, case), "completed")
                 statuses[status] = statuses.get(status, 0) + 1
                 failed, unjudged = status == "agent_failure", status == "evaluator_invalid"
-                output = None if failed else f"<answer for {case} under {cid}>"
+                output = None if failed else answer(cid, case)
                 record = {
                     "candidate_id": cid,
                     "case_name": case,
@@ -845,8 +906,8 @@ def main() -> None:
                     "error": None,
                     "attempts": 1,
                     "previous_attempts": [],
-                    "output": f"<validation answer {case} / {cid}>",
-                    "transcript": transcript(cid, case, "validation", f"<validation answer {case} / {cid}>"),
+                    "output": answer(cid, case),
+                    "transcript": transcript(cid, case, "validation", answer(cid, case)),
                     "interactions": None,
                     "environment_state": None,
                     "evaluations": {"Helpfulness": judged(validation_objectives[cid])},
@@ -900,8 +961,8 @@ def main() -> None:
                     "error": None,
                     "attempts": 1,
                     "previous_attempts": [],
-                    "output": f"<test answer {case} / {cid}>",
-                    "transcript": transcript(cid, case, "test", f"<test answer {case} / {cid}>"),
+                    "output": answer(cid, case),
+                    "transcript": transcript(cid, case, "test", answer(cid, case)),
                     "interactions": None,
                     "environment_state": None,
                     "evaluations": {"Helpfulness": judged(0.664 if cid == "c10" else 0.521)},

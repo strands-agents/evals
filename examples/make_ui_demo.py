@@ -187,7 +187,9 @@ def optimizer_runs(out: Path) -> None:
     fixture.main()
 
     names = fixture.TRAIN + fixture.VALIDATION + fixture.TEST
-    cases = [case(100 + i, name, f"Question for {name}.", f"Answer for {name}.") for i, name in enumerate(names)]
+    cases = [
+        case(100 + i, name, fixture.conversation(name)[0], fixture.answer("c10", name)) for i, name in enumerate(names)
+    ]
     judge = [{"evaluator_type": "OutputEvaluator", "name": "Helpfulness", "rubric": "Score how helpful the reply is."}]
     write(out / "tuning" / "support-cases.experiment.json", experiment(cases, judge))
 

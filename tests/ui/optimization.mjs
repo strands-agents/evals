@@ -466,7 +466,7 @@ eq([...new Set(trials.map(t => t.at(-1)))].sort(), ['fail', 'pass'],
 await openTrial(p, 'c10', 'train_case_01');
 eq(pairs(p, '#opt-cands .trial-panel > dl').map(line => line.replace(/^Transcript: .*/, 'Transcript')),
   ['Ended as: completed', 'Scored: Helpfulness 0.49 fail judged', 'Cost: 3350 tokens · 3 model calls · 4.20s',
-    'Output: <answer for train_case_01 under c10>', 'Transcript'],
+    'Output: Order NW-104233 was delivered on 2 October. It was left at the front desk.', 'Transcript'],
   'a trial opens: how it ended, each score with its verdict and reason, the cost, the output, the transcript');
 
 // ── Candidates: transcripts, in both shapes ──
@@ -480,7 +480,7 @@ for (const [cand, name, count, who] of [
   eq([text('#opt-cands .tr-count'), speakers(p)], [count, who],
     `a transcript of ${count}: each part by kind or role`);
   const blocks = $$('#opt-cands .trial-panel .call').map(flat);
-  ok(blocks.some(c => /^tool call lookup_order .*NW-000000/.test(c))
+  ok(blocks.some(c => /^tool call lookup_order .*NW-104233/.test(c))
     && blocks.includes('tool result delivered 2026-10-02') && !!$('#opt-cands details.raw'),
     'with the tool call named, its result unwrapped from the JSON envelope, and the file one disclosure away',
     blocks.join(' | '));
@@ -544,7 +544,7 @@ eq([text('.tab.on'), text('#path'), text('#rep-count'), text('#r-score')],
 eq(lines(p, '#rep-rows tr.case')[0], 'train_case_01 | Helpfulness | 0.49 | fail',
   'a row per trial: case, evaluator, score, verdict');
 await click('#rep-rows tr.case');
-ok(/<answer for train_case_01 under c10>/.test(repDetail()) && /Input not recorded in this report/.test(repDetail())
+ok(/Order NW-104233 was delivered on 2 October\. It was left at the front desk\./.test(repDetail()) && /Input not recorded in this report/.test(repDetail())
   && !/undefined|Actual trajectory/.test(repDetail()),
   'a case shows the answer, names the input as not recorded, and does not pass the transcript off as a trajectory',
   repDetail().slice(0, 300));
