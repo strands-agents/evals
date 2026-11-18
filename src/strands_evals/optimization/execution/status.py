@@ -7,10 +7,14 @@ from collections.abc import Mapping
 from botocore.exceptions import (
     ConnectionClosedError,
     ConnectTimeoutError,
+    CredentialRetrievalError,
     EndpointConnectionError,
     NoCredentialsError,
+    PartialCredentialsError,
     ReadTimeoutError,
     ResponseStreamingError,
+    SSOError,
+    TokenRetrievalError,
 )
 from strands.types.exceptions import EventLoopException
 from urllib3.exceptions import NewConnectionError, ProtocolError
@@ -28,11 +32,16 @@ class InfrastructureError(Exception):
 
 
 # No connection, no credentials, or a response that stopped or broke while read. urllib3's own timeouts
-# reach the agent unwrapped when a streamed response stalls.
+# reach the agent unwrapped when a streamed response stalls. Credentials that can't be loaded or refreshed
+# (a credential process that fails, an expired SSO session) are the environment's, never the agent's.
 _TRANSPORT_ERRORS = (
     ConnectTimeoutError,
     EndpointConnectionError,
     NoCredentialsError,
+    PartialCredentialsError,
+    CredentialRetrievalError,
+    TokenRetrievalError,
+    SSOError,
     ReadTimeoutError,
     ResponseStreamingError,
     ConnectionClosedError,
@@ -50,6 +59,8 @@ _SERVICE_ERROR_CODES = frozenset(
         "modelstreamerrorexception",
         "modelnotreadyexception",
         "throttlingexception",
+        "expiredtokenexception",
+        "expiredtoken",
     }
 )
 
@@ -60,13 +71,15 @@ def classify(error: BaseException) -> TrialStatus:
     1. Unwrap: follow `EventLoopException.original_exception` to the cause.
     2. `InfrastructureError` -> `INFRASTRUCTURE_INVALID`.
     3. `utils.is_throttling_error(cause)` -> `INFRASTRUCTURE_INVALID`.
-    4. A transport error -> `INFRASTRUCTURE_INVALID`: botocore `ConnectTimeoutError`,
-       `EndpointConnectionError`, `NoCredentialsError`, `ReadTimeoutError`, `ResponseStreamingError`,
+    4. A transport or credential error -> `INFRASTRUCTURE_INVALID`: botocore `ConnectTimeoutError`,
+       `EndpointConnectionError`, `NoCredentialsError`, `PartialCredentialsError`, `CredentialRetrievalError`,
+       `TokenRetrievalError`, `SSOError` (its subclasses included), `ReadTimeoutError`, `ResponseStreamingError`,
        `ConnectionClosedError`; urllib3 `TimeoutError`, `ProtocolError`, `NewConnectionError`.
     5. The model service's own error code (`response["Error"]["Code"]`, lowercased; read with
        `getattr`, so it also covers botocore `EventStreamError` in a streamed response):
        `internalserverexception`, `serviceunavailableexception`, `modelstreamerrorexception`,
-       `modelnotreadyexception`, `throttlingexception` -> `INFRASTRUCTURE_INVALID`.
+       `modelnotreadyexception`, `throttlingexception`, and expired credentials (`expiredtokenexception`,
+       `expiredtoken`) -> `INFRASTRUCTURE_INVALID`.
     6. Anything else -> `AGENT_FAILURE`, a user's own deadline (`asyncio.TimeoutError`) included, so a
        slow agent never sheds its hard cases by being re-run.
 
