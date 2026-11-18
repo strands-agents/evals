@@ -8,26 +8,30 @@ const RS = { row: 24, head: 22, lab: 112, right: 112, foot: 32 };
 
 /** The goals the objective expression states plus the metrics the constraints name. */
 function aimedMetrics(d) {
-  const f = d.facts || {};
-  const set = new Set([...(f.goalMetrics || []), ...(f.goals || []).map(g => g.metric)]);
-  for (const con of ((d.config || {}).constraints || [])) {
+  const set = new Set([...d.facts.goalMetrics, ...d.facts.goals.map(g => g.metric)]);
+  for (const con of (d.config.constraints || [])) {
     const named = String(con).match(/[A-Za-z_][\w.]*/);
     if (named) set.add(named[0]);
   }
   return set;
 }
 
-/* `d.goals` holds only goals the trials measured. Directions here come from the record's goals. */
-const goalDir = (d, metric) => ((((d.facts || {}).goals || []).find(g => g.metric === metric) || {}).dir) || null;
+/** Where a comparison's 95% interval sits against zero: `above`, `below` or `across`; `point` for one
+    with no width, `none` for a difference with no interval, and null when there is no difference at all. */
+function intervalSide(o) {
+  if (!o || typeof o.mean_diff !== 'number') return null;
+  if (typeof o.ci_low !== 'number' || typeof o.ci_high !== 'number') return 'none';
+  if (o.ci_low === o.ci_high) return 'point';
+  return o.ci_low > 0 ? 'above' : o.ci_high < 0 ? 'below' : 'across';
+}
 
 /* ── the champion, at a glance ── */
 
-/** How the objective's interval reads: `[kind, words]`, or null when the report has no objective. */
-function gainReading(o) {
-  if (!o || typeof o.mean_diff !== 'number') return null;
-  if (typeof o.ci_low !== 'number' || typeof o.ci_high !== 'number' || o.ci_low === o.ci_high) return ['flat', 'no interval'];
-  return o.ci_low > 0 ? ['good', 'clear of zero'] : o.ci_high < 0 ? ['bad', 'a regression'] : ['flat', 'not shown'];
-}
+/* The objective's interval as the hero reads it: `[kind, words]` by where it sits. */
+const GAIN_READING = {
+  none: ['flat', 'no interval'], point: ['flat', 'no interval'],
+  above: ['good', 'clear of zero'], below: ['bad', 'a regression'], across: ['flat', 'not shown'],
+};
 
 /* One goal metric under the baseline and under the champion: bars to compare, the change, and how
    many cases went the goal's way. */
@@ -39,14 +43,13 @@ function winRow(d, m) {
   const most = Math.max(Math.abs(m.before), Math.abs(m.after)) || 1;
   const bar = (cls, v) => `<i class="${cls}" style="width:${((Math.abs(v) / most) * 100).toFixed(1)}%"></i>`;
   const measure = caseMeasures(d).find(x => x.value === 'm:' + m.metric || x.value === 'u:' + m.metric);
-  const both = measure ? caseRows(d, measure).filter(r => r.from != null && r.to != null) : [];
-  const better = both.filter(r => r.to !== r.from && (r.to > r.from) === (measure.better !== 'lower')).length;
+  const moves = measure && caseMoves(caseRows(d, measure), measure);
   return `<div class="win ${won}"><span class="win-name">${esc(m.metric)}`
     + `${dir ? `<span class="win-dir">${dir === 'max' ? '↑ higher' : '↓ lower'} is better</span>` : ''}</span>`
     + `<span class="win-bars">${bar('was', m.before)}${bar('now', m.after)}</span>`
     + `<span class="win-nums">${esc(show(m.before))} → <b>${esc(show(m.after))}</b></span>`
     + `<span class="win-delta">${won === 'up' ? '▲' : won === 'down' ? '▼' : ''} ${esc((delta > 0 ? '+' : '') + show(delta))}</span>`
-    + `<span class="win-cases">${both.length ? `better on ${better} of ${plural(both.length, 'case')}` : ''}</span></div>`;
+    + `<span class="win-cases">${moves && moves.both ? `better on ${moves.better} of ${plural(moves.both, 'case')}` : ''}</span></div>`;
 }
 
 function championHero(d) {
@@ -66,7 +69,7 @@ function championHero(d) {
   const from = !r.baselineId ? 'picked on the validation split; the report has no baseline to compare it with'
     : r.heldOut ? `against ${esc(r.baselineId)}, the baseline, on ${plural(r.cases || 0, 'held-out case')}`
       : `against ${esc(r.baselineId)}, the baseline, on the validation split the search chose on`;
-  const reading = gainReading(r.objective);
+  const reading = GAIN_READING[intervalSide(r.objective)];
   const gain = reading
     ? `<div class="champ-gain ${reading[0]}"><span class="champ-delta">${esc(signed(r.objective.mean_diff))}</span>`
       + `<span class="champ-what">objective<span class="champ-read">${esc(reading[1])}</span></span></div>` : '';
@@ -206,24 +209,24 @@ function resultCard(d) {
         + 'the run was not aiming at</button>'
       : '');
 
-  const o = r.objective;
+  const o = r.objective, side = intervalSide(o);
   let verdict;
-  if (!o || typeof o.mean_diff !== 'number') {
+  if (!side) {
     verdict = 'This report records no overall comparison against the baseline — only the per-metric '
       + 'means above — so how much of the gap is real cannot be read off it.';
-  } else if (typeof o.ci_low !== 'number' || typeof o.ci_high !== 'number') {
+  } else if (side === 'none') {
     verdict = `Objective <b>${esc(signed(o.mean_diff))}</b> against the baseline, with no interval `
       + 'in the report — so how certain that is cannot be read off it.';
-  } else if (o.ci_high === o.ci_low) {
+  } else if (side === 'point') {
     /* Every case reported the same difference: that is no interval, not a narrow one. */
     verdict = `Objective <b>${esc(signed(o.mean_diff))}</b> against the baseline — the same on every `
       + `one of ${plural(r.cases || 0, 'test case')}, so its 95% interval has no width and says `
       + 'nothing about how far this would carry to other cases.';
   } else {
     const span = `95% interval [${esc(fine(o.ci_low))}, ${esc(fine(o.ci_high))}]`;
-    const reading = o.ci_low > 0
+    const reading = side === 'above'
       ? `clear of zero${r.heldOut ? ' on cases the search never saw' : ''}.`
-      : o.ci_high < 0
+      : side === 'below'
         ? 'below zero, so shipping the champion would be a regression.'
         : 'includes zero, so <b>this run has not shown an improvement</b>. More cases or more '
           + 'runs per case would narrow it.';
@@ -294,3 +297,29 @@ function winnerCard(d) {
     + '<button class="btn" data-md="result">Copy result as Markdown</button>'
     + '<span class="said" id="opt-copied"></span></div>';
 }
+
+/* Toggled in place: a re-render would close the rows the click just opened. */
+$('opt-result').onclick = e => {
+  if (!e.target.closest('[data-act="opt-rest"]')) return;
+  const rest = $('opt-rest'), btn = $('opt-result').querySelector('.rmore');
+  rest.hidden = !rest.hidden;
+  btn.textContent = `${rest.hidden ? '+' : '−'} ${plural(rest.querySelectorAll('tr').length, 'metric')} the run was not aiming at`;
+};
+
+$('opt-winner').onclick = async e => {
+  const act = e.target.closest('[data-act]');
+  if (!act) return;
+  const values = OPT.winner.values;
+  const text = JSON.stringify(values, null, 2) + '\n';
+  const said = $('opt-copied');
+  if (act.dataset.act === 'copy-winner') {
+    said.textContent = await copyText(text)
+      ? `copied ${plural(Object.keys(values).length, 'setting')}`
+      : 'could not reach the clipboard — the configuration is above to select by hand';
+  } else {
+    const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    Object.assign(document.createElement('a'), { href: url, download: 'champion.json' }).click();
+    URL.revokeObjectURL(url);
+    said.textContent = `downloaded champion.json · ${KB(text.length)}`;
+  }
+};

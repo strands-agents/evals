@@ -448,7 +448,7 @@ ok(/The fit is flagged.*under-states the spread of token counts/.test(text('#opt
   text('#opt-eff-note'));
 
 // ── Candidates: the table ──
-const ALL = 'c0,c1,c2,c3,c4,c5,c6,invalid-4-null,c8,c9,c10';
+const ALL = 'c0,c1,c2,c3,c4,c5,c6,invalid-7,c8,c9,c10';
 eq(lines(p, '#opt-cands tr.case'), [
   'c0 #0 baseline | 0 | 0.51 | feasible | —',
   'c1 #1 | 1 | 0.55 | feasible | system_prompt',
@@ -537,7 +537,7 @@ ok(/budget could not afford it/.test(detail(p)['Why it was tried'])
   'an unscored candidate says why it never ran and still shows its configuration');
 ok(/no trial was recorded/.test(detail(p).Cases) && !$('#opt-cands tr.detail [data-open]'),
   'with no trials and no report to open');
-await openCand(p, 'invalid-4-null');
+await openCand(p, 'invalid-7');
 ok(/not in the registry/.test(detail(p)['Why it was tried'])
   && /records no values for this candidate/.test(detail(p)['Versus c0']),
   'the invalid patch shows why it was rejected, and no diff invented from its changed keys');
@@ -545,7 +545,7 @@ await openCand(p, 'c10');
 
 // ── Candidates: filters and search ──
 for (const [filter, ids] of [
-  ['feasible', 'c0,c1,c2,c3,c5,c6,c10'], ['infeasible', 'c8'], ['unscored', 'c4,invalid-4-null,c9'], ['all', ALL],
+  ['feasible', 'c0,c1,c2,c3,c5,c6,c10'], ['infeasible', 'c8'], ['unscored', 'c4,invalid-7,c9'], ['all', ALL],
 ]) {
   await click(`#opt-seg button[data-f="${filter}"]`);
   eq([shown(p), text('#opt-cand-count')], [ids, `${ids.split(',').length} of 11 candidates, 3 never scored`],
@@ -724,6 +724,12 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
   ok(q.text('#opt-sub').startsWith('second-run') && q.$('#v-opt-overview').classList.contains('on')
     && same(on(), [false, true]), 'picking the other run opens its Overview and moves the mark', q.text('#opt-sub'));
   eq(q.window.location.hash, '#/optimization/b/overview', 'and the address names that run by its directory');
+  await go(q, 'candidates');
+  await openCand(q, 'c0');
+  await go(q, 'runs');
+  await q.click(q.$$('#opt-runs-rows tr[data-opt-run]')[0]);
+  await go(q, 'candidates');
+  ok(candRow(q, 'c0') && !q.$('#opt-cands tr.detail'), 'a candidate opened in one run is not open in the next, though both have a c0');
 }
 
 // ── a trial's verdict comes from its evaluators, not from having finished ──
@@ -908,14 +914,14 @@ const WRITTEN = configWith(c => {
 
 // ── a candidate the optimizer never labelled is measured from its trials ──
 {
-  const trial = (score, usage) => ({
+  const trial = (name, score, usage) => ({
     event: 'trial', iteration: 0,
-    record: { candidate_id: 'c0', split: 'train', status: 'completed',
+    record: { candidate_id: 'c0', case_name: name, run_index: 0, split: 'train', status: 'completed',
       evaluations: { Helpfulness: { score, reason: 'judged' } }, usage },
   });
   const q = await openLog({ objective: 'Maximize(Helpfulness)' }, [START,
-    trial(0.2, { tokens: 100, model_calls: 1, seconds: 1.5 }),
-    trial(0.4, { tokens: 300, model_calls: 3, seconds: 2.5 }),
+    trial('a', 0.2, { tokens: 100, model_calls: 1, seconds: 1.5 }),
+    trial('b', 0.4, { tokens: 300, model_calls: 3, seconds: 2.5 }),
     iterationEnd(0, [prop('c0', 0, 0.3)], 2)]);
   eq(texts(q, '#opt-series-pick button').join(), 'Objective,Helpfulness', 'the picker offers only what was measured');
   await pick(q, '#opt-series-pick', 'm:Helpfulness');
@@ -926,6 +932,39 @@ const WRITTEN = configWith(c => {
   ok(same(titles(q, '#opt-usage-chart rect.col'), ['iteration 0: 400 over 2 trials'])
     && !/excluding/.test(q.text('#opt-usage-cap')),
     'usage is summed over the iteration, with no caveat when nothing follows it', q.text('#opt-usage-cap'));
+}
+
+// ── a trial recorded again replaces the earlier record ──
+{
+  const trial = (status, score, more) => ({
+    event: 'trial', iteration: 0,
+    record: { candidate_id: 'c0', case_name: 'a', run_index: 0, split: 'train', status,
+      evaluations: score == null ? {} : { H: { score } }, usage: { tokens: 100 }, ...more },
+  });
+  const q = await openLog({ objective: 'Maximize(H)' }, [START, trial('infrastructure_invalid', null),
+    trial('completed', 0.8, { attempts: 2, previous_attempts: [{ status: 'infrastructure_invalid' }] }),
+    iterationEnd(0, [prop('c0', 0, 0.8)], 1)]);
+  eq([q.text('#opt-cost-sum'), q.$$('#opt-status-chart .legend span').map(flat).join(' | ')],
+    ['100 tokens · 1 trial', 'completed 1 | train 1'], 'it is counted once, as it ended, and so is what it spent');
+  await go(q, 'candidates');
+  await openCand(q, 'c0');
+  eq(lines(q, '#opt-cands tr.trial'), ['a | train | H 0.80 | completed'], 'and listed once under its candidate');
+}
+
+// ── proposals that built nothing new: a tie, a duplicate, two invalid patches ──
+{
+  const none = { candidate_id: null, number: null, outcome: 'invalid', objective: null };
+  const q = await openLog({ objective: 'Maximize(H)' }, [START, iterationEnd(0, [prop('c0', 0, 0.4)]),
+    iterationEnd(1, [prop('c1', 1, 0.6), prop('c2', 2, 0.6), prop('c1', 1, 0.6, 'duplicate'), none, none])]);
+  eq([stats(q)[1], texts(q, '#opt-series-chart text.vlab').join()],
+    ['Best on training | 0.60 | c1 · highest here', 'c1 · 0.60'],
+    'of two candidates level at the top, the figure and the flag on the chart name the same one: the first to get there');
+  await go(q, 'setup');
+  has(q.text('#opt-explain'), /built 3 versions/, 'a proposal that repeats a candidate is not another version built');
+  await go(q, 'candidates');
+  await q.click(q.$$('#opt-cands tr.case').at(-1));
+  eq(q.$$('#opt-cands tr.case').map(tr => tr.getAttribute('aria-expanded')).slice(-2), ['false', 'true'],
+    'and of two invalid patches in one iteration, opening one leaves the other closed');
 }
 
 // ── the candidate axis: ids too long for a slot, and more labels than fit ──
@@ -1140,6 +1179,10 @@ const TWO_GOALS = 'Pareto(Maximize(Quality), Minimize(tokens))';
   eq(['c0', 'c1', 'c2', 'c3'].map(id => at[id].cand || 'no link'), ['no link', 'c1', 'c2', 'c3'],
     'a mark links to its candidate only when the Candidates table has a row for it, which the baseline here has not');
   has(two.text('#opt-note'), /front is on the Trade-off tab/, 'the Pareto note points at this tab');
+  await go(two, 'candidates');
+  await openCand(two, 'c1');
+  eq(flat(two.$('#opt-cands .cand-sum .stat.line')), 'c1 ← c0 Derived from',
+    'a candidate descends from the baseline though no iteration lists the baseline as a proposal');
   ok(two.$('#opt-effects').hidden, 'a run with no effects.json has no effects drawer');
 
   // Where the front comes from: the end report, else the champion, else the last iteration's snapshot.
@@ -1186,10 +1229,58 @@ const TWO_GOALS = 'Pareto(Maximize(Quality), Minimize(tokens))';
     effects: [{ metric: 'Quality', key: 'prompt', level: 'rewritten', reference: 'default', mean: 0.2,
       ci90: [0.1, 0.3], p_positive: 0.98 }],
   };
+  const aimless = await openLog({ objective: 'Maximize(Quality)' }, goalLog(FRONT), { 'r/effects.json': { ...fitted, goals: [] } });
+  ok(aimless.$('#opt-effects').hidden && aimless.$$('#opt-cands tr.case').length === 4,
+    'estimates with no goal to read them for have no drawer, and the rest of the run still draws', aimless.errs.join());
   const oneGoal = await openLog({ objective: 'Maximize(Quality)' }, goalLog(FRONT), { 'r/effects.json': fitted });
   ok(!oneGoal.$('#opt-effects').hidden && oneGoal.$('#opt-eff-goal').hidden
     && texts(oneGoal, '#opt-eff-chart .eff-row text.tick').join() === '+0.2 · 0.98',
     'one goal still gets the plot, with no goal picker', texts(oneGoal, '#opt-eff-chart .eff-row text.tick').join());
+}
+
+// ── served: the run's files are read on request ──
+{
+  const trial = EVENTS.find(e => e.event === 'trial' && e.record.candidate_id === 'c10' && e.record.case_name === 'train_case_01');
+  const transcript = `demo/transcripts/${trial.record.transcript.hash}.json`;
+  const experiment = { path: 'e.json', name: 'e.json', dir: '.', size: 1, modified: 5, cases: 1, evaluators: [], reports: [] };
+  const run = { id: 'demo', dir: 'demo', run_id: RUN_ID, config: CONFIG, events_path: 'demo/events.jsonl', modified: 1,
+    tuned_against: { path: 'e.json', status: 'verified', split_cases: 15, matched: 15 } };
+  const folder = { root: '/served', depth: 3, read_only: false };
+  /* What is on disk: the experiment's stamp, and whether the transcript has been written yet. */
+  const disk = { stamp: 5, transcript: false };
+  let saved = null;
+  const answer = (body, status = 200) => ({ ok: status < 400, status, statusText: '', json: async () => structuredClone(body) });
+  const q = await page({ fetchImpl: async (url, opts = {}) => {
+    const [route, query] = String(url).split('?');
+    const asked = new URLSearchParams(query).get('path');
+    if (route === '/api/config') return answer(folder);
+    if (route === '/api/scan') return answer({ ...folder, fingerprint: 'f', experiments: [experiment], reports: [], skipped: [], optimizer_runs: [run] });
+    if (route === '/api/events') return answer({ events: EVENTS });
+    if (opts.method === 'PUT') { saved = JSON.parse(opts.body); return answer({ path: asked, modified: 6, cases: 1 }); }
+    if (asked === 'e.json') return answer({ modified: disk.stamp, document: { cases: [{ name: 'train_case_01', input: 'q' }], evaluators: [] } });
+    return asked === transcript && disk.transcript
+      ? answer({ document: JSON.parse(TRANSCRIPTS[transcript]) }) : answer({ error: 'no such file' }, 404);
+  } });
+  pages.push(q);
+  await go(q, 'candidates');
+  await openTrial(q, 'c10', 'train_case_01');
+  has(panel(q).Transcript, /which is not in the run directory/, 'a transcript the run directory lacks is named as missing');
+  disk.transcript = true;
+  await q.click('#v-opt-runs [data-act="rescan"]');
+  await tick(4);
+  eq(q.text('#opt-cands .tr-count'), '3 spans of a recorded session', 'and is read once it is there, when the folder is read again with its trial still open');
+
+  await q.openExperiment();
+  await q.type('#form [data-k="input"]', 'edited');
+  disk.stamp = 9;
+  await go(q, 'candidates');
+  await q.click('#opt-cands [data-open]');
+  await tick(4);
+  await q.openExperiment();
+  await q.click('#save');
+  await tick(4);
+  eq(saved && saved.modified, 5,
+    'reading the tuned-against experiment for a candidate\'s cases leaves the editor\'s save guard on the copy it loaded');
 }
 
 // ── a null row in the declared space, and a run that has picked nothing yet ──

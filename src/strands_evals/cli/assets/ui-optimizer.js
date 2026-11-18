@@ -8,8 +8,8 @@ let optSeries = null, optUsage = null;
 let optToX = null, optToY = null;
 let optEffGoal = null;
 let optCases = null;
-/* `{ state, doc }`: state is `ok`, `none` (no `effects.json` beside the run) or `error`. */
-let EFFECTS = { state: 'none' };
+/* The run's `effects.json`, or null when it has none that can be read. */
+let EFFECTS = null;
 let optQuery = '', optFilter = 'all';
 let optError = '';                            // why the selected run could not be read, if it could not
 const optOpen = new Set();
@@ -21,12 +21,12 @@ const TRANSCRIPTS = new Map();
 
 /** The experiment whose cases this run split up, if one in this folder has them. */
 function sourceLine(run) {
-  const t = run && run.tuned_against;
+  const t = run.tuned_against;
   if (!t) return '';
   const link = openLink('experiment', t.path);
   return t.status === 'verified'
     ? `Its ${plural(t.split_cases, 'case')} are cases of ${link}.`
-    : `${t.matched} of its ${plural(t.split_cases, 'case')} are cases of ${link}.`;
+    : `${esc(t.matched)} of its ${plural(t.split_cases, 'case')} are cases of ${link}.`;
 }
 
 function optStat(value, key, hint, title) {
@@ -41,7 +41,7 @@ function methodLine(d) {
   const e = d.explain;
   const what = e.tuned.length
     ? `Tuned ${e.tuned.map(k => `<code>${esc(k)}</code>`).join(', ')}`
-    : (e.blocks.length ? `Tuned its ${e.blocks.map(b => esc(b)).join(' and ')}` : 'Searching over your agent');
+    : (e.blocks.length ? `Tuned its ${e.blocks.map(esc).join(' and ')}` : 'Searching over your agent');
   if (!e.sizes.length) return what;
   const where = e.sizes.map(s => `${s.n} ${esc(s.name)}`).join(' · ');
   return `${what} <span class="path">· ${where}</span>`;
@@ -49,7 +49,7 @@ function methodLine(d) {
 
 function explainStrip(d) {
   const e = d.explain;
-  const runs = e.runs && e.runs > 1 ? `, each case run ${plural(e.runs, 'time')}` : '';
+  const runs = e.runs > 1 ? `, each case run ${plural(e.runs, 'time')}` : '';
   const built = e.candidates
     ? `It built <b>${esc(e.candidates)}</b> versions of your agent and ran your cases against `
       + `each one${runs}.`
@@ -70,16 +70,15 @@ const transcriptHash = t => {
   return v && typeof v === 'object' && typeof v.hash === 'string' ? v.hash : null;
 };
 
-/** Relative to the tree being read: the same path in both modes. */
-const transcriptPath = (run, hash) =>
-  `${run.dir && run.dir !== '.' ? run.dir + '/' : ''}transcripts/${hash}.json`;
+/** A file of the run directory, relative to the tree being read: the same path in both modes. */
+const runFile = (run, name) => `${run.dir && run.dir !== '.' ? run.dir + '/' : ''}${name}`;
+const transcriptPath = (run, hash) => runFile(run, `transcripts/${hash}.json`);
 
 async function fetchTranscript(run, hash) {
-  const rel = transcriptPath(run, hash);
-  TRANSCRIPTS.set(hash, { state: 'loading', rel });
-  const done = v => {
+  TRANSCRIPTS.set(hash, { state: 'loading' });
+  const done = got => {
     if (OPT_RUNS[optSel] !== run) return;      // the selection moved on while this was loading
-    TRANSCRIPTS.set(hash, Object.assign({ rel }, v));
+    TRANSCRIPTS.set(hash, got);
     renderCandidates();
   };
   try {
@@ -87,35 +86,41 @@ async function fetchTranscript(run, hash) {
     if (run.transcripts) {
       const file = run.transcripts.get(hash);
       done(file ? { state: 'ok', doc: JSON.parse(await file.text()) } : { state: 'unread' });
-    } else if (MODE === 'server') {
-      done({ state: 'ok', doc: (await api('/api/file?path=' + encodeURIComponent(rel))).document });
     } else {
-      done({ state: 'unread' });
+      done({ state: 'ok', doc: (await api('/api/file?path=' + encodeURIComponent(transcriptPath(run, hash)))).document });
     }
   } catch (err) {
     done(err.status === 404 ? { state: 'missing' } : { state: 'error', why: err.message });
   }
 }
 
-/* `effects.json` is fitted after the run, so most runs have none and a 404 is ordinary. */
+/** Read the open trial's transcript, unless it has been read or is being read. */
+function readOpenTranscript() {
+  if (!openTrial || !OPT) return;
+  const at = openTrial.lastIndexOf('|');
+  const p = OPT.proposals.find(x => x.candidate_id === openTrial.slice(0, at));
+  const hash = p && transcriptHash(p.trials[Number(openTrial.slice(at + 1))]);
+  if (hash && !TRANSCRIPTS.has(hash)) fetchTranscript(OPT_RUNS[optSel], hash);
+}
+
+/* `effects.json` is fitted after the run, so most runs have none: one that cannot be read is no different. */
 async function readEffects(run) {
-  if (run.effectsDoc) return { state: 'ok', doc: run.effectsDoc };
-  if (run.fromFolder || MODE !== 'server' || run.has_effects === false) return { state: 'none' };
-  const rel = `${run.dir && run.dir !== '.' ? run.dir + '/' : ''}effects.json`;
+  if (run.fromFolder || run.has_effects === false) return run.effectsDoc || null;
   try {
-    return { state: 'ok', doc: (await api('/api/file?path=' + encodeURIComponent(rel))).document };
-  } catch (err) {
-    return err.status === 404 ? { state: 'none' } : { state: 'error', why: err.message };
+    return (await api('/api/file?path=' + encodeURIComponent(runFile(run, 'effects.json')))).document;
+  } catch {
+    return null;
   }
 }
 
-const usableEffects = doc => !!doc && typeof doc === 'object'
-  && Array.isArray(doc.effects) && Array.isArray(doc.goals) && !!doc.metrics;
+/* With no goal there is nothing to pick an estimate for. */
+const usableEffects = doc => !!doc && typeof doc === 'object' && Array.isArray(doc.effects) && !!doc.metrics
+  && Array.isArray(doc.goals) && doc.goals.some(g => g && g.metric);
 
 function renderEffects() {
-  const ef = EFFECTS.state === 'ok' && usableEffects(EFFECTS.doc) ? EFFECTS.doc : null;
-  $('opt-effects').hidden = !ef || !ef.effects.length;
-  if (!ef || !ef.effects.length) return;
+  const ef = usableEffects(EFFECTS) && EFFECTS.effects.length ? EFFECTS : null;
+  $('opt-effects').hidden = !ef;
+  if (!ef) return;
 
   const goals = ef.goals.filter(g => g && g.metric);
   optEffGoal = fillPick('opt-eff-goal', goals.map(g => ({
@@ -123,11 +128,11 @@ function renderEffects() {
     label: `${g.metric} · ${g.better === 'lower' ? 'lower' : 'higher'} is better`,
   })), optEffGoal);
   $('opt-eff-goal').hidden = goals.length < 2;
-  const goal = goals.find(g => g.metric === optEffGoal) || goals[0];
+  const goal = goals.find(g => g.metric === optEffGoal);
 
-  const m = (ef.metrics || {})[goal.metric] || {};
+  const m = ef.metrics[goal.metric] || {};
   const diag = m.diagnostics || null;
-  $('opt-eff-sum').textContent = plural(ef.effects.filter(e => e.metric === goal.metric).length, 'estimate');
+  $('opt-eff-sum').textContent = plural(effectRows(ef, goal.metric).length, 'estimate');
   $('opt-eff-cap').textContent = `Each level against its key's reference level, for ${goal.metric}`
     + `${typeof m.observations === 'number' ? `, fitted to ${plural(m.observations, 'observation')}` : ''}`
     + '. The bar is the 90% interval; one that crosses zero is drawn faint, because the run\'s '
@@ -170,8 +175,7 @@ function transcriptSlot(run, t) {
 
 function trialPanel(t, run) {
   const kv = [];
-  const bad = t.status && t.status !== 'completed';
-  kv.push(['Ended as', (bad
+  kv.push(['Ended as', (trialFailed(t)
     ? `<span class="tag warn">${esc(t.status)}</span>`
     : `<span class="tag ok">${esc(t.status || 'completed')}</span>`)
     + (t.error_type ? ` <span class="mono">${esc(t.error_type)}</span>` : '')
@@ -186,10 +190,10 @@ function trialPanel(t, run) {
   const scores = Object.entries(t.evaluations || {});
   if (scores.length) {
     kv.push(['Scored', scores.map(([m, v]) => {
-      const score = v && typeof v === 'object' ? v.score : v;
-      const why = v && typeof v === 'object' && v.reason ? v.reason : '';
+      const score = scoreOf(v);
+      const why = (v && v.reason) || '';
       return `<div class="setting"><span class="skey">${esc(m)}</span> `
-        + `<span class="mono">${typeof score === 'number' ? esc(fmt(score)) : '—'}</span>`
+        + `<span class="mono">${esc(fmt(score))}</span>`
         + (v && typeof v.test_pass === 'boolean' ? ` ${verdictTag({ pass: v.test_pass })}` : '')
         + (why ? `<div class="why">${esc(why)}</div>` : '') + '</div>';
     }).join('')]);
@@ -232,7 +236,7 @@ function outcomeWhy(p) {
   const reason = p.label.reason.replace(/\.$/, '');
   if (p.outcome === 'infeasible') {
     const unmet = p.label.unmet.join('; ') || reason || 'a constraint';
-    const measured = Object.keys(p.measured || {}).filter(m => unmet.includes(m))
+    const measured = Object.keys(p.measured).filter(m => unmet.includes(m))
       .map(m => `${m} ${nice(p.measured[m])}`).join(', ');
     return `Not met: ${unmet}${measured ? ` (measured ${measured})` : ''}. A constraint is judged on the `
       + 'candidate as a whole, so every one of its cases can pass and it still cannot ship.';
@@ -253,28 +257,28 @@ function trialVerdict(t) {
 async function sourceCases(run) {
   const named = run.tuned_against && EXPERIMENTS.find(e => e.path === run.tuned_against.path);
   try {
-    const doc = named ? await document_for(named) : null;
+    /* A copy: `document_for` moves the save guard of the entry it reads, which may be open in the editor. */
+    const doc = named ? await document_for({ ...named }) : null;
     return doc ? new Map((doc.cases || []).map(c => [c.name, c])) : null;
   } catch {
     return null;
   }
 }
 
+/** A candidate's trials as an `EvaluationReport`-shaped document: one row per trial and evaluator, or one
+    row for a trial no evaluator scored. `source` is the experiment's cases by name, when they are known. */
 function candidateReport(p, source) {
-  /* An `EvaluationReport`-shaped document for `loadReport`. One row per (case, metric):
-     `evaluations` is metric -> {score, reason}. */
   const reportCases = [], scores = [], passes = [], reasons = [], detailed = [], measured = [];
   for (const t of p.trials) {
     const entries = Object.entries(t.evaluations || {});
-    const rows = entries.length ? entries : [[null, null]];
-    for (const [metric, value] of rows) {
-      const score = value && typeof value === 'object' ? value.score : value;
-      const reason = (value && typeof value === 'object' && value.reason) || '';
-      const failed = t.status && t.status !== 'completed';
+    const failed = trialFailed(t);
+    /* A trial records what came back, not what was asked: that is read off the experiment's case. */
+    const given = (source && source.get(t.case_name)) || {};
+    for (const [metric, value] of entries.length ? entries : [[null, null]]) {
+      const score = scoreOf(value);
       const judged = value && typeof value.test_pass === 'boolean';
       const pass = !failed && (judged ? value.test_pass : typeof score === 'number');
-      /* A trial records what came back, not what was asked: that is read off the experiment's case. */
-      const given = (source && source.get(t.case_name)) || {};
+      const reason = failed ? `${t.status}${t.error ? `: ${t.error}` : ''}` : (value && value.reason) || '';
       reportCases.push({
         name: t.case_name,
         input: given.input,
@@ -282,9 +286,9 @@ function candidateReport(p, source) {
         expected_assertion: given.expected_assertion,
         evaluator: metric,
         split: t.split,
-        actual_output: t.output == null ? null : t.output,
+        actual_output: t.output ?? null,
         /* `transcript` is a `{hash, format}` pointer, not a step list: not passed as a trajectory. */
-        actual_trajectory: t.trajectory != null ? t.trajectory : null,
+        actual_trajectory: t.trajectory ?? null,
         actual_interactions: t.interactions,
         actual_environment_state: t.environment_state,
         usage: t.usage,
@@ -292,12 +296,12 @@ function candidateReport(p, source) {
       scores.push(typeof score === 'number' ? score : 0);
       passes.push(pass);
       measured.push(!failed && typeof score === 'number');
-      reasons.push(failed ? `${t.status}${t.error ? `: ${t.error}` : ''}` : reason);
+      reasons.push(reason);
       detailed.push(metric == null ? [] : [{
         score: typeof score === 'number' ? score : 0,
         test_pass: pass,
         label: failed ? String(t.status) : (value && value.label) || metric,
-        reason: failed ? `${t.status}${t.error ? `: ${t.error}` : ''}` : reason,
+        reason,
         not_applicable: false,
       }]);
     }
@@ -311,9 +315,9 @@ function candidateReport(p, source) {
 
 /** Put one candidate's cases on the report page, in place of whatever report was there. */
 function openCandidateReport(p) {
-  const run = OPT_RUNS[optSel] || {};
+  const run = OPT_RUNS[optSel];
   repCand = p.candidate_id;
-  const meta = { path: `${run.run_id || 'run'} · ${p.candidate_id}` };
+  const meta = { path: `${run.run_id} · ${p.candidate_id}` };
   loadReport(meta, candidateReport(p, run.sourceCases));
   if (run.sourceCases === undefined) {
     sourceCases(run).then(found => {
@@ -323,7 +327,7 @@ function openCandidateReport(p) {
     });
   }
   const why = outcomeWhy(p);
-  noteCandidate(`Candidate <b>${esc(p.candidate_id)}</b> of ${esc(run.run_id || 'this run')}, `
+  noteCandidate(`Candidate <b>${esc(p.candidate_id)}</b> of ${esc(run.run_id)}, `
     + 'from Optimization.' + (why ? ` <span class="tag warn">${esc(p.outcome)}</span> ${esc(why)}` : ''));
   renderLists();
 }
@@ -348,7 +352,7 @@ function candidateMatches(p) {
   if (optFilter === 'infeasible' && p.outcome !== 'infeasible') return false;
   if (optFilter === 'unscored' && p.objective != null) return false;
   if (!optQuery) return true;
-  const hay = [p.candidate_id, p.outcome, p.rationale, p.origin, (p.changed_keys || []).join(' ')]
+  const hay = [p.candidate_id, p.outcome, p.rationale, p.origin, p.changed_keys.join(' ')]
     .concat((p.settings || []).filter(s => s.changed)
       .map(s => `${s.key} ${typeof s.after === 'string' ? s.after : JSON.stringify(s.after)}`))
     .join(' ').toLowerCase();
@@ -358,10 +362,9 @@ function candidateMatches(p) {
 /* A candidate at a glance: where it came from, its objective and each metric it measured, each
    beside the baseline's so the change reads without opening anything. */
 function candidateSummary(p, d) {
-  const byId = new Map(d.proposals.map(x => [x.candidate_id, x]));
-  const chain = [];
-  for (let at = p; at && !chain.includes(at.candidate_id); at = byId.get(at.parent_id)) chain.push(at.candidate_id);
-  const base = p.isBaseline ? null : byId.get(d.baselineId) || d.points.find(x => x.candidate_id === d.baselineId);
+  /* An invalid patch built no candidate: what it descends from is its parent's line. */
+  const chain = d.lineageOf(p.candidate_id || p.parent_id);
+  const base = p.isBaseline ? null : d.points.find(x => x.candidate_id === d.baselineId);
   const show = v => Math.abs(v) >= 10 ? nice(v) : fmt(v);
   const tile = (name, value, was, dir) => {
     const delta = value != null && was != null ? value - was : null;
@@ -373,8 +376,7 @@ function candidateSummary(p, d) {
   };
   return '<div class="cand-sum">'
     + tile('Objective', p.objective, base && base.objective, 'max')
-    + Object.keys(p.measured || {}).map(m =>
-      tile(m, p.measured[m], base && (base.measured || {})[m], goalDir(d, m))).join('')
+    + Object.keys(p.measured).map(m => tile(m, p.measured[m], base && base.measured[m], goalDir(d, m))).join('')
     + (chain.length > 1 ? `<div class="stat line"><span class="v">${esc(chain.join(' ← '))}</span>`
       + '<span class="k">Derived from</span></div>' : '')
     + '</div>';
@@ -383,7 +385,8 @@ function candidateSummary(p, d) {
 function candidateDetail(p, d, run) {
   const kv = [];
   if (p.rationale) kv.push(['Why it was tried', esc(p.rationale)]);
-  if (outcomeWhy(p)) kv.push([`Why ${p.outcome}`, esc(outcomeWhy(p))]);
+  const why = outcomeWhy(p);
+  if (why) kv.push([`Why ${p.outcome}`, esc(why)]);
 
   /* Diffed against the baseline. `changed_keys` in the row above is the diff against the parent. */
   const changed = (p.settings || []).filter(s => s.changed);
@@ -413,13 +416,9 @@ function candidateDetail(p, d, run) {
     kv.push(['Cases', `${plural(p.trials.length, 'trial')} · ${splits}`
       + ` <button class="btn" data-open="${esc(p.candidate_id)}">Open as report</button>`]);
     const rows = p.trials.map((t, i) => {
-      const scored = Object.entries(t.evaluations || {}).map(([m, v]) => {
-        const score = v && typeof v === 'object' ? v.score : v;
-        return `${esc(m)} ${typeof score === 'number' ? esc(fmt(score)) : '—'}`;
-      }).join(' · ');
-      const bad = t.status && t.status !== 'completed';
+      const scored = Object.entries(t.evaluations || {})
+        .map(([m, v]) => `${esc(m)} ${esc(fmt(scoreOf(v)))}`).join(' · ');
       const verdict = trialVerdict(t);
-      /* Keyed by position: a trial recorded twice would collide under case and run index. */
       const key = `${p.candidate_id}|${i}`;
       const on = openTrial === key;
       const nth = typeof t.run_index === 'number' && p.trials.some(x => x.run_index > 0)
@@ -429,10 +428,10 @@ function candidateDetail(p, d, run) {
         + `${esc(t.case_name == null ? '—' : t.case_name)}${nth}</td>`
         + `<td class="path">${esc(t.split || '')}</td>`
         + `<td>${scored || '<span class="path">not judged</span>'}</td>`
-        + `<td>${bad ? `<span class="tag warn">${esc(t.status)}</span>`
+        + `<td>${trialFailed(t) ? `<span class="tag warn">${esc(t.status)}</span>`
           : verdict == null ? '<span class="vb na"><i></i>completed</span>' : verdictTag({ pass: verdict })}</td></tr>`;
       return on
-        ? head + `<tr class="tdetail"><td colspan="4">${trialPanel(t, run || {})}</td></tr>`
+        ? head + `<tr class="tdetail"><td colspan="4">${trialPanel(t, run)}</td></tr>`
         : head;
     }).join('');
     kv.push(['Per case', `<table class="trials"><tbody>${rows}</tbody></table>`]);
@@ -454,7 +453,8 @@ function renderCandidates() {
   const run = OPT_RUNS[optSel];
 
   $('opt-cands').innerHTML = shown.map(p => {
-    const key = p.candidate_id || `invalid-${p.iteration}-${p.number}`;
+    /* An invalid patch has neither an id nor a number: its place in the log tells it from the next. */
+    const key = p.candidate_id || `invalid-${d.proposals.indexOf(p)}`;
     const on = optOpen.has(key);
     const name = p.candidate_id
       ? `<span class="caret${on ? ' open' : ''}"></span>${esc(p.candidate_id)}`
@@ -469,7 +469,7 @@ function renderCandidates() {
       ? `<span class="tag ${OUTCOME_TAG[p.outcome] || ''}"${TERMS[p.outcome] ? ` data-term="${esc(p.outcome)}"` : ''}>${esc(p.outcome)}</span>` : '';
     const head = `<tr class="case" data-k="${esc(key)}" tabindex="0" aria-expanded="${on}"><td>${name}${tags}</td>`
       + `<td>${esc(p.iteration)}</td><td>${obj}</td><td>${outcome}</td>`
-      + `<td class="mono">${esc((p.changed_keys || []).join(', ') || '—')}</td></tr>`;
+      + `<td class="mono">${esc(p.changed_keys.join(', ') || '—')}</td></tr>`;
     return on ? head + candidateDetail(p, d, run) : head;
   }).join('')
     || `<tr><td colspan="5"><div class="nores">${d.proposals.length
@@ -515,7 +515,7 @@ function renderTradeoff(d) {
       : `${plural(ids.length, 'candidate')} dominate on this pair of goals, worked out here: the `
         + 'set the run recorded is a front over all '
         + `${d.goals.length} of them, which this chart cannot show.`);
-  $('opt-to-chart').innerHTML = tradeoffChart(d, xg, yg, ids);
+  $('opt-to-chart').innerHTML = tradeoffChart(d, plotted, xg, yg, ids);
 
   $('opt-to-legend').innerHTML = '<span><i class="ln front"></i>'
     + `${stated ? short[d.front.source] : 'front of this pair'}</span>`
@@ -533,37 +533,27 @@ function renderTradeoff(d) {
 }
 
 function renderOptimization() {
-  const run = OPT_RUNS[optSel];
+  const run = OPT_RUNS[optSel], d = OPT;
   renderOptimizerRuns();
   renderPageHead(currentView());
-  if (!run || !OPT) {
-    $('opt-sub').textContent = optError || (OPT_RUNS.length
-      ? 'Pick a run on the Runs tab.'
-      : 'No optimizer run directory in this folder. One is a run.json with an events.jsonl beside it.');
+  if (!d) {
+    $('opt-sub').textContent = optError;
+    $('opt-sub').title = '';
     ['opt-hero', 'opt-series-chart', 'opt-series-legend', 'opt-budget-chart', 'opt-status-chart',
       'opt-usage-chart', 'opt-to-chart', 'opt-to-legend', 'opt-result', 'opt-winner', 'opt-cands',
-      'opt-explain', 'opt-method-sum', 'opt-setup-kv', 'opt-mech-kv']
+      'opt-explain', 'opt-method-sum', 'opt-setup-kv', 'opt-mech-kv', 'opt-stats']
       .forEach(id => { $(id).innerHTML = ''; });
-    $('opt-setup-sub').textContent = '';
-    $('opt-source').hidden = true;
-    $('opt-mech').hidden = true;
-    $('opt-tradeoff').hidden = true;
-    $('opt-to-none').hidden = true;
-    $('opt-effects').hidden = true;
-    $('opt-space-wrap').hidden = true;
-    $('opt-cost').hidden = true;
-    $('opt-cases').hidden = true;
-    $('opt-cand-sub').textContent = '';
-    $('opt-cand-count').textContent = '';
-    $('opt-stats').innerHTML = '';
+    ['opt-setup-sub', 'opt-cand-sub', 'opt-cand-count'].forEach(id => { $(id).textContent = ''; });
+    ['opt-source', 'opt-mech', 'opt-tradeoff', 'opt-to-none', 'opt-effects', 'opt-space-wrap', 'opt-cost', 'opt-cases']
+      .forEach(id => { $(id).hidden = true; });
     return;
   }
 
-  const d = OPT;
   $('opt-sub').textContent = run.run_id + (d.stop ? ` · stopped: ${d.stop.reason}` : ' · still running');
   $('opt-sub').title = (d.stop && d.stop.message) || '';
-
-  const stats = [
+  $('opt-method-sum').innerHTML = methodLine(d);
+  $('opt-hero').innerHTML = championHero(d);
+  $('opt-stats').innerHTML = [
     optStat(d.maxRollouts != null ? `${d.spent} / ${d.maxRollouts}` : String(d.spent), 'Rollouts',
       d.maxRollouts != null ? 'spent of the budget' : 'spent · no budget declared'),
     optStat(d.best == null ? '—' : fmt(d.best), 'Best on training',
@@ -576,17 +566,37 @@ function renderOptimization() {
         ? `candidate ${d.bestCandidate.candidate_id} scored highest on the training split; the `
           + 'champion is chosen on the validation split, so the two can differ'
         : ''),
-  ];
-  const tokens = d.iterations.reduce((sum, it) => sum + (it.usage.tokens || 0), 0) + (d.endPhase.tokens || 0);
-  $('opt-stats').innerHTML = stats.join('');
-
-  $('opt-hero').innerHTML = championHero(d);
+  ].join('');
   $('opt-result').innerHTML = resultCard(d);
   $('opt-winner').innerHTML = winnerCard(d);
   renderCaseChart(d);
+  renderRunNotes(d, run);
+  renderCost(d);
+
   $('opt-search-sum').textContent = `${plural(d.proposals.length, 'proposal')} over `
     + plural(d.iterations.length, 'iteration');
+  renderSeries(d);
+  $('opt-budget-cap').textContent = 'A rollout is one case run once. '
+    + (d.maxRollouts != null
+      ? `Cumulative, against the ${d.maxRollouts}-rollout budget.`
+      : 'Cumulative. The run config names no budget.');
+  $('opt-budget-chart').innerHTML = budgetChart(d);
 
+  $('opt-tradeoff').hidden = d.goals.length < 2;
+  $('opt-to-none').hidden = d.goals.length >= 2;
+  $('opt-to-none').textContent = d.goals.length >= 2 ? ''
+    : `This run optimized one goal${d.goals.length ? ` — ${d.goals[0].metric} — ` : ', '}`
+      + 'so it has a best value rather than a trade-off. Progress charts it by candidate.';
+  if (d.goals.length >= 2) renderTradeoff(d);
+
+  renderOptimizerSetup(d, run);
+  renderEffects();
+  $('opt-cand-sub').textContent = 'Each one is a configuration the optimizer built and ran your cases against.';
+  renderCandidates();
+}
+
+/* Progress: one chart over the objective or a metric, by candidate. */
+function renderSeries(d) {
   /* Metric values are prefixed `m:` so a metric named "objective" cannot collide with the objective. */
   const series = [{ value: 'objective', label: 'Objective' },
     ...d.metrics.map(m => ({ value: 'm:' + m, label: m }))];
@@ -606,16 +616,10 @@ function renderOptimization() {
     `<span data-term="${o}"><i class="${o}"></i>${o}</span>`
   ).join('') + (d.champion ? '<span data-term="champion"><i class="champion"></i>champion</span>' : '')
     + '<span><i class="ln"></i>best feasible so far</span>';
+}
 
-  $('opt-tradeoff').hidden = d.goals.length < 2;
-  $('opt-to-none').hidden = d.goals.length >= 2;
-  $('opt-to-none').textContent = d.goals.length >= 2 ? ''
-    : `This run optimized one goal${d.goals.length ? ` — ${d.goals[0].metric} — ` : ', '}`
-      + 'so it has a best value rather than a trade-off. Progress charts it by candidate.';
-  if (d.goals.length >= 2) renderTradeoff(d);
-
-  renderEffects();
-
+/* Overview: what the run spent, by iteration and by how each trial ended. */
+function renderCost(d) {
   $('opt-cost').hidden = false;
   $('opt-usage-wrap').hidden = d.usageKeys.length === 0;
   if (d.usageKeys.length) {
@@ -629,31 +633,15 @@ function renderOptimization() {
         : '.');
     $('opt-usage-chart').innerHTML = usageChart(d, unit.key, unit.label);
   }
-
-  $('opt-budget-cap').textContent = 'A rollout is one case run once. '
-    + (d.maxRollouts != null
-      ? `Cumulative, against the ${d.maxRollouts}-rollout budget.`
-      : 'Cumulative. The run config names no budget.');
-  $('opt-budget-chart').innerHTML = budgetChart(d);
-
   $('opt-status-cap').textContent = 'Every recorded trial by how it ended. A trial is one case run once.';
   $('opt-status-chart').innerHTML = statusChart(d);
+  const tokens = d.iterations.reduce((sum, it) => sum + it.usage.tokens, 0) + d.endPhase.tokens;
   $('opt-cost-sum').textContent = [tokens ? `${compact(tokens)} tokens` : '', plural(d.trials, 'trial')]
     .filter(Boolean).join(' · ');
+}
 
-  $('opt-method-sum').innerHTML = methodLine(d);
-  $('opt-setup-sub').textContent = 'What this run was told to do, as its run.json records it. Read-only: '
-    + 'nothing here writes that file.';
-  $('opt-explain').innerHTML = explainStrip(d);
-  const source = sourceLine(run);
-  $('opt-source').innerHTML = source;
-  $('opt-source').hidden = !source;
-  $('opt-source').title = source
-    ? 'Matched by case id. A run record does not name the experiment it was given.' : '';
-  renderOptimizerSetup(d, run);
-  $('opt-cand-sub').textContent = 'Each one is a configuration the optimizer built and ran your cases against.';
-  renderCandidates();
-
+/* Overview: what a reader should know before trusting the figures above. */
+function renderRunNotes(d, run) {
   const notes = [];
   if (run.truncated) {
     notes.push(`Only the first ${run.events} events were read, so these numbers cover part of the run.`);
@@ -683,13 +671,11 @@ function renderCaseChart(d) {
   $('opt-cases-pick').hidden = measures.length < 2;
   const m = measures.find(x => x.value === optCases);
   const rows = caseRows(d, m);
-  const both = rows.filter(r => r.from != null && r.to != null);
-  const better = both.filter(r => r.to !== r.from && (r.to > r.from) === (m.better !== 'lower')).length;
-  const worse = both.filter(r => r.to !== r.from).length - better;
+  const { both, better, worse } = caseMoves(rows, m);
   $('opt-cases-cap').textContent = `${m.label} on each case, from the baseline to the champion`
-    + `${m.better === 'lower' ? ', where lower is better' : ''}. Of ${plural(both.length, 'case')} both ran, `
+    + `${m.better === 'lower' ? ', where lower is better' : ''}. Of ${plural(both, 'case')} both ran, `
     + `${better} improved and ${worse} got worse.`
-    + (both.length < rows.length ? ' A case only one of them ran has a single mark.' : '')
+    + (both < rows.length ? ' A case only one of them ran has a single mark.' : '')
     + (rows.length > CHART_ROWS ? ` The first ${CHART_ROWS} of ${rows.length} are drawn.` : '');
   const show = v => v == null ? 'not run' : fine(v);
   $('opt-cases-chart').innerHTML = dumbbells(rows.slice(0, CHART_ROWS).map(r => ({
@@ -700,7 +686,7 @@ function renderCaseChart(d) {
 
 /* `keep` re-reads the folder: when the open run is still there, what is open inside it stays open. */
 async function loadOptimizerRuns(runs, keep) {
-  const open = optSel >= 0 && OPT_RUNS[optSel] ? OPT_RUNS[optSel].id : null;
+  const open = (OPT_RUNS[optSel] || {}).id;
   const previous = open || readAddress().opt;
   OPT_RUNS = runs;
   optSel = previous ? OPT_RUNS.findIndex(r => r.id === previous) : -1;
@@ -720,10 +706,11 @@ async function selectOptimizerRun(index, keep) {
   } else {
     OPT = null;
     /* Two runs can hold a candidate of the same id (a resumed run does), and a transcript
-       state of `missing` is an answer about one run directory: reset both. */
+       state of `missing` is an answer about one run directory: nothing opened carries over. */
+    optOpen.clear();
     openTrial = null;
     TRANSCRIPTS.clear();
-    EFFECTS = { state: 'none' };
+    EFFECTS = null;
   }
   optError = '';
   if (!run) { renderOptimization(); return; }
@@ -740,6 +727,7 @@ async function selectOptimizerRun(index, keep) {
     OPT = null;
     optError = `Could not read ${run.events_path}: ${err.message}`;
   }
+  readOpenTranscript();
   renderOptimization();
 }
 
@@ -811,10 +799,18 @@ $('opt-runs-rows').onclick = e => {
 
 /* ── Setup ── */
 function renderOptimizerSetup(d, run) {
-  const c = d.config || {};
-  const f = d.facts || configFacts(c);
+  const c = d.config, f = d.facts;
   const rows = [], mech = [];
   const mono = v => `<span class="mono">${esc(v)}</span>`;
+
+  $('opt-setup-sub').textContent = 'What this run was told to do, as its run.json records it. Read-only: '
+    + 'nothing here writes that file.';
+  $('opt-explain').innerHTML = explainStrip(d);
+  const source = sourceLine(run);
+  $('opt-source').innerHTML = source;
+  $('opt-source').hidden = !source;
+  $('opt-source').title = source
+    ? 'Matched by case id. A run record does not name the experiment it was given.' : '';
 
   rows.push(['Objective', c.objective ? mono(c.objective) : '<span class="empty">none recorded</span>']);
   if (f.isPareto) rows.push(['Shape', 'a Pareto front, so there is no single best value']);
@@ -846,7 +842,7 @@ function renderOptimizerSetup(d, run) {
   }
   const pick = c.final_pick || {};
   if (pick.n_finalists != null || f.pickRule) {
-    mech.push(['Final pick', [pick.n_finalists != null ? `${plural(pick.n_finalists, 'finalist')}` : null,
+    mech.push(['Final pick', [pick.n_finalists != null ? plural(pick.n_finalists, 'finalist') : null,
       f.pickRule ? esc(f.pickRule) : null].filter(Boolean).join(' · ')]);
   }
   if (f.selection) mech.push(['Parents chosen by', esc(f.selection)]);
@@ -860,7 +856,7 @@ function renderOptimizerSetup(d, run) {
   ).join('');
   $('opt-setup-kv').innerHTML = list(rows);
   $('opt-mech-kv').innerHTML = list(mech);
-  $('opt-mech').hidden = !mech.length;
+  $('opt-mech').hidden = false;
   $('opt-mech-sum').textContent = plural(mech.length, 'setting');
   renderOptimizerSpace(d);
 }
@@ -883,14 +879,14 @@ function defaultText(r) {
   const v = r.default;
   if (v && typeof v === 'object' && !Array.isArray(v)) {
     return typeof v.length === 'number'
-      ? `<span class="path">${esc(plural(v.length, 'character'))}</span>` : '<span class="path">recorded</span>';
+      ? `<span class="path">${plural(v.length, 'character')}</span>` : '<span class="path">recorded</span>';
   }
   if (v === undefined) return '<span class="empty">none</span>';
   return `<span class="mono">${esc(typeof v === 'number' ? fine(v) : String(v))}</span>`;
 }
 
 function renderOptimizerSpace(d) {
-  const space = d.space || [];
+  const space = d.space;
   $('opt-space-wrap').hidden = !space.length;
   const total = d.points.length;
   $('opt-space-sub').textContent = space.length
@@ -939,36 +935,6 @@ async function copyText(text) {
   } catch { return false; }
 }
 
-/* Toggled in place: a re-render would close the rows the click just opened. */
-$('opt-result').onclick = e => {
-  if (!e.target.closest('[data-act="opt-rest"]')) return;
-  const rest = $('opt-rest'), btn = $('opt-result').querySelector('.rmore');
-  rest.hidden = !rest.hidden;
-  const n = rest.querySelectorAll('tr').length;
-  btn.textContent = rest.hidden
-    ? `+ ${plural(n, 'metric')} the run was not aiming at`
-    : `− ${plural(n, 'metric')} the run was not aiming at`;
-};
-
-$('opt-winner').onclick = async e => {
-  const act = e.target.closest('[data-act]');
-  if (!act || !OPT || !OPT.winner || !OPT.winner.values) return;
-  const text = JSON.stringify(OPT.winner.values, null, 2) + '\n';
-  const said = $('opt-copied');
-  if (act.dataset.act === 'copy-winner') {
-    said.textContent = await copyText(text)
-      ? `copied ${plural(Object.keys(OPT.winner.values).length, 'setting')}`
-      : 'could not reach the clipboard — the configuration is above to select by hand';
-    return;
-  }
-  if (act.dataset.act === 'save-winner') {
-    const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
-    const a = Object.assign(document.createElement('a'), { href: url, download: 'champion.json' });
-    a.click();
-    if (URL.revokeObjectURL) URL.revokeObjectURL(url);
-    said.textContent = `downloaded champion.json · ${KB(text.length)}`;
-  }
-};
 $('opt-find').oninput = e => { optQuery = e.target.value.trim().toLowerCase(); renderCandidates(); };
 $('opt-seg').onclick = e => {
   const b = e.target.closest('button[data-f]');
@@ -981,23 +947,15 @@ $('opt-cands').onclick = e => {
   /* Handled before the row toggle: the button sits inside the row it would collapse. */
   const jump = e.target.closest('[data-open]');
   if (jump) {
-    const p = OPT && OPT.proposals.find(x => x.candidate_id === jump.dataset.open);
-    if (p && p.trials.length) {
-      openCandidateReport(p);
-      show('report');
-    }
+    openCandidateReport(OPT.proposals.find(p => p.candidate_id === jump.dataset.open));
+    show('report');
     return;
   }
   const trial = e.target.closest('tr[data-trial]');
   if (trial) {
     const key = trial.dataset.trial;
     openTrial = openTrial === key ? null : key;
-    if (openTrial) {
-      const at = key.lastIndexOf('|');
-      const p = OPT.proposals.find(x => x.candidate_id === key.slice(0, at));
-      const hash = p && transcriptHash(p.trials[Number(key.slice(at + 1))]);
-      if (hash && !TRANSCRIPTS.has(hash)) fetchTranscript(OPT_RUNS[optSel] || {}, hash);
-    }
+    readOpenTranscript();
     renderCandidates();
     return;
   }
@@ -1008,10 +966,9 @@ $('opt-cands').onclick = e => {
   renderCandidates();
   writeAddress('opt-candidates', true);
 };
-// Redrawing the whole view is cheap: the log is already parsed.
-$('opt-series-pick').onchange = e => { optSeries = e.target.value; renderOptimization(); };
-$('opt-usage-pick').onchange = e => { optUsage = e.target.value; renderOptimization(); };
+$('opt-series-pick').onchange = e => { optSeries = e.target.value; renderSeries(OPT); };
+$('opt-usage-pick').onchange = e => { optUsage = e.target.value; renderCost(OPT); };
 $('opt-cases-pick').onchange = e => { optCases = e.target.value; renderCaseChart(OPT); };
-$('opt-to-x').onchange = e => { optToX = e.target.value; renderOptimization(); };
-$('opt-to-y').onchange = e => { optToY = e.target.value; renderOptimization(); };
-$('opt-eff-goal').onchange = e => { optEffGoal = e.target.value; renderOptimization(); };
+$('opt-to-x').onchange = e => { optToX = e.target.value; renderTradeoff(OPT); };
+$('opt-to-y').onchange = e => { optToY = e.target.value; renderTradeoff(OPT); };
+$('opt-eff-goal').onchange = e => { optEffGoal = e.target.value; renderEffects(); };
