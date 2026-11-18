@@ -488,6 +488,11 @@ def test_a_link_out_of_the_folder_is_not_counted_as_a_task_result(tmp_path: Path
                 ["results.json"],
                 {("cases.json", None), ("more.json", None), (None, "results.json")},
             ),
+            "two reports get none either": (
+                ["unrelated.json"],
+                ["first.json", "second.json"],
+                {("unrelated.json", None), (None, "first.json"), (None, "second.json")},
+            ),
             "elsewhere in the tree, by the cases it holds": (
                 ["a/experiment.json"],
                 ["b/report.json"],
@@ -522,6 +527,13 @@ def test_discover_pairs_a_report_with_the_experiment_it_was_made_from(tmp_path: 
         _write(tmp_path / name, _report("a"))
 
     assert _pairs(tmp_path) == expected
+
+
+def test_discover_leaves_a_report_unpaired_when_no_experiment_holds_all_of_its_cases(tmp_path: Path):
+    _write(tmp_path / "suite" / "experiment.json", _experiment("a"))
+    _write(tmp_path / "runs" / "latest.json", _report("a", "b"))
+
+    assert _pairs(tmp_path) == {("suite/experiment.json", None), (None, "runs/latest.json")}
 
 
 def test_discover_pairs_a_report_beside_an_experiment_of_the_same_name_even_when_the_cases_differ(tmp_path: Path):
@@ -1193,6 +1205,19 @@ def test_page_needs_the_token(client: Client):
     assert client.send("GET", "/") == Reply(HTTPStatus.OK, PAGE)
 
 
+def test_a_link_with_the_wrong_token_gets_no_cookie(client: Client):
+    reply = client.send("GET", "/reports?t=guessed", headers=NO_TOKEN)
+
+    assert reply == Reply(HTTPStatus.UNAUTHORIZED, UNAUTHORIZED_PAGE.decode())
+    assert reply.headers["Set-Cookie"] is None
+
+
+def test_the_page_is_not_served_to_another_host_even_with_the_token(client: Client):
+    reply = client.send("GET", "/reports", headers={"Host": "evals.evil.example.com", "Cookie": client.cookie})
+
+    assert reply == _refused(HTTPStatus.FORBIDDEN, HOST_REFUSAL)
+
+
 def test_the_printed_link_trades_its_token_for_a_cookie_and_a_clean_address(client: Client):
     redirect = client.send("GET", f"/?t={client.token}", headers=NO_TOKEN)
     page = client.send("GET", "/", headers={**NO_TOKEN, "Cookie": client.cookie})
@@ -1260,6 +1285,16 @@ def test_the_token_redirect_never_points_off_the_server(client: Client):
 
     # Refused outright where the standard library collapses the leading slashes, and a local path where it does not.
     assert redirect.headers.get("Location") in (None, "/reports")
+
+
+def test_the_token_redirect_does_not_echo_a_path_that_is_not_printable(client: Client):
+    request = f"GET /reports/\u00e9?t={client.token} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+
+    with socket.create_connection((client.host, client.port), timeout=5) as raw:
+        raw.sendall(request.encode("latin-1"))
+        head = raw.makefile("rb").read().decode("latin-1")
+
+    assert "\r\nLocation: /\r\n" in head
 
 
 def test_the_cookie_opens_the_page_but_not_the_api(client: Client):
