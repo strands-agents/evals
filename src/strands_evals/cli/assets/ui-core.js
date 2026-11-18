@@ -5,6 +5,7 @@
 
 const app = document.querySelector('.app');
 const $ = id => document.getElementById(id);
+const isObject = v => !!v && typeof v === 'object' && !Array.isArray(v);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const fmt = n => (typeof n === 'number' && isFinite(n)) ? n.toFixed(2) : '—';
 const KB = n => n == null ? '' : (n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB');
