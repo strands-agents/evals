@@ -18,11 +18,12 @@ class ToolUse:
     input: dict[str, Any] = field(default_factory=dict)
 
 
-Turn = str | ToolUse | BaseException
+Turn = str | ToolUse | list[ToolUse] | BaseException
 
 
 class ScriptedModel(Model):
-    """Replays `turns` in order, one per model call: a text reply, a tool call, or an exception to raise.
+    """Replays `turns` in order, one per model call: a text reply, a tool call (a list: several in one turn),
+    or an exception to raise.
 
     Every call reports `usage` (Bedrock's keys, e.g. `inputTokens`, `cacheReadInputTokens`). Once the
     script runs out, the last turn repeats.
@@ -58,11 +59,12 @@ class ScriptedModel(Model):
         if isinstance(turn, BaseException):
             raise turn
         yield {"messageStart": {"role": "assistant"}}
-        if isinstance(turn, ToolUse):
-            tool_use_id = f"tool-{self.calls}"
-            yield {"contentBlockStart": {"start": {"toolUse": {"toolUseId": tool_use_id, "name": turn.name}}}}
-            yield {"contentBlockDelta": {"delta": {"toolUse": {"input": json.dumps(turn.input)}}}}
-            yield {"contentBlockStop": {}}
+        if isinstance(turn, ToolUse | list):
+            for index, use in enumerate([turn] if isinstance(turn, ToolUse) else turn):
+                tool_use_id = f"tool-{self.calls}" + (f"-{index}" if index else "")
+                yield {"contentBlockStart": {"start": {"toolUse": {"toolUseId": tool_use_id, "name": use.name}}}}
+                yield {"contentBlockDelta": {"delta": {"toolUse": {"input": json.dumps(use.input)}}}}
+                yield {"contentBlockStop": {}}
             yield {"messageStop": {"stopReason": "tool_use"}}
         else:
             yield {"contentBlockDelta": {"delta": {"text": turn}}}

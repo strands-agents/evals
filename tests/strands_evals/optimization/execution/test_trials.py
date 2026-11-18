@@ -12,14 +12,14 @@ import threading
 import opentelemetry.trace as trace_api
 import pytest
 from pydantic import BaseModel
-from strands import Agent
+from strands import Agent, tool
 from strands.types.exceptions import ModelThrottledException
 
 from strands_evals import Case
 from strands_evals.evaluators import Evaluator
 from strands_evals.optimization import Budget, InfrastructureError, TextValue, tunable
 from strands_evals.optimization.declaration.tunable import _FactoryArgumentError
-from strands_evals.optimization.execution.rollout import make_task
+from strands_evals.optimization.execution.rollout import default_rollout, make_task
 from strands_evals.optimization.execution.traces import TraceCapture
 from strands_evals.optimization.execution.trials import TrialRunner, _EvaluatorProxy, _TrialState
 from strands_evals.optimization.record.run_directory import RunDirectory
@@ -28,7 +28,7 @@ from strands_evals.types import EvaluationOutput
 from strands_evals.types.evaluation import NOT_APPLICABLE, EnvironmentState
 from strands_evals.types.optimization import TrialRecord, TrialStatus
 from strands_evals.types.trace import Session
-from tests.strands_evals.optimization.scripted_model import ScriptedModel
+from tests.strands_evals.optimization.scripted_model import ScriptedModel, ToolUse
 
 
 @pytest.fixture(autouse=True)
@@ -664,6 +664,30 @@ async def test_an_infrastructure_failure_is_re_run_within_the_allowance(traces):
     assert record.previous_attempts[0].rollouts == 1
     assert record.previous_attempts[0].pass_index == 0
     assert record.rollouts + sum(a.rollouts for a in record.previous_attempts) == spent
+
+
+async def test_an_infrastructure_error_in_a_tool_is_re_run_and_never_scored(traces):
+    @tool
+    def run_in_sandbox(cmd: str) -> str:
+        """Run a command in the case's sandbox."""
+        raise InfrastructureError("the sandbox is gone")
+
+    def build():
+        model = ScriptedModel([ToolUse("run_in_sandbox", {"cmd": "ls"}), "it failed, so the answer is 42"])
+        return Agent(model=model, tools=[run_in_sandbox], callback_handler=None)
+
+    evaluator = Fixed()
+    records, spent = await _runner(traces, MemoryCache(), _cases("a"), [evaluator], rerun_passes=1).run(
+        "cand", make_task(build, default_rollout), ["a"], runs=1, allowance=2
+    )
+
+    record = records[0]
+    assert record.status is TrialStatus.INFRASTRUCTURE_INVALID
+    assert (record.error_type, record.error) == ("InfrastructureError", "the sandbox is gone")
+    assert record.evaluations == {}
+    assert evaluator.calls == 0
+    assert spent == 2  # the first pass and its re-run
+    assert [attempt.status for attempt in record.previous_attempts] == [TrialStatus.INFRASTRUCTURE_INVALID]
 
 
 async def test_an_exhausted_allowance_leaves_the_trial_infrastructure_invalid(traces):
