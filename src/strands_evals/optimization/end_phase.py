@@ -110,8 +110,10 @@ def _holds_with_margin(
     against the bound, a value at the bound up to float noise met. The estimate judged has the ranking's
     mean of the metric (the fit's mean, else the measured train mean) and the sd of the difference between
     a mean over the train cases and one over the validation cases: the stdev of the candidate's per-case
-    train means times `sqrt(1 / train cases + 1 / validation cases)`, counting the train cases with a value
-    of the metric. Fewer than 2 such cases show no spread, so the constraint has no margin.
+    train means times `sqrt(1 / measured train cases + 1 / expected measured validation cases)`. Both counts
+    cover only the cases the metric has a value on: the means compared are means over measured cases, and the
+    expected validation count assumes the metric is measured there at the train rate (measured train cases /
+    train cases). Fewer than 2 measured cases show no spread, so the constraint has no margin.
     """
     if not assessment.is_feasible:
         return False
@@ -122,7 +124,9 @@ def _holds_with_margin(
         if len(case_means) < 2:
             return False
         mean = assessment.estimates[metric].mean if assessment.is_from_fit else statistics.fmean(case_means)
-        sd = statistics.stdev(case_means) * math.sqrt(1 / len(case_means) + 1 / n_validation_cases)
+        # the validation mean also covers only measured cases: expect the train measurement rate there
+        measured_validation = n_validation_cases * len(case_means) / len(scores.metrics_by_case)
+        sd = statistics.stdev(case_means) * math.sqrt(1 / len(case_means) + 1 / measured_validation)
         at_most = isinstance(constraint, AtMost)
         judged = Estimate(mean=mean, sd=sd).quantile(threshold if at_most else 1 - threshold)
         met = judged <= constraint.bound if at_most else judged >= constraint.bound

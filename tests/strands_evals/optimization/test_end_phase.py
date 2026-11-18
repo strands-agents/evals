@@ -326,6 +326,25 @@ def test_choose_finalists_a_constraint_measured_on_one_case_shows_no_margin():
     assert finalists == ["b", "a"]
 
 
+def test_choose_finalists_expects_the_train_measurement_rate_on_validation():
+    # "a" has HELP on 3 of 6 train cases (N/A elsewhere), so validation should be expected to measure it on
+    # about half its cases too: 3 of 6, not 6 of 6.
+    train = _floor_train(FLOOR, {"0": [0.2] * 6, "b": FLOOR_HELP["b"]}, FLOOR_TOKENS)
+    helps = [0.5, 0.8, 1.1]
+    train["a"] = _train_scores(
+        "a",
+        {f"t{i}": ({HELP: helps[i]} if i < 3 else {}) | {TOKENS: 200.0} for i in range(6)},
+        FLOOR,
+    )
+    finalists, ranking, _ = _choose(train, FLOOR, 2)
+    assert ranking == ["a", "b", "0"]
+    # 0.8 - 1.28 * stdev 0.3 * sqrt(1/3 + 1/3) = 0.49 < 0.5: no margin. Dividing the validation term by all
+    # 6 cases would give 0.8 - 1.28 * 0.3 * sqrt(1/3 + 1/6) = 0.53 and wrongly show margin.
+    assert finalists == ["b", "a"]
+    # more validation cases shrink the term at the train rate: 30 cases -> 15 expected measured
+    assert _choose(train, FLOOR, 2, n_validation_cases=30)[0] == ["a", "b"]
+
+
 def test_choose_finalists_with_one_train_case_keeps_the_ranking_order():
     train = {
         c: _train_scores(c, {"t0": {HELP: helps[0], TOKENS: FLOOR_TOKENS[c]}}, FLOOR) for c, helps in FLOOR_HELP.items()
