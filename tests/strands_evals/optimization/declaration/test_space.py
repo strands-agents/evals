@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 from strands import tool
 from strands.tools.tools import PythonAgentTool
@@ -216,6 +217,57 @@ def test_complete_turns_a_negative_zero_float_into_zero():
     assert str(baseline) == "0.0"
     filled = space.complete({}, fill=lambda key: (-0.0, "abc123"))["temperature"]
     assert str(filled) == "0.0"
+
+
+@pytest.mark.parametrize("value", [40.0, np.int64(40), np.float32(40.0)], ids=["float", "int64", "float32"])
+def test_complete_gives_an_int_key_an_int(value):
+    completed = make_space().complete({**BASELINE, "manager.Window.size": value})
+    assert type(completed["manager.Window.size"]) is int
+    assert completed == BASELINE
+    make_space().validate(completed)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(1, 1.0), (np.int64(0), 0.0), (np.float32(0.5), 0.5), (np.float64(-0.0), 0.0)],
+    ids=["int", "int64", "float32", "float64-negative-zero"],
+)
+def test_complete_gives_a_float_key_a_float(value, expected):
+    completed = make_space().complete({**BASELINE, "temperature": value})["temperature"]
+    assert type(completed) is float
+    assert str(completed) == str(expected)  # compare the text a candidate id hashes
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"manager.Window.size": 40.5}, "expected int"),
+        ({"manager.Window.size": True}, "expected int"),
+        ({"manager.Window.size": float("nan")}, "expected int"),
+        ({"manager.Window.size": float("inf")}, "expected int"),
+        ({"temperature": True}, "expected float"),
+        ({"temperature": 10**400}, "expected float"),  # beyond the float range
+    ],
+    ids=["fractional", "bool", "nan", "inf", "float-bool", "float-huge-int"],
+)
+def test_complete_leaves_other_values_of_number_keys_for_validate_to_reject(change, message):
+    completed = make_space().complete({**BASELINE, **change})
+    ((key, value),) = change.items()
+    assert completed[key] is value
+    with pytest.raises(ValueError, match=message):
+        make_space().validate(completed)
+
+
+@pytest.mark.parametrize("change", [{"manager.Window.size": 1000.0}, {"temperature": 2}], ids=["int-key", "float-key"])
+def test_a_converted_number_is_still_checked_against_its_bounds(change):
+    with pytest.raises(ValueError, match="outside"):
+        make_space().validate(make_space().complete({**BASELINE, **change}))
+
+
+def test_complete_leaves_one_of_values_as_given():
+    space = Space({"x": OneOf(1, 2, True, default=1)})
+    assert type(space.complete({"x": 2.0})["x"]) is float
+    assert space.complete({"x": True})["x"] is True
 
 
 def test_complete_keeps_unknown_keys_so_validate_reports_them():

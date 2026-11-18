@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import numbers
 import os
 import shutil
 import stat
@@ -172,9 +173,14 @@ class Space:
         """Drop keys inactive under the chosen alternatives and fill missing active keys.
 
         Keys are taken in declaration order, so a filled choice decides which of its sub-keys are
-        active. Unknown keys are kept, so `validate` reports them instead of a typo vanishing. A
-        `Float` value of -0.0 becomes 0.0, and a non-string `JsonField` value is rewritten as its JSON
-        text is written to the file ("0.50" becomes "0.5"), so one agent gets one candidate id.
+        active. Unknown keys are kept, so `validate` reports them instead of a typo vanishing.
+
+        Values are rewritten so that one agent gets one candidate id. For an `Int` key, a whole
+        number (`3.0`, `numpy.int64(3)`) becomes an int. For a `Float` key, a number (`1`,
+        `numpy.float32(0.5)`) becomes a float, and -0.0 becomes 0.0. Anything else (a bool, a
+        fractional or non-finite `Int` value, an int too large for a float) is left for `validate`
+        to reject. A non-string `JsonField` value is rewritten as its JSON text is written to the
+        file ("0.50" becomes "0.5").
 
         Args:
             values: The candidate's values.
@@ -193,8 +199,7 @@ class Space:
             else:
                 filled = fill(key) if fill is not None else None
                 value = info.default if filled is None else filled[0]
-            # `+ 0.0` turns a Float's -0.0 into 0.0, whatever its source, so both get the same candidate id.
-            completed[key] = value + 0.0 if info.kind == "float" and type(value) is float else value
+            completed[key] = _as_kind(info.kind, value)
         completed.update({key: value for key, value in values.items() if key not in self._params})
         return completed
 
@@ -202,7 +207,8 @@ class Space:
         """Check bounds, size caps, formats, active keys, and that nothing is missing.
 
         Types are strict, so equal candidates hash alike: `Int` takes an int (not a bool), `Float` a
-        float (not an int), and `OneOf` compares type and value.
+        float (not an int), and `OneOf` compares type and value. `validate` converts nothing; `complete`
+        gives numbers their key's type.
 
         Raises:
             ValueError: Listing every problem.
@@ -489,6 +495,21 @@ def _check_no_overlap(
                 "or one is inside the other"
             )
         raise TypeError(f"{key}: {marker.path} is already declared by {other_key}; a whole file's text can't be shared")
+
+
+def _as_kind(kind: ParamKind, value: Any) -> Any:
+    """`value` as an `Int` or `Float` key stores it (see `Space.complete`); other kinds' values as given."""
+    if kind not in ("int", "float") or isinstance(value, bool) or not isinstance(value, numbers.Real):
+        return value
+    if kind == "int" and isinstance(value, numbers.Integral):
+        return int(value)
+    try:
+        number = float(value)
+    except OverflowError:  # an int or fraction beyond the float range, left for `validate` to reject
+        return value
+    if kind == "float":
+        return number + 0.0  # -0.0 becomes 0.0, so both get the same candidate id
+    return int(number) if number.is_integer() else value
 
 
 def _check_value(info: ParamInfo, value: Any) -> str | None:

@@ -1,5 +1,7 @@
 import json
+import sys
 
+import numpy as np
 import pytest
 from pydantic import ValidationError
 
@@ -22,6 +24,34 @@ def test_patch_values_keep_their_exact_type_through_json(value):
 
     assert type(restored.updates["key"]) is type(value)
     assert restored.updates["key"] == value
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(np.int64(3), 3), (np.int32(-3), -3), (np.uint8(3), 3), (np.int64(2**53 + 1), 9007199254740993)],
+    ids=["int64", "int32", "uint8", "int64-above-2**53"],
+)
+def test_patch_stores_an_integer_of_another_type_as_an_exact_int(value, expected):
+    patch = Patch(updates={"key": value}, rationale="")
+
+    assert type(patch.updates["key"]) is int
+    assert patch.updates["key"] == expected
+
+
+@pytest.mark.parametrize("value", [np.True_, np.False_], ids=["true", "false"])
+def test_patch_stores_a_numpy_bool_as_a_bool(value):
+    patch = Patch(updates={"key": value}, rationale="")
+
+    assert patch.updates["key"] is bool(value)
+
+
+def test_patch_values_need_no_numpy(monkeypatch):
+    monkeypatch.setitem(sys.modules, "numpy", None)
+
+    patch = Patch(updates={"count": 3, "flag": True, "rate": 0.5}, rationale="")
+
+    assert patch.updates == {"count": 3, "flag": True, "rate": 0.5}
+    assert [type(v) for v in patch.updates.values()] == [int, bool, float]
 
 
 def test_canonical_json_of_values_is_unchanged_by_a_round_trip():

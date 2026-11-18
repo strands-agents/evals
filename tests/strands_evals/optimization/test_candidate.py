@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from strands_evals.optimization import (
@@ -10,6 +11,7 @@ from strands_evals.optimization import (
     Int,
     JsonField,
     OneOf,
+    Patch,
     Space,
     TextValue,
     choice,
@@ -132,6 +134,60 @@ def test_a_changed_choice_inherits_from_fill():
     assert child.values["manager.Summary.ratio"] == 0.6
     assert child.inherited == {"manager.Summary.ratio": "abc123"}
     assert child.defaulted == ()
+
+
+@pytest.mark.parametrize(
+    ("updates", "same_as"),
+    [
+        ({"manager.Window.size": np.int64(30), "temperature": np.float64(0.25)}, (30, 0.25)),
+        ({"manager.Window.size": 30.0, "temperature": 1}, (30, 1.0)),
+        ({"manager.Window.size": np.float64(30.0), "temperature": np.int64(0)}, (30, 0.0)),
+    ],
+    ids=["numpy", "integral-float-and-int", "numpy-integral-float-and-int"],
+)
+def test_a_patchs_numbers_take_their_keys_types_in_the_child(updates, same_as):
+    space = make_space()
+    baseline = Candidate.baseline(space)
+    size, temperature = same_as
+    expected = baseline.child(
+        space, {"manager.Window.size": size, "temperature": temperature}, origin=["numbers"], rationale=""
+    )
+
+    child = baseline.child(space, Patch(updates=updates, rationale="").updates, origin=["numbers"], rationale="")
+
+    assert type(child.values["manager.Window.size"]) is int
+    assert type(child.values["temperature"]) is float
+    assert child.id == expected.id
+
+
+def test_a_whole_float_for_an_int_key_repeats_the_parents_id():
+    space = make_space()
+    baseline = Candidate.baseline(space)
+    child = baseline.child(space, {"manager.Window.size": 40.0}, origin=["numbers"], rationale="")
+    assert child.id == baseline.id
+
+
+@pytest.mark.parametrize(("key", "message"), [("size", "expected int"), ("temperature", "expected float")])
+def test_a_numpy_bool_for_a_number_key_is_rejected_as_a_bool_is(key, message):
+    space = Space({"size": Int(1, 100, default=40), "temperature": Float(0.0, 1.0, default=0.7)})
+    with pytest.raises(ValueError, match=message):
+        Candidate.baseline(space).child(
+            space, Patch(updates={key: np.True_}, rationale="").updates, origin=["numbers"], rationale=""
+        )
+
+
+def test_a_numpy_integer_is_an_int_option():
+    space = Space({"depth": OneOf(1, 2, 3)})
+    patch = Patch(updates={"depth": np.int64(2)}, rationale="")
+    child = Candidate.baseline(space).child(space, patch.updates, origin=["options"], rationale="")
+    assert type(child.values["depth"]) is int and child.values["depth"] == 2
+
+
+def test_a_numpy_bool_is_a_bool_option():
+    space = Space({"verbose": OneOf(False, True)})
+    patch = Patch(updates={"verbose": np.True_}, rationale="")
+    child = Candidate.baseline(space).child(space, patch.updates, origin=["options"], rationale="")
+    assert child.values["verbose"] is True
 
 
 def test_child_rejects_invalid_values():
