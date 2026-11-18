@@ -392,6 +392,29 @@ def test_the_held_out_check_predicts_over_the_cases_a_candidate_was_measured_on(
     assert some_cases["z_mean"] == pytest.approx(every_case["z_mean"], abs=0.1)  # about 1.9 apart without the subset
 
 
+def test_the_held_out_check_skips_a_candidate_measured_on_a_case_the_earlier_metric_never_observed():
+    # The earlier fit's design has the N/A cases, but the metric has no observation on them: their case effects are
+    # only the prior, so a new candidate measured there can't be predicted and is left out of the check.
+    candidates, observations, _, cases = _world(1, n=12)
+    na = cases[2:6]  # not the first case, the reference: both designs then code the case effects the same way
+    rest = [case for case in cases if case not in na]
+    model = BayesBenchModel()
+    first = model.fit(_chain_data(candidates, _not_applicable(observations, na), cases, 6))
+    assert set(na) <= set(first.design.cases)
+    assert set(na).isdisjoint(first.metrics["score"].observed_cases)
+    full = model.fit(_data(candidates, observations, cases), previous=first)
+    assert full.diagnostics["score"]["n_holdout"] == 0
+    # measured only where the earlier metric has observations, the new candidates are checked as if `na` never existed
+    partial = model.fit(_data(candidates, _not_applicable(observations, na), cases), previous=first)
+    other = BayesBenchModel()
+    on_rest = {cid: {case: by_case[case] for case in rest} for cid, by_case in observations.items()}
+    first_rest = other.fit(_chain_data(candidates, on_rest, rest, 6))
+    expected = other.fit(_data(candidates, on_rest, rest), previous=first_rest)
+    assert partial.diagnostics["score"]["n_holdout"] == expected.diagnostics["score"]["n_holdout"] == 6
+    for key in ("z_mean", "z_sq_sum"):
+        assert partial.diagnostics["score"][key] == pytest.approx(expected.diagnostics["score"][key])
+
+
 def test_a_previous_fit_on_other_cases_checks_nothing():
     candidates, observations, _, cases = _world(1, n=12)
 
