@@ -20,12 +20,6 @@ _SPACE = re.compile(r"[ \t\r\n]+")
 
 # Each pair of fields a report row or a case can carry, in the order the page shows them.
 _ASPECTS = ("output", "trajectory", "interactions", "environment_state")
-_ASPECT_LABEL = {
-    "output": "output",
-    "trajectory": "trajectory",
-    "interactions": "interactions",
-    "environment_state": "environment state",
-}
 
 
 def _truthy(value: Any) -> bool:
@@ -170,7 +164,7 @@ def _case_blocks(case: dict, sides: Sequence[str]) -> list[str]:
     parts = _block("Input", case.get("input")) + _block("Assertion", case.get("expected_assertion"))
     for aspect in _ASPECTS:
         for side in sides:
-            label = f"{side.capitalize()} {_ASPECT_LABEL[aspect]}"
+            label = f"{side.capitalize()} {aspect.replace('_', ' ')}"
             value = case.get(f"{side}_{aspect}")
             parts += _trajectory(label, value) if aspect == "trajectory" else _block(label, value)
     return parts
@@ -274,11 +268,11 @@ def experiment_markdown(path: str, doc: dict, reports: Sequence[str]) -> str:
     parts = [f"# Experiment: {path}", "\n".join(facts), "## Evaluators"]
     parts += [part for i, e in enumerate(evaluators) for part in _evaluator_parts(e, i)] or ["None."]
     parts.append("## Cases")
-    listed = [part for i, case in enumerate(cases) for part in case_parts(case, i, "###")]
+    listed = [part for i, case in enumerate(cases) for part in _case_parts(case, i, "###")]
     return _document(parts + (listed or ["None."]))
 
 
-def case_parts(case: dict, index: int, heading: str) -> list[str]:
+def _case_parts(case: dict, index: int, heading: str) -> list[str]:
     return [
         f"{heading} {_name(case.get('name'), index)}",
         *_case_blocks(case, ("expected",)),
