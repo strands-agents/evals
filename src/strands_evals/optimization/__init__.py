@@ -57,7 +57,7 @@ from .score_model.design import design
 from .score_model.effects import effects
 from .score_model.protocols import Fit, FitData, MetricModel, ScoreModel
 from .score_model.ranking import Assessment, LowerBound, Mean, PickRule, p_met
-from .scoring.metrics import MetricRegistry
+from .scoring.metrics import Derived, MetricRegistry
 from .scoring.objectives import (
     AtLeast,
     AtMost,
@@ -99,6 +99,7 @@ __all__ = [
     "Component",
     "Constraint",
     "Criteria",
+    "Derived",
     "EnvironmentFn",
     "Estimate",
     "Evidence",

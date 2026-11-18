@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from strands_evals.optimization import MetricRegistry
+from strands_evals.optimization import Derived, MetricRegistry
 from strands_evals.optimization.scoring.metrics import USAGE_METRICS
 
 
@@ -72,3 +72,65 @@ def test_an_infinite_end_is_unbounded(range_, stored):
 def test_a_nan_end_fails(range_):
     with pytest.raises(ValueError, match="NaN"):
         MetricRegistry({"Score": range_})
+
+
+# --- derived metrics ---
+
+
+def price(m):
+    return 3e-6 * m["input_tokens"] + 15e-6 * m["output_tokens"]
+
+
+COST = Derived("cost", price, range=(0, None))
+
+
+def test_a_derived_metric_resolves_to_itself_with_its_range():
+    registry = MetricRegistry({"Stars": (1, 5)}, [COST])
+    assert registry.resolve("cost") == "cost"
+    assert registry.range("cost") == (0.0, None)
+    assert registry.is_derived("cost") and not registry.is_usage("cost") and not registry.is_derived("Stars")
+    assert registry.derived == (COST,) and registry.evaluators == ("Stars",)
+
+
+def test_an_unknown_metric_lists_the_derived_ones_too():
+    with pytest.raises(ValueError, match="unknown metric 'costs'.*'cost'"):
+        MetricRegistry({}, [COST]).resolve("costs")
+
+
+@pytest.mark.parametrize("name", ["Stars", "tokens"])
+def test_a_derived_metric_named_like_a_measured_one_fails(name):
+    with pytest.raises(ValueError, match="named like an evaluator or usage metric"):
+        MetricRegistry({"Stars": (1, 5)}, [Derived(name, price)])
+
+
+def test_the_same_derived_metric_twice_registers_once_and_two_with_one_name_fail():
+    assert MetricRegistry({}, [COST, Derived("cost", price, range=(0, None))]).derived == (COST,)
+    with pytest.raises(ValueError, match="two different Derived metrics are named 'cost'"):
+        MetricRegistry({}, [COST, Derived("cost", lambda m: m["tokens"], range=(0, None))])
+    with pytest.raises(ValueError, match="two different Derived metrics"):
+        MetricRegistry({}, [COST, Derived("cost", price)])  # another range
+
+
+@pytest.mark.parametrize(
+    ("range_", "stored"), [((0, None), (0.0, None)), ((-math.inf, 1), (None, 1.0)), ((None, None), (None, None))]
+)
+def test_a_derived_range_is_stored_as_floats_or_none(range_, stored):
+    assert Derived("cost", price, range=range_).range == stored
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error", "match"),
+    [
+        ({"name": "", "fn": price}, ValueError, "must not be empty"),
+        ({"name": 3, "fn": price}, TypeError, "must be a string"),
+        ({"name": "cost", "fn": "price"}, TypeError, "must be callable"),
+        ({"name": "cost", "fn": price, "range": (0, 1, 2)}, TypeError, r"\(low, high\)"),
+        ({"name": "cost", "fn": price, "range": (0, "1")}, TypeError, r"\(low, high\)"),
+        ({"name": "cost", "fn": price, "range": (True, None)}, TypeError, r"\(low, high\)"),
+        ({"name": "cost", "fn": price, "range": (1, 1)}, ValueError, "is empty"),
+        ({"name": "cost", "fn": price, "range": (math.nan, None)}, ValueError, "NaN"),
+    ],
+)
+def test_a_bad_derived_metric_fails_at_construction(kwargs, error, match):
+    with pytest.raises(error, match=match):
+        Derived(**kwargs)

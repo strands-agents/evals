@@ -241,11 +241,16 @@ class Optimizer:
             agent_failure_score=agent_failure_score,
             feasibility_threshold=feasibility_threshold,
         )
-        if agent_failure_score == "worst" and all(registry.is_usage(m) for m in self._criteria.goal_metrics):
+        # A Derived metric reading usage is computed from a crash's real usage, so it can look cheap too; one reading
+        # only evaluator scores doesn't, but what fn reads isn't known until it runs.
+        criteria = self._criteria
+        if agent_failure_score == "worst" and all(
+            criteria.registry.is_usage(m) or criteria.registry.is_derived(m) for m in criteria.goal_metrics
+        ):
             warnings.warn(
-                'every goal is a usage metric and agent_failure_score="worst" scores only evaluators, so a run that '
-                "crashes early counts its real, small usage and looks cheap; add an evaluator term to the objective "
-                "or an AtLeast constraint on one",
+                'every goal is a usage metric or a Derived metric, and agent_failure_score="worst" scores only '
+                "evaluators, so a run that crashes early counts its real, small usage and can look cheap; add an "
+                "evaluator term to the objective or an AtLeast constraint on one",
                 UserWarning,
                 stacklevel=2,
             )
@@ -362,8 +367,9 @@ class Optimizer:
         metrics: dict[str, dict[str, Any]] = {}
         for metric in criteria.goal_metrics:
             low, high = registry.range(metric)
+            kind = "usage" if registry.is_usage(metric) else "derived" if registry.is_derived(metric) else "evaluator"
             metrics[metric] = {
-                "kind": "usage" if registry.is_usage(metric) else "evaluator",
+                "kind": kind,
                 "roles": [],
                 "range": [low, high],
             }
@@ -812,7 +818,7 @@ class Optimizer:
                 final={c: (assessments[c].objective, i + 1) for i, c in enumerate(ranking)},
                 trial_counts={c: self._trial_count(c) for c in self._candidates},
                 failures={c: s.failures for c, s in self._train.items()},
-                metrics=[*criteria.registry.evaluators, *USAGE_METRICS],
+                metrics=[*criteria.registry.evaluators, *USAGE_METRICS, *(d.name for d in criteria.registry.derived)],
                 goal_metrics=list(criteria.goal_metrics),
                 constraints=[str(c) for c in criteria.constraints],
                 validation=report,
@@ -1790,6 +1796,20 @@ class Optimizer:
             else:
                 evaluator, error_type = next(iter(first.evaluator_errors.items()))
                 message += f"; first error ({first.case_name}): evaluator {evaluator} raised {error_type}"
+        # Why scoring dropped a goal value, for the metrics never measured if any, so a dropped value isn't silent.
+        explained = never or self._criteria.goal_metrics
+        taken_out = next(
+            (
+                (case, reason)
+                for case, by_run in scores.unavailable.items()
+                for reasons in by_run.values()
+                for metric, reason in reasons.items()
+                if metric in explained
+            ),
+            None,
+        )
+        if taken_out is not None:
+            message += f"; first goal value taken out ({taken_out[0]}): {taken_out[1]}"
         self._run.events.append("stop", reason="setup", message=message)
         raise RuntimeError(message)
 
@@ -1819,7 +1839,8 @@ class Optimizer:
         with `space=`), `rollout_fn`, `environment`, the objective, constraints, search, selection, and
         score model. Of those, the cases, the space, the objective, constraints, search, selection, and score
         model are compared with `run.json` (`ValueError` naming the field); the agent code, `rollout_fn`,
-        `environment`, and the evaluators can't be compared and are the caller's to keep. Everything else
+        `environment`, the evaluators, and `Derived` functions can't be compared and are the caller's to keep
+        (the saved trials' `Derived` values are computed again with the functions passed). Everything else
         is read from `run.json`, never passed again: the split (with the seed it used), the final pick
         (`FinalPick.from_config`), `runs_per_candidate`, `agent_failure_score`, `feasibility_threshold`, seed,
         `proposals_per_iteration`, and `rerun_passes`. Only `budget`, `max_workers`, and `on_iteration` may differ
@@ -1833,8 +1854,8 @@ class Optimizer:
         search stop a step earlier than without the kill; and a refit that succeeded in the run but raises when
         replayed (e.g. under another numpy) is replaced by measured means until a refit succeeds, with a
         warning. If you changed cases,
-        evaluators, judge settings, or agent code, start a new run instead: resuming would mix results from
-        the old and new setups.
+        evaluators, `Derived` metrics, judge settings, or agent code, start a new run instead: resuming would
+        mix results from the old and new setups.
 
         Args:
             run_dir: The run directory to reopen.

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import math
+import numbers
 import statistics
 from collections import Counter, defaultdict
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Literal
 
 from scipy import stats
@@ -25,9 +26,9 @@ from ...types.optimization import (
     Usage,
     near,
 )
-from .metrics import USAGE_METRICS, MetricRegistry
+from .metrics import USAGE_METRICS, Derived, MetricRegistry
 
-MetricTarget = str | Evaluator | type[Evaluator]
+MetricTarget = str | Evaluator | type[Evaluator] | Derived
 
 
 @dataclass(frozen=True, init=False)
@@ -37,14 +38,16 @@ class _Direction:
     metric: str
     weight: float
     scale: float | None
+    derived: Derived | None = field(default=None, compare=False, repr=False)
 
     def __init__(self, target: MetricTarget, /, *, weight: float = 1.0, scale: float | None = None):
         """Name the metric; an evaluator instance resolves via `get_name()`, a class via `get_type_name()`.
 
-        Names are checked against the run's evaluators when the `Optimizer` is built.
+        Names are checked against the run's evaluators when the `Optimizer` is built. A `Derived` target is
+        named by its `name` and kept as `derived`, so `Criteria` registers it.
 
         Args:
-            target: A metric name, an evaluator class, or an evaluator instance.
+            target: A metric name, an evaluator class, an evaluator instance, or a `Derived` metric.
             weight: Relative importance inside `WeightedSum` or `Pareto`.
             scale: The size of a meaningful change, so metrics in different units combine; None means the
                 metric's range width (1.0 for a 0-1 evaluator). An unbounded metric (every usage metric)
@@ -55,6 +58,7 @@ class _Direction:
             ValueError: `weight` or `scale` is not a finite number > 0.
         """
         object.__setattr__(self, "metric", _metric_name(target))
+        object.__setattr__(self, "derived", target if isinstance(target, Derived) else None)
         object.__setattr__(self, "weight", _positive("weight", weight))
         object.__setattr__(self, "scale", None if scale is None else _positive("scale", scale))
 
@@ -114,9 +118,9 @@ class WeightedSum(_Combination):
     `Minimize("tokens")`) is its oriented value / scale.
     `WeightedSum(Maximize("Helpfulness"), Minimize("tokens", scale=1000))` makes 1,000 tokens worth
     as much as the whole 0-1 Helpfulness range. Per case, N/A evaluator terms drop and the remaining
-    evaluator weights are rescaled to the same total; usage terms are never rescaled. All evaluator
-    terms N/A, or any usage term unmeasured, leaves the case unmeasured. A `WeightedSum` of one
-    objective is that objective.
+    evaluator weights are rescaled to the same total; usage and `Derived` terms are never rescaled. All
+    evaluator terms N/A, or any usage or `Derived` term unmeasured, leaves the case unmeasured. A
+    `WeightedSum` of one objective is that objective.
     """
 
 
@@ -141,12 +145,13 @@ class _Bound:
 
     metric: str
     bound: float
+    derived: Derived | None = field(default=None, compare=False, repr=False)
 
     def __init__(self, target: MetricTarget, /, bound: float):
         """Name the metric as in `Maximize`.
 
         Args:
-            target: A metric name, an evaluator class, or an evaluator instance.
+            target: A metric name, an evaluator class, an evaluator instance, or a `Derived` metric.
             bound: The limit on the mean; by position or keyword (`AtMost("tokens", bound=4000)`).
 
         Raises:
@@ -155,6 +160,7 @@ class _Bound:
         if isinstance(bound, bool) or not isinstance(bound, (int, float)) or not math.isfinite(bound):
             raise TypeError(f"{type(self).__name__} bound must be a finite number, got {bound!r}")
         object.__setattr__(self, "metric", _metric_name(target))
+        object.__setattr__(self, "derived", target if isinstance(target, Derived) else None)
         object.__setattr__(self, "bound", float(bound))
 
     def __str__(self) -> str:
@@ -178,8 +184,8 @@ Constraint = AtMost | AtLeast
 class _Term:
     """One objective term, resolved: its metric, direction, weight in the combination, scale, and offset.
 
-    `is_usage` marks a usage metric (tokens, seconds, ...): when another term is missing on a case, its
-    weight is never rescaled, and when it is missing itself, the case is left unmeasured.
+    `required` marks a usage metric (tokens, seconds, ...) or a `Derived` one: when another term is missing
+    on a case, its weight is never rescaled, and when it is missing itself, the case is left unmeasured.
 
     `offset` is the term's oriented worst end (the range's low end under `Maximize`, minus its high end
     under `Minimize`), subtracted before dividing by `scale`, so every bounded term of a combination
@@ -191,7 +197,7 @@ class _Term:
     maximize: bool
     weight: float
     scale: float
-    is_usage: bool
+    required: bool
     offset: float = 0.0
 
 
@@ -199,9 +205,10 @@ class Criteria:
     """The objective plus the constraints; names resolve through the registry at construction.
 
     Attributes:
-        objective: What to optimize, the default filled in, every metric name resolved.
+        objective: What to optimize, the default filled in, every metric name resolved (a `Derived` metric to
+            its name; `registry` holds it).
         constraints: The constraints, metric names resolved.
-        registry: The run's metric registry.
+        registry: The run's metric registry, with the goals' `Derived` metrics added.
         agent_failure_score: What an `agent_failure` run's evaluator metrics count as.
         feasibility_threshold: The P(met) threshold a constraint needs to count as met (not a fraction of cases);
             read by the ranking, the candidate label, and the final pick.
@@ -237,13 +244,15 @@ class Criteria:
         Args:
             objective: What to optimize; None means the mean of every evaluator's score.
             constraints: Bounds every shipped candidate must meet.
-            registry: Resolves the metric names and gives their ranges.
+            registry: Resolves the metric names and gives their ranges. A goal given a `Derived` metric adds
+                it (`Criteria.registry` is then a copy with it), so every goal can name it.
             agent_failure_score: What an `agent_failure` run's evaluator metrics count as.
             feasibility_threshold: The P(met) threshold a constraint needs
                 (`Optimizer(feasibility_threshold=)`), 0 < x < 1.
 
         Raises:
-            ValueError: A metric name is unknown or ambiguous; inside a `WeightedSum` or `Pareto`, the same
+            ValueError: A metric name is unknown or ambiguous; a `Derived` metric named like an evaluator, a
+                usage metric, or a different `Derived` metric; inside a `WeightedSum` or `Pareto`, the same
                 metric twice after resolution, a metric with an unbounded range and no `scale=`, or an
                 evaluator with no end on its worse side (a low end under `Maximize`, a high end under
                 `Minimize`), since dropping its term on an N/A case would score the case above a perfect one; a lone
@@ -270,6 +279,11 @@ class Criteria:
             raise ValueError(
                 f'agent_failure_score must be "worst", a finite number, or None, got {agent_failure_score!r}'
             )
+        derived = _derived_metrics(objective, constraints)
+        if derived:
+            registry = MetricRegistry(
+                {name: registry.range(name) for name in registry.evaluators}, [*registry.derived, *derived]
+            )
         self.registry = registry
         self.agent_failure_score = agent_failure_score
         self.feasibility_threshold = feasibility_threshold
@@ -278,24 +292,27 @@ class Criteria:
         self.is_pareto = isinstance(self.objective, Pareto)
         self._terms = self._build_terms(self.objective)
         # Fixed by the objective; computed once, since objective_value runs for every run, case, and fit estimate.
-        self._evaluator_terms = tuple(t for t in self._terms if not t.is_usage)
-        self._usage_terms = tuple(t for t in self._terms if t.is_usage)
+        self._evaluator_terms = tuple(t for t in self._terms if not t.required)
+        self._required_terms = tuple(t for t in self._terms if t.required)
         self._total_weight = sum(t.weight for t in self._terms)
         self._evaluator_weight = sum(t.weight for t in self._evaluator_terms)
         self.goal_metrics = tuple(dict.fromkeys([t.metric for t in self._terms] + [c.metric for c in self.constraints]))
         if isinstance(agent_failure_score, (int, float)):
             for name in self.goal_metrics:
-                if not registry.is_usage(name) and not _in_range(agent_failure_score, registry.range(name)):
+                if name in registry.evaluators and not _in_range(agent_failure_score, registry.range(name)):
                     low, high = registry.range(name)
                     raise ValueError(
                         f"agent_failure_score={agent_failure_score!r} is outside {name}'s range [{low}, {high}]; "
                         'use agent_failure_score="worst" to score each evaluator at its own worst end'
                     )
         # Computed once: read for every evaluator of every crashed run.
-        self._agent_failure_values = {name: self._compute_agent_failure_value(name) for name in registry.evaluators}
+        self._agent_failure_values = {
+            name: self._compute_agent_failure_value(name)
+            for name in (*registry.evaluators, *(d.name for d in registry.derived))
+        }
 
     def agent_failure_value(self, metric: str) -> float | None:
-        """What an `agent_failure` run counts as for one evaluator metric.
+        """What an `agent_failure` run counts as for one evaluator or `Derived` metric.
 
         Under `agent_failure_score="worst"`: the range's low end when every goal on the metric is a `Maximize` or
         `AtLeast`, the high end when every one is a `Minimize` or `AtMost`; None when that end is unbounded,
@@ -303,7 +320,9 @@ class Criteria:
         goal uses whose range doesn't contain it (outside a goal metric's range, `Criteria` raises); None
         gives None. Usage metrics always give None (a crash's usage is measured, not scored). A crashed run
         can't tell which evaluators would have found nothing to judge, so it scores an evaluator that
-        another run of the case found N/A too.
+        another run of the case found N/A too. A `Derived` metric is computed from the crashed run's values
+        when it can be; this value stands in only when it can't, and only under "worst" (a number is an
+        evaluator score, which reaches a derived metric through the scores it reads, so it gives None).
 
         Raises:
             KeyError: `metric` is not a resolved metric.
@@ -312,11 +331,13 @@ class Criteria:
         return self._agent_failure_values.get(metric)  # usage metrics aren't in it: None
 
     def _compute_agent_failure_value(self, metric: str) -> float | None:
-        """`agent_failure_value` for one evaluator metric, computed once in `__init__`."""
+        """`agent_failure_value` for one evaluator or derived metric, computed once in `__init__`."""
         low, high = self.registry.range(metric)
         if self.agent_failure_score is None:
             return None
         if self.agent_failure_score != "worst":
+            if self.registry.is_derived(metric):
+                return None
             score = float(self.agent_failure_score)
             return score if _in_range(score, (low, high)) else None
         wants = {"max" if t.maximize else "min" for t in self._terms if t.metric == metric}
@@ -340,8 +361,8 @@ class Criteria:
         None when the values leave it unmeasured.
         """
         # A missing evaluator term drops, its weight spread over the measured evaluator terms; a missing usage
-        # term leaves the value unmeasured, since rescaling a cost up would swamp the scores.
-        if any(t.metric not in metrics for t in self._usage_terms):
+        # or derived term leaves the value unmeasured, since rescaling a cost up would swamp the scores.
+        if any(t.metric not in metrics for t in self._required_terms):
             return None
         # Weights are > 0, so 0 means no evaluator term is measured.
         measured_weight = sum(t.weight for t in self._evaluator_terms if t.metric in metrics)
@@ -352,7 +373,7 @@ class Criteria:
         for term in self._terms:
             if term.metric not in metrics:
                 continue
-            weight = term.weight if term.is_usage else term.weight * rescale
+            weight = term.weight if term.required else term.weight * rescale
             total += weight * (_oriented(term, metrics[term.metric]) - term.offset) / term.scale
         return total / self._total_weight
 
@@ -427,7 +448,7 @@ class Criteria:
                     )
                 low, high = self.registry.range(o.metric)
                 worst, side = (low, "low") if isinstance(o, Maximize) else (high, "high")
-                if worst is None and not self.registry.is_usage(o.metric):
+                if worst is None and not _is_required(self.registry, o.metric):
                     # A term is measured from its worst end; with none, dropping it on a case where the evaluator
                     # is N/A would score that case as if the evaluator had done better than its best.
                     raise ValueError(
@@ -452,7 +473,7 @@ class Criteria:
                     isinstance(objective, Maximize),
                     1.0,
                     1.0,
-                    self.registry.is_usage(objective.metric),
+                    _is_required(self.registry, objective.metric),
                 ),
             )
         terms = []
@@ -465,7 +486,7 @@ class Criteria:
             # usage metric (never N/A) may lack that end.
             worst = low if maximize else (None if high is None else -high)
             offset = 0.0 if worst is None else worst
-            terms.append(_Term(o.metric, maximize, o.weight, scale, self.registry.is_usage(o.metric), offset))
+            terms.append(_Term(o.metric, maximize, o.weight, scale, _is_required(self.registry, o.metric), offset))
         return tuple(terms)
 
 
@@ -481,7 +502,8 @@ def _case_metrics(
     (a crash's tokens are real cost). `infrastructure_invalid` and `evaluator_invalid` runs are left out.
     An evaluator value outside its range (beyond float noise at an end) is taken out with the reason "give
     the evaluator a score_range = (low, high)", never clipped, and a NaN or infinite evaluator or usage value
-    with "is not a finite number"; the trial's saved status is left as is.
+    with "is not a finite number"; the trial's saved status is left as is. `Derived` metrics: computed per
+    run from that run's evaluator and usage values (`_derive`).
 
     Args:
         records: One candidate's trial records on one split.
@@ -497,12 +519,15 @@ def _case_metrics(
     by_case: dict[str, dict[str, list[float | None]]] = {}
     unavailable: dict[str, dict[int, dict[str, str]]] = {}
     not_applicable: dict[str, set[str]] = defaultdict(set)
+    derived = registry.derived
     for record in records:
         values = by_case.setdefault(
-            record.case_name, {metric: [None] * runs for metric in (*registry.evaluators, *USAGE_METRICS)}
+            record.case_name,
+            {metric: [None] * runs for metric in (*registry.evaluators, *USAGE_METRICS, *(d.name for d in derived))},
         )
         if record.status not in (TrialStatus.COMPLETED, TrialStatus.AGENT_FAILURE):
             continue
+        run_not_applicable: set[str] = set()
         for metric in USAGE_METRICS:
             usage = _usage_value(record.usage, metric)
             if usage is not None and not math.isfinite(usage):
@@ -519,6 +544,7 @@ def _case_metrics(
                 continue
             if _not_applicable(record, metric):
                 not_applicable[record.case_name].add(metric)
+                run_not_applicable.add(metric)
                 continue
             low, high = registry.range(metric)
             reason = None
@@ -534,7 +560,108 @@ def _case_metrics(
                 unavailable.setdefault(record.case_name, {}).setdefault(record.run_index, {})[metric] = reason
                 continue
             values[metric][record.run_index] = float(output.score)
+        if derived:
+            _derive(record, values, criteria, run_not_applicable, unavailable)
     return by_case, unavailable, not_applicable
+
+
+class _Absent(KeyError):
+    """Raised by `_RunValues` for an evaluator or usage metric the run has no value of."""
+
+
+class _RunValues(Mapping[str, float]):
+    """One run's evaluator and usage values by name, read-only, as one `Derived.fn` reads them.
+
+    A name the run has no value of raises `_Absent` (a `KeyError`, so `get` returns its default); a name that
+    is not an evaluator or usage metric raises `ValueError`, since no run could have it.
+    """
+
+    def __init__(self, values: Mapping[str, float], registry: MetricRegistry, reader: str) -> None:
+        self._values, self._registry, self._reader = values, registry, reader
+
+    def __getitem__(self, name: str) -> float:
+        if name in self._values:
+            return self._values[name]
+        if name in self._registry.evaluators or name in USAGE_METRICS:
+            raise _Absent(name)
+        if self._registry.is_derived(name):
+            raise ValueError(
+                f"Derived metric {self._reader!r} read {name!r}, another Derived metric; a Derived metric reads "
+                "only evaluator scores and usage, so compute that part in its fn too"
+            )
+        raise ValueError(
+            f"Derived metric {self._reader!r} read {name!r}, which is not an evaluator or usage metric; "
+            f"it can read {[*self._registry.evaluators, *USAGE_METRICS]}"
+        )
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+
+def _derive(
+    record: TrialRecord,
+    values: dict[str, list[float | None]],
+    criteria: Criteria,
+    run_not_applicable: set[str],
+    unavailable: dict[str, dict[int, dict[str, str]]],
+) -> None:
+    """Fill in each `Derived` metric of one run from the run's evaluator and usage values in `values`.
+
+    When `fn` can't give a value (it reads a metric the run has no value of, or raises an `ArithmeticError`
+    such as a division by zero), an `agent_failure` run takes the derived metric's `agent_failure_value`; a run
+    without one has no value of it, and the reason is kept in `unavailable`. A value that is not finite or lies
+    outside the derived metric's range (beyond float noise at an end, which is set to the end) is taken out with
+    the reason, on a crashed run too, never clipped. Any other exception from `fn` propagates.
+
+    Raises:
+        ValueError: `fn` read a name that is not an evaluator or usage metric (a typo, or another derived
+            metric), so no run could have it.
+        TypeError: `fn` returned something other than a number.
+    """
+    registry, run = criteria.registry, record.run_index
+    inputs = {name: v for name in (*registry.evaluators, *USAGE_METRICS) if (v := values[name][run]) is not None}
+    taken_out: dict[str, str] = {}
+    for metric in registry.derived:
+        try:
+            result = metric.fn(_RunValues(inputs, registry, metric.name))
+            if isinstance(result, bool) or not isinstance(result, numbers.Real):
+                raise TypeError(f"Derived metric {metric.name!r} returned {result!r}; fn must return a number")
+            value = float(result)  # an int too large for a float raises OverflowError, an ArithmeticError
+        except _Absent as error:
+            missing = error.args[0]
+            lacks = (
+                "found nothing to judge on this run" if missing in run_not_applicable else "this run has no value of"
+            )
+            reason = f"{metric.name} needs {missing!r}, which {lacks}"
+        except ArithmeticError as error:
+            reason = f"{metric.name} raised {type(error).__name__}: {error}"
+        else:
+            low, high = metric.range
+            if not math.isfinite(value):
+                taken_out[metric.name] = f"{metric.name}={value!r} is not a finite number"
+            elif not _in_range(value, metric.range):
+                taken_out[metric.name] = (
+                    f"{metric.name}={value!r} is outside its range [{low}, {high}]; give the Derived metric a "
+                    "range=(low, high) (None for unbounded)"
+                )
+            else:
+                # Float noise past an end (1 - 0.3 - 0.2 - 0.5 is -5.55e-17) is that end, so a mean of 0 stays 0.
+                if low is not None:
+                    value = max(value, low)
+                if high is not None:
+                    value = min(value, high)
+                values[metric.name][run] = value
+            continue
+        fallback = criteria.agent_failure_value(metric.name) if record.status is TrialStatus.AGENT_FAILURE else None
+        if fallback is not None:
+            values[metric.name][run] = fallback
+        else:
+            taken_out[metric.name] = reason
+    if taken_out:
+        unavailable.setdefault(record.case_name, {}).setdefault(run, {}).update(taken_out)
 
 
 def score(candidate_id: str, records: Sequence[TrialRecord], criteria: Criteria, splits: CaseSplit) -> SplitScores:
@@ -709,19 +836,34 @@ def _width(range_: Range) -> float | None:
     return None if low is None or high is None else high - low
 
 
+def _is_required(registry: MetricRegistry, metric: str) -> bool:
+    """Whether an objective term on `metric` is `_Term.required`: a usage or `Derived` metric, never dropped
+    with its weight rescaled as an evaluator's term is on a case the evaluator finds N/A."""
+    return registry.is_usage(metric) or registry.is_derived(metric)
+
+
+def _derived_metrics(objective: Objective | None, constraints: Sequence[Constraint]) -> list[Derived]:
+    """The `Derived` metrics the goals were given, in goal order: the objective's, then the constraints'."""
+    directions = objective.objectives if isinstance(objective, _Combination) else (objective,)
+    return [d for goal in (*directions, *constraints) if isinstance(d := getattr(goal, "derived", None), Derived)]
+
+
 def _oriented(term: _Term, value: float) -> float:
     return value if term.maximize else -value
 
 
 def _metric_name(target: MetricTarget) -> str:
-    """A metric name from a name, an evaluator instance (`get_name()`), or an evaluator class (`get_type_name()`)."""
+    """A metric name from a name, an evaluator instance (`get_name()`), an evaluator class (`get_type_name()`), or a
+    `Derived` metric (its `name`)."""
     if isinstance(target, str):
         return target
+    if isinstance(target, Derived):
+        return target.name
     if isinstance(target, Evaluator):
         return target.get_name()
     if isinstance(target, type) and issubclass(target, Evaluator):
         return target.get_type_name()
-    raise TypeError(f"a metric is a name, an evaluator, or an evaluator class, got {target!r}")
+    raise TypeError(f"a metric is a name, an evaluator, an evaluator class, or a Derived metric, got {target!r}")
 
 
 def _check_terms(kind: str, objectives: Sequence[Maximize | Minimize], *, need_scale: bool = True) -> None:

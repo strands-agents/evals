@@ -7,6 +7,7 @@ from strands_evals.optimization import (
     AtLeast,
     AtMost,
     Criteria,
+    Derived,
     Maximize,
     MetricRegistry,
     Minimize,
@@ -675,3 +676,231 @@ def test_a_usage_value_that_is_not_finite_is_taken_out():
     assert "seconds" not in train.metrics_by_case["a"]
     assert train.objective == pytest.approx(-3.0)
     assert not train.is_eligible  # case a has no seconds
+
+
+# --- derived metrics ---
+
+
+def price(m):
+    return 0.001 * m["input_tokens"] + 0.005 * m["output_tokens"]
+
+
+COST = Derived("cost", price, range=(0, None))
+
+
+def test_a_goal_given_a_derived_metric_is_named_by_it_and_keeps_it():
+    goal = Minimize(COST, scale=0.1)
+    assert goal.metric == "cost" and goal.derived is COST
+    assert str(goal) == "Minimize(cost, scale=0.1)" and str(AtMost(COST, 0.5)) == "cost <= 0.5"
+    assert AtMost(COST, 0.5).derived is COST and AtMost("cost", 0.5).derived is None
+
+
+def test_criteria_registers_a_goals_derived_metric_so_every_goal_can_name_it():
+    criteria = Criteria(Maximize("Helpfulness"), [AtMost(COST, 0.5), AtLeast("cost", 0.1)], REGISTRY)
+    assert criteria.registry.derived == (COST,) and criteria.registry.evaluators == REGISTRY.evaluators
+    assert criteria.goal_metrics == ("HelpfulnessEvaluator", "cost")
+    assert REGISTRY.derived == ()  # the registry given is left as is
+    with pytest.raises(ValueError, match="unknown metric 'cost'"):
+        Criteria(Maximize("Helpfulness"), [AtMost("cost", 0.5)], REGISTRY)  # named, but never given
+
+
+def test_a_derived_metric_named_like_an_evaluator_or_twice_fails():
+    with pytest.raises(ValueError, match="named like an evaluator or usage metric"):
+        Criteria(Maximize(Derived("Stars", price)), [], REGISTRY)
+    with pytest.raises(ValueError, match="two different Derived metrics are named 'cost'"):
+        Criteria(Minimize(COST), [AtMost(Derived("cost", lambda m: m["tokens"]), 1)], REGISTRY)
+
+
+@pytest.mark.parametrize("kind", [WeightedSum, Pareto])
+def test_a_derived_term_is_combined_like_a_usage_one(kind):
+    # Never dropped, so it needs no worst end; unbounded, so it needs a scale.
+    criteria = Criteria(kind(Maximize("Helpfulness"), Minimize(COST, scale=0.5)), [], REGISTRY)
+    assert criteria.objective_value({"HelpfulnessEvaluator": 0.8, "cost": 0.25}) == pytest.approx((0.8 - 0.5) / 2)
+    assert criteria.objective_value({"HelpfulnessEvaluator": 0.8}) is None  # a missing derived term: unmeasured
+    assert criteria.terms({"HelpfulnessEvaluator": 0.8, "cost": 0.25}) == (0.8, -0.25)
+    with pytest.raises(ValueError, match="cost has no bounded range: give it a scale="):
+        Criteria(kind(Maximize("Helpfulness"), Minimize(COST)), [], REGISTRY)
+
+
+def test_a_derived_metric_is_computed_per_run_and_averaged_per_case():
+    criteria = Criteria(Maximize("Helpfulness"), [AtMost(COST, 1.0)], REGISTRY)
+    records = [
+        record("a", 0, scores={"HelpfulnessEvaluator": 0.5}, tokens=100, output_tokens=20),
+        record("a", 1, scores={"HelpfulnessEvaluator": 0.7}, tokens=300, output_tokens=60),
+        record("b", 0, scores={"HelpfulnessEvaluator": 0.9}, tokens=200, output_tokens=40),
+    ]
+    train = score("c1", records, criteria, SPLITS).train
+    assert train.metrics_by_run["a"]["cost"] == [pytest.approx(0.18), pytest.approx(0.54)]
+    assert train.metrics_by_case["a"]["cost"] == pytest.approx(0.36)
+    assert train.metrics_by_case["b"]["cost"] == pytest.approx(0.36)
+    assert train.is_eligible and train.unavailable == {}
+    assert measured_metrics(train, criteria.registry)["cost"].mean == pytest.approx(0.36)
+
+
+def test_a_derived_metric_reads_the_scores_the_run_has():
+    stars_per_token = Derived("stars_per_token", lambda m: m["Stars"] / m["tokens"], range=(0, None))
+    criteria = Criteria(Maximize(stars_per_token), [], REGISTRY)
+    records = [record("a", scores={"Stars": 4.0}, tokens=200), record("b", scores={"Stars": 2.0}, tokens=100)]
+    train = score("c1", records, criteria, SPLITS).train
+    assert train.metrics_by_case["a"]["stars_per_token"] == 0.02 and train.objective == pytest.approx(0.02)
+
+
+def test_a_crashed_runs_derived_metric_is_computed_from_its_usage_and_failure_scores():
+    margin = Derived("margin", lambda m: m["HelpfulnessEvaluator"] - 0.5, range=(-0.5, 0.5))
+    criteria = Criteria(Maximize(margin), [AtMost(COST, 1.0)], REGISTRY)
+    records = [
+        record("a", 0, status=TrialStatus.AGENT_FAILURE, tokens=100, output_tokens=0),
+        record("b", 0, scores={"HelpfulnessEvaluator": 1.0}),
+    ]
+    train = score("c1", records, criteria, SPLITS).train
+    assert train.metrics_by_case["a"]["cost"] == pytest.approx(0.1)  # from the crash's measured usage
+    # No goal names HelpfulnessEvaluator, so the crash has no score for it: margin takes its own worst end.
+    assert criteria.agent_failure_value("HelpfulnessEvaluator") is None
+    assert train.metrics_by_case["a"]["margin"] == -0.5 and train.is_eligible
+
+
+def test_a_crashed_runs_derived_metric_uses_the_failure_score_of_an_evaluator_a_goal_names():
+    product = Derived("product", lambda m: m["HelpfulnessEvaluator"] * 2, range=(0, 2))
+    criteria = Criteria(WeightedSum(Maximize("Helpfulness"), Maximize(product)), [], REGISTRY, agent_failure_score=0.25)
+    records = [record("a", 0, status=TrialStatus.AGENT_FAILURE), record("b", 0, scores={"HelpfulnessEvaluator": 1.0})]
+    assert score("c1", records, criteria, SPLITS).train.metrics_by_case["a"]["product"] == 0.5
+
+
+def test_a_derived_metric_needing_a_value_the_run_lacks_is_taken_out_with_the_reason():
+    cached = Derived("cached", lambda m: m["cache_read_tokens"] / m["tokens"], range=(0, 1))
+    double = Derived("double", lambda m: 2 * m["Stars"], range=(2, 10))
+    criteria = Criteria(WeightedSum(Maximize("Helpfulness"), Maximize(double)), [AtLeast(cached, 0.5)], REGISTRY)
+    records = [
+        record("a", scores={"HelpfulnessEvaluator": 0.5, "Stars": NA}),  # and no cache counts reported
+        record("b", scores={"HelpfulnessEvaluator": 0.5, "Stars": 3.0}, cache_read_tokens=60),
+    ]
+    train = score("c1", records, criteria, SPLITS).train
+    assert train.unavailable["a"][0] == {
+        "double": "double needs 'Stars', which found nothing to judge on this run",
+        "cached": "cached needs 'cache_read_tokens', which this run has no value of",
+    }
+    assert (train.metrics_by_case["b"]["cached"], train.metrics_by_case["b"]["double"]) == (0.6, 6.0)
+    assert train.objective_by_run["a"] == [None]  # a derived term is never dropped
+    assert not train.is_eligible
+
+
+def test_a_derived_metric_reads_a_default_with_get_for_a_value_the_run_lacks():
+    uncached = Derived("uncached", lambda m: m["input_tokens"] - m.get("cache_read_tokens", 0), range=(0, None))
+    criteria = Criteria(Minimize(uncached), [], REGISTRY)
+    records = [
+        record("a", tokens=100, output_tokens=40),
+        record("b", tokens=100, output_tokens=40, cache_read_tokens=50),
+    ]
+    train = score("c1", records, criteria, SPLITS).train
+    assert (train.metrics_by_case["a"]["uncached"], train.metrics_by_case["b"]["uncached"]) == (60.0, 10.0)
+
+
+def test_a_derived_metric_that_divides_by_zero_has_no_value_or_its_worst_end_on_a_crash():
+    per_point = Derived("per_point", lambda m: m["tokens"] / m["HelpfulnessEvaluator"], range=(0, None))
+    criteria = Criteria(Maximize("Helpfulness"), [AtMost(per_point, 1000)], REGISTRY)
+    records = [record("a", scores={"HelpfulnessEvaluator": 0.0}), record("b", scores={"HelpfulnessEvaluator": 0.5})]
+    train = score("c1", records, criteria, SPLITS).train
+    assert train.unavailable["a"][0]["per_point"].startswith("per_point raised ZeroDivisionError")
+    assert train.metrics_by_case["b"]["per_point"] == 200.0
+    # On a crash Helpfulness counts as 0, so the division fails there too: the crash takes share's worst end.
+    share = Derived("share", lambda m: m["output_tokens"] / m["HelpfulnessEvaluator"], range=(0, 100))
+    criteria = Criteria(Maximize("Helpfulness"), [AtMost(share, 50)], REGISTRY)
+    records = [record("a", status=TrialStatus.AGENT_FAILURE), record("b", scores={"HelpfulnessEvaluator": 0.5})]
+    assert score("c1", records, criteria, SPLITS).train.metrics_by_case["a"]["share"] == 100.0
+
+
+def test_a_numeric_crash_score_reaches_a_derived_metric_only_through_the_scores_it_reads():
+    cached = Derived("cached", lambda m: m["cache_read_tokens"] + 0 * m["HelpfulnessEvaluator"], range=(5, None))
+    # 0.0 is outside cached's range, but it is an evaluator score, so only the evaluators' ranges are checked.
+    criteria = Criteria(Maximize("Helpfulness"), [AtMost(cached, 100)], REGISTRY, agent_failure_score=0.0)
+    assert criteria.agent_failure_value("cached") is None
+    records = [record("a", status=TrialStatus.AGENT_FAILURE), record("b", scores={"HelpfulnessEvaluator": 1.0})]
+    train = score("c1", records, criteria, SPLITS).train
+    assert "cached" not in train.metrics_by_case["a"]  # not 0.0, which would make the crash look cheapest
+    assert train.unavailable["a"][0]["cached"] == "cached needs 'cache_read_tokens', which this run has no value of"
+
+
+@pytest.mark.parametrize(
+    ("value", "reason"),
+    [
+        (math.nan, "cost=nan is not a finite number"),
+        (-1.0, "cost=-1.0 is outside its range [0.0, 10.0]; give the Derived metric a range=(low, high)"),
+    ],
+)
+def test_a_derived_value_that_is_not_finite_or_outside_its_range_is_taken_out(value, reason):
+    criteria = Criteria(
+        Minimize(Derived("cost", lambda m: value if m["tokens"] < 150 else 1.0, range=(0, 10))), [], REGISTRY
+    )
+    crashed = record("a", 1, status=TrialStatus.AGENT_FAILURE, tokens=100)  # computed, so not given the worst end
+    train = score("c1", [record("a", tokens=100), crashed, record("b", tokens=200)], criteria, SPLITS).train
+    assert train.unavailable["a"][0]["cost"].startswith(reason) and train.unavailable["a"][1]["cost"].startswith(reason)
+    assert "cost" not in train.metrics_by_case["a"] and not train.is_eligible
+
+
+def test_float_noise_at_a_derived_range_end_is_that_end():
+    criteria = Criteria(Minimize(Derived("left", lambda m: 1 - 0.3 - 0.2 - 0.5, range=(0, 1))), [], REGISTRY)
+    train = score("c1", [record("a"), record("b")], criteria, SPLITS).train
+    assert train.metrics_by_case["a"]["left"] == 0.0 and train.unavailable == {}
+
+
+def test_a_case_keeps_the_derived_value_of_the_runs_that_have_one():
+    cached = Derived("cached", lambda m: m["cache_read_tokens"], range=(0, None))
+    criteria = Criteria(Maximize("Helpfulness"), [AtMost(cached, 100)], REGISTRY)
+    records = [
+        record("a", 0, scores={"HelpfulnessEvaluator": 0.5}, cache_read_tokens=10),
+        record("a", 1, scores={"HelpfulnessEvaluator": 0.5}),
+        record("b", 0, scores={"HelpfulnessEvaluator": 0.5}, cache_read_tokens=30),
+    ]
+    train = score("c1", records, criteria, SPLITS).train
+    assert train.metrics_by_run["a"]["cached"] == [10.0, None]
+    assert train.metrics_by_case["a"]["cached"] == 10.0 and train.is_eligible
+    assert train.unavailable["a"][1]["cached"] == "cached needs 'cache_read_tokens', which this run has no value of"
+
+
+def test_in_tells_a_value_the_run_lacks_and_fails_on_a_name_no_run_has():
+    seen = []
+
+    def has_cache(m):
+        seen.append("cache_read_tokens" in m)
+        return 1.0
+
+    criteria = Criteria(Minimize(Derived("probe", has_cache)), [], REGISTRY)
+    score("c1", [record("a"), record("b", cache_read_tokens=5)], criteria, SPLITS)
+    assert seen == [False, True]
+    typo = Criteria(Minimize(Derived("probe", lambda m: float("cache_reads" in m))), [], REGISTRY)
+    with pytest.raises(ValueError, match="'probe' read 'cache_reads'"):
+        score("c1", [record("a"), record("b")], typo, SPLITS)
+
+
+@pytest.mark.parametrize("returned", ["3", None, True])
+def test_a_derived_function_returning_anything_but_a_number_fails(returned):
+    criteria = Criteria(Minimize(Derived("odd", lambda m: returned)), [], REGISTRY)
+    with pytest.raises(TypeError, match=f"Derived metric 'odd' returned {returned!r}; fn must return a number"):
+        score("c1", [record("a"), record("b")], criteria, SPLITS)
+
+
+def test_an_int_too_large_for_a_float_has_no_value():
+    criteria = Criteria(Minimize(Derived("huge", lambda m: 10**400 if m["tokens"] < 150 else 1)), [], REGISTRY)
+    train = score("c1", [record("a", tokens=100), record("b", tokens=200)], criteria, SPLITS).train
+    assert train.unavailable["a"][0]["huge"].startswith("huge raised OverflowError")
+
+
+@pytest.mark.parametrize(
+    ("fn", "match"),
+    [
+        (lambda m: m["input_tokns"], r"'typo' read 'input_tokns', which is not an evaluator or usage metric"),
+        (lambda m: m.get("cache_read_tokenz", 0), r"'typo' read 'cache_read_tokenz', which is not an evaluator"),
+        (lambda m: 2 * m["cost"], r"'typo' read 'cost', another Derived metric"),
+    ],
+)
+def test_a_derived_metric_reading_a_name_no_run_has_fails(fn, match):
+    criteria = Criteria(Minimize(Derived("typo", fn)), [AtMost(COST, 1)], REGISTRY)
+    with pytest.raises(ValueError, match=match):
+        score("c1", [record("a"), record("b")], criteria, SPLITS)
+
+
+def test_a_key_error_from_the_derived_functions_own_lookup_propagates():
+    prices = {"input_tokens": 0.001}  # output_tokens missing from the user's own table
+    criteria = Criteria(Minimize(Derived("cost", lambda m: sum(prices[k] * m[k] for k in m))), [], REGISTRY)
+    with pytest.raises(KeyError, match="output_tokens"):
+        score("c1", [record("a"), record("b")], criteria, SPLITS)
