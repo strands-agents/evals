@@ -26,7 +26,9 @@ async function goTo(want, force) {
   if (want.session && (!sesMeta || sesMeta.path !== want.session)) await openSession(want.session);
   const opt = want.opt ? OPT_RUNS.findIndex(r => r.id === want.opt) : -1;
   if (opt >= 0 && opt !== optSel) await selectOptimizerRun(opt);
-  const at = want.case ? cases.findIndex(c => c.name === want.case) : -1;
+  /* Unsaved edits may have kept another experiment open: the case is picked only in the one the address names. */
+  const here = want.case && expMeta && expMeta.path === want.experiment;
+  const at = here ? cases.findIndex(c => c.name === want.case) : -1;
   if (at >= 0 && at !== sel) { sel = at; renderForm(); }
   const candidate = want.cand && OPT ? OPT.proposals.find(p => p.candidate_id === want.cand) : null;
   if (candidate && candidate.trials.length && repCand !== candidate.candidate_id) openCandidateReport(candidate);
@@ -75,7 +77,10 @@ async function followAddress() {
   /* Where the address could not be followed (unsaved edits kept, a file that is gone), it is corrected. */
   writeAddress(currentView(), true);
 }
-window.addEventListener('popstate', followAddress);
-window.addEventListener('hashchange', followAddress);
+/* One at a time: a step taken while the one before it is still loading waits its turn. */
+let followed = Promise.resolve();
+const followInTurn = () => { followed = followed.then(followAddress, followAddress); };
+window.addEventListener('popstate', followInTurn);
+window.addEventListener('hashchange', followInTurn);
 
 boot();

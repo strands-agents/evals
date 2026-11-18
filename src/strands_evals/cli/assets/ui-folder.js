@@ -5,7 +5,7 @@
 const SCAN_DEPTH = 3;
 
 function classify(o) {
-  if (!o || typeof o !== 'object' || Array.isArray(o)) return null;
+  if (!isObject(o)) return null;
   if (Array.isArray(o.cases) && Array.isArray(o.evaluators)) return 'experiment';
   if (typeof o.overall_score === 'number' && Array.isArray(o.scores)
       && Array.isArray(o.test_passes) && Array.isArray(o.cases)) return 'report';
@@ -22,12 +22,15 @@ function classify(o) {
 
 /* Same rule as the server's `_stem`: the token only comes off at a separator or the whole name. */
 const stem = n => n.replace(/\.json$/i, '').replace(/(^|[._-])(experiment|exp|report|rep)$/i, '');
+/* The server orders paths by code point, which `localeCompare` does not. */
+const byPath = (a, b) => (a.meta.path < b.meta.path ? -1 : 1);
+const newestFirst = (a, b) => b.meta.modified - a.meta.modified || byPath(a, b);
 
 function reportMeta(obj) {
   const detailed = obj.detailed_results || [], passes = obj.test_passes || [], rows = obj.cases || [];
   let failing = 0, notApplicable = 0;
   rows.forEach((_, i) => {
-    const outs = detailed[i] || [];
+    const outs = Array.isArray(detailed[i]) ? detailed[i] : [];
     const declined = outs.length > 0 && outs.every(o => o && o.label === 'not_applicable' && o.test_pass);
     if (declined) notApplicable++;
     else if (i < passes.length && !passes[i]) failing++;
@@ -49,7 +52,7 @@ function stepsApart(left, right) {
 /* The experiment a report was made from, or null when that cannot be told. Mirrors `experiment_of`
    in `_ui_server.py`: beside it under the same name, else the nearest one holding all its cases. */
 function experimentOf(report, experiments, alone) {
-  const beside = experiments.filter(e => e.dir === report.dir).sort((a, b) => (a.meta.path < b.meta.path ? -1 : 1));
+  const beside = experiments.filter(e => e.dir === report.dir).sort(byPath);
   const named = beside.filter(e => stem(e.meta.name) === stem(report.meta.name));
   if (named.length) return named[0];
   if (alone && beside.length === 1) return beside[0];
@@ -59,13 +62,20 @@ function experimentOf(report, experiments, alone) {
   return closest.length === 1 ? closest[0] : null;
 }
 
+/* Every identifier a case of an experiment can be referred to by: report rows prefer `session_id`,
+   optimizer splits hold whichever the run was given. */
+function caseIds(experiment) {
+  const ids = new Set();
+  for (const c of experiment.cases || []) {
+    if (!c || typeof c !== 'object') continue;
+    for (const key of ['session_id', 'name']) if (c[key] != null) ids.add(String(c[key]));
+  }
+  return ids;
+}
+
 // Same pairing check as the server.
 function linkStatus(expObj, repObj) {
-  const keys = new Set();
-  (expObj.cases || []).forEach(c => {
-    if (c && c.session_id != null) keys.add(String(c.session_id));
-    if (c && c.name != null) keys.add(String(c.name));
-  });
+  const keys = caseIds(expObj);
   const rows = new Set();
   (repObj.cases || []).forEach(r => {
     const k = r && (r.session_id || r.name);
@@ -94,7 +104,7 @@ function readEventLines(text) {
       bad.push({ line: number, why: 'invalid JSON: ' + err.message });
       return;
     }
-    if (event && typeof event === 'object' && !Array.isArray(event)) events.push(event);
+    if (isObject(event)) events.push(event);
     else bad.push({ line: number, why: 'not a JSON object' });
   });
   return { events, bad };
@@ -130,9 +140,6 @@ function logSummary(events) {
   };
 }
 
-/* Two record shapes: the optimizer writes fractions at `split.train` and the drawn names
-   under `split.cases.train`; earlier records put the names at `split.train` directly. */
-
 function tunedAgainst(split, experiments) {
   const wanted = new Set();
   for (const part of ['train', 'validation', 'test']) {
@@ -142,20 +149,14 @@ function tunedAgainst(split, experiments) {
   }
   if (!wanted.size) return null;
 
+  /* The largest overlap wins, and a tie goes to the first path, as in the server's `tuned_against`. */
   let best = null;
-  for (const exp of [...experiments].sort((a, b) => a.meta.path.localeCompare(b.meta.path))) {
-    const expCases = exp.meta.obj.cases || [];
-    /* Counts identifiers in common, the same way the server's `tuned_against` does. */
-    const have = new Set();
-    for (const c of expCases) {
-      if (!c || typeof c !== 'object') continue;
-      for (const k of ['session_id', 'name']) if (c[k] != null) have.add(String(c[k]));
-    }
-    let matched = 0;
-    wanted.forEach(id => { if (have.has(id)) matched++; });
+  for (const exp of [...experiments].sort(byPath)) {
+    const have = caseIds(exp.meta.obj);
+    const matched = [...wanted].filter(id => have.has(id)).length;
     if (matched && (!best || matched > best.matched)) {
       best = {
-        path: exp.meta.path, matched, split_cases: wanted.size, experiment_cases: expCases.length,
+        path: exp.meta.path, matched, split_cases: wanted.size, experiment_cases: exp.meta.obj.cases.length,
         status: matched === wanted.size ? 'verified' : 'partial',
       };
     }
@@ -164,12 +165,31 @@ function tunedAgainst(split, experiments) {
 }
 
 /* An optimizer run is a directory holding both a run.json and an events.jsonl. */
-function optimizerRunsFrom(configs, logs, transcripts, effects) {
-  const runs = [];
-  [...configs.keys()].sort().forEach(dir => {
-    if (!logs.has(dir)) return;
+function runDirs(entries) {
+  const dirsWith = name => new Set(entries.filter(e => e.path.split('/').pop() === name).map(e => dirOf(e.path)));
+  const logs = dirsWith('events.jsonl');
+  return new Set([...dirsWith('run.json')].filter(dir => logs.has(dir)));
+}
+
+/* What a run directory keeps for itself, which the server leaves out of its walk. `effects.json` is read instead. */
+const RUN_OWN_DIRS = ['transcripts', 'candidates', 'front'];
+const RUN_OWN_FILES = ['best.values.json', 'result.json'];
+
+/* `{ run, rest }` when `path` is a run directory's own storage: the run, and the path inside it. */
+function runStorage(path, runs) {
+  for (const run of runs) {
+    const rest = run === '.' ? path : path.startsWith(run + '/') ? path.slice(run.length + 1) : null;
+    if (rest != null && (RUN_OWN_DIRS.some(own => rest.startsWith(own + '/')) || RUN_OWN_FILES.includes(rest.toLowerCase()))) {
+      return { run, rest };
+    }
+  }
+  return null;
+}
+
+function optimizerRunsFrom(configs, logs, transcripts, effects, experiments) {
+  const runs = [...configs.keys()].sort().map(dir => {
     const config = configs.get(dir), log = logs.get(dir);
-    runs.push({
+    return {
       id: dir,
       dir,
       run_id: config.obj.run_id || (dir === '.' ? 'this folder' : dir.slice(dir.lastIndexOf('/') + 1)),
@@ -186,17 +206,16 @@ function optimizerRunsFrom(configs, logs, transcripts, effects) {
       bad_lines: log.bad,
       truncated: false,
       eventsCache: log.events,
-      /* Always a Map for a folder run, even empty: a served run reads transcripts on request. */
-      transcripts: transcripts.get(dir) || new Map(),
+      /* Held as Files: a served run reads a transcript on request instead. */
+      transcripts: transcripts.get(dir),
       fromFolder: true,
       has_effects: effects.has(dir),
-      effectsDoc: (effects.get(dir) || {}).obj || null,
+      effectsDoc: effects.get(dir) || null,
       ...logSummary(log.events),
-      tuned_against: null,          // filled in by the caller, which holds the experiments
-    });
+      tuned_against: tunedAgainst(config.obj.split, experiments),
+    };
   });
-  runs.sort((a, b) => b.modified - a.modified);
-  return runs;
+  return runs.sort((a, b) => b.modified - a.modified);
 }
 
 /* The directories the server's walk leaves out, to the same depth. `rootDepth` is 1 when every path
@@ -207,48 +226,36 @@ function scanned(path, rootDepth) {
   return dirs.length <= SCAN_DEPTH && !dirs.some(d => d.startsWith('.') || SKIPPED_DIRS.includes(d));
 }
 
-/* A run directory's own storage, which the server prunes too. `transcripts/` is held aside below instead. */
-const RUN_OWN_DIRS = ['candidates', 'front'];
-function withoutRunStorage(entries) {
-  const dirsWith = name => new Set(entries.filter(e => e.path.split('/').pop() === name).map(e => dirOf(e.path)));
-  const logs = dirsWith('events.jsonl');
-  const runs = [...dirsWith('run.json')].filter(dir => logs.has(dir)).map(dir => (dir === '.' ? '' : dir + '/'));
-  return entries.filter(e => !runs.some(run => RUN_OWN_DIRS.some(own => e.path.startsWith(run + own + '/'))));
-}
+const UNRECOGNISED = 'not an experiment or a report';
 
 async function ingest(all, rootDepth = 0) {
   /* In path order, so a directory's files are read in the order the server reads them. */
-  const entries = withoutRunStorage(all.filter(e => scanned(e.path, rootDepth)))
+  const entries = all.filter(e => scanned(e.path, rootDepth))
     .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  const found = [];
-  skipped = [];
+  const runs = runDirs(entries);
+  const found = [], skipped = [];
   const stores = new Map();                     // directory -> the saved task results it holds
-  const logs = new Map(), configs = new Map(), transcripts = new Map(), effects = new Map();
-  const owned = [];                             // `best.values.json` and `result.json`, held aside the same way
+  const logs = new Map(), configs = new Map(), effects = new Map();
+  const transcripts = new Map([...runs].map(run => [run, new Map()]));
+  const modified = file => (file.lastModified ? file.lastModified / 1000 : 0);
 
   for (const { file, path } of entries) {
-    /* `transcripts/<hash>.json` belongs to the run directory above it and is kept as a File, unparsed. */
-    const held = /(^|\/)transcripts\/([^/]+)\.json$/i.exec(path);
-    if (held) {
-      const dir = dirOf(dirOf(path));
-      if (!transcripts.has(dir)) transcripts.set(dir, new Map());
-      transcripts.get(dir).set(held[2], file);
+    const own = runStorage(path, runs);
+    if (own) {
+      /* `transcripts/<hash>.json` is kept as a File, unparsed, until a trial that names it is opened. */
+      const held = /^transcripts\/([^/]+)\.json$/i.exec(own.rest);
+      if (held) transcripts.get(own.run).set(held[1], file);
       continue;
     }
-    if (/\.jsonl$/i.test(file.name)) {
-      if (file.name.toLowerCase() !== 'events.jsonl') {
-        skipped.push({ path, why: 'not an optimizer event log' });
-        continue;
-      }
-      const { events, bad } = readEventLines(await file.text());
-      logs.set(dirOf(path), {
-        path, events, bad, size: file.size,
-        modified: file.lastModified ? file.lastModified / 1000 : 0,
-      });
+    const here = dirOf(path), name = file.name.toLowerCase();
+    if (name.endsWith('.jsonl')) {
+      if (name !== 'events.jsonl') skipped.push({ path, why: 'not an optimizer event log' });
+      else if (!runs.has(here)) skipped.push({ path, why: 'no run.json beside it' });
+      else logs.set(here, { path, size: file.size, modified: modified(file), ...readEventLines(await file.text()) });
       continue;
     }
 
-    const text = await file.text(), here = dirOf(path);
+    const text = await file.text();
     /* One result read in full shows the directory is a store; the rest are told by how they open. */
     if (stores.has(here) && TASK_RESULT_HEAD.test(text)) {
       stores.set(here, stores.get(here) + 1);
@@ -256,85 +263,56 @@ async function ingest(all, rootDepth = 0) {
     }
     let obj = null, why = null;
     try { obj = JSON.parse(text); } catch (err) { why = 'invalid JSON: ' + err.message; }
+    if (runs.has(here) && name === 'effects.json') {
+      effects.set(here, obj);
+      continue;
+    }
     const kind = why ? null : classify(obj);
     if (!kind && !why && isTaskResult(obj)) {
       stores.set(here, (stores.get(here) || 0) + 1);
       continue;
     }
-    if (!kind) {
-      /* Hold a run.json aside rather than skipping it: whether it is an optimizer run config
-         depends on a sibling that may not have been read yet. */
-      if (!why && obj && typeof obj === 'object' && file.name.toLowerCase() === 'run.json') {
-        configs.set(dirOf(path), {
-          path, obj, size: file.size,
-          modified: file.lastModified ? file.lastModified / 1000 : 0,
-        });
-        continue;
-      }
-      /* Same hold-aside for `effects.json` and `best.values.json`. */
-      if (!why && obj && file.name.toLowerCase() === 'effects.json') {
-        effects.set(dirOf(path), { path, obj });
-        continue;
-      }
-      if (!why && obj && ['best.values.json', 'result.json'].includes(file.name.toLowerCase())) {
-        owned.push({ path, dir: dirOf(path) });
-        continue;
-      }
-      skipped.push({ path, why: why || 'not an experiment or a report' });
+    if (!kind && runs.has(here) && name === 'run.json' && isObject(obj)) {
+      configs.set(here, { obj, modified: modified(file) });
       continue;
     }
-    const meta = {
-      path, name: file.name, size: file.size,
-      modified: file.lastModified ? file.lastModified / 1000 : 0, obj,
-    };
-    if (kind === 'experiment') Object.assign(meta, { cases: (obj.cases || []).length, evaluators: obj.evaluators || [] });
+    if (!kind) {
+      skipped.push({ path, why: why || UNRECOGNISED });
+      continue;
+    }
+    const meta = { path, name: file.name, size: file.size, modified: modified(file), obj };
+    if (kind === 'experiment') Object.assign(meta, { cases: obj.cases.length, evaluators: obj.evaluators.filter(isObject) });
     else if (kind === 'report') Object.assign(meta, reportMeta(obj));
     else Object.assign(meta, kind === 'session' ? sessionMeta(obj) : diagnosisMeta(obj));
-    found.push({ kind, meta, dir: dirOf(path) });
+    found.push({ kind, meta, dir: here });
   }
 
-  const optimizerRuns = optimizerRunsFrom(configs, logs, transcripts, effects);
-  const experiments = found.filter(f => f.kind === 'experiment');
-  optimizerRuns.forEach(run => {
-    run.tuned_against = tunedAgainst((run.config || {}).split, experiments);
-  });
-  const paired = new Set(optimizerRuns.map(r => r.dir));
-  configs.forEach((config, dir) => {
-    if (!paired.has(dir)) skipped.push({ path: config.path, why: 'not an experiment or a report' });
-  });
-  logs.forEach((log, dir) => {
-    if (!paired.has(dir)) skipped.push({ path: log.path, why: 'no run.json beside it' });
-  });
-  effects.forEach((held, dir) => {
-    if (!paired.has(dir)) skipped.push({ path: held.path, why: 'not an experiment or a report' });
-  });
-  owned.forEach(held => {
-    if (!paired.has(held.dir)) skipped.push({ path: held.path, why: 'not an experiment or a report' });
-  });
-
-  const filesOf = kind => found.filter(f => f.kind === kind)
-    .sort((a, b) => b.meta.modified - a.meta.modified || (a.meta.path < b.meta.path ? -1 : 1));
-  const madeFrom = new Map();
+  const filesOf = kind => found.filter(f => f.kind === kind).sort(newestFirst);
+  const experiments = filesOf('experiment'), made = new Map();
   const reports = filesOf('report').map(r => {
     const alone = found.filter(f => f.kind === 'report' && f.dir === r.dir).length === 1;
     const e = experimentOf(r, experiments, alone);
-    if (e) madeFrom.set(e.meta.path, (madeFrom.get(e.meta.path) || []).concat(r.meta.path));
+    if (e) made.set(e.meta.path, (made.get(e.meta.path) || []).concat(r.meta.path));
     return Object.assign(r.meta, {
       dir: r.dir, experiment: e ? e.meta.path : null, link: e ? linkStatus(e.meta.obj, r.meta.obj) : null,
     });
   });
   return {
-    experiments: filesOf('experiment').map(e =>
-      Object.assign(e.meta, { dir: e.dir, reports: madeFrom.get(e.meta.path) || [] })),
-    reports, optimizerRuns, ...sessionsFrom(found),
+    experiments: experiments.map(e => Object.assign(e.meta, { dir: e.dir, reports: made.get(e.meta.path) || [] })),
+    reports, skipped, ...sessionsFrom(found),
+    optimizerRuns: optimizerRunsFrom(configs, logs, transcripts, effects, experiments),
     stores: [...stores].sort(([a], [b]) => (a < b ? -1 : 1)).map(([dir, files]) => ({ dir, files })),
   };
 }
 
 /* The folder replaces whatever was open, so nothing from before it may stay on screen. */
-async function showFolder(found) {
+async function showFolder(label, entries, rootDepth) {
+  const found = await ingest(entries, rootDepth);
+  folderLabel = label;
+  showingSample = false;
   EXPERIMENTS = found.experiments;
   REPORTS = found.reports;
+  skipped = found.skipped;
   clearExperiment(); clearReport(); closeCandidate(); closeSession();
   setSessions(found);
   renderLists();
@@ -343,6 +321,7 @@ async function showFolder(found) {
 }
 
 async function pickFolder() {
+  if (!await mayDiscard('open a folder')) return;
   if (window.showDirectoryPicker) {
     let dir;
     try { dir = await window.showDirectoryPicker(); } catch { return; }   // cancelled
@@ -357,11 +336,7 @@ async function pickFolder() {
       }
     };
     await walk(dir, '', 0);
-    folderLabel = dir.name;
-    showingSample = false;
-    const found = await ingest(entries);
-    await showFolder(found);
-    return;
+    return showFolder(dir.name, entries);
   }
   // showDirectoryPicker needs a secure context, which file:// is not: fall back to a directory <input>.
   $('dirinput').click();
@@ -372,9 +347,7 @@ app.querySelector('[data-act="pick"]').onclick = pickFolder;
 $('dirinput').onchange = async e => {
   const files = [...e.target.files].filter(f => /\.jsonl?$/i.test(f.name));
   const first = (files[0] && files[0].webkitRelativePath) || '';
-  folderLabel = first.includes('/') ? first.slice(0, first.indexOf('/')) : 'selected folder';
-  showingSample = false;
-  const rooted = first.includes('/') && files.every(f => (f.webkitRelativePath || '').startsWith(folderLabel + '/'));
-  const found = await ingest(files.map(f => ({ file: f, path: f.webkitRelativePath || f.name })), rooted ? 1 : 0);
-  await showFolder(found);
+  const label = first.includes('/') ? first.slice(0, first.indexOf('/')) : 'selected folder';
+  const rooted = first.includes('/') && files.every(f => (f.webkitRelativePath || '').startsWith(label + '/'));
+  await showFolder(label, files.map(f => ({ file: f, path: f.webkitRelativePath || f.name })), rooted ? 1 : 0);
 };

@@ -5,6 +5,7 @@
 
 const app = document.querySelector('.app');
 const $ = id => document.getElementById(id);
+const isObject = v => !!v && typeof v === 'object' && !Array.isArray(v);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const fmt = n => (typeof n === 'number' && isFinite(n)) ? n.toFixed(2) : '—';
 const KB = n => n == null ? '' : (n < 1024 ? n + ' B' : (n / 1024).toFixed(1) + ' KB');
@@ -65,6 +66,17 @@ function diffSeq(a, b) {
   return out;
 }
 
+/** Replace an element's markup without losing the keyboard's place in it: focus goes back to the
+    element of the same tag and data attributes, when there still is one. */
+function redraw(el, html) {
+  const had = el.contains(document.activeElement) ? document.activeElement : null;
+  el.innerHTML = html;
+  if (!had) return;
+  const mark = JSON.stringify(had.dataset);
+  const same = [...el.querySelectorAll(had.localName)].find(x => JSON.stringify(x.dataset) === mark);
+  if (same) same.focus();
+}
+
 /** Fill a picker, keeping `want` chosen if it is still on offer. Returns what ended up chosen.
     A few short choices sit side by side; more, or `asList`, open as a list under a button. */
 function fillPick(id, options, want, asList) {
@@ -105,10 +117,12 @@ function ask(message, yes, no) {
     box.innerHTML = `<div class="ask-card"><p>${esc(message)}</p><div class="ask-acts">`
       + `<button class="btn" data-answer="no">${esc(no)}</button>`
       + `<button class="btn pri" data-answer="yes">${esc(yes)}</button></div></div>`;
+    const asker = document.activeElement;
     const onKey = e => { if (e.key === 'Escape') done(false); };
     const done = answer => {
       box.remove();
       document.removeEventListener('keydown', onKey);
+      asker.focus();
       resolve(answer);
     };
     box.onclick = e => {
@@ -156,29 +170,34 @@ async function api(path, opts) {
 
 /* ══════════ chrome ══════════ */
 
+/* Every view the page has: `show()` knows no other. */
 const SECTION_OF = {
   reports: 'evals', report: 'evals', compare: 'evals', experiments: 'evals', experiment: 'evals',
+  sessions: 'evals', session: 'evals',
   'opt-runs': 'optimization', 'opt-setup': 'optimization', 'opt-overview': 'optimization',
   'opt-progress': 'optimization', 'opt-candidates': 'optimization', 'opt-tunables': 'optimization',
   'opt-trade': 'optimization',
 };
-/* The list a page is opened from: the sidebar marks that, since the page itself is not in it. */
-const listOf = view => view === 'report' ? (repCand ? 'opt-runs' : 'reports')
-  : view === 'compare' ? 'reports'
-  : view === 'experiment' ? 'experiments'
-    : view === 'session' ? 'sessions'
-      : SECTION_OF[view] === 'optimization' ? 'opt-runs' : view;
 const VIEW_NAME = {
-  reports: 'Reports', report: 'Report', compare: 'Compare', experiments: 'Experiments', experiment: 'Cases', 'opt-runs': 'Runs',
+  reports: 'Reports', report: 'Report', compare: 'Compare', experiments: 'Experiments', experiment: 'Cases',
+  sessions: 'Sessions', session: 'Session', 'opt-runs': 'Runs',
   'opt-setup': 'Setup', 'opt-overview': 'Overview', 'opt-progress': 'Progress',
   'opt-candidates': 'Candidates', 'opt-tunables': 'Tunables', 'opt-trade': 'Trade-off',
 };
+/* The list a page is opened from: the sidebar marks that, since the page itself is not in it. */
+const LIST_OF = { report: 'reports', compare: 'reports', experiment: 'experiments', session: 'sessions' };
+const listOf = view => ((view === 'report' && repCand) || SECTION_OF[view] === 'optimization' ? 'opt-runs'
+  : LIST_OF[view] || view);
 /* Reports when there are any, since most folders hold results; a folder of experiments alone opens on those,
    and one of sessions alone on those. */
 const homeView = () => (REPORTS.length ? 'reports' : EXPERIMENTS.length ? 'experiments'
   : sessionRows().length ? 'sessions' : 'reports');
 
+/* Counts the moves between views: a file that arrives after one is not opened over where the page went. */
+let moves = 0;
+
 function show(view, opts) {
+  moves += 1;
   if (!SECTION_OF[view] || (SECTION_OF[view] === 'optimization' && !OPT_RUNS.length)) view = homeView();
   /* A page with nothing open in it is its list. */
   if (view === 'report' && !REP) view = 'reports';
@@ -200,25 +219,15 @@ function show(view, opts) {
   $('folder').hidden = !lists;
   $('skips').hidden = !lists;
   $('stores').hidden = !lists;
-  const run = OPT_RUNS[optSel];
-  const folder = ROOT || folderLabel || 'no folder opened';
-  const where = {
-    reports: folder,
-    experiments: folder,
-    experiment: expMeta && expMeta.path,
-    report: repMeta && repMeta.path,
+  /* The bar names the file behind a page, and the folder behind a list. */
+  const run = OPT_RUNS[optSel] || {};
+  const config = run.dir === '.' ? 'run.json' : `${run.dir}/run.json`, log = run.events_path;
+  $('path').textContent = {
+    report: repMeta && repMeta.path, experiment: expMeta && expMeta.path, session: sesMeta && sesMeta.path,
     compare: `${CMP.length} reports`,
-    sessions: folder,
-    session: sesMeta && sesMeta.path,
-    'opt-runs': folder,
-    'opt-setup': (run && (run.dir === '.' ? 'run.json' : run.dir + '/run.json')) || 'no optimizer run loaded',
-    'opt-tunables': (run && (run.dir === '.' ? 'run.json' : run.dir + '/run.json')) || 'no optimizer run loaded',
-    'opt-overview': (run && run.events_path) || 'no optimizer run loaded',
-    'opt-progress': (run && run.events_path) || 'no optimizer run loaded',
-    'opt-candidates': (run && run.events_path) || 'no optimizer run loaded',
-    'opt-trade': (run && run.events_path) || 'no optimizer run loaded',
-  }[view];
-  $('path').textContent = where;
+    'opt-setup': config, 'opt-tunables': config,
+    'opt-overview': log, 'opt-progress': log, 'opt-candidates': log, 'opt-trade': log,
+  }[view] || ROOT || folderLabel;
   renderPageHead(view);
   renderGuide(view);
   if (opts && opts.silent) return;

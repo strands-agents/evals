@@ -2,9 +2,8 @@
 import { page, runner } from './harness.mjs';
 
 const { ok, done } = runner('standalone');
-const { $, $$, text, click, type, saved, openFolder, openExperiment, openReport, errs } = await page();   // no fetch, so /api/config fails
+const { $, $$, text, click, type, saved, openFolder, openExperiment, openReport, view: on } = await page();   // no fetch, so /api/config fails
 const caseCount = () => $$('#case-list li[data-i]').length;
-const on = () => $('.view.on').id;
 
 // ── boot: the bundled sample ──
 ok(text('.tab.on') === 'Reports' && $$('.view.on').length === 1, 'lands on Reports, the one view showing', text('.tab.on'));
@@ -101,4 +100,4 @@ await click($$('#case-list li[data-i]')[2]);
 ok($$('#form .chips .chip').length === 2 && !!$('#form .chips .addchip'), 'a list of tool names is chips that can be added to',
   $$('#form .chips .chip').length);
 
-done(errs);
+done();

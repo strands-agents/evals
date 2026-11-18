@@ -28,6 +28,10 @@ const FROM_CODE = '<span class="empty" data-tip="No experiment file holds these 
 /* The experiment a report was made from, as its list row and its page header both say it. */
 const madeFrom = r => (r.experiment ? `${openLink('experiment', r.experiment)} ${linkTag(r.link)}` : FROM_CODE);
 
+/* The reports made from an experiment that the folder still holds. */
+const reportsOf = e => e.reports.map(path => REPORTS.find(r => r.path === path)).filter(Boolean);
+const experimentSize = e => `${plural(e.cases, 'case')} · ${plural((e.evaluators || []).length, 'evaluator')}`;
+
 const filed = m => `${m.dir && m.dir !== '.' ? `<span class="dim">${esc(m.dir)} /</span> ` : ''}${esc(m.name)}`
   + `<br><span class="path">${KB(m.size)}</span>`;
 
@@ -35,11 +39,11 @@ function renderLists() {
   $('mode-tag').textContent = MODE === 'server'
     ? (READONLY ? 'served · read-only' : 'served · saves to disk')
     : 'standalone file · saves download';
-  $('mode-tag').className = 'mode ' + (MODE === 'server' ? (READONLY ? 'ro' : 'live') : 'ro');
+  $('mode-tag').className = 'mode ' + (MODE === 'server' && !READONLY ? 'live' : 'ro');
   $('mode-tag').dataset.tip = MODE !== 'server' ? 'Opened without a server, so nothing can be written back. Save downloads a copy.'
     : READONLY ? 'Served with --read-only. Cases can be read but not saved.'
       : 'Served by strands-evals ui. Save writes the experiment file in place.';
-  $('root-path').textContent = ROOT || folderLabel || '';
+  $('root-path').textContent = ROOT || folderLabel;
   const from = MODE === 'server'
     ? `Everything ${DEPTH != null ? DEPTH + ' levels ' : ''}under the directory the CLI was started in.`
     : showingSample
@@ -57,7 +61,7 @@ function renderLists() {
   const nothing = (what, link) => (failed ? '' : blank(`No ${what} here`, MODE === 'server'
     ? `No ${what} JSON under ${esc(ROOT)}. ${link}` : 'Open a folder to look for experiments and reports.'));
 
-  $('reports-rows').innerHTML = failed + (REPORTS.map(r => {
+  redraw($('reports-rows'), failed + (REPORTS.map(r => {
     const open = !repCand && repMeta && repMeta.path === r.path;
     return `<tr class="row${open ? ' on' : ''}" data-report="${esc(r.path)}" tabindex="0">
         <td><label class="pickbox"><input type="checkbox" data-pick="${esc(r.path)}"${cmpPick.has(r.path) ? ' checked' : ''}
@@ -66,17 +70,16 @@ function renderLists() {
       + (r.failing ? ` · <span class="vb fail"><i></i>${r.failing} failing</span>` : '') + `</td>
         <td class="ev">${madeFrom(r)}</td>
         <td class="ev">${when(r.modified)}</td></tr>`;
-  }).join('') || nothing('report', docLink('cli/run/#experiment-file-run', 'empty-reports', 'How to run an experiment')));
+  }).join('') || nothing('report', docLink('cli/run/#experiment-file-run', 'empty-reports', 'How to run an experiment'))));
 
-  $('experiments-rows').innerHTML = failed + (EXPERIMENTS.map(e => {
-    const made = e.reports.map(path => REPORTS.find(r => r.path === path)).filter(Boolean);
-    return `<tr class="row${expMeta && expMeta.path === e.path ? ' on' : ''}" data-experiment="${esc(e.path)}" tabindex="0">
+  redraw($('experiments-rows'), failed + (EXPERIMENTS.map(e =>
+    `<tr class="row${expMeta && expMeta.path === e.path ? ' on' : ''}" data-experiment="${esc(e.path)}" tabindex="0">
         <td>${filed(e)}</td>
-        <td class="ev">${plural(e.cases, 'case')} · ${plural((e.evaluators || []).length, 'evaluator')}</td>
-        <td class="ev">${made.map(r => `${openLink('report', r.path, r.name)} ${fmt(r.overall_score)}`).join('<br>')
+        <td class="ev">${experimentSize(e)}</td>
+        <td class="ev">${reportsOf(e).map(r => `${openLink('report', r.path, r.name)} ${fmt(r.overall_score)}`).join('<br>')
           || '<span class="empty">not run yet</span>'}</td>
-        <td class="ev">${when(e.modified)}</td></tr>`;
-  }).join('') || nothing('experiment', docLink('quickstart/#run-your-first-evaluation', 'empty-experiments', 'Create your first experiment')));
+        <td class="ev">${when(e.modified)}</td></tr>`).join('')
+    || nothing('experiment', docLink('quickstart/#run-your-first-evaluation', 'empty-experiments', 'Create your first experiment'))));
 
   $('skips').innerHTML = skipped.length
     ? `<details class="skips"><summary>${plural(skipped.length, 'file')} skipped</summary><ul>`
@@ -86,8 +89,6 @@ function renderLists() {
   renderComparePick();
   renderPageHead(currentView());
 }
-
-app.querySelectorAll('[data-act="rescan"]').forEach(b => { b.onclick = () => rescan(true); });
 
 /* ══════════ reading the folder, and opening what is in it ══════════ */
 
@@ -129,12 +130,29 @@ function openFailed(path, err) {
   show(homeView());
 }
 
+/* A file's document, or null when it would not load or the page moved on while it did. */
+async function documentToOpen(meta) {
+  const from = moves;
+  try {
+    const doc = await document_for(meta);
+    return moves === from ? doc : null;
+  } catch (err) {
+    if (moves === from) openFailed(meta.path, err);
+    return null;
+  }
+}
+
+/* Whether the open experiment's unsaved edits may be dropped: asked in the page when there are any. */
+async function mayDiscard(doing) {
+  const dirty = countDirty();
+  return !dirty || ask(`${plural(dirty, 'unsaved change')} will be lost if you ${doing}.`, 'Discard and open', 'Stay');
+}
+
 /** Open one report on its own page. The experiment editor, and any edits in it, are left alone. */
 async function openReport(path) {
   const meta = REPORTS.find(r => r.path === path);
-  if (!meta) return;
-  let doc;
-  try { doc = await document_for(meta); } catch (err) { return openFailed(path, err); }
+  const doc = meta && await documentToOpen(meta);
+  if (!doc) return;
   closeCandidate();
   loadReport(meta, doc);
   scanError = '';
@@ -146,14 +164,12 @@ async function openReport(path) {
 async function openExperiment(path, opts) {
   const meta = EXPERIMENTS.find(e => e.path === path);
   if (!meta) return;
+  const force = opts && opts.force;
   /* Opening the one already open again would re-read it from disk and drop unsaved edits. */
-  if (expMeta && expMeta.path === path && !(opts && opts.force)) return show('experiment');
-  const dirty = countDirty();
-  if (!(opts && opts.force) && dirty
-      && !await ask(`${dirty} unsaved ${dirty === 1 ? 'change' : 'changes'} will be lost if you open another experiment.`,
-        'Discard and open', 'Stay')) return;
-  let doc;
-  try { doc = await document_for(meta); } catch (err) { return openFailed(path, err); }
+  if (expMeta && expMeta.path === path && !force) return show('experiment');
+  if (!force && !await mayDiscard('open another experiment')) return;
+  const doc = await documentToOpen(meta);
+  if (!doc) return;
   loadExperiment(meta, doc);
   scanError = '';
   renderLists();

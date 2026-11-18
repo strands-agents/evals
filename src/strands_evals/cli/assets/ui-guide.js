@@ -4,7 +4,6 @@
    term is written here once, beside the documentation page that says more. */
 
 const DOCS = 'https://strandsagents.com/docs/user-guide/evals-sdk/';
-const REPO = 'https://github.com/strands-agents/evals';
 /* Campaign tags in the form the Strands site's analytics reads. `utm_content` names the placement. */
 const CAMPAIGN = 'utm_source=strands-evals-ui&utm_medium=product&utm_campaign=evals-ui';
 
@@ -30,6 +29,9 @@ const TERMS = {
   pairing: ['Pairing', 'A report is matched to an experiment beside it with the same name, or else to the nearest one holding all its cases. Verified means every case in the report is in that experiment.', 'how-to/serialization/'],
   overall: ['Overall score', 'The mean score over every row that applied. Rows an evaluator marked not applicable are left out.', 'how-evaluation-works/#the-levels-an-evaluator-scores-at'],
   draft: ['Draft', 'A case whose metadata says status: draft. Review drafts steps through them so each can be accepted or dropped.', 'how-to/experiment_management/#using-metadata-for-organization'],
+  session: ['Session', 'Everything recorded for one conversation with an agent: one or more traces, saved as a file.', 'how-evaluation-works/#what-an-evaluation-is-made-of'],
+  trace: ['Trace', 'One run of the agent inside a session, made of spans: each agent invocation, model call and tool call.', 'how-evaluation-works/#what-an-evaluation-is-made-of'],
+  diagnosis: ['Diagnosis', 'What the detectors found in a session: the spans where something failed, and the root cause behind each.', 'detectors/'],
   iteration: ['Iteration', 'One round of the search: candidates are proposed, run on the training cases, and ranked.', ''],
   constraint: ['Constraint', 'A limit a candidate has to stay within, such as a token budget. One that does not is infeasible.', ''],
   budget: ['Budget', 'The most rollouts or iterations the run was allowed to spend before it had to stop.', ''],
@@ -152,6 +154,25 @@ const VIEW_GUIDE = {
     terms: ['report', 'verdict', 'not_applicable'],
     links: [['cli/run/#experiment-file-run', 'Running an experiment'], ['cli/report/', 'The report command']],
   },
+  sessions: {
+    steps: [
+      'Each row is a <b>session</b>: the recorded traces of one conversation, saved with <code>strands-evals fetch ... -o FILE</code> or from code.',
+      'Select a row to read it, one trace after another.',
+      'A <b>diagnosis</b> shows on the page of the session it was made from. One whose session is not in this folder is listed here on its own.',
+    ],
+    terms: ['session', 'trace', 'diagnosis'],
+    links: [['cli/', 'CLI reference'], ['detectors/', 'Diagnosing failures']],
+  },
+  session: {
+    steps: [
+      'Read it top to bottom. Each <b>trace</b> has its own heading and what it cost; the time between traces is not counted.',
+      'A trace with several agent invocations is split into turns: the prompt and the reply first, then the model and tool calls behind them.',
+      'No diagnosis yet? Make one, then Rescan: <code>strands-evals diagnose FILE -o NAME.diagnosis.json</code>',
+      '<b>Copy as Markdown</b> at the top copies the session and its diagnoses as text for a coding agent.',
+    ],
+    terms: ['session', 'trace', 'diagnosis'],
+    links: [['detectors/', 'Diagnosing failures'], ['cli/', 'CLI reference']],
+  },
   'opt-runs': {
     steps: [
       'Each row is one optimizer run in this folder: what it achieved, the configuration it picked, and why it stopped.',
@@ -215,15 +236,12 @@ const guideWanted = () => document.cookie.split('; ').includes(`${GUIDE_KEY}=on`
 /** Fill the guide panel for a view: what to do there, the terms it uses, and where the docs say more. */
 function renderGuide(view) {
   const guide = VIEW_GUIDE[view];
-  if (!guide) return;
-  const terms = (guide.terms || []).map(key =>
-    `<dt>${esc(TERMS[key][0])}</dt><dd>${esc(TERMS[key][1])}</dd>`).join('');
+  const terms = guide.terms.map(key => `<dt>${esc(TERMS[key][0])}</dt><dd>${esc(TERMS[key][1])}</dd>`).join('');
   const links = (guide.links || [['', 'Evals documentation']]).map(([path, label]) =>
     docLink(path, `guide-${view}`, label)).join('');
   $('guide-body').innerHTML = `<h2>${esc(VIEW_NAME[view])}</h2>`
     + `<ol>${guide.steps.map(step => `<li>${step}</li>`).join('')}</ol>`
-    + (terms ? `<dl>${terms}</dl>` : '')
-    + `<p class="guide-links">${links}</p>`;
+    + `<dl>${terms}</dl><p class="guide-links">${links}</p>`;
 }
 
 function setGuide(on) {
@@ -260,7 +278,7 @@ function helpFor(kind, key) {
     };
   }
   if (kind === 'setting') {
-    const [type, name] = key.split('.');
+    const [type, name] = key.split(/\.(.*)/s);
     const known = ((EVALUATOR_INFO[type] || {}).settings || []).find(s => s.name === name);
     const state = known ? (known.required ? 'Required.' : `Default: ${known.default}.`) : '';
     if (!SETTING_GUIDE[name] && !state) return null;
@@ -311,7 +329,7 @@ app.addEventListener('click', e => {
   if (e.target.closest('[data-guide-toggle], [data-guide-close]')) {
     const on = app.dataset.guide !== 'on';
     setGuide(on);
-    document.cookie = `${GUIDE_KEY}=${on ? 'on' : 'off'}; path=/; max-age=31536000; SameSite=Lax`;
+    remember(GUIDE_KEY, on ? 'on' : 'off');
     /* The content column just changed width, and charts are drawn to the width they have. */
     if (REP) renderReportCharts();
     if (OPT) renderOptimization();

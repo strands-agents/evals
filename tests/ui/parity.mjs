@@ -1,14 +1,11 @@
 /* The server's discovery (`_ui_server.py`) and the page's no-server folder reader (`ui-folder.js`)
  * are two implementations of one contract. This runs both over the same tree and compares them. */
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { page, runner } from './harness.mjs';
+import { page, realServer, runner } from './harness.mjs';
 
 const { ok, done } = runner('parity');
-const PY = process.env.PYTHON || 'python3';
 const TOKEN = 'parity-token';
 const FIXTURE = new URL('./fixtures/optimizer-run/', import.meta.url).pathname;
 
@@ -58,12 +55,16 @@ const TREE = {
   'tie/right/e.json': experiment('t1'),
   'tie/shared.report.json': report(['t1']),
   'split-source/experiment.json': experiment('train_case_01', 'train_case_02', 'val_case_01', 'test_case_01'),
+  'Zsplit/experiment.json': experiment('train_case_01', 'train_case_02', 'val_case_01', 'test_case_01'),
+  'odd/experiment.json': { cases: cases('odd1'), evaluators: ['not an object', { evaluator_type: 'OutputEvaluator', rubric: 'r' }] },
+  'odd/report.json': { ...report(['odd1']), detailed_results: ['not a list'] },
   'recorded/any-name.json': session('s1', [span('a', 0, 1.2345), span('b', 2, 3.5)], [span('c', 600, 600.25)], []),
   'recorded/s1.diagnosis.json': diagnosis('s1'),
   'recorded/untimed.json': session('s2', [{ span_type: 'inference', messages: [] }]),
   'recorded/elsewhere/s9.diagnosis.json': diagnosis('s9'),
   'recorded/causes.json': { root_causes: [{ failure_span_id: 'a', location: 'b' }] },
   'recorded/no-spans.session.json': { session_id: 's3', traces: [{ trace_id: 't' }] },
+  'elsewhere/transcripts/s4.json': session('s4', [span('a', 0, 1)]),
   'twice/left/s.json': session('twin', [span('a', 0, 1)]),
   'twice/right/s.json': session('twin', [span('a', 0, 1)]),
   'twice/twin.diagnosis.json': diagnosis('twin'),
@@ -89,8 +90,10 @@ for (const [rel, content] of Object.entries(TREE)) {
 fs.cpSync(FIXTURE, path.join(root, 'tuning'), { recursive: true });
 fs.writeFileSync(path.join(root, 'tuning/result.json'), JSON.stringify({ champion: 'c10' }));
 fs.writeFileSync(path.join(root, 'tuning/best.values.json'), JSON.stringify({ temperature: 0.2 }));
-fs.mkdirSync(path.join(root, 'tuning/candidates/c1'), { recursive: true });
-fs.writeFileSync(path.join(root, 'tuning/candidates/c1/agent.json'), JSON.stringify({ copied: true }));
+for (const own of ['candidates/c1/agent.json', 'front/c1.json']) {
+  fs.mkdirSync(path.dirname(path.join(root, 'tuning', own)), { recursive: true });
+  fs.writeFileSync(path.join(root, 'tuning', own), JSON.stringify({ copied: true }));
+}
 
 /* What a folder picker hands the page: every .json and .jsonl under the root. */
 const picked = {};
@@ -102,15 +105,7 @@ const picked = {};
   }
 })(root);
 
-const port = await new Promise(resolve => {
-  const probe = net.createServer();
-  probe.listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); });
-});
-const proc = spawn(PY, [new URL('./serve.py', import.meta.url).pathname, root, String(port), TOKEN], { stdio: ['ignore', 'pipe', 'inherit'] });
-await new Promise((resolve, reject) => {
-  proc.stdout.on('data', chunk => String(chunk).includes('ready') && resolve());
-  proc.on('exit', code => reject(new Error('server exited ' + code)));
-});
+const { base, stop } = await realServer(root, TOKEN);
 
 /* Only what both sides decide. Sizes, mtimes and in-memory documents differ by construction. */
 const pick = (obj, keys) => obj && Object.fromEntries(keys.map(k => [k, obj[k] === undefined ? null : obj[k]]));
@@ -136,7 +131,7 @@ const normalize = ({ experiments, reports, skipped, optimizer, sessions, diagnos
 });
 
 try {
-  const served = await (await fetch(`http://127.0.0.1:${port}/api/scan`, { headers: { 'X-Evals-Token': TOKEN } })).json();
+  const served = await (await fetch(`${base}/api/scan`, { headers: { 'X-Evals-Token': TOKEN } })).json();
   const p = await page();
   await p.openFolder(picked);
   const folder = JSON.parse(p.window.eval('JSON.stringify({ experiments: EXPERIMENTS, reports: REPORTS, skipped, optimizer: OPT_RUNS,'
@@ -174,8 +169,8 @@ try {
       }
     }
   }
-  done(p.errs);
+  done();
 } finally {
-  proc.kill();
+  stop();
   fs.rmSync(root, { recursive: true, force: true });
 }

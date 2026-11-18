@@ -1,4 +1,6 @@
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import net from 'node:net';
 import { JSDOM } from 'jsdom';
 
 const ASSET = process.env.UI_HTML
@@ -11,7 +13,7 @@ const HTML = fs.readFileSync(ASSET, 'utf8')
   .replace(/<script src="([\w.-]+)"><\/script>/g, (_, name) => `<script>\n${beside(name)}</script>`);
 
 /** A File stand-in: jsdom cannot build a real FileList, and only `text()` is used. */
-export class FakeFile {
+class FakeFile {
   constructor(path, text) {
     this.webkitRelativePath = path;
     this.name = path.split('/').pop();
@@ -22,8 +24,9 @@ export class FakeFile {
   async text() { return this._t; }
 }
 
-/* Every window built, closed when the suite reports: a served page polls on a timer, which would keep Node alive. */
-const WINDOWS = [];
+/* Every page built. When the suite reports, each one's errors count against it and its window is closed:
+   a served page polls on a timer, which would keep Node alive. */
+const PAGES = [];
 
 export const tick = (n = 3) => new Promise(resolve => setTimeout(resolve, n * 5));
 
@@ -68,7 +71,6 @@ export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok', to
     },
   });
   const { window } = dom;
-  WINDOWS.push(window);
   window.addEventListener('error', e => errs.push(String((e.error && e.error.message) || e.error)));
   const d = window.document;
   await tick();
@@ -89,6 +91,18 @@ export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok', to
       const el = typeof s === 'string' ? d.querySelector(s) : s;
       el.value = value;
       el.dispatchEvent(new window.Event('input', { bubbles: true }));
+      await tick();
+    },
+    /** The view that is showing, as its element's id. */
+    view: () => d.querySelector('.view.on').id,
+    /** Go Back or Forward by `delta` steps, and let the page follow. */
+    travel: async delta => {
+      window.history.go(delta);
+      await tick(6);
+    },
+    /** Ask the server whether the folder changed, as the page's timer does. */
+    poll: async () => {
+      await window.pollNow();
       await tick();
     },
     /** Open an experiment's cases from the Experiments list: the first, or the one whose row says `match`. */
@@ -127,6 +141,7 @@ export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok', to
       await tick();
     },
   };
+  PAGES.push(api);
   return api;
 }
 
@@ -155,6 +170,24 @@ export function fakeServer({ config = { root: '/served', depth: 3, read_only: fa
   return Object.assign(fetchImpl, { sent });
 }
 
+/** Start the real server over `root` on a port the OS says is free: `{ base, stop }` once it is listening. */
+export async function realServer(root, token) {
+  const port = await new Promise(resolve => {
+    const probe = net.createServer();
+    probe.listen(0, '127.0.0.1', () => {
+      const { port } = probe.address();
+      probe.close(() => resolve(port));
+    });
+  });
+  const proc = spawn(process.env.PYTHON || 'python3',
+    [new URL('./serve.py', import.meta.url).pathname, root, String(port), token], { stdio: ['ignore', 'pipe', 'inherit'] });
+  await new Promise((resolve, reject) => {
+    proc.stdout.on('data', chunk => String(chunk).includes('ready') && resolve());
+    proc.on('exit', code => reject(new Error('server exited ' + code)));
+  });
+  return { base: `http://127.0.0.1:${port}`, stop: () => proc.kill() };
+}
+
 export function runner(name) {
   let fail = 0, pass = 0;
   const ok = (cond, msg, extra) => {
@@ -162,9 +195,11 @@ export function runner(name) {
   };
   return {
     ok,
-    done(errs) {
-      WINDOWS.forEach(window => window.close());
-      if (errs && errs.length) { console.log('page errors:', errs); fail += errs.length; }
+    /** Report the suite. An error on any page it built fails it. */
+    done() {
+      const errs = PAGES.flatMap(p => p.errs);
+      PAGES.forEach(p => p.window.close());
+      if (errs.length) { console.log('page errors:', errs); fail += errs.length; }
       console.log(`${fail ? 'FAILED' : 'ok'}  ${name}: ${pass} passed${fail ? `, ${fail} failed` : ''}`);
       if (fail) process.exitCode = 1;
     },

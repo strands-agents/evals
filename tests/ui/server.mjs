@@ -1,15 +1,11 @@
 /* Served mode against the real Python server: the page's requests go out over HTTP to
    `strands-evals ui`, so the contract is tested rather than a mock of it. */
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { page, runner, waitFor } from './harness.mjs';
+import { page, realServer, runner, waitFor } from './harness.mjs';
 
-const PY = process.env.PYTHON || 'python3';
 const TOKEN = 'test-token-abc';
-const SERVE = new URL('./serve.py', import.meta.url).pathname;
 const { ok, done } = runner('server');
 
 // ── a tree with one paired run, one bare experiment, two unusable files and an optimizer run ──
@@ -47,21 +43,7 @@ fs.writeFileSync(path.join(root, 'half-written.json'), '{"cases": [');
 fs.cpSync(new URL('./fixtures/optimizer-run/', import.meta.url).pathname, path.join(root, 'tuning'),
   { recursive: true });
 
-// ── the real server, on a port the OS says is free ──
-const port = await new Promise(resolve => {
-  const probe = net.createServer();
-  probe.listen(0, '127.0.0.1', () => {
-    const { port } = probe.address();
-    probe.close(() => resolve(port));
-  });
-});
-const proc = spawn(PY, [SERVE, root, String(port), TOKEN], { stdio: ['ignore', 'pipe', 'inherit'] });
-await new Promise((resolve, reject) => {
-  proc.stdout.on('data', chunk => String(chunk).includes('ready') && resolve());
-  proc.on('exit', code => reject(new Error('server exited ' + code)));
-  setTimeout(() => reject(new Error('server did not start')), 10000);
-});
-const base = `http://127.0.0.1:${port}`;
+const { base, stop } = await realServer(root, TOKEN);
 // jsdom has no fetch: forward the page's relative requests to the real server.
 const requested = [];
 const forward = async (url, opts = {}) => { requested.push(String(url)); return fetch(base + url, opts); };
@@ -74,7 +56,7 @@ const served = async (route = '/') => {
 
 try {
   const p = await served();
-  const { $, $$, text, click, type, window, errs } = p;
+  const { $, $$, text, click, type, window } = p;
 
   // ── mode, and the discovery the server did ──
   ok(/served · saves to disk/.test(text('#mode-tag')) && text('.tab.on') === 'Reports',
@@ -283,7 +265,7 @@ try {
   const nested = () => live.text('#experiments-rows tr.row[data-experiment="nested/experiment.json"]');
   const seen = () => [live.$$('#opt-cands tr.trial').length, !!live.$('#opt-cands tr.tdetail .msg'), /not run yet/.test(nested())];
   asked.length = 0;
-  await live.window.pollNow();
+  await live.poll();
   ok(asked.join() === '/api/changes' && String(seen()) === '15,true,true',
     'a poll over an unchanged folder asks the server one thing and changes nothing', `${asked.join()} | ${seen()}`);
 
@@ -292,14 +274,14 @@ try {
   late.record.case_name = 'late_case';
   fs.appendFileSync(path.join(root, 'tuning/events.jsonl'), JSON.stringify(late) + '\n');
   fs.writeFileSync(path.join(root, 'nested/report.json'), JSON.stringify(report));
-  await live.window.pollNow();
+  await live.poll();
   const written = live.text('#reports-rows tr.row[data-report="nested/report.json"]') || '';
   ok(String(seen()) === '16,true,false' && /report\.json 0\.50/.test(nested()) && /2 rows/.test(written) && /nested\/experiment\.json/.test(written),
     'a trial appended to the log and a report written beside an experiment both show on the next poll, '
     + 'with the open transcript still open', `${seen()} | ${nested()} | ${written}`);
 
-  done(errs.concat(direct.errs, onCase.errs, picking.errs, linked.errs, live.errs));
+  done();
 } finally {
-  proc.kill();
+  stop();
   fs.rmSync(root, { recursive: true, force: true });
 }

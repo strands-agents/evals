@@ -91,8 +91,8 @@ h2, .chart h3, .pane > header .t, .hero .big, .stat .v, .winner .wid {
 .bar .path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Links out to the docs, set like the site's own navigation. */
 .navlinks { display: flex; gap: 26px; margin-left: 14px; }
-.navlinks a, .nav-foot a { color: var(--ink1); text-decoration: none; }
-.navlinks a { font: 500 14px var(--mono); letter-spacing: .02em; }
+.navlinks a, .nav-foot a { text-decoration: none; }
+.navlinks a { color: var(--ink1); font: 500 14px var(--mono); letter-spacing: .02em; }
 .navlinks a:hover, .nav-foot a:hover { color: var(--accent); }
 .navicon { display: inline-flex; flex: none; color: var(--ink1); }
 .navicon svg { width: 20px; height: 20px; }
@@ -151,7 +151,6 @@ h2, .chart h3, .pane > header .t, .hero .big, .stat .v, .winner .wid {
 .borrowed .btn { margin-left: auto; flex: none; }
 .source { margin: -10px 0 18px; }
 .path { color: var(--ink3); font-size: 12.5px; }
-.path b { color: var(--ink2); font-weight: 500; }
 
 main { grid-area: main; min-width: 0; max-width: 1120px; padding: 40px 44px 72px; }
 .view { display: none; }
@@ -184,8 +183,9 @@ h2 { font-size: 24px; font-weight: 600; margin: 0 0 8px; letter-spacing: .01em; 
 .count { color: var(--ink3); font-size: 12px; padding: 10px 10px 0; }
 
 .pane { background: var(--card); border: 1px solid var(--edge); border-radius: var(--r); }
+/* The case's actions share its header with its name and id, and go under them when there is no room. */
 .pane > header {
-  display: flex; align-items: center; gap: 10px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px;
   padding: 16px 22px; border-bottom: 1px solid var(--hair);
 }
 .pane > header .t { font-weight: 600; font-size: 13.5px; }
@@ -346,18 +346,16 @@ tr.detail td { background: var(--hair2); }
 .kv dd.m { font-family: var(--mono); font-size: 12.5px; }
 .del { color: var(--bad); }
 .ins { color: var(--good); }
-/* runs picker + evaluators strip */
+/* ── the evaluators strip, and the rows of a list ── */
 .evs { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 24px; min-width: 0; max-width: 100%; }
+/* One line, however long a rubric is: the whole value is in the form the chip opens. */
 .evchip {
-  display: inline-flex; align-items: baseline; gap: 8px; padding: 5px 12px;
+  display: inline-flex; align-items: baseline; gap: 8px; max-width: min(100%, 620px); padding: 5px 12px;
   border: 1px solid var(--line); border-radius: 999px; background: var(--card); font-size: 12.5px;
 }
-.evchip b { font-weight: 600; }
-.evchip .t, .evchip .c { color: var(--ink2); }
-/* One line, however long a rubric is: the whole value is in the form the chip opens. */
-.evchip { max-width: min(100%, 620px); }
-.evchip b, .evchip .t { flex: none; }
-.evchip .c { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.evchip b { flex: none; font-weight: 600; }
+.evchip .t { flex: none; color: var(--ink2); }
+.evchip .c { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink2); }
 .evchip .ck { color: var(--ink1); font-weight: 550; }
 tr.run, tr.row { cursor: pointer; }
 tr.run:hover td, tr.run.on td, tr.row:hover td, tr.row.on td { background: var(--hair2); }
@@ -378,10 +376,9 @@ a[data-report]:hover, a[data-experiment]:hover { color: var(--accent); border-bo
 .caret.open { transform: rotate(90deg); }
 tr.case:hover .caret, tr.trial:hover .caret { color: var(--ink1); }
 
-/* ── additions: provenance, skipped files, narrow screens ── */
-/* The folder being read, over both lists. */
+/* ── the folder line, the page header, tags and skipped files ── */
+/* The folder being read, over the lists. */
 .folder { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 28px; }
-.folder .grow { flex: 1; }
 /* The page header: what is open, where it came from, and the views that belong to it. */
 .pagehead { margin: 0 0 28px; padding-bottom: 16px; border-bottom: 1px solid var(--hair); }
 .crumbs { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font: 13px var(--mono); color: var(--ink3); }
@@ -433,7 +430,7 @@ details.skips code { font-family: var(--mono); color: var(--ink2); }
 .evform .hint { margin-top: 8px; }
 .evform label { font-size: 12.5px; color: var(--ink2); font-weight: 550; }
 .evform input.f { font-size: 13px; max-width: 420px; }
-.evform textarea.f { font-size: 13px; resize: vertical; min-height: 64px; }
+.evform textarea.f { font-size: 13px; min-height: 64px; }
 .evform .evlab.top { align-self: start; padding-top: 9px; }
 .evform input[type="checkbox"].f { width: auto; max-width: none; }
 .more {
@@ -444,8 +441,7 @@ details.skips code { font-family: var(--mono); color: var(--ink2); }
 .reload { margin-left: 8px; }
 .scroll { overflow-x: auto; }
 
-/* optimization */
-/* ── the champion, at a glance ── */
+/* ── optimization: the champion, at a glance ── */
 .champ {
   display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px 36px; align-items: center;
   margin: 0 0 22px; padding: 24px 28px; border: 1px solid var(--edge); border-radius: 14px;
@@ -547,12 +543,12 @@ button.rmore:hover { color: var(--ink1); }
 .setting .tag { margin-left: 8px; }
 .setting .inline { color: var(--ink2); margin-top: 4px; }
 .setting .inline .was { color: var(--ink3); text-decoration: line-through; }
-.setting pre {
-  margin: 6px 0 2px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--hair);
+/* A block of text as it was recorded: a setting's value, a trial's output, a file. */
+.setting pre, .trial-panel pre.out, .trace pre.out {
+  padding: 8px 10px; background: var(--bg); border: 1px solid var(--hair);
   border-radius: 7px; font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
 }
-.setting pre .del { color: var(--bad); }
-.setting pre .ins { color: var(--good); }
+.setting pre { margin: 6px 0 2px; }
 .setting pre .same { color: var(--ink3); }
 .wacts { display: flex; gap: 10px; align-items: center; margin-top: 14px; flex-wrap: wrap; }
 .wacts .said { font-size: 12px; color: var(--ink3); }
@@ -568,16 +564,12 @@ button.rmore:hover { color: var(--ink1); }
 .methodline code {
   font-family: var(--mono); font-size: 11.5px; color: var(--ink1);
 }
-.chead2 + .sub { margin-bottom: 14px; }
 table.trials { width: 100%; border-collapse: collapse; margin: 4px 0 2px; }
 table.trials td { padding: 4px 10px 4px 0; border-bottom: 1px solid var(--hair2); vertical-align: top; }
 table.trials tr:last-child td { border-bottom: 0; }
 .kv.wide { grid-template-columns: 196px 1fr; gap: 14px 22px; margin: 8px 0 0; }
-.kv.wide dt { color: var(--ink2); }
-.kv.wide dd { margin: 0; color: var(--ink1); }
-.kv.wide dd.m {
-  font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere;
-}
+.kv.wide dd { color: var(--ink1); }
+.kv.wide dd.m { font-size: 12px; overflow-wrap: anywhere; }
 .kv.wide dd .path { display: block; margin-top: 2px; }
 .charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; margin: 8px 0 28px; }
 .charts .wide { grid-column: 1 / -1; }
@@ -640,7 +632,7 @@ details.drawer .scroll { margin-bottom: 14px; }
 .chart .cap { margin: 0 0 18px; font-size: 11.5px; color: var(--ink3); line-height: 1.6; max-width: 92ch; }
 /* Chart geometry estimates label widths in the sans face; only tick and axis classes opt into mono. */
 .chart svg { display: block; width: 100%; height: auto; overflow: visible; font-family: var(--sans); }
-.chart .empty { font-size: 12px; color: var(--ink3); padding: 18px 0 22px; }
+.chart .empty { font-size: 12px; padding: 18px 0 22px; }
 .ax { stroke: var(--hair); stroke-width: 1; }
 .grid-l { stroke: var(--hair2); stroke-width: 1; }
 .plot { fill: none; stroke: var(--hair); stroke-width: 1; }
@@ -680,12 +672,13 @@ details.drawer .scroll { margin-bottom: 14px; }
 .legend .hollow { background: var(--bg); border: 1.5px solid var(--ink2); }
 .legend .shade { background: var(--ink1); opacity: .14; border-radius: 2px; }
 .legend .feasible { background: var(--ink2); }
-.legend .completed { background: var(--good); }
 .legend .infeasible { background: var(--bg); border: 2px solid var(--bad); }
-.legend .agent_failure { background: var(--bad); }
 .legend .ineligible { background: var(--bg); border: 1.5px dashed var(--ink3); }
-.legend .infrastructure_invalid, .legend .other { background: var(--ink3); }
-.legend .evaluator_invalid { background: var(--warn); }
+/* How a trial ended, in a legend and in the bar it explains. */
+.legend .completed, .bars .completed { background: var(--good); }
+.legend .agent_failure, .bars .agent_failure { background: var(--bad); }
+.legend .evaluator_invalid, .bars .evaluator_invalid { background: var(--warn); }
+.legend .infrastructure_invalid, .legend .other, .bars .infrastructure_invalid, .bars .other { background: var(--ink3); }
 .legend .champion { background: var(--accent); }
 .legend .dot { background: var(--ink2); }
 .legend .pass, .legend .up { background: var(--good); }
@@ -710,15 +703,11 @@ details.drawer .scroll { margin-bottom: 14px; }
 .cell.fail { fill: var(--bad); }
 .cell.na { fill: var(--track); }
 .cell.hot { stroke: var(--ink1); stroke-width: 1.5; }
-.chart [data-row] { cursor: pointer; }
-/* Focus shows as the hover state does: the row lit, the cell outlined. */
-.chart [data-row]:focus { outline: none; }
+/* A mark that opens something. Focus shows as the hover state does: the row lit, the cell or point outlined. */
+.chart [data-row], .chart [data-cmp-row], .chart [data-cand] { cursor: pointer; }
+.chart [data-row]:focus, .chart [data-cmp-row]:focus, .pt:focus { outline: none; }
 .bars { display: flex; height: 26px; border-radius: 6px; overflow: hidden; border: 1px solid var(--hair); }
 .bars span { display: block; height: 100%; }
-.bars .completed { background: var(--good); }
-.bars .agent_failure { background: var(--bad); }
-.bars .evaluator_invalid { background: var(--warn); }
-.bars .infrastructure_invalid, .bars .other { background: var(--ink3); }
 .optnote { font-size: 12px; color: var(--ink2); margin: 10px 0 0; line-height: 1.5; }
 .optnote.warn { color: var(--warn); }
 
@@ -731,11 +720,7 @@ tr.tdetail > td { padding: 0 0 10px !important; }
   font-family: var(--sans);
 }
 .trial-panel .kv { grid-template-columns: 112px 1fr; }
-.trial-panel pre.out, .trace pre.out {
-  margin: 0; padding: 8px 10px; background: var(--bg); border: 1px solid var(--hair);
-  border-radius: 7px; font-size: 11.5px; line-height: 1.5; white-space: pre-wrap;
-  word-break: break-word; max-height: 240px; overflow: auto;
-}
+.trial-panel pre.out, .trace pre.out { margin: 0; max-height: 240px; overflow: auto; }
 .trial-panel .why { color: var(--ink2); font-size: 12px; line-height: 1.5; margin-top: 2px; }
 .tr-count { font-size: 11.5px; color: var(--ink3); margin: 2px 0 6px; }
 .tr-sum { font: 11.5px var(--mono); color: var(--ink2); margin: 0 0 8px; }
@@ -814,11 +799,9 @@ a.doc::after { content: " \2197"; }
 .evlab { display: inline-flex; align-items: center; gap: 8px; }
 
 /* ── tooltips, and what a hovered chart mark does ── */
-.chart [data-cand] { cursor: pointer; }
 .col, .eff-row, .rs-row { transition: opacity .12s; }
 svg.hovering :is(.pt, .col, .eff-row, .rs-row):not(.hot) { opacity: .3; }
-/* A focused mark gets `.hot` too, so the ring below stands in for the browser's focus outline. */
-.pt:focus { outline: none; }
+/* A focused mark gets `.hot` too, so this ring stands in for the browser's focus outline. */
 .pt.hot { transform: scale(1.5); stroke: var(--ink1); stroke-width: 1.5; }
 .chart[data-focus] .pt { opacity: .2; }
 .chart[data-focus="feasible"] .pt.feasible, .chart[data-focus="infeasible"] .pt.infeasible,
@@ -849,9 +832,8 @@ th[data-term], th[data-tip], .cap[data-term] {
   .charts { grid-template-columns: minmax(0, 1fr); }
   .cols { grid-template-columns: minmax(0, 1fr); gap: 16px; }
   .list { max-height: 220px; overflow-y: auto; }
-  .hero { flex-wrap: wrap; gap: 16px; }
-  .stats { flex-wrap: wrap; gap: 18px; }
-  .ctl { flex-wrap: wrap; }
+  .hero { gap: 16px; }
+  .stats { gap: 18px; }
   .ctl .find { width: 100%; }
   .kv { grid-template-columns: 1fr; gap: 1px 0; }
   .kv dt { padding-top: 7px; }
@@ -875,6 +857,9 @@ th[data-term], th[data-tip], .cap[data-term] {
   .tab, .sections.lonely .tab { padding: 5px 10px; }
   .sec { padding: 2px 10px; }
   main { padding: 22px 16px 48px; }
+  /* The header's actions sit under its facts, not beside them. */
+  .facts { flex-basis: 100%; }
+  #cmp-with .pick-list { left: 0; right: auto; }
 }
 
 /* ── short windows: the sidebar scrolls with the page, so it never takes the scroll for itself ── */
@@ -928,13 +913,6 @@ table.cmp a, .facts .chip { overflow-wrap: anywhere; }
 .facts .chip { margin: 2px 0; }
 .facts .chip .ord, .facts .chip .x { flex: none; }
 #cmp-evals td .delta { margin-left: 6px; font-size: 11.5px; }
-.chart [data-cmp-row] { cursor: pointer; }
-.chart [data-cmp-row]:focus { outline: none; }
-/* On a narrow page the header's actions sit under its facts, not beside them. */
-@media (max-width: 1080px) {
-  .facts { flex-basis: 100%; }
-  #cmp-with .pick-list { left: 0; right: auto; }
-}
 /* ── sessions: a session's traces and turns, a diagnosis of one, and the note that a task result store was found ── */
 .tr-trace + .tr-trace { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--hair); }
 .tr-head {
@@ -958,8 +936,6 @@ table.cmp a, .facts .chip { overflow-wrap: anywhere; }
 .mdacts { display: flex; flex-wrap: wrap; gap: 8px; }
 /* The header's copy buttons are laid out with the picker beside them, as items of the one row. */
 .copy-acts { display: contents; }
-/* The case's actions share its header with its name and id, and go under them when there is no room. */
-.pane > header { flex-wrap: wrap; row-gap: 8px; }
 .rowd + .mdacts, .kv + .mdacts { margin-top: 14px; }
 /* A table wider than a narrow window scrolls sideways: its actions stay within what is showing. */
 .detail .mdacts { position: sticky; left: 0; width: fit-content; max-width: calc(100vw - 56px); }
