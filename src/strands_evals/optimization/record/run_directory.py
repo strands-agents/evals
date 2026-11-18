@@ -20,7 +20,7 @@ from ..candidate import Candidate
 from ..declaration.files import _write_text_atomically
 from .events import EventLog, _encode, closed_events
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _NAME = re.compile(r"[a-z0-9_-]+")
 
@@ -257,7 +257,7 @@ class RunDirectory:
         content.
 
         Args:
-            stem: `"best"` for the champion, or `"front/<number>-<id>"` for a `Pareto` front member.
+            stem: `"best"` for the selected candidate, or `"front/<number>-<id>"` for a `Pareto` front member.
             diff: The review diff (`diff(...)`).
             values: The changed numbers and choices, `{key: {"old": ..., "new": ...}}`.
         """

@@ -1042,7 +1042,7 @@ async def test_the_end_phase_ships_the_best_finalist_and_writes_the_run_files(tm
     result = await optimizer.run_async()
     events = _events(optimizer)
     names = _names(events, next(i for i, e in enumerate(events) if e["event"] == "stop"))
-    # Two finalists and the baseline on validation, then the champion and the baseline on test.
+    # Two finalists and the baseline on validation, then the selected candidate and the baseline on test.
     assert names == ["stop", "finalists", "score", "score", "score", "picked", "score", "score", "test"]
     assert result.improved and result.best.values["temperature"] == 1.0 and result.stop_reason == "iterations"
     assert result.best.changed_values() == {"temperature": {"old": 0.0, "new": 1.0}}
@@ -1050,7 +1050,7 @@ async def test_the_end_phase_ships_the_best_finalist_and_writes_the_run_files(tm
     assert {e["split"] for e in events if e["event"] == "score"} == {"train", "validation", "test"}
 
     test = result.test
-    assert (test.champion_id, test.baseline_id) == (result.best.id, result.baseline_id)
+    assert (test.candidate_id, test.baseline_id) == (result.best.id, result.baseline_id)
     assert test.objective.mean_diff == pytest.approx(1.0) and test.objective.n_cases == 6
     assert test.ratio == {"Temperature": None}  # the baseline's mean is 0
     assert test.missing == {result.best.id: 0, result.baseline_id: 0}
@@ -1070,7 +1070,7 @@ async def test_the_baseline_ships_when_nothing_beats_it_and_is_tested_against_it
     )
     result = await optimizer.run_async()
     assert not result.improved and result.best.id == result.baseline_id
-    assert result.test.champion_id == result.test.baseline_id == result.baseline_id
+    assert result.test.candidate_id == result.test.baseline_id == result.baseline_id
     assert result.test.objective.mean_diff == 0.0 and set(result.test.means) == {result.baseline_id}
     assert (optimizer._run.root / "best.diff").read_text() == ""
     assert json.loads((optimizer._run.root / "best.values.json").read_text()) == {}
@@ -1092,7 +1092,7 @@ async def test_a_test_arm_with_no_completed_trial_skips_the_report(tmp_path):
     result = await optimizer.run_async()
     assert result.best.values["temperature"] == 1.0  # picked on validation, where it ran
     assert result.test is None
-    assert result.test_reason == "every test trial of the champion failed, so there is nothing to compare"
+    assert result.test_reason == "every test trial of the selected candidate failed, so there is nothing to compare"
 
 
 async def test_a_finalist_failing_a_constraint_on_validation_cannot_ship(tmp_path):
@@ -1229,9 +1229,9 @@ def _assert_same(resumed, original, *, rerun=None):
     assert resumed.stop_reason == original.stop_reason
     assert resumed.rollouts_spent == original.rollouts_spent
     assert resumed.effects == original.effects
-    for field in ("champion_id", "front", "objectives", "estimates", "infeasible", "problem", "reason"):
+    for field in ("selected_id", "front", "objectives", "estimates", "infeasible", "problem", "reason"):
         assert getattr(resumed.validation, field) == getattr(original.validation, field)
-    for field in ("champion_id", "objective", "difference", "ratio", "missing"):
+    for field in ("candidate_id", "objective", "difference", "ratio", "missing"):
         assert getattr(resumed.test, field) == getattr(original.test, field)
 
 
@@ -1592,9 +1592,9 @@ async def test_rows_cover_every_proposal_iteration_and_trial(tmp_path):
     assert baseline["reason"] is not None and baseline["train.Temperature"] == 0.0
     assert invalid["reason"] and invalid["candidate_id"] is None and invalid["values"] is None
     assert invalid["is_from_fit"] is None and invalid["rollouts"] == 0
-    assert second["champion"] and second["finalist"] and second["rank"] == 1
+    assert second["selected"] and second["finalist"] and second["rank"] == 1
     assert second["changed_keys"] == ["temperature"] and second["values"]["temperature"] == 1.0
-    assert first["finalist"] and not first["champion"] and first["validation_objective"] == pytest.approx(0.5)
+    assert first["finalist"] and not first["selected"] and first["validation_objective"] == pytest.approx(0.5)
     assert first["trials"] == 8 and first["failures"] == 0 and first["on_front"] is None
     assert "estimate.Temperature" in first and "train_ci95.tokens" in first
 
@@ -1609,10 +1609,10 @@ async def test_rows_cover_every_proposal_iteration_and_trial(tmp_path):
     trials = sum(len(records) for records in optimizer._records.values())
     assert len(cases) == trials == 8 * 3 + 6 * 3 + 6 * 2
     assert [r["number"] for r in cases] == sorted(r["number"] for r in cases)
-    champion = [r for r in cases if r["candidate_id"] == result.best.id]
-    assert [r["split"] for r in champion] == ["train"] * 8 + ["validation"] * 6 + ["test"] * 6
+    selected = [r for r in cases if r["candidate_id"] == result.best.id]
+    assert [r["split"] for r in selected] == ["train"] * 8 + ["validation"] * 6 + ["test"] * 6
     assert all(
-        r["objective"] == 1.0 and r["score.Temperature"] == 1.0 and r["applicable.Temperature"] for r in champion
+        r["objective"] == 1.0 and r["score.Temperature"] == 1.0 and r["applicable.Temperature"] for r in selected
     )
 
 
@@ -1667,7 +1667,7 @@ async def test_the_result_reloads_whole_without_the_run_folder_and_summarizes(tm
 
     text = result.summary()
     assert f"Ships candidate {result.best.number} ({result.best.id})" in text
-    assert "Validation:" in text and "Test, the champion vs the baseline" in text
+    assert "Validation:" in text and "Test, the selected candidate vs the baseline" in text
     assert "temperature: 0.0 -> 1.0" in text
     with pytest.raises(ValueError, match="unknown grain"):
         result.to_rows("trial")
@@ -1776,12 +1776,12 @@ async def test_pareto_ships_the_front_s_max_gain_member_and_tests_every_member(t
     result = await optimizer.run_async()
     temperature = {c.id: c.values["temperature"] for c in result.candidates.values()}
     assert [temperature[c] for c in result.validation.front] == [1.0, 0.5, 0.0]
-    assert result.validation.champion_id == result.best.id and temperature[result.best.id] == 1.0
+    assert result.validation.selected_id == result.best.id and temperature[result.best.id] == 1.0
     assert [c.id for c in result.front] == result.validation.front
     # Every validated front member is tested against the baseline.
     assert list(result.front_test) == result.validation.front
     assert all(
-        (report.champion_id, report.baseline_id) == (member, result.baseline_id)
+        (report.candidate_id, report.baseline_id) == (member, result.baseline_id)
         for member, report in result.front_test.items()
     )
 

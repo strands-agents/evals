@@ -121,13 +121,13 @@ class WeightedSum(_Combination):
 
 
 class Pareto(_Combination):
-    """Several objectives optimized jointly; one champion ships, and the front is reported.
+    """Several objectives optimized jointly; one candidate ships, and the front is reported.
 
     `Pareto(Maximize("Helpfulness", weight=2), Minimize("tokens", scale=1000))`. The front is the candidates
     no other one beats on every objective. Candidates are ranked by the weighted gain, `WeightedSum`'s value
-    with each objective's own `weight` and `scale`, and the champion is the validated front's highest-gain
-    member (the baseline when nothing feasible beats it); every front member is tested against the
-    baseline. Constraints only filter candidates; they are never front dimensions. A `Pareto` of one
+    with each objective's own `weight` and `scale`, and the selected candidate is the validated front's
+    highest-gain member (the baseline when nothing feasible beats it); every front member is tested against
+    the baseline. Constraints only filter candidates; they are never front dimensions. A `Pareto` of one
     objective is that objective.
     """
 

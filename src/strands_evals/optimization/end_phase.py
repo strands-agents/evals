@@ -94,12 +94,12 @@ def pick(
     rule: PickRule,
     problem: str | None = None,
 ) -> ValidationReport:
-    """The champion: the first feasible candidate on validation, baseline included; else the baseline.
+    """What ships: the first feasible candidate on validation, baseline included; else the baseline.
 
     Feasible = eligible on validation and P(met) >= `criteria.feasibility_threshold` for every
     constraint (measured means without a fit). Ranked by objective resolved to a tenth of its sd;
     ties -> most trials, then earlier.
-    Under a `Pareto` objective the same champion (the validated front's highest-gain member) plus
+    Under a `Pareto` objective the same pick (the validated front's highest-gain member) plus
     `ValidationReport.front`.
 
     Args:
@@ -120,7 +120,7 @@ def pick(
     # The baseline comes first in `ids`, so with equal objectives and trial counts it wins the tie.
     ranked = rank(assessments, ids, trial_counts=trial_counts)
     feasible = [c for c in ranked if assessments[c].is_feasible]
-    champion = feasible[0] if feasible else baseline_id
+    selected = feasible[0] if feasible else baseline_id
     infeasible: dict[str, str] = {}
     for c in ids:
         if c not in assessments:
@@ -129,25 +129,25 @@ def pick(
             infeasible[c] = label_candidate(validation[c], assessments[c], criteria=criteria).reason
     objectives = {c: assessments[c].objective if c in assessments else None for c in ids}
     return ValidationReport(
-        champion_id=champion,
+        selected_id=selected,
         front=pareto_front(assessments, ranked) if criteria.is_pareto else [],
         objectives=objectives,
         estimates={c: dict(assessments[c].estimates) for c in ids if c in assessments},
         infeasible=infeasible,
         measured={c: measured_metrics(validation[c], criteria.registry) for c in ids if c in validation},
         problem=problem,
-        reason=_pick_reason(champion, baseline_id, finalist_ids, objectives, feasible),
+        reason=_pick_reason(selected, baseline_id, finalist_ids, objectives, feasible),
     )
 
 
 def _pick_reason(
-    champion: str,
+    selected: str,
     baseline_id: str,
     finalist_ids: Sequence[str],
     objectives: Mapping[str, float | None],
     feasible: Sequence[str],
 ) -> str:
-    """One sentence on why `champion` ships."""
+    """One sentence on why `selected` ships."""
 
     def shown(c: str) -> str:
         value = objectives.get(c)
@@ -155,8 +155,8 @@ def _pick_reason(
 
     if not finalist_ids:
         return "no finalist from the search; the baseline ships"
-    if champion != baseline_id:
-        return f"{champion} highest on validation: {shown(champion)} vs baseline {shown(baseline_id)}"
+    if selected != baseline_id:
+        return f"{selected} highest on validation: {shown(selected)} vs baseline {shown(baseline_id)}"
     others = [c for c in feasible if c != baseline_id]
     if not others:
         return "no finalist meets every constraint on validation; the baseline ships"

@@ -105,7 +105,7 @@ class CandidateView(BaseModel):
         return {key: dict(sides) for key, sides in self.changed.items()}
 
     def write_diff(self, path: str | Path) -> Path:
-        """Write this candidate's changes as the run writes the champion's (`best.diff`), for review.
+        """Write this candidate's changes as the run writes the selected candidate's (`best.diff`), for review.
 
         `path` gets `diff()`; `path.with_suffix(".values.json")` gets the changed numbers and choices as
         `{key: {"old": ..., "new": ...}}`, with one side only for a key active on one side. Both are always
@@ -133,17 +133,18 @@ class OptimizationResult(BaseModel):
         baseline_id: The baseline's id.
         candidates: Every candidate of the run's closed iterations by id, in display-number order (a killed
             iteration's candidate that the resumed run didn't propose again is left out).
-        validation: How the champion was picked on validation: every finalist's objective and estimates, and
-            why any was infeasible.
-        test: The champion against the baseline on test, report only: a negative `mean_diff` is possible
-            and never changes what ships. When the baseline ships it is compared with itself. None without
-            test cases, when it couldn't be afforded, or when every test trial of the champion or the baseline
-            failed (`test_reason` says which).
+        validation: How the selected candidate was picked on validation: every finalist's objective and
+            estimates, and why any was infeasible.
+        test: The selected candidate against the baseline on test, report only: a negative `mean_diff` is
+            possible and never changes what ships. When the baseline ships it is compared with itself. None
+            without test cases, when it couldn't be afforded, or when every test trial of the selected
+            candidate or the baseline failed (`test_reason` says which).
         test_reason: Why `test` is None (the `test` event's reason), or under `Pareto` which front members
             the test report couldn't afford or measured nothing for; None when everything ran.
         front_test: Under a `Pareto` objective, each tested front member against the baseline on test
-            (`front_test[best.id]` is `test` when the champion is on the validated front; members not afforded
-            or with every test trial failed are absent); `{}` otherwise or when the test report was skipped.
+            (`front_test[best.id]` is `test` when the selected candidate is on the validated front; members not
+            afforded or with every test trial failed are absent); `{}` otherwise or when the test report was
+            skipped.
         effects: `effects.json`: per metric and option from the search fit, or empty with the reason.
         iterations: Every search step, in order.
         rollouts_spent: Rollouts counted against the budget, the end phase's included.
@@ -191,19 +192,19 @@ class OptimizationResult(BaseModel):
 
     @property
     def best(self) -> CandidateView:
-        """The champion, `validation.champion_id` (the baseline when nothing feasible beats it)."""
-        return self.candidates[self.validation.champion_id]
+        """The selected candidate, `validation.selected_id` (the baseline when nothing feasible beats it)."""
+        return self.candidates[self.validation.selected_id]
 
     @property
     def front(self) -> list[CandidateView]:
-        """Under a `Pareto` objective, the validated front (`validation.front`), champion first, each with
-        `diff()` and values, so a reviewer can apply another trade-off; `[]` otherwise."""
+        """Under a `Pareto` objective, the validated front (`validation.front`), the selected candidate first,
+        each with `diff()` and values, so a reviewer can apply another trade-off; `[]` otherwise."""
         return [self.candidates[c] for c in self.validation.front]
 
     @property
     def improved(self) -> bool:
         """Whether something other than the baseline ships (`best.id != baseline_id`)."""
-        return self.validation.champion_id != self.baseline_id
+        return self.validation.selected_id != self.baseline_id
 
     def summary(self) -> str:
         """The run in a few lines: why the search stopped, what ships and why, every finalist on validation
@@ -227,7 +228,7 @@ class OptimizationResult(BaseModel):
         lines += ["", "Validation" + (f" (measured means: {v.problem})" if v.problem else "") + ":"]
         table = [["", "candidate", "objective", *goals]]
         for c, objective in v.objectives.items():
-            mark = "*" if c == v.champion_id else ""
+            mark = "*" if c == v.selected_id else ""
             note = f"  infeasible: {v.infeasible[c]}" if c in v.infeasible else ""
             table.append(
                 [mark, self._name(c), _number(objective), *(self._metric_cell(c, m) for m in goals)]
@@ -237,12 +238,12 @@ class OptimizationResult(BaseModel):
 
         if v.front:
             objective_metrics = [g["metric"] for g in self.effects.get("goals", []) if g["role"] == "objective"]
-            lines += ["", "Validated front (* = champion; test: difference vs the baseline):"]
+            lines += ["", "Validated front (* = selected; test: difference vs the baseline):"]
             table = [["", "candidate", *goals, *(f"test {m}" for m in objective_metrics)]]
             for c in v.front:
                 report = self.front_test.get(c)
                 table.append(
-                    ["*" if c == v.champion_id else "", self._name(c)]
+                    ["*" if c == v.selected_id else "", self._name(c)]
                     + [self._metric_cell(c, m) for m in goals]
                     + [
                         "-" if report is None or m not in report.difference else _comparison(report.difference[m])
@@ -256,7 +257,11 @@ class OptimizationResult(BaseModel):
             lines.append(f"Test: skipped ({self.test_reason}).")
         else:
             t = self.test
-            versus = "the baseline against itself" if t.champion_id == t.baseline_id else "the champion vs the baseline"
+            versus = (
+                "the baseline against itself"
+                if t.candidate_id == t.baseline_id
+                else "the selected candidate vs the baseline"
+            )
             lines.append(f"Test, {versus} (paired {round(TEST_LEVEL * 100)}% interval; reported only):")
             table = [["objective", "-" if t.objective is None else _comparison(t.objective), ""]]
             for metric, compared in t.difference.items():
@@ -466,7 +471,7 @@ def _proposal_rows(
             failures=failures.get(candidate_id) if scored else None,  # type: ignore[arg-type]
             rollouts=rollouts[(iteration, candidate_id)] if scored else 0,  # type: ignore[index]
             finalist=candidate_id in finalists if scored else None,
-            champion=candidate_id == validation.champion_id if scored else None,
+            selected=candidate_id == validation.selected_id if scored else None,
             validation_objective=validation.objectives.get(candidate_id) if scored else None,  # type: ignore[arg-type]
             on_front=candidate_id in validation.front if scored and is_pareto else None,
             values=None if view is None else dict(view.values),

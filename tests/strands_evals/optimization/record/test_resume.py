@@ -276,7 +276,7 @@ def test_a_stop_keeps_its_partial_iteration_and_the_end_phase_progress(run):
     assert state.candidates == ["base", "c1", "c3"]
     assert state.history[-1] == "c1"
     assert state.finalists == ["c3", "base"]
-    assert state.validation.champion_id == "c3"
+    assert state.validation.selected_id == "c3"
     assert state.is_test_done is False
 
     log.append("test", report=None, reason="no test cases", front={})
@@ -287,11 +287,11 @@ def test_a_stop_keeps_its_partial_iteration_and_the_end_phase_progress(run):
     assert state.front_test == {}
 
 
-def _validation(champion):
+def _validation(selected):
     return {
-        "champion_id": champion,
+        "selected_id": selected,
         "front": [],
-        "objectives": {champion: 0.9},
+        "objectives": {selected: 0.9},
         "estimates": {},
         "infeasible": {},
         "measured": {},

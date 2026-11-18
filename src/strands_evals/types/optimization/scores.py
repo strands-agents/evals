@@ -93,8 +93,8 @@ class SplitScores(BaseModel):
 
     The search (fit, selection, labels, observe, Reflection) reads `train`; the end phase's pick reads
     `validation`; the test report reads `test`. Every scored candidate has train scores; `validation` is
-    None unless it was a finalist or the baseline, `test` None unless it was the champion, the baseline, or
-    (under `Pareto`) a tested front member.
+    None unless it was a finalist or the baseline, `test` None unless it was the selected candidate, the
+    baseline, or (under `Pareto`) a tested front member.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -150,12 +150,12 @@ class CandidateLabel(BaseModel):
 
 
 class ValidationReport(BaseModel):
-    """How the end phase picked the champion on validation, saved in the `picked` event.
+    """The end phase's pick on validation: what ships and why, saved in the `picked` event.
 
     Attributes:
-        champion_id: What ships; the baseline's id when nothing feasible beats it.
+        selected_id: What ships; the baseline's id when nothing feasible beats it.
         front: Under a `Pareto` objective, the validated front (the baseline included when on it), in ranking
-            order, so the champion is first unless the front is empty; `[]` otherwise.
+            order, so the selected candidate is first unless the front is empty; `[]` otherwise.
         objectives: Candidate id -> its validation objective under the validation fit, or by measured
             validation means when `problem` is set; None when it isn't eligible on validation.
         estimates: Candidate id -> goal metric -> the validation fit's estimate; empty when assessed by
@@ -170,7 +170,7 @@ class ValidationReport(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    champion_id: str
+    selected_id: str
     front: list[str]
     objectives: dict[str, float | None]
     estimates: dict[str, dict[str, Estimate]]
@@ -181,27 +181,29 @@ class ValidationReport(BaseModel):
 
 
 class TestReport(BaseModel):
-    """The champion against the baseline on test, saved in the `test` event; report only.
+    """One candidate against the baseline on test, saved in the `test` event; report only.
 
-    When the baseline ships, `champion_id == baseline_id`: the baseline is measured once and compared with
-    itself (differences 0, ratios 1), and `missing` and `means` hold one key. Under a `Pareto` objective
-    each tested front member gets its own report against the baseline (`champion_id` = that member).
+    `OptimizationResult.test` is the selected candidate's report. When the baseline ships,
+    `candidate_id == baseline_id`: the baseline is measured once and compared with itself (differences 0,
+    ratios 1), and `missing` and `means` hold one key. Under a `Pareto` objective each tested front member
+    gets its own report against the baseline (`candidate_id` = that member).
 
     Attributes:
-        objective: `Criteria.objective_value` per case, champion - baseline; None when no test case was
+        candidate_id: The candidate compared with the baseline.
+        objective: `Criteria.objective_value` per case, candidate - baseline; None when no test case was
             measured by both.
         difference: Per goal metric; a metric with no test case measured by both is left out.
         ratio: Per goal metric; None when the baseline mean is 0 or the metric can be < 0; a metric with no
             test case measured by both is left out, as in `difference`.
         missing: Candidate id -> number of test cases with no counted run (left out).
-        means: Champion and baseline -> every metric measured on test.
+        means: The candidate and the baseline -> every metric measured on test.
     """
 
     __test__ = False  # not a pytest test class
 
     model_config = ConfigDict(frozen=True)
 
-    champion_id: str
+    candidate_id: str
     baseline_id: str
     objective: PairedComparison | None
     difference: dict[str, PairedComparison]

@@ -86,10 +86,10 @@ class Optimizer:
     """Searches for changes to a declared agent on train, then picks what ships once, on validation.
 
     Each iteration the schedule plans a step, selection picks a parent, proposers propose, every candidate is
-    scored on train, and the score model is refitted. There is no champion during the run: after the search
-    stops, the top finalists and the baseline are measured on validation, a fresh fit picks the champion
-    (only a candidate meeting every constraint ships, else the baseline), and the champion is compared with
-    the baseline on test, reported only.
+    scored on train, and the score model is refitted. The search's ranking supplies only parents and
+    finalists. After the search stops, the top finalists and the baseline are measured on validation, a fresh
+    fit picks one of them (only a candidate meeting every constraint ships, else the baseline), and that pick
+    is compared with the baseline on test, reported only.
 
     Pass either `factory` (a `TunableFactory`, positionally as in `Optimizer(experiment, create_agent)` or
     by keyword) or `build_task=` with `space=`. `environment=` and `rollout_fn=` work only with `factory=`.
@@ -267,7 +267,7 @@ class Optimizer:
         if self._criteria.is_pareto:
             finalists = max(finalists, PARETO_MIN_FINALISTS)
         validation_reserve = (finalists + 1) * validation * runs_per_candidate
-        # Champion and baseline; under Pareto every front member.
+        # The selected candidate and the baseline; under Pareto every front member.
         test_reserve = ((finalists + 1) if self._criteria.is_pareto else 2) * test * runs_per_candidate
         needed = train * runs_per_candidate + validation_reserve + test_reserve
         if budget.max_rollouts < needed:
@@ -437,7 +437,7 @@ class Optimizer:
         """Score the baseline, run the search until it stops, then the end phase.
 
         Returns:
-            The champion, the validation and test reports, the effects, and the run's costs.
+            The selected candidate, the validation and test reports, the effects, and the run's costs.
 
         Raises:
             RuntimeError: The baseline isn't eligible after its re-run passes (some train case has no
@@ -637,9 +637,8 @@ class Optimizer:
         self._run.events.append("stop", iteration=self._iteration, reason=reason, message=messages.get(reason, ""))
 
     async def _end_phase(self, stop_reason: StopReason) -> OptimizationResult:
-        """Finalists from the search ranking (E1), measured with the baseline on validation (E2), the champion
-        picked on a fresh validation fit (E3), the test report (E4); then `effects.json`, the diffs, and
-        `result.json`.
+        """Finalists from the search ranking (E1), measured with the baseline on validation (E2), the pick on
+        a fresh validation fit (E3), the test report (E4); then `effects.json`, the diffs, and `result.json`.
 
         After `resume`, each of E1, E3 (with E2), and E4 that the event log already holds is reused as saved, so a
         finished run only rewrites its files.
@@ -722,8 +721,8 @@ class Optimizer:
             )
             for c in sorted(self._saved, key=run.number)
         }
-        champion = views[report.champion_id]
-        run.save_diff("best", champion.diff(), champion.changed_values())
+        selected = views[report.selected_id]
+        run.save_diff("best", selected.diff(), selected.changed_values())
         for c in report.front if criteria.is_pareto else []:
             run.save_diff(f"front/{views[c].number}-{c}", views[c].diff(), views[c].changed_values())
         agent_cost: dict[SplitName, Usage] = {split: Usage.zero() for split in SPLIT_NAMES}
@@ -805,24 +804,25 @@ class Optimizer:
         )
 
     async def _test(self, report: ValidationReport) -> tuple[TestReport | None, str | None, dict[str, TestReport]]:
-        """E4: the champion and the baseline on test (and under `Pareto` every validated front member), report only.
+        """E4: the selected candidate and the baseline on test (and under `Pareto` every validated front member),
+        report only.
 
         Returns:
-            The champion's report (None when skipped: no test cases, the budget, or no completed test trial
-            of the champion or the baseline), why it or some front members were skipped, and under
-            `Pareto` each tested front member's report.
+            The selected candidate's report (None when skipped: no test cases, the budget, or no completed
+            test trial of the selected candidate or the baseline), why it or some front members were skipped,
+            and under `Pareto` each tested front member's report.
         """
         cases = list(self._case_split.test)
         if not cases:
             return None, "no test cases", {}
-        baseline, champion = self._baseline.id, report.champion_id
+        baseline, selected = self._baseline.id, report.selected_id
         front = report.front if self._criteria.is_pareto else []
         runner = self._runner()
         pending = {
             c: runner.pending(c, cases, runs=self._runs_per_candidate)
-            for c in dict.fromkeys([champion, baseline, *front])
+            for c in dict.fromkeys([selected, baseline, *front])
         }
-        chosen = list(dict.fromkeys([champion, baseline]))
+        chosen = list(dict.fromkeys([selected, baseline]))
         total = sum(pending[c] for c in chosen)
         if not self._budget.can_afford(total, phase="test"):
             allowance = self._budget.allowance(phase="test")
@@ -850,12 +850,12 @@ class Optimizer:
             for c in chosen
             if not any(r.split == "test" and r.status is TrialStatus.COMPLETED for r in self._records[c].values())
         ]
-        if champion in failed or baseline in failed:
-            arm = "the baseline" if baseline in failed else "the champion"
+        if selected in failed or baseline in failed:
+            arm = "the baseline" if baseline in failed else "the selected candidate"
             return None, f"every test trial of {arm} failed, so there is nothing to compare", {}
         reports = {
             c: self._test_report(c, scores)
-            for c in dict.fromkeys([champion, *front])
+            for c in dict.fromkeys([selected, *front])
             if c in scores and c not in failed
         }
         reasons = []
@@ -866,7 +866,7 @@ class Optimizer:
         if failed:
             numbers = ", ".join(str(self._run.number(c)) for c in failed)
             reasons.append(f"every test trial of front members {numbers} failed")
-        return reports[champion], "; ".join(reasons) or None, {c: reports[c] for c in front if c in reports}
+        return reports[selected], "; ".join(reasons) or None, {c: reports[c] for c in front if c in reports}
 
     def _test_report(self, candidate_id: str, scores: Mapping[str, CandidateScores]) -> TestReport:
         """`candidate_id` against the baseline per test case (paired t-interval at `TEST_LEVEL`); the baseline
@@ -889,7 +889,7 @@ class Optimizer:
             c: {r.case_name for r in self._records[c].values() if r.split == "test" and self._counted(r)} for c in ids
         }
         return TestReport(
-            champion_id=candidate_id,
+            candidate_id=candidate_id,
             baseline_id=baseline,
             objective=paired_interval(mine.objective_by_case, theirs.objective_by_case, level=TEST_LEVEL),
             difference=difference,
