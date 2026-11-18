@@ -10,35 +10,6 @@ let sesMeta = null, SES = null;              // the open session, or lone diagno
 let sesFound = [];                           // the diagnoses shown with it, as `{ meta, doc }`
 let sesMark = '';                            // what was on disk when it was read
 
-Object.assign(SECTION_OF, { sessions: 'evals', session: 'evals' });
-Object.assign(VIEW_NAME, { sessions: 'Sessions', session: 'Session' });
-Object.assign(TERMS, {
-  session: ['Session', 'Everything recorded for one conversation with an agent: one or more traces, saved as a file.', 'how-evaluation-works/#what-an-evaluation-is-made-of'],
-  trace: ['Trace', 'One run of the agent inside a session, made of spans: each agent invocation, model call and tool call.', 'how-evaluation-works/#what-an-evaluation-is-made-of'],
-  diagnosis: ['Diagnosis', 'What the detectors found in a session: the spans where something failed, and the root cause behind each.', 'detectors/'],
-});
-Object.assign(VIEW_GUIDE, {
-  sessions: {
-    steps: [
-      'Each row is a <b>session</b>: the recorded traces of one conversation, saved with <code>strands-evals fetch ... -o FILE</code> or from code.',
-      'Select a row to read it, one trace after another.',
-      'A <b>diagnosis</b> shows on the page of the session it was made from. One whose session is not in this folder is listed here on its own.',
-    ],
-    terms: ['session', 'trace', 'diagnosis'],
-    links: [['cli/', 'CLI reference'], ['detectors/', 'Diagnosing failures']],
-  },
-  session: {
-    steps: [
-      'Read it top to bottom. Each <b>trace</b> has its own heading and what it cost; the time between traces is not counted.',
-      'A trace with several agent invocations is split into turns: the prompt and the reply first, then the model and tool calls behind them.',
-      'No diagnosis yet? Make one, then Rescan: <code>strands-evals diagnose FILE -o NAME.diagnosis.json</code>',
-      '<b>Copy as Markdown</b> at the top copies the session and its diagnoses as text for a coding agent.',
-    ],
-    terms: ['session', 'trace', 'diagnosis'],
-    links: [['detectors/', 'Diagnosing failures'], ['cli/', 'CLI reference']],
-  },
-});
-
 /* ══════════ reading a folder without the server ══════════
    `sessionMeta`, `diagnosisMeta`, `sessionOf` and `isTaskResult` mirror `_session_summary`,
    `_diagnosis_summary`, `session_of` and `is_task_result` in `_ui_server.py`. */
@@ -157,11 +128,16 @@ function renderSession() {
 const sessionMark = m => [m.modified].concat((m.diagnoses || []).map(path =>
   (DIAGNOSES.find(d => d.path === path) || {}).modified)).join();
 
-async function loadSession(meta) {
+/* A session's document and those of the diagnoses made of it, as `{ doc, found }`. */
+async function readSession(meta) {
   const doc = await document_for(meta);
   const found = isSession(meta) ? await Promise.all(madeOf(meta).map(async d => ({ meta: d, doc: await document_for(d) })))
     : [{ meta, doc }];
-  sesMeta = meta; SES = doc; sesFound = found;
+  return { doc, found };
+}
+
+function loadSession(meta, read) {
+  sesMeta = meta; SES = read.doc; sesFound = read.found;
   sesMark = sessionMark(meta);
   renderSessions();
   renderSession();
@@ -171,8 +147,9 @@ async function loadSession(meta) {
 async function openSession(path) {
   const named = sessionRows().find(m => m.path === path)
     || SESSIONS.find(s => s.path === (DIAGNOSES.find(d => d.path === path) || {}).session);
-  if (!named) return;
-  try { await loadSession(named); } catch (err) { return openFailed(path, err); }
+  const read = named && await readToOpen(path, () => readSession(named));
+  if (!read) return;
+  loadSession(named, read);
   scanError = '';
   renderLists();
   show('session');
@@ -180,8 +157,10 @@ async function openSession(path) {
 
 /** Re-read the open session when its file, or a diagnosis made of it, changed on disk. */
 async function refreshSession() {
-  const now = sesMeta && sessionRows().find(m => m.path === sesMeta.path);
-  if (now && sessionMark(now) !== sesMark) await loadSession(now);
+  const was = sesMeta, now = was && sessionRows().find(m => m.path === was.path);
+  if (!now || sessionMark(now) === sesMark) return;
+  const read = await readSession(now);
+  if (sesMeta === was) loadSession(now, read);
 }
 
 app.addEventListener('click', e => {

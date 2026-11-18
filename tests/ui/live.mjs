@@ -21,7 +21,12 @@ const tree = {
   mark: 'm1',
   experiments: [listed('e.json', 5, { reports: ['r.json'] })],
   reports: [listed('r.json', 5, { experiment: 'e.json', link: null }), listed('other.json', 5, { experiment: null, link: null })],
+  sessions: [{ path: 's.json', name: 's.json', dir: '.', size: 1, modified: 5, session_id: 's', traces: 1, spans: 1, seconds: 1, diagnoses: [] }],
   files: {
+    's.json': { modified: 5, document: { session_id: 's', traces: [{ trace_id: 't', session_id: 's', spans: [{
+      span_info: { span_id: 'a', session_id: 's', parent_span_id: null, start_time: '2026-01-05T09:00:00.000000Z', end_time: '2026-01-05T09:00:01.000000Z' },
+      span_type: 'invoke_agent', user_prompt: 'hello', agent_response: 'hi', available_tools: [],
+    }] }] } },
     'e.json': { modified: 5, document: experiment('second question') },
     'r.json': { modified: 5, document: report(true, false) },
     'other.json': { modified: 5, document: report(true, true) },
@@ -36,7 +41,7 @@ const write = (path, document) => {
 const server = fakeServer({
   mark: () => tree.mark,
   scan: () => [{ root: '/served', depth: 3, read_only: false, fingerprint: tree.mark, experiments: tree.experiments, reports: tree.reports,
-    skipped: [], optimizer_runs: [] }],
+    sessions: tree.sessions, skipped: [], optimizer_runs: [] }],
   file: path => ({ path, ...tree.files[path] }),
 });
 const asked = () => server.sent.splice(0).map(r => r.url.split('?')[0]).join(' ');
@@ -125,6 +130,18 @@ ok(input() === 'rewritten a third time', 'Rescan shows the open experiment as it
   await release();
   await polled;
   ok(p.text('#crumbs') === 'Reports/other.json', 'nor does a re-read of the report that was open before it', p.text('#crumbs'));
+
+  release = hold('s.json');
+  await p.openSession();
+  await p.openReport('other.json');
+  await release();
+  ok(p.text('#crumbs') === 'Reports/other.json', 'nor does a session that loads late', p.text('#crumbs'));
+
+  release = hold('r.json');
+  await p.click('#cmp-with button[data-value="r.json"]');
+  await p.click('.tab[data-view="experiments"]');
+  await release();
+  ok(p.$('#v-experiments').classList.contains('on'), 'nor a comparison whose reports load late', p.$('.view.on').id);
 }
 
 // ── a tab nobody is looking at stays quiet, and catches up when it is looked at ──

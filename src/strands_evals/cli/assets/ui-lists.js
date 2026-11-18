@@ -130,17 +130,18 @@ function openFailed(path, err) {
   show(homeView());
 }
 
-/* A file's document, or null when it would not load or the page moved on while it did. */
-async function documentToOpen(meta) {
+/* What `read` loads for the file at `path`, or null when it would not load or the page moved on while it did. */
+async function readToOpen(path, read) {
   const from = moves;
   try {
-    const doc = await document_for(meta);
-    return moves === from ? doc : null;
+    const got = await read();
+    return moves === from ? got : null;
   } catch (err) {
-    if (moves === from) openFailed(meta.path, err);
+    if (moves === from) openFailed(path, err);
     return null;
   }
 }
+const documentToOpen = meta => readToOpen(meta.path, () => document_for(meta));
 
 /* Whether the open experiment's unsaved edits may be dropped: asked in the page when there are any. */
 async function mayDiscard(doing) {

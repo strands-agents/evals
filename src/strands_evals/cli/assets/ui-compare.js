@@ -49,7 +49,9 @@ async function openCompare(paths, quiet) {
   if (metas.length < 2) return false;
   const read = [];
   for (const meta of metas) {
-    try { read.push(await comparable(meta)); } catch (err) { openFailed(meta.path, err); return false; }
+    const one = await readToOpen(meta.path, () => comparable(meta));
+    if (!one) return false;
+    read.push(one);
   }
   CMP = read.sort((a, b) => a.at - b.at || a.meta.path.localeCompare(b.meta.path));
   renderCompare();
