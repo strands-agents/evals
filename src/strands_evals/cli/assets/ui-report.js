@@ -25,13 +25,18 @@ app.querySelector('#rep-borrowed').onclick = e => {
   show('opt-candidates');
 };
 
+function setFilter(f) {
+  repFilter = f;
+  app.querySelectorAll('#rep-seg button').forEach(b => b.classList.toggle('on', b.dataset.f === f));
+}
+
 /* `keep` re-reads the same report: the filter, the search and the open rows stay as they are. */
 function loadReport(meta, doc, keep) {
   repMeta = meta; REP = doc;
   if (!keep) {
-    openRows = new Set(); repFilter = 'all'; repQuery = ''; repLimit = 300;
+    openRows = new Set(); repQuery = ''; repLimit = 300;
     $('rep-find').value = '';
-    app.querySelectorAll('#rep-seg button').forEach(b => b.classList.toggle('on', b.dataset.f === 'all'));
+    setFilter('all');
     repGroup = ''; repGroupOnly = null;
   }
   buildRows(); renderHero(); renderReportCharts(); renderLenses(); renderReport();
@@ -238,21 +243,23 @@ $('rep-find').oninput = e => { repQuery = e.target.value.trim().toLowerCase(); r
 $('rep-seg').onclick = e => {
   const b = e.target.closest('button[data-f]');
   if (!b) return;
-  repFilter = b.dataset.f; repLimit = 300;
-  app.querySelectorAll('#rep-seg button').forEach(x => x.classList.toggle('on', x === b));
+  setFilter(b.dataset.f); repLimit = 300;
   renderReport();
 };
 $('rep-more').onclick = () => { repLimit += 300; renderReport(); };
-/** Open one row of the table and bring it into view, clearing a filter that would hide it. */
+/** Open one row of the table and bring it into view, clearing whatever would hide it. The address then names it. */
 function openReportRow(i) {
-  repFilter = 'all'; repQuery = ''; repGroupOnly = null;
+  repQuery = ''; repGroupOnly = null;
   $('rep-find').value = '';
-  app.querySelectorAll('#rep-seg button').forEach(b => b.classList.toggle('on', b.dataset.f === 'all'));
+  setFilter('all');
   renderLenses();
   const at = inGroupOrder(BY_CASE).findIndex(g => g.rows.some(r => r.i === i));
   repLimit = Math.max(repLimit, at + 1);
+  /* The address names the row added last, so one that is open already is added again. */
+  openRows.delete(i);
   openRows.add(i);
   renderReport();
+  writeAddress(currentView(), true);
   const row = $('rep-rows').querySelector(`tr.case[data-i="${i}"]`);
   if (row && row.scrollIntoView) row.scrollIntoView({ block: 'center' });
 }

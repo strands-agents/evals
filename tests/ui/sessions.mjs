@@ -125,6 +125,8 @@ const found = p => {
   eq(p.$$('#ses-trace .tr-trace').map(tr => [tr.dataset.trace, [...tr.querySelectorAll(':scope > .msg > .who span')].map(el => p.text(el)).join(' ')]),
     [['t-0', '#0 #1 #2'], ['t-1', '#3 #4 #5'], ['t-2', '#6 #7 #8']], 'spans stay under their own trace, numbered through the session');
   ok(!p.$('#ses-trace .tr-turn') && !p.$('#ses-found').children.length, 'a trace of one agent invocation is not split into turns');
+  eq(texts(p, '#actions [data-md], #v-session [data-md]'), ['Copy as Markdown', 'Copy path'],
+    'the session is copied from its header, by the one button that says so');
 
   await p.click('#crumbs a');
   ok(shown(p) === 'v-sessions' && p.$('#sessions-rows tr.row.on').dataset.session === 'traces/a.json',
@@ -183,6 +185,17 @@ const found = p => {
   eq([p.text('#probe .tr-count'), texts(p, '#probe .tr-sum'), p.$$('#probe .tr-trace').length, p.$$('#probe .tr-head, #probe .tr-turn').length],
     ['3 spans of a recorded session', ['1 model call · 1 tool call · 4s'], 1, 0], 'one trace of one invocation draws as before, inside its trace');
   eq(p.window.traceStats(APART), { seconds: 12, tokens: null, modelCalls: 3, toolCalls: 3 }, 'a session costs what its traces took, added up');
+  pages.push(p);
+}
+
+// ── a message that is not one ──
+{
+  const p = await page();
+  await p.openFolder({ 'odd.json': { session_id: 's-odd', traces: [{ spans: [
+    { span_type: 'inference', messages: [null, { role: 'assistant', content: 'still here' }] }] }] } });
+  await p.openSession();
+  eq([shown(p), texts(p, '#ses-trace .msg.nested')], ['v-session', ['unknown', 'assistantstill here']],
+    'a message that is not one is shown as unknown, and the rest of its span with it');
   pages.push(p);
 }
 

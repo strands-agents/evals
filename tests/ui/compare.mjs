@@ -112,6 +112,7 @@ await p.click(p.$$('#cmp-ends g.bell')[1]);
 ok(view(p) === 'v-report' && p.text('#crumbs') === 'Reports/b/report.json'
   && p.$('#rep-rows tr.case[data-i="4"]').getAttribute('aria-expanded') === 'true',
 'a row that moved opens in the newest report, on that row', `${view(p)} ${p.text('#crumbs')}`);
+ok(p.window.location.hash === '#/reports/b/report.json/rows/c/X', 'which the address names', p.window.location.hash);
 p.window.history.back();
 await tick();
 ok(view(p) === 'v-compare' && compared(p).length === 3, 'Back from the report returns to the comparison', view(p));

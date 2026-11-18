@@ -61,6 +61,8 @@ function groupHead(list, at) {
 function renderLenses() {
   const diagnosed = ROWS.some(r => r.diagnosis);
   app.querySelector('#rep-seg [data-f="diag"]').hidden = !diagnosed;
+  /* A report written again with no diagnosis in it no longer offers the filter that was on. */
+  if (!diagnosed && repFilter === 'diag') setFilter('all');
 
   const choices = REP ? groupChoices() : [];
   $('rep-lens').hidden = choices.length < 2;

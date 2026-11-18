@@ -221,7 +221,8 @@ $('v-compare').addEventListener('click', async e => {
   if (!mark) return;
   const [at, row] = mark.dataset.cmpRow.split(':').map(Number);
   await openReport(CMP[at].meta.path);
-  openReportRow(row);
+  /* A report that would not open leaves the page on a list. */
+  if (currentView() === 'report') openReportRow(row);
 });
 
 /* ── picking reports in the list ── */

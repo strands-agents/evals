@@ -381,9 +381,11 @@ const candidateActions = p => (p.candidate_id ? '<div class="mdacts">'
   + mdButton('candidate', 'Copy as Markdown', p.candidate_id) + mdButton('candidate-link', 'Copy link', p.candidate_id)
   + '</div>' : '');
 
-/* The traces drawn so far, so a button can name the one it copies by its place here. */
+/* The traces drawn so far, so a button can name the one it copies by its place here.
+   The open session has none: its page header copies it whole. */
 const TRACE_DOCS = [];
 function traceCopy(doc) {
+  if (doc === SES) return '';
   let n = TRACE_DOCS.indexOf(doc);
   if (n < 0) n = TRACE_DOCS.push(doc) - 1;
   return `<button class="btn tr-copy" data-md="trace" data-arg="${n}">Copy as Markdown</button>`;

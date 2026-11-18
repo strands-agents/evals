@@ -65,15 +65,17 @@ const usageLine = u => {
   return parts.length ? parts.join(' · ') + ' tokens' : '';
 };
 
+/* A message's content as blocks: a list as it is, anything else as one block of text. */
+const messageBlocks = m => (Array.isArray(m && m.content) ? m.content
+  : [{ text: !m || m.content == null ? '' : String(m.content) }]);
+
 function messageCard(m, nested) {
   const role = (m && m.role) || 'unknown';
   const known = ['user', 'assistant', 'tool', 'system'].includes(role) ? ` ${role}` : '';
-  const content = Array.isArray(m.content) ? m.content
-    : [{ text: m.content == null ? '' : String(m.content) }];
-  const u = usageLine((m.metadata || {}).usage);
+  const u = usageLine(((m && m.metadata) || {}).usage);
   return `<div class="msg${known}${nested ? ' nested' : ''}"><div class="who">`
     + `<b>${esc(role)}</b>${u ? `<span>${esc(u)}</span>` : ''}</div>`
-    + content.map(b => contentBlock(b)).join('') + '</div>';
+    + messageBlocks(m).map(contentBlock).join('') + '</div>';
 }
 
 function spanCard(s, i) {

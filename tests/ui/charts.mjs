@@ -55,6 +55,7 @@ await p.click(p.$$('#rep-heat rect.cell')[1]);
 const opened = p.$('#rep-rows tr.case[aria-expanded="true"]');
 ok(opened && opened.dataset.i === '2' && p.$('#rep-find').value === '',
   'selecting a cell opens its row in the table, clearing the filter that hid it', opened && opened.dataset.i);
+ok(p.window.location.hash === '#/reports/now/report.json/rows/b/X', 'and the address names the row', p.window.location.hash);
 
 // ── the score distribution: per evaluator, over the rows it applied to ──
 same(tips(p, '#rep-spread line.hmean'), ['X · mean 0.6 over 3 rows', 'Y · mean 0.2 over 1 row'],
