@@ -45,6 +45,9 @@ RUN_OWN_FILES = frozenset({"effects.json", "best.values.json", "result.json"})
 TASK_RESULT_HEAD = re.compile(rb'\s*\{\s*"input"\s*:')
 TASK_RESULT_KEYS = frozenset({"input", "actual_output", "expected_output", "actual_trajectory"})
 
+# What reading a file as JSON can raise. `RecursionError` is a document nested too deeply for the reader.
+NOT_JSON = (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError)
+
 
 def _prune_run_storage(filenames: list[str], dirnames: list[str]) -> None:
     """Drop a run directory's own storage from a walk, in place.
@@ -439,6 +442,9 @@ def scan(root: Path, depth: int = DEFAULT_DEPTH) -> tuple[list[ScannedFile], lis
         except json.JSONDecodeError as exc:
             skipped.append({"path": rel, "why": f"invalid JSON at line {exc.lineno}: {exc.msg}"})
             continue
+        except RecursionError:
+            skipped.append({"path": rel, "why": "nested too deeply to read"})
+            continue
 
         kind = classify(obj)
         if kind is not None:
@@ -582,6 +588,9 @@ def read_event_log(path: Path, max_lines: int = MAX_EVENT_LINES) -> EventLog:
                 continue
             log.bad_lines.append({"line": number, "why": f"invalid JSON: {exc.msg}"})
             continue
+        except RecursionError:
+            log.bad_lines.append({"line": number, "why": "nested too deeply to read"})
+            continue
         if isinstance(event, dict):
             log.events.append(event)
         else:
@@ -666,7 +675,7 @@ def discover_optimizer_runs(root: Path, depth: int = DEFAULT_DEPTH) -> list[dict
         try:
             config = json.loads(config_path.read_text(encoding="utf-8"))
             config_stat, events_stat = config_path.stat(), events_path.stat()
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        except NOT_JSON:
             continue
         if not isinstance(config, dict):
             continue

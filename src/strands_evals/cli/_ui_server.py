@@ -36,6 +36,7 @@ from ._ui_discovery import (
     DEFAULT_DEPTH,
     DIAGNOSIS,
     EXPERIMENT,
+    NOT_JSON,
     REPORT,
     SESSION,
     classify,
@@ -409,7 +410,7 @@ class UIHandler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length)
         try:
             body = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except NOT_JSON as exc:
             self._error(HTTPStatus.BAD_REQUEST, f"body is not JSON: {exc}")
             return None
         if not isinstance(body, dict):
@@ -460,7 +461,7 @@ class UIHandler(BaseHTTPRequestHandler):
         rel, target = requested
         try:
             obj = json.loads(target.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except NOT_JSON as exc:
             self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{rel} could not be parsed: {exc}")
             return
         self._json(
@@ -488,7 +489,7 @@ class UIHandler(BaseHTTPRequestHandler):
         target = requested[1]
         try:
             obj = json.loads(target.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except NOT_JSON as exc:
             self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{rel} could not be parsed: {exc}")
             return
         kind = classify(obj)
@@ -519,7 +520,7 @@ class UIHandler(BaseHTTPRequestHandler):
             for made in listed(found.sessions).get("diagnoses") or []:
                 try:
                     diagnoses.append((made, finite(json.loads((root / made).read_text(encoding="utf-8")))))
-                except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                except NOT_JSON as exc:
                     self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{made} could not be parsed: {exc}")
                     return
             text = session_markdown(path, obj, session_seconds(obj), diagnoses)
@@ -554,7 +555,7 @@ class UIHandler(BaseHTTPRequestHandler):
         # The page saves back to the experiment it loaded; it never creates a file or replaces another kind.
         try:
             current = json.loads(target.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        except NOT_JSON:
             current = None
         if classify(current) != EXPERIMENT:
             self._error(HTTPStatus.CONFLICT, f"{rel} is not an experiment file")

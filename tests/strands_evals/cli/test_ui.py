@@ -52,6 +52,8 @@ from strands_evals.types.evaluation import EvaluationData
 from strands_evals.types.trace import InferenceSpan, Session, SpanInfo, Trace
 
 NOT_RECOGNISED = "not an experiment or a report"
+# More arrays inside one another than the JSON reader will follow.
+TOO_DEEP = "[" * 100_000
 MISSING_RUBRIC = {
     "index": 0,
     "evaluator_type": "OutputEvaluator",
@@ -215,6 +217,7 @@ def test_scan_names_the_files_it_could_not_use(tmp_path: Path):
     (tmp_path / "broken.json").write_text("{not json")
     (tmp_path / "binary.json").write_bytes(b"\xff\xfe")
     (tmp_path / "unrelated.json").write_text('{"hello": "world"}')
+    (tmp_path / "deep.json").write_text(TOO_DEEP)
 
     result = discover(tmp_path)
 
@@ -222,7 +225,11 @@ def test_scan_names_the_files_it_could_not_use(tmp_path: Path):
     reasons = {skip["path"]: skip["why"] for skip in result.skipped}
     # The tail of the invalid-JSON reason is the json module's wording.
     assert reasons.pop("broken.json").startswith("invalid JSON at line 1: ")
-    assert reasons == {"binary.json": "could not read: UnicodeDecodeError", "unrelated.json": NOT_RECOGNISED}
+    assert reasons == {
+        "binary.json": "could not read: UnicodeDecodeError",
+        "unrelated.json": NOT_RECOGNISED,
+        "deep.json": "nested too deeply to read",
+    }
 
 
 def test_discover_describes_an_experiment_and_the_report_made_from_it(tmp_path: Path):
@@ -601,8 +608,18 @@ TESTED = {"event": "test", "report": {"champion_id": "c3", "baseline_id": "c0", 
             '{"event": "config"}\n[1, 2, 3]\n',
             EventLog(events=[{"event": "config"}], bad_lines=[{"line": 2, "why": "not a JSON object"}]),
         ),
+        (
+            f'{{"event": "config"}}\n{TOO_DEEP}\n',
+            EventLog(events=[{"event": "config"}], bad_lines=[{"line": 2, "why": "nested too deeply to read"}]),
+        ),
     ],
-    ids=["complete lines", "partial last line dropped", "broken middle line reported", "line that is not an object"],
+    ids=[
+        "complete lines",
+        "partial last line dropped",
+        "broken middle line reported",
+        "line that is not an object",
+        "line nested too deeply",
+    ],
 )
 def test_read_event_log_reads_one_event_per_line(tmp_path: Path, text, expected):
     path = tmp_path / "events.jsonl"
@@ -1659,13 +1676,15 @@ def test_the_data_at_a_page_address_is_refused_for_a_file_it_cannot_serve(client
     assert reply == _refused(status, message.replace("{root}", client.settings["root"]))
 
 
-def test_the_data_at_a_page_address_says_when_the_file_is_not_json(client: Client):
-    (client.root / "half.json").write_text('{"cases": [')
+@pytest.mark.parametrize("text", ['{"cases": [', TOO_DEEP], ids=["cut short", "nested too deeply"])
+@pytest.mark.parametrize("address", ["/reports/odd.json.md", "/api/file?path=odd.json"])
+def test_reading_says_when_the_file_is_not_json(client: Client, address, text):
+    (client.root / "odd.json").write_text(text)
 
-    reply = client.send("GET", "/reports/half.json.md")
+    reply = client.send("GET", address)
 
     assert reply.status == HTTPStatus.UNPROCESSABLE_ENTITY
-    assert reply.body["error"].startswith("half.json could not be parsed: ")
+    assert reply.body["error"].startswith("odd.json could not be parsed: ")
 
 
 def test_llms_txt_describes_every_address_the_server_answers(client: Client):
