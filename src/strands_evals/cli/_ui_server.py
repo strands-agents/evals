@@ -26,6 +26,7 @@ import stat
 import tempfile
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from http import HTTPStatus
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -58,19 +59,25 @@ MAX_EVENT_LINES = 50_000
 
 EXPERIMENT = "experiment"
 REPORT = "report"
+SESSION = "session"
+DIAGNOSIS = "diagnosis"
 
 EVENT_LOG_NAME = "events.jsonl"
 RUN_CONFIG_NAME = "run.json"
 
 SKIPPED_DIRS = frozenset({"node_modules", "__pycache__"})
 # Where the page keeps its views: `/reports/<file>`, `/experiments/<file>`, `/optimization/<directory>/overview`.
-PAGE_ROOTS = ("/reports", "/experiments", "/optimization")
+PAGE_ROOTS = ("/reports", "/experiments", "/sessions", "/optimization")
 PRINTABLE = re.compile(r"[!-~]+")
 
 # A run directory's own storage. Scanning it would fill the skipped list and spend the file budget.
 RUN_OWN_DIRS = frozenset({"transcripts", "candidates", "front"})
 # Files a run writes beside its log; none is an experiment or a report.
 RUN_OWN_FILES = frozenset({"effects.json", "best.values.json", "result.json"})
+
+# How a saved task result opens: `EvaluationData` writes `input` first. Enough to tell one without parsing it.
+TASK_RESULT_HEAD = re.compile(rb'\s*\{\s*"input"\s*:')
+TASK_RESULT_KEYS = frozenset({"input", "actual_output", "expected_output", "actual_trajectory"})
 
 
 def _prune_run_storage(filenames: list[str], dirnames: list[str]) -> None:
@@ -122,7 +129,7 @@ def fingerprint(root: Path, depth: int = DEFAULT_DEPTH) -> str:
 
 @dataclass
 class ScannedFile:
-    """One JSON file in the tree that parsed as an experiment or a report."""
+    """One JSON file in the tree that parsed as something the page shows."""
 
     path: str  # root-relative, posix-style
     kind: str
@@ -146,6 +153,9 @@ class Discovery:
     skipped: list[dict] = field(default_factory=list)
     truncated: bool = False
     optimizer_runs: list[dict] = field(default_factory=list)
+    sessions: list[dict] = field(default_factory=list)
+    diagnoses: list[dict] = field(default_factory=list)
+    stores: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -158,11 +168,13 @@ class EventLog:
 
 
 # `classify`, `_stem`, `link_status`, `_report_summary`, `read_event_log` and `tuned_against` are mirrored in
-# `assets/ui-folder.js` for the page's no-server mode. Change one side and the other must follow.
+# `assets/ui-folder.js` for the page's no-server mode, and `_session_summary`, `_diagnosis_summary`, `session_of`
+# and `is_task_result` in `assets/ui-sessions.js`. Change one side and the other must follow.
 def classify(obj: Any) -> str | None:
     """Identify a parsed JSON document by its shape, never by its filename.
 
     Both shapes carry `cases`: `evaluators` marks an experiment, the report's required fields mark a report.
+    A session is traces of spans, as `fetch -o` writes one; a diagnosis is what `diagnose -o` writes about one.
     """
     if not isinstance(obj, dict):
         return None
@@ -176,7 +188,27 @@ def classify(obj: Any) -> str | None:
         and isinstance(obj.get("cases"), list)
     ):
         return REPORT
+    traces = obj.get("traces")
+    if isinstance(obj.get("session_id"), str) and isinstance(traces, list):
+        return SESSION if all(isinstance(t, dict) and isinstance(t.get("spans"), list) for t in traces) else None
+    failures, causes = obj.get("failures"), obj.get("root_causes")
+    found = isinstance(failures, list) and all(
+        isinstance(f, dict) and isinstance(f.get("span_id"), str) for f in failures
+    )
+    explained = isinstance(causes, list) and all(
+        isinstance(c, dict) and isinstance(c.get("failure_span_id"), str) for c in causes
+    )
+    if found and isinstance(obj.get("session_id"), str) and (causes is None or explained):
+        return DIAGNOSIS
+    # `--rca-only` writes root causes alone, with no session named.
+    if failures is None and explained and causes:
+        return DIAGNOSIS
     return None
+
+
+def is_task_result(obj: Any) -> bool:
+    """Whether a parsed document is one case's saved task output, as `LocalFileTaskResultStore` writes it."""
+    return isinstance(obj, dict) and TASK_RESULT_KEYS <= obj.keys()
 
 
 def _dirname(path: str) -> str:
@@ -324,28 +356,80 @@ def _experiment_summary(obj: dict) -> dict:
     }
 
 
+def _millis(stamp: Any) -> int | None:
+    """A span's timestamp in whole milliseconds, which is all the page's `Date.parse` keeps of one."""
+    if not isinstance(stamp, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return int(moment.replace(microsecond=0).timestamp()) * 1000 + moment.microsecond // 1000
+
+
+def _session_summary(obj: dict) -> dict:
+    """How much a session recorded, and how long its traces ran for. The time between traces is not counted."""
+    traces = [trace["spans"] for trace in obj["traces"]]
+    millis: int | None = None
+    for spans in traces:
+        infos = [span.get("span_info") for span in spans if isinstance(span, dict)]
+        ends = [info.get(key) for info in infos if isinstance(info, dict) for key in ("start_time", "end_time")]
+        times = [millis_at for millis_at in map(_millis, ends) if millis_at is not None]
+        if len(times) > 1:
+            millis = (millis or 0) + max(times) - min(times)
+    return {
+        "session_id": obj["session_id"],
+        "traces": len(traces),
+        "spans": sum(len(spans) for spans in traces),
+        "seconds": None if millis is None else millis / 1000,
+    }
+
+
+def _diagnosis_summary(obj: dict) -> dict:
+    session_id = obj.get("session_id")
+    return {
+        "session_id": session_id if isinstance(session_id, str) else None,
+        "failures": len(obj.get("failures") or []),
+        "root_causes": len(obj.get("root_causes") or []),
+    }
+
+
+_SUMMARY: dict[str, Callable[[dict], dict]] = {
+    EXPERIMENT: _experiment_summary,
+    REPORT: _report_summary,
+    SESSION: _session_summary,
+    DIAGNOSIS: _diagnosis_summary,
+}
+
+
 def _file_entry(scanned: ScannedFile) -> dict:
-    entry = {
+    return {
         "path": scanned.path,
         "name": scanned.name,
         "size": scanned.size,
         "modified": scanned.modified,
+        **_SUMMARY[scanned.kind](scanned.obj),
     }
-    if scanned.kind == EXPERIMENT:
-        entry.update(_experiment_summary(scanned.obj))
-    else:
-        entry.update(_report_summary(scanned.obj))
-    return entry
 
 
-def scan(root: Path, depth: int = DEFAULT_DEPTH) -> tuple[list[ScannedFile], list[dict], bool]:
+def _opens_as_task_result(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            return TASK_RESULT_HEAD.match(handle.read(64)) is not None
+    except OSError:
+        return False
+
+
+def scan(root: Path, depth: int = DEFAULT_DEPTH) -> tuple[list[ScannedFile], list[dict], bool, dict[str, int]]:
     """Read every JSON file under `root` up to `depth` directories deep.
 
-    Returns the files that classified, the ones that did not with the reason, and whether the file cap was hit.
+    Returns the files that classified, the ones that did not with the reason, whether the file cap was hit, and
+    how many saved task results each task result store holds. Those are neither listed nor counted against the cap.
     """
     found: list[ScannedFile] = []
     skipped: list[dict] = []
     truncated = False
+    stores: dict[str, int] = {}
     root = root.resolve()
     seen = 0
 
@@ -353,12 +437,16 @@ def scan(root: Path, depth: int = DEFAULT_DEPTH) -> tuple[list[ScannedFile], lis
         for filename in filenames:
             if not filename.lower().endswith(".json"):
                 continue
+            full = here / filename
+            rel = full.relative_to(root).as_posix()
+            # One result read in full shows the directory is a store; the rest are told by how they open.
+            if _dirname(rel) in stores and _opens_as_task_result(full):
+                stores[_dirname(rel)] += 1
+                continue
             if seen >= MAX_SCAN_FILES:
                 truncated = True
                 break
             seen += 1
-            full = here / filename
-            rel = full.relative_to(root).as_posix()
             if full.is_symlink() and not _inside(root, full.resolve()):
                 skipped.append({"path": rel, "why": "a link to a file outside this folder"})
                 continue
@@ -373,6 +461,10 @@ def scan(root: Path, depth: int = DEFAULT_DEPTH) -> tuple[list[ScannedFile], lis
                 continue
 
             kind = classify(obj)
+            if kind is None and is_task_result(obj):
+                stores[_dirname(rel)] = stores.get(_dirname(rel), 0) + 1
+                seen -= 1
+                continue
             if kind is None:
                 skipped.append({"path": rel, "why": "not an experiment or a report"})
                 continue
@@ -380,7 +472,7 @@ def scan(root: Path, depth: int = DEFAULT_DEPTH) -> tuple[list[ScannedFile], lis
         if truncated:
             break
 
-    return found, skipped, truncated
+    return found, skipped, truncated, stores
 
 
 def _steps_apart(left: str, right: str) -> int:
@@ -414,6 +506,16 @@ def experiment_of(report: ScannedFile, experiments: Sequence[ScannedFile], alone
     return closest[0] if len(closest) == 1 else None
 
 
+def session_of(diagnosis: ScannedFile, sessions: Sequence[ScannedFile]) -> ScannedFile | None:
+    """The session a diagnosis is of: the nearest one with its `session_id`. A tie is not guessed."""
+    named = [s for s in sessions if s.obj["session_id"] == diagnosis.obj.get("session_id")]
+    if not named:
+        return None
+    nearest = min(_steps_apart(s.directory, diagnosis.directory) for s in named)
+    closest = [s for s in named if _steps_apart(s.directory, diagnosis.directory) == nearest]
+    return closest[0] if len(closest) == 1 else None
+
+
 def _newest_first(scanned: ScannedFile) -> tuple[float, str]:
     """Sort key for a list: most recently changed first, and by path where that ties."""
     return (-scanned.modified, scanned.path)
@@ -422,9 +524,10 @@ def _newest_first(scanned: ScannedFile) -> tuple[float, str]:
 def discover(root: Path, depth: int = DEFAULT_DEPTH) -> Discovery:
     """List the experiments and the reports in the tree, each report with the experiment it was made from.
 
-    A report made in code has no experiment file, and one experiment can have many reports.
+    A report made in code has no experiment file, and one experiment can have many reports. Sessions are listed
+    too, each with the diagnoses made of it, and a diagnosis whose session is not in the tree stands on its own.
     """
-    found, skipped, truncated = scan(root, depth)
+    found, skipped, truncated, stores = scan(root, depth)
     scanned_experiments = [f for f in found if f.kind == EXPERIMENT]
     scanned_reports = [f for f in found if f.kind == REPORT]
 
@@ -449,6 +552,21 @@ def discover(root: Path, depth: int = DEFAULT_DEPTH) -> Discovery:
         for experiment in sorted(scanned_experiments, key=_newest_first)
     ]
 
+    scanned_sessions = [f for f in found if f.kind == SESSION]
+    diagnoses: list[dict] = []
+    diagnosed: dict[str, list[str]] = {}
+    for diagnosis in sorted((f for f in found if f.kind == DIAGNOSIS), key=_newest_first):
+        session = session_of(diagnosis, scanned_sessions)
+        if session is not None:
+            diagnosed.setdefault(session.path, []).append(diagnosis.path)
+        diagnoses.append(
+            {**_file_entry(diagnosis), "dir": diagnosis.directory, "session": session.path if session else None}
+        )
+    sessions = [
+        {**_file_entry(session), "dir": session.directory, "diagnoses": diagnosed.get(session.path, [])}
+        for session in sorted(scanned_sessions, key=_newest_first)
+    ]
+
     optimizer_runs = discover_optimizer_runs(root, depth)
 
     for optimizer_run in optimizer_runs:
@@ -464,7 +582,14 @@ def discover(root: Path, depth: int = DEFAULT_DEPTH) -> Discovery:
     ]
 
     return Discovery(
-        experiments=experiments, reports=reports, skipped=skipped, truncated=truncated, optimizer_runs=optimizer_runs
+        experiments=experiments,
+        reports=reports,
+        skipped=skipped,
+        truncated=truncated,
+        optimizer_runs=optimizer_runs,
+        sessions=sessions,
+        diagnoses=diagnoses,
+        stores=[{"dir": directory, "files": files} for directory, files in sorted(stores.items())],
     )
 
 
@@ -1028,6 +1153,9 @@ class UIHandler(BaseHTTPRequestHandler):
                 "skipped": result.skipped,
                 "truncated": result.truncated,
                 "optimizer_runs": result.optimizer_runs,
+                "sessions": result.sessions,
+                "diagnoses": result.diagnoses,
+                "stores": result.stores,
             },
         )
 

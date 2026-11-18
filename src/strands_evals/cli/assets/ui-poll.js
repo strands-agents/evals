@@ -8,6 +8,7 @@ let polling = false;
 
 /** Re-read the open report and the open experiment where their files changed. Unsaved edits are never replaced. */
 async function refreshOpen() {
+  await refreshSession();
   const changed = (list, loaded) => {
     const now = loaded && list.find(m => m.path === loaded.path);
     return now && now.modified !== loaded.modified ? now : null;

@@ -31,6 +31,9 @@ def _run(args: argparse.Namespace) -> int:
                         "experiments": result.experiments,
                         "reports": result.reports,
                         "optimizer_runs": result.optimizer_runs,
+                        "sessions": result.sessions,
+                        "diagnoses": result.diagnoses,
+                        "stores": result.stores,
                         "skipped": result.skipped,
                     },
                     indent=2,
@@ -49,6 +52,14 @@ def _run(args: argparse.Namespace) -> int:
                 champion = f"champion {run['champion_id']}" if run.get("champion_id") else "no champion"
                 stopped = f", stopped: {run['stop_reason']}" if run.get("stop_reason") else ""
                 print(f"optimizer run {run['dir']} ({search})  ->  {champion}{stopped}")  # noqa: T201
+            for session in result.sessions:
+                made = ", ".join(session["diagnoses"]) or "(not diagnosed)"
+                print(f"session {session['path']} ({session['traces']} traces, {session['spans']} spans)  ->  {made}")  # noqa: T201
+            for diagnosis in result.diagnoses:
+                if diagnosis["session"] is None:
+                    print(f"(no session)  ->  {diagnosis['path']} ({diagnosis['failures']} failures)")  # noqa: T201
+            for store in result.stores:
+                print(f"task result store {store['dir']} ({store['files']} results)")  # noqa: T201
             for skip in result.skipped:
                 print(f"skipped {skip['path']}: {skip['why']}", file=sys.stderr)  # noqa: T201
         return EXIT_OK

@@ -113,6 +113,7 @@ async function rescan(keepOpen) {
   REPORTS = res.reports; EXPERIMENTS = res.experiments;
   skipped = res.skipped || []; truncated = !!res.truncated;
   treeMark = res.fingerprint;
+  setSessions(res);
   renderLists();
 
   await loadOptimizerRuns(res.optimizer_runs || [], keepOpen);

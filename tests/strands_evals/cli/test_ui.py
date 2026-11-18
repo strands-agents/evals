@@ -7,6 +7,7 @@ import os
 import socket
 import threading
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
 from email.message import Message
 from http import HTTPStatus
 from http.client import HTTPConnection
@@ -39,6 +40,10 @@ from strands_evals.cli._ui_server import (
 from strands_evals.cli.commands import ui as ui_command
 from strands_evals.cli.main import main
 from strands_evals.experiment import _builtin_evaluator_types
+from strands_evals.local_file_task_result_store import LocalFileTaskResultStore
+from strands_evals.types.detector import DiagnosisResult, FailureItem, FailureOutput, RCAItem, RCAOutput
+from strands_evals.types.evaluation import EvaluationData
+from strands_evals.types.trace import InferenceSpan, Session, SpanInfo, Trace
 
 NOT_RECOGNISED = "not an experiment or a report"
 MISSING_RUBRIC = {
@@ -951,6 +956,7 @@ def test_the_page_is_refused_without_this_servers_cookie(client: Client, cookie)
         "/reports",
         "/reports/support/support.report.json",
         "/experiments/support/support.experiment.json/cases/a%20case",
+        "/sessions/recorded/checkout.session.json",
         "/optimization/tuning/run-1/candidates/c8/report",
     ],
 )
@@ -1434,6 +1440,185 @@ def test_evaluator_catalog_describes_each_built_in_from_the_class():
     assert all(len(setting["default"] or "") <= 48 for entry in catalog.values() for setting in entry["settings"])
 
 
+# ── sessions, diagnoses and task result stores ──
+
+
+def _session(session_id: str, *traces: list[tuple[float, float]]) -> dict:
+    """A session as `fetch -o` writes it: a trace per argument, holding a span per (start, end) in seconds."""
+    began = datetime(2026, 1, 5, 9, tzinfo=timezone.utc)
+
+    def span(start: float, end: float) -> InferenceSpan:
+        times = {"start_time": began + timedelta(seconds=start), "end_time": began + timedelta(seconds=end)}
+        return InferenceSpan(span_info=SpanInfo(session_id=session_id, **times), messages=[])
+
+    recorded = Session(
+        session_id=session_id,
+        traces=[
+            Trace(trace_id=f"{session_id}-{number}", session_id=session_id, spans=[span(*times) for times in spans])
+            for number, spans in enumerate(traces)
+        ],
+    )
+    return json.loads(recorded.model_dump_json(indent=2))
+
+
+_FAILURE = FailureItem(span_id="span-3", category=["wrong_tool"], confidence=[0.9], evidence=["looked it up twice"])
+_CAUSE = RCAItem(
+    failure_span_id="span-3",
+    location="span-2",
+    causality="PRIMARY_FAILURE",
+    failure_detection_timing="ONLY_AT_TASK_END",
+    completion_status="PARTIAL_SUCCESS",
+    root_cause_explanation="no refund tool is described",
+    fix_type="TOOL_DESCRIPTION_FIX",
+    fix_recommendation="describe one",
+)
+
+
+def _diagnosis(session_id: str) -> dict:
+    """A diagnosis as `diagnose -o` writes it."""
+    return DiagnosisResult(session_id=session_id, failures=[_FAILURE], root_causes=[_CAUSE]).model_dump(mode="json")
+
+
+@pytest.mark.parametrize(
+    "obj,expected",
+    _cases(
+        {
+            "a fetched session": (_session("s", [(0, 1)]), "session"),
+            "a session with no traces": ({"session_id": "s", "traces": []}, "session"),
+            "traces that hold no spans": ({"session_id": "s", "traces": [{"trace_id": "t"}]}, None),
+            "traces with no session id": ({"traces": [{"spans": []}]}, None),
+            "a diagnosis": (_diagnosis("s"), "diagnosis"),
+            "detect-only": (FailureOutput(session_id="s", failures=[_FAILURE]).model_dump(mode="json"), "diagnosis"),
+            "rca-only": (RCAOutput(root_causes=[_CAUSE]).model_dump(mode="json"), "diagnosis"),
+            "a diagnosis that found nothing": (DiagnosisResult(session_id="s").model_dump(mode="json"), "diagnosis"),
+            "failures that name no span": ({"session_id": "s", "failures": ["it broke"]}, None),
+            "no root causes and no session": ({"root_causes": []}, None),
+        }
+    ),
+)
+def test_classify_knows_a_session_and_a_diagnosis_by_shape(obj, expected):
+    assert classify(obj) == expected
+
+
+def test_discover_lists_a_session_with_what_it_recorded(tmp_path: Path):
+    # Two traces ten minutes apart, and one with nothing in it: the wait between them is not the session's time.
+    _write(tmp_path / "recorded" / "any-name.json", _session("s-1", [(0, 1.5), (2, 4)], [(600, 600.25)], []))
+    untimed = _session("s-2", [(0, 1)])
+    untimed["traces"][0]["spans"][0]["span_info"].update(start_time="yesterday", end_time=None)
+    _write(tmp_path / "untimed.json", untimed)
+
+    found = discover(tmp_path)
+
+    by_path = {session["path"]: session for session in found.sessions}
+    assert by_path["recorded/any-name.json"] == {
+        **_listed(tmp_path, "recorded/any-name.json"),
+        "session_id": "s-1",
+        "traces": 3,
+        "spans": 3,
+        "seconds": 4.25,
+        "dir": "recorded",
+        "diagnoses": [],
+    }
+    assert (by_path["untimed.json"]["spans"], by_path["untimed.json"]["seconds"]) == (1, None)
+    assert (found.skipped, found.experiments, found.reports) == ([], [], [])
+
+
+def test_a_diagnosis_goes_to_the_nearest_session_with_its_id_or_stands_alone(tmp_path: Path):
+    _write(tmp_path / "runs" / "checkout.json", _session("s-1", [(0, 1)]))
+    _write(tmp_path / "copies" / "checkout.json", _session("s-1", [(0, 1)]))
+    _write(tmp_path / "runs" / "found" / "checkout.diagnosis.json", _diagnosis("s-1"))
+    _write(tmp_path / "runs" / "elsewhere.diagnosis.json", _diagnosis("s-9"))
+    _write(tmp_path / "runs" / "causes.json", RCAOutput(root_causes=[_CAUSE]).model_dump(mode="json"))
+    # Two sessions with the id, equally near: which one was diagnosed is not guessed.
+    _write(tmp_path / "left" / "twin.json", _session("twin", [(0, 1)]))
+    _write(tmp_path / "right" / "twin.json", _session("twin", [(0, 1)]))
+    _write(tmp_path / "twin.diagnosis.json", _diagnosis("twin"))
+
+    found = discover(tmp_path)
+
+    assert {d["path"]: d["session"] for d in found.diagnoses} == {
+        "runs/found/checkout.diagnosis.json": "runs/checkout.json",
+        "runs/elsewhere.diagnosis.json": None,
+        "runs/causes.json": None,
+        "twin.diagnosis.json": None,
+    }
+    assert {s["path"]: s["diagnoses"] for s in found.sessions if s["diagnoses"]} == {
+        "runs/checkout.json": ["runs/found/checkout.diagnosis.json"]
+    }
+    entry = next(d for d in found.diagnoses if d["path"] == "runs/causes.json")
+    assert (entry["session_id"], entry["failures"], entry["root_causes"], entry["dir"]) == (None, 0, 1, "runs")
+    assert found.skipped == []
+
+
+def test_a_task_result_store_is_reported_and_its_files_are_neither_skipped_nor_counted(tmp_path: Path, monkeypatch):
+    store = LocalFileTaskResultStore(tmp_path / "store")
+    for name in ("a", "b", "c", "d", "e"):
+        store.save(name, EvaluationData(input=f"ask {name}", actual_output="answer", name=name))
+    _write(tmp_path / "store" / "notes.json", {"hello": "world"})
+    _write(tmp_path / "experiment.json", _experiment("a"))
+    _write(tmp_path / "report.json", _report("a"))
+    # Opens the way a saved result does, and is not one.
+    _write(tmp_path / "inputs" / "row.json", {"input": "q", "output": "a"})
+
+    # Four files besides the five results: the cap is reached only if a result is counted.
+    monkeypatch.setattr(_ui_server, "MAX_SCAN_FILES", 4)
+    found = discover(tmp_path)
+
+    assert found.stores == [{"dir": "store", "files": 5}]
+    assert found.truncated is False
+    assert {skip["path"]: skip["why"] for skip in found.skipped} == {
+        "inputs/row.json": NOT_RECOGNISED,
+        "store/notes.json": NOT_RECOGNISED,
+    }
+    assert _found(tmp_path) == ["experiment.json", "report.json"]
+
+    monkeypatch.setattr(_ui_server, "MAX_SCAN_FILES", 3)
+    assert discover(tmp_path).truncated is True
+
+
+def test_scan_endpoint_serves_sessions_diagnoses_and_stores(client: Client):
+    _write(client.root / "recorded" / "checkout.json", _session("s-1", [(0, 1)]))
+    _write(client.root / "recorded" / "checkout.diagnosis.json", _diagnosis("s-1"))
+    LocalFileTaskResultStore(client.root / "store").save("a", EvaluationData(input="q", actual_output="a"))
+
+    body = client.send("GET", "/api/scan").body
+
+    found = discover(client.root)
+    assert [s["path"] for s in body["sessions"]] == ["recorded/checkout.json"]
+    assert (body["sessions"], body["diagnoses"], body["stores"]) == (found.sessions, found.diagnoses, found.stores)
+    assert body["stores"] == [{"dir": "store", "files": 1}]
+    opened = client.send("GET", "/api/file?path=recorded/checkout.json").body
+    assert opened["document"] == _session("s-1", [(0, 1)])
+
+
+def test_ui_list_names_sessions_and_task_result_stores(tmp_path: Path, capsys):
+    _write(tmp_path / "recorded" / "checkout.json", _session("s-1", [(0, 1), (1, 2)], [(5, 6)]))
+    _write(tmp_path / "recorded" / "checkout.diagnosis.json", _diagnosis("s-1"))
+    _write(tmp_path / "recorded" / "quiet.json", _session("s-2", [(0, 1)]))
+    _write(tmp_path / "lost.diagnosis.json", _diagnosis("s-9"))
+    LocalFileTaskResultStore(tmp_path / "store").save("a", EvaluationData(input="q", actual_output="a"))
+
+    assert main(["--rich", "ui", str(tmp_path), "--list"]) == 0
+
+    printed = capsys.readouterr()
+    assert sorted(printed.out.splitlines()) == [
+        "(no session)  ->  lost.diagnosis.json (1 failures)",
+        "session recorded/checkout.json (2 traces, 3 spans)  ->  recorded/checkout.diagnosis.json",
+        "session recorded/quiet.json (1 traces, 1 spans)  ->  (not diagnosed)",
+        "task result store store (1 results)",
+    ]
+    assert printed.err == ""
+
+    assert main(["--json", "ui", str(tmp_path), "--list"]) == 0
+    found = discover(tmp_path)
+    listed = json.loads(capsys.readouterr().out)
+    assert (listed["sessions"], listed["diagnoses"], listed["stores"]) == (
+        found.sessions,
+        found.diagnoses,
+        found.stores,
+    )
+
+
 # ── the command ──
 
 
@@ -1465,6 +1650,9 @@ def test_ui_list_prints_what_it_found_as_json(tmp_path: Path, capsys):
         "experiments": found.experiments,
         "reports": found.reports,
         "optimizer_runs": found.optimizer_runs,
+        "sessions": [],
+        "diagnoses": [],
+        "stores": [],
         "skipped": found.skipped,
     }
 

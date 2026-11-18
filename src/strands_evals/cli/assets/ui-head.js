@@ -43,7 +43,8 @@ function renderPageHead(view) {
   const run = OPT_RUNS[optSel] && (view === 'report' ? repCand : SECTION_OF[view] === 'optimization' && view !== 'opt-runs');
   const head = run ? runHead(view)
     : view === 'report' && repMeta ? reportHead()
-      : view === 'experiment' && expMeta ? experimentHead() : null;
+      : view === 'experiment' && expMeta ? experimentHead()
+        : view === 'session' && sesMeta ? sessionHead() : null;
   $('pagehead').hidden = !head;
   $('opt-tabs').hidden = !run || view === 'report';
   if (!head) return;

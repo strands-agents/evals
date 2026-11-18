@@ -26,7 +26,7 @@ that can import `strands_evals`; override with `PYTHON=/path/to/venv/bin/python 
 suites at a different build of the page with `UI_HTML=path/to/ui.html`.
 
 `harness.mjs` holds what the suites share: `page()` builds the page in jsdom and returns helpers to
-drive it (`openReport()` and `openExperiment()` pick a row from the two lists), `fakeServer()` is a `fetch` that answers as the server would, and `runner()` counts
+drive it (`openReport()`, `openExperiment()` and `openSession()` pick a row from the lists), `fakeServer()` is a `fetch` that answers as the server would, and `runner()` counts
 assertions.
 
 | Suite | Covers |
@@ -40,7 +40,8 @@ assertions.
 | `charts.mjs` | The Report's charts: the verdict grid and the row a cell opens, the score distribution per evaluator, this report against another (what flipped, what moved, what only one holds), cost per case read off recorded sessions, and a recorded session in a report row drawn as a trace. |
 | `live.mjs` | Keeping up with the folder, against a `fakeServer()` whose tree the test changes: an unchanged folder costs one request, a new experiment appears, a re-run report is re-read on its own with the filter and open rows kept, a clean editor follows the file, unsaved edits are never replaced, and a hidden tab does not poll. |
 | `fidelity.mjs` | Nothing the page does not understand is misprinted or lost. A case's input and outputs of any shape in a report row and the editor: a dict or list as indented JSON, a list of role and content messages as a conversation, never `[object Object]`. A structured field edited as JSON, with JSON that does not parse marked and refused. Keys the editor has no field for, on the file, a case and an evaluator, written back by Save in the download and to the server. |
-| `parity.mjs` | The server's discovery and the page's folder reader run over one tree and compared field by field: which files are experiments and reports, how they pair, the failing and not-applicable counts, what is skipped and why, which directories are left out, and the optimizer run summary. |
+| `parity.mjs` | The server's discovery and the page's folder reader run over one tree and compared field by field: which files are experiments and reports, how they pair, the failing and not-applicable counts, what is skipped and why, which directories are left out, the optimizer run summary, sessions and their durations, which session a diagnosis goes to, and what a task result store holds. |
+| `sessions.mjs` | Sessions as a third kind of thing in the Evals section: a session told by its shape and a look-alike that is not one, the sidebar item only when there is one, the list's figures, a session's page with each trace under its own heading and cost, a trace of several agent invocations read as turns, a diagnosis on its session's page or on its own, a task result store named and its files neither listed nor skipped, the addresses that reopen a session, and a new or rewritten session picked up while the page is open. |
 
 `fixtures/optimizer-run` is synthetic and not committed. `fixtures/make_optimizer_run.py` writes
 it deterministically (84 files, 80 of them transcripts named by content hash), and `npm test` runs

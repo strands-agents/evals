@@ -12,6 +12,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from strands_evals.experiment import Experiment
+from strands_evals.local_file_task_result_store import LocalFileTaskResultStore
+from strands_evals.types.detector import DiagnosisResult, FailureItem, RCAItem
+from strands_evals.types.evaluation import EvaluationData
 from strands_evals.types.evaluation_report import EvaluationReport
 from strands_evals.types.trace import (
     AgentInvocationSpan,
@@ -133,6 +136,106 @@ def session(name: str, text: str, answer: str, tools: list[str], seconds: float)
         )
     recorded = Session(session_id=name, traces=[Trace(trace_id=f"trace-{name}", session_id=name, spans=spans)])
     return recorded.model_dump(mode="json")
+
+
+def turn(session_id: str, trace_id: str, number: int, begin: float, text: str, answer: str, tool: str) -> list:
+    """One agent invocation and the model and tool calls under it, as the spans of a turn `begin` seconds in."""
+
+    def info(part: str, start: float, end: float, parent: str | None = None) -> SpanInfo:
+        return SpanInfo(
+            trace_id=trace_id,
+            span_id=f"{trace_id}-{number}-{part}",
+            session_id=session_id,
+            parent_span_id=parent,
+            start_time=START + timedelta(seconds=begin + start),
+            end_time=START + timedelta(seconds=begin + end),
+        )
+
+    agent = info("agent", 0, 4)
+    call = ToolCall(name=tool, arguments={"customer": "c-1042"}, tool_call_id=f"call-{number}")
+    asked = AssistantMessage(content=[TextContent(text=f"I will use {tool}."), ToolCallContent(**call.model_dump())])
+    return [
+        AgentInvocationSpan(span_info=agent, user_prompt=text, agent_response=answer, available_tools=[]),
+        InferenceSpan(span_info=info("model", 0.2, 1.4, agent.span_id), messages=[asked]),
+        ToolExecutionSpan(
+            span_info=info("tool", 1.4, 2.6, agent.span_id),
+            tool_call=call,
+            tool_result=ToolResult(content=json.dumps({"ok": True, "tool": tool}), tool_call_id=call.tool_call_id),
+        ),
+        InferenceSpan(
+            span_info=info("reply", 2.6, 3.8, agent.span_id),
+            messages=[AssistantMessage(content=[TextContent(text=answer)])],
+        ),
+    ]
+
+
+# What the customer asked and what the agent said, with the tool it used: one conversation, three exchanges.
+EXCHANGES = [
+    ("Where is my order 11023?", "Order 11023 is in transit and due Thursday.", "lookup_order"),
+    ("Can you send it to my office instead?", "I changed the delivery address to your office.", "update_address"),
+    ("And refund the express fee.", "I could not find an express fee on this order.", "lookup_order"),
+]
+
+
+def sessions(out: Path) -> None:
+    """Sessions as `strands-evals fetch -o` writes them, and a diagnosis as `strands-evals diagnose -o` does."""
+    # One trace per exchange, minutes apart: how an agent that is invoked once per message is recorded.
+    apart = Session(
+        session_id="checkout-help",
+        traces=[
+            Trace(
+                trace_id=f"checkout-{number}",
+                session_id="checkout-help",
+                spans=turn("checkout-help", f"checkout-{number}", number, number * 240, *exchange),
+            )
+            for number, exchange in enumerate(EXCHANGES)
+        ],
+    )
+    write(out / "sessions" / "checkout-help.session.json", apart.model_dump(mode="json"))
+
+    # The same conversation recorded as one trace, so the three invocations are its turns.
+    spans = [
+        span
+        for number, exchange in enumerate(EXCHANGES)
+        for span in turn("returns-chat", "returns", number, number * 5, *exchange)
+    ]
+    together = Session(
+        session_id="returns-chat", traces=[Trace(trace_id="returns", session_id="returns-chat", spans=spans)]
+    )
+    write(out / "sessions" / "returns-chat.session.json", together.model_dump(mode="json"))
+
+    diagnosis = DiagnosisResult(
+        session_id="checkout-help",
+        failures=[
+            FailureItem(
+                span_id="checkout-2-tool",
+                category=["wrong_tool_selection"],
+                confidence=[0.9],
+                evidence=["The customer asked for a refund of a fee, and the agent looked the order up again."],
+            )
+        ],
+        root_causes=[
+            RCAItem(
+                failure_span_id="checkout-2-tool",
+                location="checkout-2-model",
+                causality="PRIMARY_FAILURE",
+                propagation_impact=["checkout-2-reply"],
+                failure_detection_timing="ONLY_AT_TASK_END",
+                completion_status="PARTIAL_SUCCESS",
+                root_cause_explanation="No tool for refunds is described, so the model fell back to the order lookup.",
+                fix_type="TOOL_DESCRIPTION_FIX",
+                fix_recommendation="Add a refund tool, or say in the system prompt that fee refunds go to a person.",
+            )
+        ],
+    )
+    write(out / "sessions" / "checkout-help.diagnosis.json", diagnosis.model_dump(mode="json"))
+
+
+def task_results(directory: Path, cases: dict[str, tuple]) -> None:
+    """What each case's task returned, kept by a task result store so evaluators can be re-run without the agent."""
+    store = LocalFileTaskResultStore(directory)
+    for name, (text, expected, tools, _) in cases.items():
+        store.save(name, EvaluationData(input=text, actual_output=expected, name=name, actual_trajectory=tools))
 
 
 def report(cases: dict[str, tuple], judged: dict[tuple[str, str], tuple[float, str]], traced: bool) -> dict:
@@ -277,6 +380,9 @@ def main(out: Path) -> None:
     write(out / "edited-since" / "billing.experiment.json", experiment(cases[2:5], EVALUATORS[:1]))
     write(out / "edited-since" / "billing.report.json", report(dict(list(SUPPORT.items())[1:4]), now, traced=False))
     write(out / "report-only" / "nightly.report.json", report(two, now, traced=False))
+
+    sessions(out)
+    task_results(out / "support" / "task-results", SUPPORT)
 
     # The experiments shipped as examples: written by hand, not run.
     shutil.copytree(REPO / "examples" / "experiments", out / "examples", dirs_exist_ok=True)

@@ -28,10 +28,11 @@ function routeFor(view) {
     const name = cases[sel] && cases[sel].name;
     return `/experiments${idPath(expMeta.path)}${name ? '/cases/' + encodeURIComponent(name) : ''}`;
   }
-  return view === 'experiments' ? '/experiments' : '/reports';
+  if (view === 'session' && sesMeta) return `/sessions${idPath(sesMeta.path)}`;
+  return view === 'experiments' ? '/experiments' : view === 'sessions' ? '/sessions' : '/reports';
 }
 
-/** What a path asks for: `{ tab, report, experiment, case, opt, cand }`, with only the parts it names.
+/** What a path asks for: `{ tab, report, experiment, case, session, opt, cand }`, with only the parts it names.
     A path that names nothing leaves `tab` out, for the page to choose its own first view. */
 function parseRoute(path) {
   const [root, ...rest] = path.split('/').filter(Boolean).map(segment => {
@@ -45,6 +46,7 @@ function parseRoute(path) {
     return OPT_VIEW[last] ? { tab: OPT_VIEW[last], opt: idOf(rest.slice(0, -1)) } : { tab: 'opt-runs' };
   }
   if (root === 'reports') return rest.length ? { tab: 'report', report: rest.join('/') } : { tab: 'reports' };
+  if (root === 'sessions') return rest.length ? { tab: 'session', session: rest.join('/') } : { tab: 'sessions' };
   if (root === 'experiments') {
     if (!rest.length) return { tab: 'experiments' };
     /* A file's path ends in `.json`, so `cases` after one can only be the view of a single case. */

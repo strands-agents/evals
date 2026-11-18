@@ -22,6 +22,7 @@ function bundled() {
 async function goTo(want, force) {
   if (want.report && (repCand || !repMeta || repMeta.path !== want.report)) await openReport(want.report);
   if (want.experiment && (!expMeta || expMeta.path !== want.experiment)) await openExperiment(want.experiment, { force });
+  if (want.session && (!sesMeta || sesMeta.path !== want.session)) await openSession(want.session);
   const opt = want.opt ? OPT_RUNS.findIndex(r => r.id === want.opt) : -1;
   if (opt >= 0 && opt !== optSel) await selectOptimizerRun(opt);
   const at = want.case ? cases.findIndex(c => c.name === want.case) : -1;

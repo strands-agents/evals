@@ -12,6 +12,7 @@ if (gen.status !== 0) {
 }
 
 const suites = ['standalone.mjs', 'fileorigin.mjs', 'extras.mjs', 'optimization.mjs', 'server.mjs', 'parity.mjs', 'guide.mjs', 'charts.mjs', 'live.mjs', 'fidelity.mjs'];
+suites.push('sessions.mjs');
 let failed = 0;
 
 for (const suite of suites) {

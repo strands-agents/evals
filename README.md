@@ -174,6 +174,8 @@ with someone serving the same folder:
 | `/reports/<report file>` | One report. |
 | `/experiments` | Every experiment file found, each with the reports made from it. |
 | `/experiments/<experiment file>` | Its cases; add `/cases/<name>` for one case. |
+| `/sessions` | Every recorded session found. Listed only when there is one. |
+| `/sessions/<session file>` | One session, trace by trace, with any diagnosis made of it. |
 | `/optimization` | The optimizer runs found. |
 | `/optimization/<run directory>/<view>` | One run: `setup`, `overview`, `progress`, `candidates`, `tunables` or `trade-off`. |
 | `/optimization/<run directory>/candidates/<id>/report` | One candidate's cases, as a report. |
@@ -182,6 +184,11 @@ A report is listed whether or not an experiment file sits beside it, so one made
 `run_evaluations()` and saved with `to_file()` shows up too, marked as run from code. A report is matched to
 the experiment of the same name in its directory, or failing that to the one experiment that holds all of
 its cases, and one experiment can have many reports.
+
+A session saved with `strands-evals fetch ... -o` is listed under Sessions and read one trace after another.
+A diagnosis written by `strands-evals diagnose -o` is shown on the page of the session with its `session_id`,
+or listed on its own when that session is not in the folder. The directory of a `LocalFileTaskResultStore`
+is named on the lists and its files are left out of the scan.
 
 To see every view with data in it, `python examples/make_ui_demo.py DIR` writes a synthetic folder to serve.
 Pass `--read-only` to browse without the Save path at all, and `--host` to serve beyond this machine
