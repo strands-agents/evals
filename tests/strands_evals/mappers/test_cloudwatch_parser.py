@@ -1,5 +1,9 @@
 """Tests for CloudWatchLogsParser - raw CloudWatch logs → normalized span format."""
 
+from copy import deepcopy
+
+import pytest
+
 from strands_evals.mappers import CloudWatchLogsParser, parse_cloudwatch_logs
 
 
@@ -148,6 +152,40 @@ class TestEventNormalization:
 
 
 class TestParserIntegration:
+    @pytest.mark.parametrize(
+        "embedded_events", [None, [], [{"event_name": "existing.event", "body": {"text": "hello"}}]]
+    )
+    @pytest.mark.parametrize("with_separate_event", [False, True])
+    def test_preserves_embedded_events(self, embedded_events: list[dict] | None, with_separate_event: bool) -> None:
+        span = {
+            "trace_id": "t1",
+            "span_id": "s1",
+            "start_time": 1000,
+            "end_time": 2000,
+            "span_events": deepcopy(embedded_events),
+        }
+        records = [span]
+        expected_events = deepcopy(embedded_events) if embedded_events is not None else []
+        if with_separate_event:
+            records.append(
+                make_event_record(span_id="s1", event_name="new.event", time_nano=1500, body={"text": "world"})
+            )
+            expected_events.append(
+                {
+                    "event_name": "new.event",
+                    "span_id": "s1",
+                    "timestamp": 1500,
+                    "attributes": {},
+                    "body": {"text": "world"},
+                }
+            )
+        original_records = deepcopy(records)
+
+        result = parse_cloudwatch_logs(records)
+
+        assert result[0]["span_events"] == expected_events
+        assert records == original_records
+
     def test_spans_with_events_associated(self):
         """Events are associated with their parent spans."""
         span = make_span_record(trace_id="t1", span_id="s1")

@@ -21,7 +21,7 @@ from __future__ import annotations
 import copy
 import math
 import statistics
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
@@ -79,7 +79,8 @@ class BayesBenchModel(ScoreModel):
             data: The candidates' scores on one split; the first of `data.candidates` (the baseline, unless it
                 was left out) sets an unbounded metric's unit.
             previous: The last successful fit, whose held-out checks are carried forward; another model's fit
-                counts as none. A candidate measured on a case `previous` wasn't fitted on isn't checked.
+                counts as none. A candidate measured on a case the earlier metric has no observation on isn't
+                checked (its case effect there is only the prior, so the earlier fit can't predict it).
 
         Raises:
             ValueError: A goal metric no eligible candidate has a value of (e.g. an evaluator N/A on every case),
@@ -158,8 +159,8 @@ class BayesBenchModel(ScoreModel):
                 for cid in pool:
                     if cid in before_fit.candidates or cid not in means:
                         continue
-                    if not set(measured_cases[cid]) <= set(earlier.design.cases):
-                        continue  # the earlier fit never saw these cases, so it can't predict them
+                    if not set(measured_cases[cid]) <= set(earlier.observed_cases):
+                        continue  # the earlier fit has no observation on these cases, so it can't predict them
                     # predicted over the cases it was measured on (an evaluator N/A on a case leaves it out), as
                     # its mean is; with every case measured, the same as the earlier fit's average over the cases
                     cases_measured = measured_cases[cid]
@@ -192,7 +193,16 @@ class BayesBenchModel(ScoreModel):
                 noise=noise,
                 observations=int(posterior.n),
             )
-            models[metric] = BayesBenchMetric(layout, posterior, offset, unit, noise, candidate_sd)
+            observed = {case for cases in measured_cases.values() for case in cases}
+            models[metric] = BayesBenchMetric(
+                layout,
+                posterior,
+                offset,
+                unit,
+                noise,
+                candidate_sd,
+                observed_cases=[case for case in layout.cases if case in observed],
+            )
         return BayesBenchFit(
             metrics=models, candidates=frozenset(pool), diagnostics=diagnostics, design=layout, checks=checks
         )
@@ -210,14 +220,26 @@ class BayesBenchMetric:
         offset, unit: The model's scale: metric = model value * unit + offset.
         noise: The observation noise variance, on the model's scale.
         candidate_sd: The prior sd of a candidate's own effect (over the mixture, the root of its mean square).
+        observed_cases: The cases some fitted candidate has a value of this metric on, in the design's order (every
+            case of the design unless given): what `at`, `difference`, `ratio`, and `value_under` average over. A
+            case none has a value on (an evaluator N/A there) is left out, as its effect has no observation.
     """
 
     def __init__(
-        self, design: _Design, posterior: Any, offset: float, unit: float, noise: float, candidate_sd: float
+        self,
+        design: _Design,
+        posterior: Any,
+        offset: float,
+        unit: float,
+        noise: float,
+        candidate_sd: float,
+        *,
+        observed_cases: Sequence[str] | None = None,
     ) -> None:
         self.design, self.posterior = design, posterior
         self.offset, self.unit, self.noise = offset, unit, noise
         self.candidate_sd = candidate_sd
+        self.observed_cases = tuple(design.cases if observed_cases is None else observed_cases)
 
     def own(self, candidate: str | None) -> float:
         """The variance a configuration's own effect adds: none for a fitted candidate, whose effect the posterior
@@ -225,12 +247,12 @@ class BayesBenchMetric:
         return 0.0 if candidate is not None and candidate in self.design.fitted else self.candidate_sd**2
 
     def at(self, values: Values, candidate: str | None = None) -> Estimate:
-        """The metric's mean over the cases at `values`, in its own units.
+        """The metric's mean over `observed_cases` at `values`, in its own units.
 
         With a fitted `candidate`, its own effect is the posterior's; otherwise it is unknown and adds the prior's
         variance.
         """
-        mean, var = self.posterior.predictive(self.design.row(values, candidate=candidate))
+        mean, var = self.posterior.predictive(self._row(values, candidate))
         sd = math.sqrt(max(float(var[0]) + self.own(candidate), 0.0)) * self.unit
         return Estimate(mean=float(mean[0]) * self.unit + self.offset, sd=sd)
 
@@ -243,7 +265,7 @@ class BayesBenchMetric:
         reference_candidate: str | None = None,
     ) -> Estimate:
         """`values` minus `reference` over the same cases, in the metric's units; the shared effects cancel."""
-        a = self.design.row(values, candidate=candidate) - self.design.row(reference, candidate=reference_candidate)
+        a = self._row(values, candidate) - self._row(reference, reference_candidate)
         mean, var = self.posterior.predictive(a)
         variance = float(var[0]) + self.own(candidate) + self.own(reference_candidate)
         return Estimate(mean=float(mean[0]) * self.unit, sd=math.sqrt(max(variance, 0.0)) * self.unit)
@@ -260,8 +282,8 @@ class BayesBenchMetric:
 
         The sd uses the variance of a ratio of two correlated estimates (the delta method).
         """
-        a = self.design.row(values, candidate=candidate)
-        b = self.design.row(reference, candidate=reference_candidate)
+        a = self._row(values, candidate)
+        b = self._row(reference, reference_candidate)
         mean, var = self.posterior.predictive(np.vstack([a, b]))
         var_a = float(var[0]) + self.own(candidate)
         var_b = float(var[1]) + self.own(reference_candidate)
@@ -282,7 +304,11 @@ class BayesBenchMetric:
 
     def value_under(self, effects: Any, values: Values) -> Any:
         """The metric at `values`, in its own units, under each set of `sample_effects`."""
-        return (effects @ self.design.row(values)) * self.unit + self.offset
+        return (effects @ self._row(values, None)) * self.unit + self.offset
+
+    def _row(self, values: Values, candidate: str | None) -> Any:
+        """A configuration's row of the design, averaged over `observed_cases`."""
+        return self.design.row(values, candidate=candidate, over=self.observed_cases)
 
 
 @dataclass(frozen=True)

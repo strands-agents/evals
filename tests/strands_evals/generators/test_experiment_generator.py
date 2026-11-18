@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -23,6 +24,7 @@ def test_experiment_generator__init__():
         max_parallel_num_cases=5,
         rubric_system_prompt="rubric system prompt",
         case_system_prompt="case system prompt",
+        difficulty_distribution={"routine": 1, "adversarial": 3},
     )
     assert generator.input_type is str
     assert generator.output_type is int
@@ -34,6 +36,7 @@ def test_experiment_generator__init__():
     assert generator.max_parallel_num_cases == 5
     assert generator.rubric_system_prompt == "rubric system prompt"
     assert generator.case_system_prompt == "case system prompt"
+    assert generator.difficulty_distribution == {"routine": 1, "adversarial": 3}
 
 
 def test_experiment_generator__init__minimum():
@@ -60,7 +63,7 @@ async def test_experiment_generator_case_worker():
     mock_agent.structured_output_async.return_value = mock_case_data
 
     with patch("strands_evals.generators.experiment_generator.Agent", return_value=mock_agent):
-        await generator._case_worker(queue, "test prompt", [], results)
+        await generator._case_worker(queue, "test prompt", [], results, [])
 
     assert len(results) == 1
     assert isinstance(results[0], Case)
@@ -81,6 +84,122 @@ async def test_experiment_generator_generate_cases_async():
 
     assert len(cases) == 3
     assert all(isinstance(case, Case) for case in cases)
+
+
+@pytest.mark.asyncio
+async def test_experiment_generator_generate_cases_async_agent_construction_error():
+    """Test that a setup error that kills every worker is raised instead of hanging or returning no cases"""
+    generator = ExperimentGenerator(str, str, max_parallel_num_cases=2)
+
+    with (
+        patch("strands_evals.generators.experiment_generator.Agent", side_effect=RuntimeError("bad profile")),
+        pytest.raises(RuntimeError, match="bad profile"),
+    ):
+        await asyncio.wait_for(generator.generate_cases_async("test prompt", num_cases=3), timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_experiment_generator_generate_cases_async_per_case_failure(caplog):
+    """Test that a failed case is logged while its siblings are kept"""
+    generator = ExperimentGenerator(str, str, max_parallel_num_cases=1)
+
+    mock_agent = AsyncMock()
+    mock_case_data = MagicMock()
+    mock_case_data.model_dump.return_value = {"name": "test", "input": "hello"}
+    mock_agent.structured_output_async.side_effect = [mock_case_data, RuntimeError("throttled"), mock_case_data]
+
+    with (
+        patch("strands_evals.generators.experiment_generator.Agent", return_value=mock_agent),
+        caplog.at_level(logging.WARNING, logger="strands_evals.generators.experiment_generator"),
+    ):
+        cases = await generator.generate_cases_async("test prompt", num_cases=3)
+
+    assert len(cases) == 2
+    summaries = [record.getMessage() for record in caplog.records if "could not be generated" in record.getMessage()]
+    assert summaries == ["requested=<3>, generated=<2>, failed=<1> | some cases could not be generated"]
+
+
+@pytest.mark.asyncio
+async def test_experiment_generator_generate_cases_async_concurrent_calls(caplog):
+    """Test that overlapping calls on one generator report only their own failures"""
+    generator = ExperimentGenerator(str, str)
+
+    mock_case_data = MagicMock()
+    mock_case_data.model_dump.return_value = {"name": "test", "input": "hello"}
+
+    def structured_output(_case_model, prompt):
+        if "failing" in prompt:
+            raise RuntimeError("throttled")
+        return mock_case_data
+
+    mock_agent = AsyncMock()
+    mock_agent.structured_output_async.side_effect = structured_output
+
+    with (
+        patch("strands_evals.generators.experiment_generator.Agent", return_value=mock_agent),
+        caplog.at_level(logging.WARNING, logger="strands_evals.generators.experiment_generator"),
+    ):
+        clean, failing = await asyncio.gather(
+            generator.generate_cases_async("clean prompt", num_cases=1),
+            generator.generate_cases_async("failing prompt", num_cases=1),
+        )
+
+    assert len(clean) == 1
+    assert failing == []
+    summaries = [record.getMessage() for record in caplog.records if "could not be generated" in record.getMessage()]
+    assert summaries == ["requested=<1>, generated=<0>, failed=<1> | some cases could not be generated"]
+
+
+@pytest.mark.parametrize("distribution", [{}, {"easy": -1, "hard": 2}, {"easy": 0}])
+def test_experiment_generator__init__invalid_difficulty_distribution(distribution):
+    """Test initialization rejects negative or all-zero difficulty weights"""
+    with pytest.raises(ValueError, match="difficulty_distribution"):
+        ExperimentGenerator(str, str, difficulty_distribution=distribution)
+
+
+@pytest.mark.parametrize(
+    ("distribution", "num_cases", "expected"),
+    [
+        ({"easy": 0.3, "medium": 0.5, "hard": 0.2}, 1, ["medium"]),
+        ({"easy": 0.3, "medium": 0.5, "hard": 0.2}, 5, ["medium", "easy", "hard", "medium", "easy"]),
+        ({"easy": 1}, 0, []),
+    ],
+)
+def test_experiment_generator_allocate_difficulties(distribution, num_cases, expected):
+    """Test difficulties follow the distribution and interleave"""
+    generator = ExperimentGenerator(str, str, difficulty_distribution=distribution)
+    assert generator._allocate_difficulties(num_cases) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("distribution", "expected_prompts"),
+    [
+        (None, ["p1", "p1", "p2"]),
+        (
+            {"easy": 1, "hard": 2},
+            [
+                "p1 Ensure that the test case has a difficulty level of hard.",
+                "p1 Ensure that the test case has a difficulty level of easy.",
+                "p2 Ensure that the test case has a difficulty level of hard.",
+            ],
+        ),
+    ],
+)
+async def test_experiment_generator_generate_cases_async_with_difficulty_distribution(distribution, expected_prompts):
+    """Test that difficulties are allocated over the whole run, sliced per topic, and omitted when None"""
+    generator = ExperimentGenerator(str, str, difficulty_distribution=distribution)
+
+    mock_agent = AsyncMock()
+    mock_case_data = MagicMock()
+    mock_case_data.model_dump.return_value = {"name": "test", "input": "hello"}
+    mock_agent.structured_output_async.return_value = mock_case_data
+
+    with patch("strands_evals.generators.experiment_generator.Agent", return_value=mock_agent):
+        with patch.object(generator, "_prepare_generation_prompts", return_value=[("p1", 2), ("p2", 1)]):
+            await generator.generate_cases_async("test prompt", num_cases=3, num_topics=2)
+
+    assert [c.args[1] for c in mock_agent.structured_output_async.call_args_list] == expected_prompts
 
 
 @pytest.mark.asyncio

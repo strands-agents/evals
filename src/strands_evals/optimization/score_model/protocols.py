@@ -56,7 +56,8 @@ class MetricModel(Protocol):
     """
 
     def at(self, values: Values, candidate: str | None = None) -> Estimate:
-        """The metric's mean over the cases.
+        """The metric's mean over the cases it has a value on: a case where no fitted candidate has one (an
+        evaluator N/A there) is left out.
 
         Args:
             values: The configuration to predict: declared key -> value (see the class docstring).

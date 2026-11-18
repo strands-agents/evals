@@ -101,6 +101,15 @@ def _measured(observations, cid):
     return float(np.mean([v for runs in observations[cid].values() for v in runs]))
 
 
+def _not_applicable(observations, cases, *, but=()):
+    """`observations` with no value on `cases` (an evaluator N/A there: each run None), except for the candidates
+    `but`."""
+    return {
+        cid: {case: [None] * len(runs) if case in cases and cid not in but else runs for case, runs in by_case.items()}
+        for cid, by_case in observations.items()
+    }
+
+
 def test_estimate_intervals_cover_the_truth():
     covered = total = 0
     for seed in range(12):
@@ -130,6 +139,18 @@ def test_a_deterministic_metric_is_estimated_as_measured():
     fit = _fit(candidates, observations, cases)
     for cid, values in candidates.items():
         assert fit.metrics["score"].at(values, cid).mean == pytest.approx(_measured(observations, cid), abs=1e-3)
+
+
+@pytest.mark.parametrize("never", [[0], [2, 4]], ids=["the reference case", "two other cases"])
+def test_a_deterministic_metric_is_estimated_as_measured_over_the_cases_it_has_a_value_on(never):
+    candidates, observations, _, cases = _world(3, cases=6, runs=2, noise=0.0, text_spread=0.03)
+    na = [cases[k] for k in never]
+    fit = _fit(candidates, _not_applicable(observations, na), cases)
+    for cid, values in candidates.items():
+        measured = np.mean([v for case, runs in observations[cid].items() if case not in na for v in runs])
+        estimate = fit.metrics["score"].at(values, cid)
+        assert estimate.mean == pytest.approx(measured, abs=1e-3)
+        assert estimate.sd < 0.005  # no case without an observation averaged in
 
 
 def test_effects_recover_an_option_effect():
@@ -210,6 +231,57 @@ def test_an_eligible_candidate_with_no_value_of_one_metric_is_left_out_of_that_m
     assert "c3" in fit.candidates
     assert fit.metrics["score"].posterior.n == 5 * len(cases)
     assert fit.metrics["tokens"].posterior.n == 4 * len(cases)
+
+
+def test_a_case_no_candidate_has_a_value_on_is_left_out_of_every_value():
+    # Its case effect has no observation and stays at the prior: averaged in, it would shift every value and widen
+    # every sd. Left out, the fit gives what a fit without that case gives.
+    candidates, observations, _, cases = _world(2, n=12, cases=6)
+    na = cases[2:4]
+    rest = [case for case in cases if case not in na]
+    model = _fit(candidates, _not_applicable(observations, na), cases).metrics["score"]
+    expected = _fit(
+        candidates, {cid: {case: by_case[case] for case in rest} for cid, by_case in observations.items()}, rest
+    ).metrics["score"]
+    for cid, values in candidates.items():
+        for candidate in (cid, None):
+            got, want = model.at(values, candidate), expected.at(values, candidate)
+            assert (got.mean, got.sd) == pytest.approx((want.mean, want.sd), rel=1e-8)
+    pair = (candidates["c1"], candidates["c0"])
+    got = model.ratio(*pair, candidate="c1", reference_candidate="c0")
+    want = expected.ratio(*pair, candidate="c1", reference_candidate="c0")
+    assert (got.mean, got.sd) == pytest.approx((want.mean, want.sd), rel=1e-8)
+    draws = model.sample_effects(5, np.random.default_rng(0))
+    moved = draws.copy()
+    for case in na:  # the first case is the reference, so case k's column is the (k - 1)-th after `case_start`
+        moved[:, model.design.case_start + cases.index(case) - 1] += 10.0
+    assert np.array_equal(model.value_under(moved, candidates["c5"]), model.value_under(draws, candidates["c5"]))
+    assert model.observed_cases == tuple(rest)
+
+
+def test_each_metric_averages_over_the_cases_it_has_a_value_on():
+    candidates, observations, _, cases = _world(1, n=5, cases=6)
+    tokens = {cid: {case: [100.0 + i] for case in cases} for i, cid in enumerate(candidates)}
+
+    def fit(score):
+        data = FitData(
+            space=SPACE,
+            text_blocks={"text": ["text"]},
+            candidates=candidates,
+            cases=cases,
+            scores=_scores({"score": score, "tokens": tokens}, ineligible={"c0"}),
+            ranges={"score": (None, None), "tokens": (0.0, None)},
+        )
+        return BayesBenchModel().fit(data)
+
+    # The score is N/A on cases[2] for every candidate but the baseline, which isn't eligible (as in the end phase's
+    # validation fit), and on cases[3] for every one but c3.
+    partial = fit(_not_applicable(_not_applicable(observations, [cases[2]], but={"c0"}), [cases[3]], but={"c3"}))
+    assert partial.metrics["score"].observed_cases == tuple(c for c in cases if c != cases[2])
+    assert partial.metrics["tokens"].observed_cases == tuple(cases)
+    every = fit(observations)
+    for cid, values in candidates.items():
+        assert partial.metrics["tokens"].at(values, cid) == every.metrics["tokens"].at(values, cid)
 
 
 def test_a_goal_metric_no_eligible_candidate_has_raises():
@@ -320,6 +392,29 @@ def test_the_held_out_check_predicts_over_the_cases_a_candidate_was_measured_on(
     assert some_cases["z_mean"] == pytest.approx(every_case["z_mean"], abs=0.1)  # about 1.9 apart without the subset
 
 
+def test_the_held_out_check_skips_a_candidate_measured_on_a_case_the_earlier_metric_never_observed():
+    # The earlier fit's design has the N/A cases, but the metric has no observation on them: their case effects are
+    # only the prior, so a new candidate measured there can't be predicted and is left out of the check.
+    candidates, observations, _, cases = _world(1, n=12)
+    na = cases[2:6]  # not the first case, the reference: both designs then code the case effects the same way
+    rest = [case for case in cases if case not in na]
+    model = BayesBenchModel()
+    first = model.fit(_chain_data(candidates, _not_applicable(observations, na), cases, 6))
+    assert set(na) <= set(first.design.cases)
+    assert set(na).isdisjoint(first.metrics["score"].observed_cases)
+    full = model.fit(_data(candidates, observations, cases), previous=first)
+    assert full.diagnostics["score"]["n_holdout"] == 0
+    # measured only where the earlier metric has observations, the new candidates are checked as if `na` never existed
+    partial = model.fit(_data(candidates, _not_applicable(observations, na), cases), previous=first)
+    other = BayesBenchModel()
+    on_rest = {cid: {case: by_case[case] for case in rest} for cid, by_case in observations.items()}
+    first_rest = other.fit(_chain_data(candidates, on_rest, rest, 6))
+    expected = other.fit(_data(candidates, on_rest, rest), previous=first_rest)
+    assert partial.diagnostics["score"]["n_holdout"] == expected.diagnostics["score"]["n_holdout"] == 6
+    for key in ("z_mean", "z_sq_sum"):
+        assert partial.diagnostics["score"][key] == pytest.approx(expected.diagnostics["score"][key])
+
+
 def test_a_previous_fit_on_other_cases_checks_nothing():
     candidates, observations, _, cases = _world(1, n=12)
 
@@ -351,6 +446,24 @@ def test_a_row_at_a_case_the_fit_doesnt_have_raises():
         layout.row(candidates["c0"], "nope")
 
 
+def test_a_row_averaged_over_some_cases_weights_each_of_them_equally():
+    candidates, observations, _, cases = _world(1, n=5, cases=6)
+    layout = _fit(candidates, observations, cases).metrics["score"].design
+    values = candidates["c1"]
+    assert np.array_equal(layout.row(values, over=cases), layout.row(values))
+    some = layout.row(values, over=[cases[1], cases[4], cases[1]])[layout.case_start :]  # duplicates count once
+    assert list(some) == [0.5, 0, 0, 0.5, 0]  # the first case is the reference, with no column
+    with_reference = layout.row(values, over=cases[:2])[layout.case_start :]
+    assert list(with_reference) == [0.5, 0, 0, 0, 0]
+    assert not layout.row(values, over=cases[:1])[layout.case_start :].any()
+    with pytest.raises(ValueError, match="unknown case 'nope'"):
+        layout.row(values, over=[cases[1], "nope"])
+    with pytest.raises(ValueError, match="no cases to average over"):
+        layout.row(values, over=[])
+    with pytest.raises(ValueError, match="not both"):
+        layout.row(values, cases[1], over=cases)
+
+
 def test_an_unbounded_metric_is_scaled_by_twice_the_baselines_mean():
     candidates, observations, _, cases = _world(1, n=5)
     fit = _fit(candidates, observations, cases)
@@ -377,6 +490,7 @@ def test_a_ratio_against_a_reference_whose_mean_is_zero_is_none():
             return 0.0
 
     zero = BayesBenchMetric(model.design, Posterior(), 0.0, 1.0, model.noise, model.candidate_sd)
+    assert zero.observed_cases == tuple(cases)  # every case of the design unless given
     assert zero.ratio(candidates["c1"], candidates["c0"], candidate="c1", reference_candidate="c0") is None
     ratio = model.ratio(candidates["c1"], candidates["c0"], candidate="c1", reference_candidate="c0")
     at = model.at(candidates["c1"], "c1").mean / model.at(candidates["c0"], "c0").mean

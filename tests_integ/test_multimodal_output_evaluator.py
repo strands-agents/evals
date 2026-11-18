@@ -16,6 +16,10 @@ from strands_evals import Case, Experiment
 from strands_evals.evaluators import MultimodalOutputEvaluator
 from strands_evals.types.multimodal import ImageData, MultimodalInput
 
+# TODO: re-enable once image fixtures no longer depend on picsum.photos.
+# The host has been returning HTTP 522 / timing out, causing CI failures.
+pytestmark = pytest.mark.skip(reason="picsum.photos fixture host is unreliable (HTTP 522 / timeouts)")
+
 # Deterministic picsum.photos URLs — same image every time for a given ID.
 # id/274: Times Square at night (city, neon signs, buildings, crowds)
 # id/152: Purple petunia flowers (close-up, nature, green leaves)
