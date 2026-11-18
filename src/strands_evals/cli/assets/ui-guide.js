@@ -278,7 +278,7 @@ function helpFor(kind, key) {
     };
   }
   if (kind === 'setting') {
-    const [type, name] = key.split('.');
+    const [type, name] = key.split(/\.(.*)/s);
     const known = ((EVALUATOR_INFO[type] || {}).settings || []).find(s => s.name === name);
     const state = known ? (known.required ? 'Required.' : `Default: ${known.default}.`) : '';
     if (!SETTING_GUIDE[name] && !state) return null;

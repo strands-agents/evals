@@ -14,7 +14,7 @@ const parse = a => {
 const docLinks = p => p.$$(`a[href^="${DOCS}"]`);
 const EXPERIMENT = {
   cases: [{ name: 'a', session_id: 's-a', input: 'q' }],
-  evaluators: [{ evaluator_type: 'Contains', value: 'x', case_sensitive: true }, { evaluator_type: 'AcmeSecretJudge', threshold: 1 }],
+  evaluators: [{ evaluator_type: 'Contains', value: 'x', 'value.unit': 'word', case_sensitive: true }, { evaluator_type: 'AcmeSecretJudge', threshold: 1 }],
 };
 const helpText = p => p.text('.help-pop');
 const helpLink = p => parse(p.$('.help-pop a'));
@@ -118,6 +118,7 @@ const helpLink = p => parse(p.$('.help-pop a'));
   ok(/letter case/.test(helpText(p)) && /Default: true\./.test(helpText(p)), 'a setting says what it does and its default', helpText(p));
   await p.click('.help[data-help="setting:Contains.value"]');
   ok(/Required\./.test(helpText(p)), 'or that it is required', helpText(p));
+  ok(!p.$('.help[data-help="setting:Contains.value.unit"]'), 'a setting is not explained as another whose name it starts with');
 
   await p.click(p.$$('#evs .evchip')[1]);
   ok(/Not one of the built-in evaluators/.test(p.text('#evform .evsum')), 'an evaluator the library does not ship says so',
