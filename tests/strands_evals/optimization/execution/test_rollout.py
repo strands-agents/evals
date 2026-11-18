@@ -744,6 +744,23 @@ async def test_an_async_factorys_agent_is_tagged_once_awaited(traces):
     assert (usage.tokens, benchmark.tokens) == (15, 1000)
 
 
+async def test_a_factory_returning_a_task_is_tagged_once_awaited(traces):
+    async def build_agent():
+        return Agent(model=ScriptedModel(["hi"]), callback_handler=None)
+
+    def factory():
+        return asyncio.ensure_future(build_agent())  # awaitable, yet not a coroutine
+
+    async def rollout(agent_factory, case):
+        agent = await agent_factory()
+        await _user().invoke_async(str(await agent.invoke_async(case.input)))
+        return {"output": "x"}
+
+    usage, benchmark, _ = await _attempt(make_task(factory, rollout), traces)
+
+    assert (usage.tokens, benchmark.tokens) == (15, 1000)
+
+
 async def test_a_multi_agent_system_the_factory_builds_is_the_candidates(traces):
     def factory():
         return Swarm([Agent(name="solo", model=ScriptedModel(["done"]), callback_handler=None)])

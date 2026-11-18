@@ -228,7 +228,7 @@ def _tagging(agent_factory: Callable[..., Any], rollout_span: Span) -> Callable[
 
     def build(*args: Any, **kwargs: Any) -> Any:
         built = agent_factory(*args, **kwargs)
-        return tag_when_built(built) if inspect.iscoroutine(built) else tag(built)
+        return tag_when_built(built) if inspect.isawaitable(built) else tag(built)
 
     return build
 
