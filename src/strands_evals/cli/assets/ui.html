@@ -60,7 +60,9 @@
       <nav class="crumbs" id="crumbs" aria-label="Where this is"></nav>
       <div class="headrow">
         <p class="facts" id="facts"></p>
-        <div class="actions" id="actions"></div>
+        <div class="actions" id="actions">
+          <div class="pick" id="cmp-with" role="group" aria-label="Compare with another report" hidden></div>
+        </div>
       </div>
       <div class="ptabs" id="opt-tabs" hidden>
         <button class="tab" data-view="opt-setup" data-sec="optimization" hidden data-tip="What the open run was told to do.">Setup</button>
@@ -86,6 +88,8 @@
       <h2>Reports</h2>
       <p class="sub" id="reports-sub"></p>
       <div class="ctl">
+        <button class="btn pri" id="cmp-go" hidden data-tip="Open the ticked reports side by side."></button>
+        <span class="path" id="cmp-hint">Tick two or more reports to compare them.</span>
         <span class="grow"></span>
         <span class="path" id="reports-count"></span>
       </div>
@@ -97,6 +101,45 @@
           </tr></thead>
           <tbody id="reports-rows"></tbody>
         </table>
+      </div>
+    </section>
+
+    <section class="view" id="v-compare">
+      <h2>Compare</h2>
+      <p class="sub" id="cmp-sub"></p>
+      <div class="scroll">
+        <table class="rep cmp">
+          <thead><tr>
+            <th data-tip="Its place among the reports compared, oldest first.">#</th><th data-term="report">Report</th><th data-term="overall">Overall</th>
+            <th data-tip="The change in the overall score from the report before it.">Change</th>
+            <th class="n" data-tip="One row is one case scored by one evaluator.">Rows</th><th class="n" data-tip="Rows that passed. A row that was not applicable is neither.">Passing</th>
+            <th class="n" data-tip="Rows that failed.">Failing</th>
+          </tr></thead>
+          <tbody id="cmp-summary"></tbody>
+        </table>
+      </div>
+      <div class="charts">
+        <div class="chart wide">
+          <h3>Each evaluator's mean</h3>
+          <p class="cap">The mean score over the rows an evaluator applied to, in each report, with the change from the report before it that has one.</p>
+          <div class="scroll"><table class="rtab" id="cmp-evals"></table></div>
+        </div>
+      </div>
+      <div class="charts">
+        <div class="chart wide">
+          <h3>Verdict by row and report</h3>
+          <p class="cap" id="cmp-grid-cap"></p>
+          <div id="cmp-grid"></div>
+          <div class="legend"><span><i class="pass"></i>pass</span><span><i class="fail"></i>fail</span><span data-term="not_applicable"><i class="na"></i>not applicable</span></div>
+        </div>
+      </div>
+      <div class="charts">
+        <div class="chart wide">
+          <h3 id="cmp-ends-head"></h3>
+          <p class="cap" id="cmp-ends-cap"></p>
+          <div id="cmp-ends"></div>
+          <div class="legend" id="cmp-ends-legend"></div>
+        </div>
       </div>
     </section>
 
@@ -167,7 +210,7 @@
         <div class="stats" id="r-stats"></div>
       </div>
       <details class="drawer" id="rep-charts" open hidden>
-        <summary>Charts<span class="path">verdicts, scores, and what changed since another report</span></summary>
+        <summary>Charts<span class="path">verdicts, scores, and what each case took</span></summary>
         <div class="charts">
           <div class="chart wide">
             <h3>Verdict by case and evaluator</h3>
@@ -177,19 +220,10 @@
           </div>
         </div>
         <div class="charts">
-          <div class="chart" id="rep-spread-card">
+          <div class="chart wide" id="rep-spread-card">
             <h3>Score distribution</h3>
             <p class="cap">How each evaluator's scores are spread over the rows it applied to. The tick is the mean.</p>
             <div id="rep-spread"></div>
-          </div>
-          <div class="chart">
-            <div class="chead">
-              <h3>Against another report</h3>
-              <div class="pick" id="rep-cmp-pick" role="group" aria-label="Report to compare against"></div>
-            </div>
-            <p class="cap" id="rep-cmp-cap"></p>
-            <div id="rep-cmp"></div>
-            <div class="legend" id="rep-cmp-legend"></div>
           </div>
         </div>
         <div class="charts" id="rep-cost-card" hidden>
@@ -436,6 +470,7 @@
 <script src="ui-experiment.js"></script>
 <script src="ui-report.js"></script>
 <script src="ui-report-charts.js"></script>
+<script src="ui-compare.js"></script>
 <script src="ui-folder.js"></script>
 <script src="ui-optimizer-record.js"></script>
 <script src="ui-charts.js"></script>

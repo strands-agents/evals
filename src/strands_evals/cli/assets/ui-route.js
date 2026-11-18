@@ -14,6 +14,10 @@ const OPT_VIEW = Object.fromEntries(Object.entries(OPT_SEGMENT).map(([view, segm
 const idPath = id => id === '.' ? '' : '/' + String(id).split('/').map(encodeURIComponent).join('/');
 const idOf = segments => segments.join('/') || '.';
 
+/* A comparison names its reports in the query, `?r=<path>&r=<path>`. Every other page is its path alone. */
+const comparedQuery = paths => (paths.length ? '?' + paths.map(path => 'r=' + encodeURIComponent(path)).join('&') : '');
+const comparedIn = query => new URLSearchParams(query).getAll('r');
+
 /** The path for a view, given what is open in it. */
 function routeFor(view) {
   const opt = OPT_RUNS[optSel];
@@ -24,6 +28,7 @@ function routeFor(view) {
     return opt && OPT_SEGMENT[view] ? `/optimization${idPath(opt.id)}/${OPT_SEGMENT[view]}` : '/optimization';
   }
   if (view === 'report' && repMeta) return `/reports${idPath(repMeta.path)}`;
+  if (view === 'compare') return '/reports/compare' + comparedQuery(CMP.map(c => c.meta.path));
   if (view === 'experiment' && expMeta) {
     const name = cases[sel] && cases[sel].name;
     return `/experiments${idPath(expMeta.path)}${name ? '/cases/' + encodeURIComponent(name) : ''}`;
@@ -31,9 +36,11 @@ function routeFor(view) {
   return view === 'experiments' ? '/experiments' : '/reports';
 }
 
-/** What a path asks for: `{ tab, report, experiment, case, opt, cand }`, with only the parts it names.
+/** What a path asks for: `{ tab, report, compare, experiment, case, opt, cand }`, with only the parts it names.
     A path that names nothing leaves `tab` out, for the page to choose its own first view. */
-function parseRoute(path) {
+function parseRoute(route) {
+  const [path, query = ''] = route.split('?');
+  if (path.replace(/\/+$/, '') === '/reports/compare') return { tab: 'compare', compare: comparedIn(query) };
   const [root, ...rest] = path.split('/').filter(Boolean).map(segment => {
     try { return decodeURIComponent(segment); } catch { return segment; }
   });
@@ -55,7 +62,8 @@ function parseRoute(path) {
   return {};
 }
 
-const currentRoute = () => MODE === 'server' ? location.pathname : location.hash.slice(1);
+const currentRoute = () => MODE === 'server'
+  ? location.pathname + comparedQuery(comparedIn(location.search)) : location.hash.slice(1);
 const readAddress = () => parseRoute(currentRoute());
 
 /* The route the page last wrote or followed, and whether it is following one now. */
@@ -69,7 +77,11 @@ function writeAddress(view, replace) {
   if (route === lastRoute) return;
   lastRoute = route;
   const push = !replace && app.dataset.ready;
-  const url = MODE === 'server' ? route + location.search : `${location.pathname}${location.search}#${route}`;
+  /* Whatever else the address carries stays; the reports of a comparison left behind do not. */
+  const others = new URLSearchParams(location.search);
+  others.delete('r');
+  const kept = others.toString() && (route.includes('?') ? '&' : '?') + others;
+  const url = MODE === 'server' ? route + kept : `${location.pathname}${location.search}#${route}`;
   /* On file:// the origin is opaque and the History API throws SecurityError: fall back to the hash. */
   try {
     history[push ? 'pushState' : 'replaceState'](null, '', url);

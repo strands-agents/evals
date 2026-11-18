@@ -43,9 +43,11 @@ function renderPageHead(view) {
   const run = OPT_RUNS[optSel] && (view === 'report' ? repCand : SECTION_OF[view] === 'optimization' && view !== 'opt-runs');
   const head = run ? runHead(view)
     : view === 'report' && repMeta ? reportHead()
+      : view === 'compare' && CMP.length ? compareHead()
       : view === 'experiment' && expMeta ? experimentHead() : null;
   $('pagehead').hidden = !head;
   $('opt-tabs').hidden = !run || view === 'report';
+  renderCompareAction(view);
   if (!head) return;
   $('crumbs').innerHTML = crumbs(head[0]);
   $('facts').innerHTML = head[1];

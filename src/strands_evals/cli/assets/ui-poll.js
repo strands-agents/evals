@@ -34,7 +34,7 @@ async function pollNow() {
     let mark;
     try { mark = (await api('/api/changes')).fingerprint; } catch { return; }   // no answer: the next tick asks again
     if (!mark || mark === treeMark || !await rescan(true)) return;
-    try { await refreshOpen(); } catch (err) { scanError = `could not re-read: ${err.message}`; }
+    try { await refreshOpen(); await refreshCompare(); } catch (err) { scanError = `could not re-read: ${err.message}`; }
     renderLists();
   } finally {
     polling = false;

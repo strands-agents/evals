@@ -6,6 +6,7 @@ usage: python examples/make_ui_demo.py DIR, then strands-evals ui DIR
 import copy
 import importlib.util
 import json
+import os
 import shutil
 import sys
 from datetime import datetime, timedelta, timezone
@@ -260,6 +261,8 @@ def main(out: Path) -> None:
     write(out / "support" / "support.report.json", report(SUPPORT, now, traced=True))
     write(out / "support-last-week" / "support.experiment.json", experiment(cases, EVALUATORS))
     write(out / "support-last-week" / "support.report.json", report(SUPPORT, {**now, **EARLIER}, traced=False))
+    earlier = (datetime.now(timezone.utc) - timedelta(days=7)).timestamp()
+    os.utime(out / "support-last-week" / "support.report.json", (earlier, earlier))
 
     # Cases still in draft, for the review pass; nothing has run them yet.
     drafts = [
