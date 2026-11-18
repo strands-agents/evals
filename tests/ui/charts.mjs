@@ -2,8 +2,7 @@
    distribution, and what each case cost. */
 import { page, runner } from './harness.mjs';
 
-const { ok, done } = runner('charts');
-const same = (actual, expected, msg) => ok(JSON.stringify(actual) === JSON.stringify(expected), msg, JSON.stringify(actual));
+const { ok, same, done } = runner('charts');
 
 /* Rows as `[case, evaluator, score, verdict]`, the verdict one of pass, fail or na. */
 const report = (rows, trajectories = {}) => ({
@@ -27,7 +26,6 @@ const session = seconds => {
 const NOW = [['a', 'X', 1, 'pass'], ['a', 'Y', 0.2, 'fail'], ['b', 'X', 0, 'fail'], ['b', 'Y', 1, 'na'], ['c', 'X', 0.8, 'pass']];
 const THEN = [['a', 'X', 1, 'pass'], ['a', 'Y', 0.9, 'pass'], ['b', 'X', 0, 'fail'], ['c', 'X', 0.3, 'fail'], ['d', 'X', 1, 'pass']];
 
-const tips = (p, selector) => p.$$(selector).map(el => el.querySelector('title').textContent);
 const p = await page();
 await p.openFolder({
   'now/experiment.json': experiment, 'now/report.json': report(NOW, { a: session(5), c: session(2) }),
@@ -36,7 +34,7 @@ await p.openFolder({
 await p.openReport('now /');
 
 // ── the verdict grid: one cell per row of the report, a gap where an evaluator did not run ──
-same(tips(p, '#rep-heat rect.cell'), [
+same(p.tips('#rep-heat rect.cell'), [
   'a · X · score 1.00 · pass', 'b · X · score 0.00 · fail', 'c · X · score 0.80 · pass',
   'a · Y · score 0.20 · fail', 'b · Y · not applicable',
 ], 'the grid has a cell per case and evaluator that ran, saying what it scored');
@@ -52,13 +50,13 @@ ok(opened && opened.dataset.i === '2' && p.$('#rep-find').value === '',
 ok(p.window.location.hash === '#/reports/now/report.json/rows/b/X', 'and the address names the row', p.window.location.hash);
 
 // ── the score distribution: per evaluator, over the rows it applied to ──
-same(tips(p, '#rep-spread line.hmean'), ['X · mean 0.6 over 3 rows', 'Y · mean 0.2 over 1 row'],
+same(p.tips('#rep-spread line.hmean'), ['X · mean 0.6 over 3 rows', 'Y · mean 0.2 over 1 row'],
   'the distribution is per evaluator and leaves out the rows it did not apply to');
 ok(p.$$('#rep-spread rect.hbin').length === 4, 'with a bar wherever scores fall', p.$$('#rep-spread rect.hbin').length);
 
 // ── what each case cost, read off its recorded session ──
 same(p.$$('#rep-cost text.vlab').map(t => t.textContent), ['5s', '2s'], 'cases with a recorded session are charted by how long they took, longest first');
-same(tips(p, '#rep-cost g.rbar'), ['a · 1 model call · 1 tool call · 5s', 'c · 1 model call · 1 tool call · 2s'],
+same(p.tips('#rep-cost g.rbar'), ['a · 1 model call · 1 tool call · 5s', 'c · 1 model call · 1 tool call · 2s'],
   'with what the session counted');
 
 // ── a recorded session in a report row is drawn as a trace ──
@@ -88,4 +86,4 @@ await p.openFolder({ 'now/experiment.json': experiment });
 ok(p.$('#rep-charts').hidden && !p.$('#rep-rows tr') && p.text('#r-score') === '—',
   'a folder with no report in it shows no charts, and nothing else of the last report', p.text('#r-score'));
 
-done(p.errs);
+done();

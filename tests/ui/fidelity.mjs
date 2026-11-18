@@ -2,10 +2,7 @@
    shape, and keys the editor has no field for, at every level of an experiment file. */
 import { fakeServer, page, runner, tick } from './harness.mjs';
 
-const { ok, done } = runner('fidelity');
-const pages = [];
-const open = async opts => { const p = await page(opts); pages.push(p); return p; };
-const same = (actual, expected, msg) => ok(JSON.stringify(actual) === JSON.stringify(expected), msg, JSON.stringify(actual));
+const { ok, same, done } = runner('fidelity');
 const pretty = v => JSON.stringify(v, null, 2);
 
 const MULTIMODAL = { instruction: 'Describe the chart', media: ['q3.png'] };
@@ -36,7 +33,7 @@ const pairs = el => [...el.querySelectorAll('dt')].map(dt => [dt.textContent, dt
 
 // ── a report row shows a value of any shape ──
 {
-  const p = await open();
+  const p = await page();
   await p.openFolder({ 'run/experiment.json': EXPERIMENT, 'run/report.json': REPORT });
   await p.openReport('run');
   for (const row of p.$$('#rep-rows tr.case')) await p.click(`#rep-rows tr.case[data-i="${row.dataset.i}"]`);
@@ -71,7 +68,7 @@ const pairs = el => [...el.querySelectorAll('dt')].map(dt => [dt.textContent, dt
 
 // ── the editor keeps a structured field structured ──
 {
-  const p = await open();
+  const p = await page();
   await p.openFolder({ 'run/experiment.json': EXPERIMENT });
   await p.openExperiment();
   const field = k => p.$(`#form [data-k="${k}"]`);
@@ -107,7 +104,7 @@ const pairs = el => [...el.querySelectorAll('dt')].map(dt => [dt.textContent, dt
 // ── served: what goes to the server is the whole document ──
 {
   let sent = null;
-  const p = await open({ fetchImpl: fakeServer({
+  const p = await page({ fetchImpl: fakeServer({
     scan: { experiments: [{ path: 'e.json', name: 'e.json', dir: '.', size: 1, modified: 5, cases: 2,
       evaluators: EXPERIMENT.evaluators, reports: [] }] },
     file: { path: 'e.json', modified: 5, document: EXPERIMENT },
@@ -129,7 +126,7 @@ const pairs = el => [...el.querySelectorAll('dt')].map(dt => [dt.textContent, dt
     { event: 'trial', iteration: 0, record: trial },
     { event: 'iteration_end', iteration: 0, record: { iteration: 0, rollouts_spent: 1, proposals: [{ candidate_id: 'c0', number: 0, outcome: 'feasible', objective: 1 }] } },
   ];
-  const p = await open();
+  const p = await page();
   await p.openFolder({ 'r/run.json': { run_id: 'inline' }, 'r/events.jsonl': events.map(e => JSON.stringify(e)).join('\n') + '\n' });
   await p.click('.tab[data-view="opt-candidates"]');
   await p.click('#opt-cands tr.case');
@@ -138,4 +135,4 @@ const pairs = el => [...el.querySelectorAll('dt')].map(dt => [dt.textContent, dt
   ok(output && output.textContent === pretty({ answer: 42 }), 'its output is printed as JSON in the trial panel', output && output.textContent);
 }
 
-done(pages.flatMap(p => p.errs));
+done();

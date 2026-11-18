@@ -1,15 +1,12 @@
 /* What the page hands a coding agent: Markdown for what is open, the path and the command that go
    with it, and an address for one report row or one candidate. The server writes a report, an
    experiment and a session as Markdown too, so the two are run over the same files here and compared. */
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { page, runner, waitFor } from './harness.mjs';
+import { page, realServer, runner, waitFor } from './harness.mjs';
 
 const { ok, done } = runner('markdown');
-const PY = process.env.PYTHON || 'python3';
 const TOKEN = 'markdown-token';
 const is = (actual, expected, msg) => ok(actual === expected, msg, `\n--- got\n${actual}\n--- wanted\n${expected}`);
 
@@ -113,16 +110,7 @@ write('sessions/lost.diagnosis.json', JSON.stringify(LOST));
 fs.cpSync(new URL('./fixtures/optimizer-run/', import.meta.url).pathname, path.join(root, 'tuning'), { recursive: true });
 const ROOT = fs.realpathSync(root);
 
-const port = await new Promise(resolve => {
-  const probe = net.createServer();
-  probe.listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); });
-});
-const proc = spawn(PY, [new URL('./serve.py', import.meta.url).pathname, root, String(port), TOKEN], { stdio: ['ignore', 'pipe', 'inherit'] });
-await new Promise((resolve, reject) => {
-  proc.stdout.on('data', chunk => String(chunk).includes('ready') && resolve());
-  proc.on('exit', code => reject(new Error('server exited ' + code)));
-});
-const base = `http://127.0.0.1:${port}`;
+const { base, stop } = await realServer(root, TOKEN);
 const fromServer = async address => (await fetch(base + address, { headers: { 'X-Evals-Token': TOKEN } })).text();
 
 /* A page whose clipboard is the test's: `copy` clicks a button and returns what it put there. */
@@ -864,8 +852,8 @@ ${JSON.stringify(LOST, null, 2)}
   await alone.click('#actions [data-md="report"]');
   is(alone.text('#actions [data-md="report"]'), 'Could not copy', 'a copy that did not happen says so');
 
-  done([...p.errs, ...linked.errs, ...pointed.errs, ...alone.errs, ...back.errs]);
+  done();
 } finally {
-  proc.kill();
+  stop();
   fs.rmSync(root, { recursive: true, force: true });
 }

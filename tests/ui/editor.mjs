@@ -1,9 +1,7 @@
 /* The cases editor: an edit is written as it was made, or Save says why not. */
 import { fakeServer, page, runner, tick } from './harness.mjs';
 
-const { ok, done } = runner('editor');
-const pages = [];
-const same = (actual, expected, msg) => ok(JSON.stringify(actual) === JSON.stringify(expected), msg, JSON.stringify(actual));
+const { ok, same, done } = runner('editor');
 
 const draft = name => ({ name, session_id: `s-${name}`, input: 'q', metadata: { status: 'draft' } });
 const EXPERIMENT = {
@@ -14,7 +12,6 @@ const DRAFTS = { cases: [draft('a'), draft('b')], evaluators: [] };
 
 async function opened(files, match) {
   const p = await page();
-  pages.push(p);
   await p.openFolder(files);
   await p.openExperiment(match);
   return p;
@@ -84,7 +81,6 @@ const state = p => [p.text('#dirty'), p.$('#save').disabled];
     file: { path: 'e.json', modified: 5, document: DRAFTS },
     put: () => new Promise(resolve => { release = () => resolve([{ path: 'e.json', modified: 6, cases: 2 }]); }),
   }) });
-  pages.push(p);
   await p.openExperiment();
   await p.click('#review-case');
   await p.key('a');
@@ -96,4 +92,4 @@ const state = p => [p.text('#dirty'), p.$('#save').disabled];
     'it waits for the answer: nothing is dropped that the save did not send, and nothing is left looking saved');
 }
 
-done(pages.flatMap(p => p.errs));
+done();

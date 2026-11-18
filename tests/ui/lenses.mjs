@@ -2,10 +2,7 @@
    what failed, why, where and what to do. */
 import { fakeServer, page, runner, tick } from './harness.mjs';
 
-const { ok, done } = runner('lenses');
-const pages = [];
-const open = async opts => { const p = await page(opts); pages.push(p); return p; };
-const same = (actual, expected, msg) => ok(JSON.stringify(actual) === JSON.stringify(expected), msg, JSON.stringify(actual));
+const { ok, same, done } = runner('lenses');
 
 const NA = [{ score: 1, test_pass: true, label: 'not_applicable' }];
 /* name, evaluator, score, pass, metadata, the evaluator's outputs */
@@ -49,7 +46,7 @@ const lens = p => {
 
 // ── grouping by what the cases carry ──
 {
-  const p = await open();
+  const p = await page();
   await p.openFolder({ 'tagged/report.json': TAGGED, 'chaos/report.json': CHAOS, 'bare/report.json': BARE });
   await p.openReport('tagged');
   const { choices, choose, summary, group, table } = lens(p);
@@ -129,7 +126,7 @@ const lens = p => {
       skipped: [], optimizer_runs: [] }],
     file: path => ({ path, ...tree.files[path] }),
   });
-  const p = await open({ fetchImpl: server, visible: true });
+  const p = await page({ fetchImpl: server, visible: true });
   await p.openReport('r.json');
   const { choose, summary, group, table } = lens(p);
   await choose('team');
@@ -204,7 +201,7 @@ const lens = p => {
   DIAGNOSED.cases[0].actual_trajectory = SESSION;
   DIAGNOSED.cases[1].actual_trajectory = SESSION;
 
-  const p = await open();
+  const p = await page();
   await p.openFolder({ 'run/report.json': DIAGNOSED });
   await p.openReport('run');
   const { table } = lens(p);
@@ -274,4 +271,4 @@ const lens = p => {
     'nothing in a diagnosis is printed as [object Object] or undefined');
 }
 
-done(pages.flatMap(p => p.errs));
+done();

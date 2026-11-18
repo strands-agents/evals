@@ -93,6 +93,8 @@ export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok', to
       el.dispatchEvent(new window.Event('input', { bubbles: true }));
       await tick();
     },
+    /** What hovering each match of a selector says: the text of its `<title>`. */
+    tips: s => [...d.querySelectorAll(s)].map(el => el.querySelector('title').textContent),
     /** The view that is showing, as its element's id. */
     view: () => d.querySelector('.view.on').id,
     /** Go Back or Forward by `delta` steps, and let the page follow. */
@@ -195,6 +197,8 @@ export function runner(name) {
   };
   return {
     ok,
+    /** Passes when the two are the same once written as JSON; a failure prints what was got. */
+    same: (actual, expected, msg) => ok(JSON.stringify(actual) === JSON.stringify(expected), msg, JSON.stringify(actual)),
     /** Report the suite. An error on any page it built fails it. */
     done() {
       const errs = PAGES.flatMap(p => p.errs);

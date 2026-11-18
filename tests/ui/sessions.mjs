@@ -2,9 +2,7 @@
    diagnoses made of them, and the task result stores the scan leaves out. */
 import { fakeServer, page, runner, tick } from './harness.mjs';
 
-const { ok, done } = runner('sessions');
-const pages = [];
-const eq = (got, want, msg) => ok(JSON.stringify(got) === JSON.stringify(want), msg, `\n  got:  ${JSON.stringify(got)}\n  want: ${JSON.stringify(want)}`);
+const { ok, same: eq, done } = runner('sessions');
 
 /* Timestamps as the library writes them: UTC, six fractional digits. */
 const at = seconds => new Date(Date.UTC(2026, 0, 5, 9) + seconds * 1000).toISOString().replace('Z', '000Z');
@@ -73,7 +71,6 @@ const FOLDER = {
 const cells = (p, match) => p.$$('#sessions-rows tr.row').find(r => r.textContent.includes(match)).querySelectorAll('td');
 const rowOf = (p, match) => [...cells(p, match)].slice(1, 3).map(td => p.text(td));
 const tab = p => p.$('.tab[data-view="sessions"]');
-const shown = p => p.$('.view.on').id;
 const texts = (p, selector) => p.$$(selector).map(el => p.text(el));
 /* A diagnosis on a session's page: how much it found, then each part under its heading. */
 const found = p => {
@@ -88,8 +85,8 @@ const found = p => {
   await p.openFolder(FOLDER);
   ok(!tab(p).hidden && p.text(tab(p)) === 'Sessions', 'one appears once a session is found');
   await p.click(tab(p));
-  ok(shown(p) === 'v-sessions' && tab(p).getAttribute('aria-current') === 'page' && p.window.location.hash === '#/sessions',
-    'and it opens the list, at an address of its own', `${shown(p)} ${p.window.location.hash}`);
+  ok(p.view() === 'v-sessions' && tab(p).getAttribute('aria-current') === 'page' && p.window.location.hash === '#/sessions',
+    'and it opens the list, at an address of its own', `${p.view()} ${p.window.location.hash}`);
   eq(p.text('#sessions-count'), '3 sessions · 2 diagnoses without their session', 'the list counts what it holds');
   eq(rowOf(p, 'a.json'), ['3 traces · 9 spans', '12s'],
     'a session is recognised whatever its file is called, and its duration leaves out the wait between traces');
@@ -114,8 +111,8 @@ const found = p => {
 
   // ── a session of several traces: one after another, each under its own heading with what it cost ──
   await p.openSession('a.json');
-  ok(shown(p) === 'v-session' && p.window.location.hash === '#/sessions/traces/a.json' && tab(p).classList.contains('on'),
-    'a row opens the session on its own page, named in the address', `${shown(p)} ${p.window.location.hash}`);
+  ok(p.view() === 'v-session' && p.window.location.hash === '#/sessions/traces/a.json' && tab(p).classList.contains('on'),
+    'a row opens the session on its own page, named in the address', `${p.view()} ${p.window.location.hash}`);
   eq([p.text('#crumbs'), p.text('#facts'), p.text('#path')],
     ['Sessions/traces/a.json', '3 traces · 9 spans · 12s · session s-apart', 'traces/a.json'], 'the page header names it and says what it holds');
   eq(p.text('#ses-trace .tr-count'), '3 traces · 9 spans of a recorded session', 'the session is counted as a whole');
@@ -129,7 +126,7 @@ const found = p => {
     'the session is copied from its header, by the one button that says so');
 
   await p.click('#crumbs a');
-  ok(shown(p) === 'v-sessions' && p.$('#sessions-rows tr.row.on').dataset.session === 'traces/a.json',
+  ok(p.view() === 'v-sessions' && p.$('#sessions-rows tr.row.on').dataset.session === 'traces/a.json',
     'the breadcrumb leads back to the list, with the open session marked');
 
   // ── one trace of one invocation: no headings, and its cost said once ──
@@ -167,7 +164,7 @@ const found = p => {
   // ── a diagnosis with no session to show ──
   await p.click('#crumbs a');
   await p.openSession('lost.diagnosis.json');
-  eq([shown(p), p.window.location.hash, p.text('#facts')],
+  eq([p.view(), p.window.location.hash, p.text('#facts')],
     ['v-session', '#/sessions/elsewhere/lost.diagnosis.json', 'A diagnosis of session s-gone, which is not in this folder · 1 failure · 1 root cause'],
     'a diagnosis on its own opens as a page that says which session it is missing');
   ok(found(p)[1]['What failed'].startsWith('at T1') && !p.$('#ses-found .spanref') && p.$('#ses-trace details.raw') && !p.$('#ses-trace .tr-trace'),
@@ -179,9 +176,8 @@ const found = p => {
 
   // ── opening another folder leaves nothing of the last one ──
   await p.openFolder({ 'e.json': { cases: [{ name: 'a', input: 'q' }], evaluators: [] } });
-  ok(tab(p).hidden && shown(p) === 'v-experiments' && !p.text('#stores'), 'a folder with no session hides the item again',
-    `${tab(p).hidden} ${shown(p)}`);
-  pages.push(p);
+  ok(tab(p).hidden && p.view() === 'v-experiments' && !p.text('#stores'), 'a folder with no session hides the item again',
+    `${tab(p).hidden} ${p.view()}`);
 }
 
 // ── a message that is not one ──
@@ -190,9 +186,8 @@ const found = p => {
   await p.openFolder({ 'odd.json': { session_id: 's-odd', traces: [{ spans: [
     { span_type: 'inference', messages: [null, { role: 'assistant', content: 'still here' }] }] }] } });
   await p.openSession();
-  eq([shown(p), texts(p, '#ses-trace .msg.nested')], ['v-session', ['unknown', 'assistantstill here']],
+  eq([p.view(), texts(p, '#ses-trace .msg.nested')], ['v-session', ['unknown', 'assistantstill here']],
     'a message that is not one is shown as unknown, and the rest of its span with it');
-  pages.push(p);
 }
 
 /* ── served: addresses, and keeping up with the folder ── */
@@ -219,8 +214,7 @@ function serve(tree) {
   };
   const openAt = async path => {
     const p = await page({ fetchImpl: serve(tree), url: `http://127.0.0.1:9999${path}` });
-    pages.push(p);
-    return [p, `${shown(p)} ${p.window.location.pathname}`];
+    return [p, `${p.view()} ${p.window.location.pathname}`];
   };
   const [linked, where] = await openAt('/sessions/traces/a.json');
   ok(where === 'v-session /sessions/traces/a.json' && linked.$$('#ses-trace .tr-trace').length === 3 && linked.$('#ses-found .diag'),
@@ -234,11 +228,10 @@ function serve(tree) {
   await p.openSession();
   p.window.history.back();
   await tick(6);
-  eq(`${shown(p)} ${p.window.location.pathname}`, 'v-sessions /sessions', 'Back from a session returns to the list');
+  eq(`${p.view()} ${p.window.location.pathname}`, 'v-sessions /sessions', 'Back from a session returns to the list');
   p.window.history.forward();
   await tick(6);
-  eq(`${shown(p)} ${p.window.location.pathname}`, 'v-session /sessions/traces/a.json', 'and Forward opens it again');
-  pages.push(p);
+  eq(`${p.view()} ${p.window.location.pathname}`, 'v-session /sessions/traces/a.json', 'and Forward opens it again');
 }
 
 {
@@ -246,7 +239,7 @@ function serve(tree) {
   const server = serve(tree);
   const p = await page({ fetchImpl: server, url: 'http://127.0.0.1:9999/sessions', visible: true });
   const poll = async () => { await p.window.pollNow(); await tick(); };
-  eq([tab(p).hidden, shown(p), p.window.location.pathname], [true, 'v-reports', '/reports'],
+  eq([tab(p).hidden, p.view(), p.window.location.pathname], [true, 'v-reports', '/reports'],
     'the address of the list in a folder with no session falls back to Reports');
 
   tree.sessions.push(sessionEntry('new/a.json', 5, PLAIN));
@@ -276,7 +269,6 @@ function serve(tree) {
   await poll();
   ok(p.text('#facts').endsWith('1 failure found'), 'a diagnosis made of the open session shows up on its page', p.text('#facts'));
   eq([found(p)[0], Object.keys(found(p)[1])], ['1 failure · 0 root causes · session s-apart', ['What failed']], 'failures alone read as what failed');
-  pages.push(p);
 }
 
-done(pages.flatMap(p => p.errs));
+done();

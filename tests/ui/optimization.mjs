@@ -24,7 +24,6 @@ const eq = (actual, expected, msg) => ok(same(actual, expected), msg, JSON.strin
 const has = (actual, pattern, msg) => ok(pattern.test(actual || ''), msg, actual);
 
 /* ── building pages ── */
-const pages = [];
 const jsonl = events => events.map(e => JSON.stringify(e)).join('\n') + '\n';
 /* The fixture log with every event passed through `change`; returning nothing drops the event. */
 const eventsWith = change => jsonl(EVENTS.map(e => change(structuredClone(e))).filter(Boolean));
@@ -33,7 +32,6 @@ const go = (q, tab) => q.click(`.tab[data-view="opt-${tab}"]`);
 
 async function open(files, tab) {
   const q = await page();
-  pages.push(q);
   await q.openFolder(files);
   if (tab) await go(q, tab);
   return q;
@@ -130,7 +128,6 @@ const blockDiff = root => {
 /* ══════════ the fixture run ══════════ */
 
 const p = await page();
-pages.push(p);
 const { $, $$, text, click } = p;
 
 // ── section visibility ──
@@ -1261,7 +1258,6 @@ const TWO_GOALS = 'Pareto(Maximize(Quality), Minimize(tokens))';
     return asked === transcript && disk.transcript
       ? answer({ document: JSON.parse(TRANSCRIPTS[transcript]) }) : answer({ error: 'no such file' }, 404);
   } });
-  pages.push(q);
   await go(q, 'candidates');
   await openTrial(q, 'c10', 'train_case_01');
   has(panel(q).Transcript, /which is not in the run directory/, 'a transcript the run directory lacks is named as missing');
@@ -1283,4 +1279,4 @@ const TWO_GOALS = 'Pareto(Maximize(Quality), Minimize(tokens))';
     'reading the tuned-against experiment for a candidate\'s cases leaves the editor\'s save guard on the copy it loaded');
 }
 
-done(pages.flatMap(q => q.errs));
+done();
