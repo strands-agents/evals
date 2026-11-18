@@ -55,18 +55,17 @@ const fetchImpl = async (url, opts) => {
 const p = await page({ fetchImpl, visible: true });
 await p.openExperiment();
 const rows = () => p.$$('#experiments-rows tr.row');
-const poll = async () => { await p.window.pollNow(); await tick(); };
 
 // ── nothing changed: one cheap question, and nothing re-read ──
 asked();
-await poll();
+await p.poll();
 ok(asked() === '/api/changes', 'a poll over an unchanged folder asks only whether it changed');
 
 // ── an experiment appears ──
 tree.experiments.push(listed('new/e.json', 5, { dir: 'new', reports: [] }));
 tree.mark += '+';
 rows()[0].focus();
-await poll();
+await p.poll();
 ok(rows().length === 2 && rows()[0].classList.contains('on'),
   'a new experiment shows up in the list with nothing clicked, and the open one stays marked', p.text('#experiments-rows'));
 ok(p.d.activeElement === rows()[0], 'and the keyboard is still on the row it was on', p.d.activeElement.tagName);
@@ -78,7 +77,7 @@ await p.click('#rep-seg button[data-f="fail"]');
 await p.click('#rep-rows tr.case');
 write('r.json', report(false, false));
 asked();
-await poll();
+await p.poll();
 ok(asked() === '/api/changes /api/scan /api/file', 'only the report is fetched again, not the experiment open beside it');
 ok(p.text('#r-score') === '0.00' && p.$$('#rep-rows tr.case').length === 2, 'a report written again is shown',
   `${p.text('#r-score')} · ${p.$$('#rep-rows tr.case').length} rows`);
@@ -89,14 +88,14 @@ ok(p.$('#rep-seg button.on').dataset.f === 'fail' && p.$('#rep-rows tr.case[aria
 await p.openExperiment();
 await p.click(p.$$('#case-list li[data-i]')[1]);
 write('e.json', experiment('rewritten elsewhere'));
-await poll();
+await p.poll();
 const input = () => p.$('#form [data-k="input"]').value;
 ok(input() === 'rewritten elsewhere', 'an untouched editor reloads, still on the case it was showing', input());
 
 // ── but never over unsaved edits ──
 await p.type('#form [data-k="input"]', 'my edit');
 write('e.json', experiment('rewritten again'));
-await poll();
+await p.poll();
 ok(input() === 'my edit' && /changed on disk/.test(p.text('#saved')),
   'unsaved edits are kept, and the page says the file moved under them', `${input()} | ${p.text('#saved')}`);
 await p.click('#saved .reload');
@@ -133,11 +132,11 @@ Object.defineProperty(p.d, 'hidden', { value: true, configurable: true });
 tree.experiments.pop();
 tree.mark += '+';
 asked();
-await poll();
+await p.poll();
 ok(asked() === '', 'a hidden tab does not poll');
 Object.defineProperty(p.d, 'hidden', { value: false, configurable: true });
 p.d.dispatchEvent(new p.window.Event('visibilitychange'));
 await tick(4);
 ok(rows().length === 1, 'and catches up as soon as it is shown again', rows().length);
 
-done(p.errs);
+done();

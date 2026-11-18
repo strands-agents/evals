@@ -1,14 +1,11 @@
 /* The server's discovery (`_ui_server.py`) and the page's no-server folder reader (`ui-folder.js`)
  * are two implementations of one contract. This runs both over the same tree and compares them. */
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { page, runner } from './harness.mjs';
+import { page, realServer, runner } from './harness.mjs';
 
 const { ok, done } = runner('parity');
-const PY = process.env.PYTHON || 'python3';
 const TOKEN = 'parity-token';
 const FIXTURE = new URL('./fixtures/optimizer-run/', import.meta.url).pathname;
 
@@ -106,15 +103,7 @@ const picked = {};
   }
 })(root);
 
-const port = await new Promise(resolve => {
-  const probe = net.createServer();
-  probe.listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); });
-});
-const proc = spawn(PY, [new URL('./serve.py', import.meta.url).pathname, root, String(port), TOKEN], { stdio: ['ignore', 'pipe', 'inherit'] });
-await new Promise((resolve, reject) => {
-  proc.stdout.on('data', chunk => String(chunk).includes('ready') && resolve());
-  proc.on('exit', code => reject(new Error('server exited ' + code)));
-});
+const { base, stop } = await realServer(root, TOKEN);
 
 /* Only what both sides decide. Sizes, mtimes and in-memory documents differ by construction. */
 const pick = (obj, keys) => obj && Object.fromEntries(keys.map(k => [k, obj[k] === undefined ? null : obj[k]]));
@@ -140,7 +129,7 @@ const normalize = ({ experiments, reports, skipped, optimizer, sessions, diagnos
 });
 
 try {
-  const served = await (await fetch(`http://127.0.0.1:${port}/api/scan`, { headers: { 'X-Evals-Token': TOKEN } })).json();
+  const served = await (await fetch(`${base}/api/scan`, { headers: { 'X-Evals-Token': TOKEN } })).json();
   const p = await page();
   await p.openFolder(picked);
   const folder = JSON.parse(p.window.eval('JSON.stringify({ experiments: EXPERIMENTS, reports: REPORTS, skipped, optimizer: OPT_RUNS,'
@@ -178,8 +167,8 @@ try {
       }
     }
   }
-  done(p.errs);
+  done();
 } finally {
-  proc.kill();
+  stop();
   fs.rmSync(root, { recursive: true, force: true });
 }

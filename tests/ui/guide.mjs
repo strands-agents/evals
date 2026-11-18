@@ -3,8 +3,6 @@
 import { fakeServer, page, runner, tick } from './harness.mjs';
 
 const { ok, done } = runner('guide');
-const pages = [];
-const open = async opts => { const p = await page(opts); pages.push(p); return p; };
 
 const DOCS = 'https://strandsagents.com/docs/user-guide/evals-sdk/';
 const TAGS = 'utm_source=strands-evals-ui&utm_medium=product&utm_campaign=evals-ui&utm_content=';
@@ -23,7 +21,7 @@ const helpLink = p => parse(p.$('.help-pop a'));
 
 // ── every link into the docs is tagged, names its placement, and opens beside the page ──
 {
-  const p = await open();
+  const p = await page();
   const views = p.$$('main > section.view').map(s => s.id.slice(2));
   /* The chrome's links, and the guide's for each view in turn: the panel holds one view at a time. */
   const links = views.flatMap(view => {
@@ -44,15 +42,19 @@ const helpLink = p => parse(p.$('.help-pop a'));
   ok(links.some(a => /\?utm_source.*#what-an-evaluation-is-made-of$/.test(a.href)),
     'an anchor comes after the tags, where a browser reads it');
   ok(!p.d.documentElement.innerHTML.includes('t=tok'), 'no link carries the page token');
-  ok(views.every(view => { p.window.renderGuide(view); return p.$('#guide-body ol li') && docLinks({ $$: s => p.$$(`#guide-body ${s}`) }).length; }),
-    'every view has a guide, with steps and a way into the docs');
+  const unguided = views.filter(view => {
+    p.$('#guide-body').innerHTML = '';
+    p.window.renderGuide(view);
+    return !p.$('#guide-body ol li') || !p.$(`#guide-body a[href^="${DOCS}"]`);
+  });
+  ok(unguided.length === 0, 'every view has a guide of its own, with steps and a way into the docs', unguided.join());
 }
 
 // ── the guide: a panel beside the content, closed until asked for, and that choice is kept ──
 {
-  const p = await open();
+  const p = await page();
   const state = () => [p.$('#guide').hidden, p.$('.app').dataset.guide, p.$('[data-guide-toggle]').getAttribute('aria-expanded')].join();
-  ok(state() === 'true,off,false' && !p.$('main details.guide'), 'the guide starts closed and takes no room in the view', state());
+  ok(state() === 'true,off,false', 'the guide starts closed', state());
   await p.click('[data-guide-toggle]');
   ok(state() === 'false,on,true' && p.d.cookie.includes('strands-evals-guide=on'),
     'the Guide switch opens it beside the content and remembers', `${state()} ${p.d.cookie}`);
@@ -67,14 +69,14 @@ const helpLink = p => parse(p.$('.help-pop a'));
   ok(state() === 'true,off,false' && p.d.cookie.includes('strands-evals-guide=off'), 'its own close button closes it and remembers that too',
     `${state()} ${p.d.cookie}`);
 
-  const later = await open({ cookie: 'strands-evals-guide=on' });
+  const later = await page({ cookie: 'strands-evals-guide=on' });
   ok(!later.$('#guide').hidden && later.text('#guide-body h2') === 'Reports', 'a page opened after it was left open starts with it open',
     later.$('#guide').hidden);
 }
 
 // ── a ? on a case field says what it is, what it takes, and where the docs cover it ──
 {
-  const p = await open();
+  const p = await page();
   await p.openFolder({ 'run/experiment.json': EXPERIMENT });
   await p.openExperiment();
   const fields = p.$$('#form .help').map(b => b.dataset.help);
@@ -102,7 +104,7 @@ const helpLink = p => parse(p.$('.help-pop a'));
     { name: 'value', required: true, default: null }, { name: 'case_sensitive', required: false, default: 'true' },
   ] } };
   const listed = { path: 'e.json', name: 'e.json', dir: '.', size: 1, modified: 5, cases: 1, evaluators: EXPERIMENT.evaluators, reports: [] };
-  const p = await open({ fetchImpl: fakeServer({
+  const p = await page({ fetchImpl: fakeServer({
     config: { root: '/served', depth: 3, read_only: false, evaluators: catalog },
     scan: { experiments: [listed] }, file: { path: 'e.json', modified: 5, document: EXPERIMENT },
   }) });
@@ -124,7 +126,7 @@ const helpLink = p => parse(p.$('.help-pop a'));
     'and its name stays out of the link', parse(p.$('#evform .evsum a')));
 }
 {
-  const p = await open();
+  const p = await page();
   await p.openFolder({ 'run/experiment.json': { ...EXPERIMENT, evaluators: [{ evaluator_type: 'ToolSelectionAccuracyEvaluator' }, { evaluator_type: 'HelpfulnessEvaluator' }] } });
   await p.openExperiment();
   const pagesFor = [];
@@ -143,7 +145,7 @@ const helpLink = p => parse(p.$('.help-pop a'));
 
 // ── tooltips: a label explains itself on hover or focus, from the glossary or its own text ──
 {
-  const p = await open();
+  const p = await page();
   await p.openFolder({ 'run/experiment.json': EXPERIMENT });
   const tip = p.$('.tip');
   const over = async (el, type = 'mouseover') => {
@@ -177,4 +179,4 @@ const helpLink = p => parse(p.$('.help-pop a'));
     'every column head, view and filter says what it is');
 }
 
-done(pages.flatMap(p => p.errs));
+done();

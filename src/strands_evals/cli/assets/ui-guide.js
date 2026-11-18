@@ -236,15 +236,12 @@ const guideWanted = () => document.cookie.split('; ').includes(`${GUIDE_KEY}=on`
 /** Fill the guide panel for a view: what to do there, the terms it uses, and where the docs say more. */
 function renderGuide(view) {
   const guide = VIEW_GUIDE[view];
-  if (!guide) return;
-  const terms = (guide.terms || []).map(key =>
-    `<dt>${esc(TERMS[key][0])}</dt><dd>${esc(TERMS[key][1])}</dd>`).join('');
+  const terms = guide.terms.map(key => `<dt>${esc(TERMS[key][0])}</dt><dd>${esc(TERMS[key][1])}</dd>`).join('');
   const links = (guide.links || [['', 'Evals documentation']]).map(([path, label]) =>
     docLink(path, `guide-${view}`, label)).join('');
   $('guide-body').innerHTML = `<h2>${esc(VIEW_NAME[view])}</h2>`
     + `<ol>${guide.steps.map(step => `<li>${step}</li>`).join('')}</ol>`
-    + (terms ? `<dl>${terms}</dl>` : '')
-    + `<p class="guide-links">${links}</p>`;
+    + `<dl>${terms}</dl><p class="guide-links">${links}</p>`;
 }
 
 function setGuide(on) {
