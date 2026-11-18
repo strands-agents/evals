@@ -1,3 +1,6 @@
+import enum
+import threading
+
 import pytest
 from strands import tool
 from strands.tools.tools import PythonAgentTool
@@ -283,15 +286,17 @@ def test_resolve_builds_a_fresh_component_every_call():
     assert first is not second
 
 
-def test_resolve_passes_a_components_fixed_arguments_as_is():
-    # Documented in component(): fixed arguments are shared across builds, never copied.
-    history = []
+def test_resolve_gives_every_build_its_own_copy_of_a_components_fixed_arguments():
+    history = [["declared"]]
     space = Space({"manager": component(Summary, ratio=Float(0.1, 0.9), keep=history)})
     baseline = space.complete({})
     first = space.resolve("manager", baseline, None)
     second = space.resolve("manager", baseline, None)
-    assert first is not second
-    assert first.keep is history and second.keep is history
+    assert first.keep == second.keep == [["declared"]]
+    assert first.keep is not second.keep and first.keep is not history
+    assert first.keep[0] is not history[0]  # deep: nested objects are copied too
+    first.keep[0].append("first trial")
+    assert second.keep == [["declared"]] and history == [["declared"]]
 
 
 def test_resolve_passes_plain_values_through():
@@ -315,14 +320,41 @@ def test_a_choice_with_a_fixed_value_flattens_only_the_components_keys():
     assert space.complete({"plugin": "off"}) == {"plugin": "off"}
 
 
-def test_resolve_builds_a_fresh_component_or_passes_the_fixed_value():
-    marker = {"mode": "dense"}
+def test_resolve_builds_a_fresh_component_or_copies_the_fixed_value():
+    marker = {"mode": "dense", "seen": []}
     space = Space({"plugin": choice(on=component(Window, size=Int(1, 100)), off=None, preset=marker)})
     on = space.complete({})
     first, second = space.resolve("plugin", on, None), space.resolve("plugin", on, None)
     assert isinstance(first, Window) and first is not second
     assert space.resolve("plugin", {"plugin": "off"}, None) is None
-    assert space.resolve("plugin", {"plugin": "preset"}, None) is marker
+    chosen = {"plugin": "preset"}
+    preset, other = space.resolve("plugin", chosen, None), space.resolve("plugin", chosen, None)
+    assert preset == other == marker
+    assert preset is not marker and preset is not other
+    preset["seen"].append("first trial")
+    assert other["seen"] == [] and marker["seen"] == []
+
+
+class Mode(enum.Enum):
+    DENSE = "dense"
+
+
+def summarize(text: str) -> str:
+    return text
+
+
+def test_resolve_returns_fixed_values_that_copying_leaves_as_they_are():
+    space = Space({"plugin": choice(off=None, mode=Mode.DENSE, hook=summarize)})
+    assert space.resolve("plugin", {"plugin": "off"}, None) is None
+    assert space.resolve("plugin", {"plugin": "mode"}, None) is Mode.DENSE
+    assert space.resolve("plugin", {"plugin": "hook"}, None) is summarize
+
+
+def test_resolve_shares_an_object_the_components_factory_refers_to():
+    lock = threading.Lock()  # can't be deep-copied, so only a factory can pass it on
+    space = Space({"guard": choice(shared=component(lambda: lock))})
+    assert space.resolve("guard", {"guard": "shared"}, None) is lock
+    assert space.resolve("guard", {"guard": "shared"}, None) is lock
 
 
 class Pinned:

@@ -222,13 +222,24 @@ class _Design:
             out.append("candidate")
         return out
 
-    def row(self, values: Values, case: str | None = None, candidate: str | None = None) -> Any:
-        """A configuration's row: at one case, or (`case=None`) averaged over the cases; with the candidate's own
-        effect when `candidate` is a fitted one, else at what its factors predict.
+    def row(
+        self,
+        values: Values,
+        case: str | None = None,
+        candidate: str | None = None,
+        *,
+        over: Sequence[str] | None = None,
+    ) -> Any:
+        """A configuration's row: at one case, or (`case=None`) averaged over the cases `over` (every case of the
+        fit when None; a case listed twice counts once); with the candidate's own effect when `candidate` is a
+        fitted one, else at what its factors predict.
 
         Raises:
-            ValueError: `case` is not one of this fit's cases.
+            ValueError: `case` or a case in `over` is not one of this fit's cases, `over` is empty, or both `case`
+                and `over` are given.
         """
+        if case is not None and over is not None:
+            raise ValueError("a row at one case has no cases to average over: give `case` or `over`, not both")
         x = np.zeros(self.p)
         if self.encoder:
             x[: self.n_design] = self.encoder.row(tuple(self._level(f, values) for f in self.factors))
@@ -242,13 +253,24 @@ class _Design:
                 x[self.trend_start + j] = (_trend_value(values[key], log) - center) / spread
         if candidate is not None and candidate in self._candidate_column:
             x[self.candidate_start + self._candidate_column[candidate]] = 1.0
-        if case is None:
+        if case is not None:
+            self._put_case(x, case, 1.0)
+        elif over is None:
             x[self.case_start :] = 1.0 / len(self.cases) if len(self.cases) > 1 else 0.0
-        elif (column := self._case_column.get(case)) is not None:
-            x[self.case_start + column] = 1.0
+        else:
+            names = list(dict.fromkeys(over))
+            if not names:
+                raise ValueError("no cases to average over")
+            for name in names:
+                self._put_case(x, name, 1.0 / len(names))
+        return x
+
+    def _put_case(self, x: Any, case: str, weight: float) -> None:
+        """Set `case`'s column of `x` to `weight`; the reference case has no column (the intercept is its level)."""
+        if (column := self._case_column.get(case)) is not None:
+            x[self.case_start + column] = weight
         elif not self.cases or case != self.cases[0]:
             raise ValueError(f"unknown case {case!r}: not one of this fit's cases")
-        return x
 
     def contrasts(self) -> Iterator[tuple[_Factor, str, Any]]:
         """Each factor level's contrast row against its reference, every other factor at its reference; the level

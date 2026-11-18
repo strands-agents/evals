@@ -24,7 +24,7 @@ classifiers = [
 dependencies = [
     "pydantic>=2.4.0,<3.0.0",
     "rich>=15.0.0,<16.0.0",
-    "strands-agents>=1.45.0",
+    "strands-agents>=1.64.0",
     "typing-extensions>=4.13.2,<5.0.0",
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
@@ -80,6 +80,8 @@ optimization = [
     "scipy>=1.11.0,<2.0.0",
     "optuna>=5.0.0,<6.0.0",
     "strands-agents>=1.50.0",
+    "tomli>=2.0.0,<3.0.0; python_version < '3.11'",  # `strands-evals optimize run FILE.toml` on 3.10
+    "strands-harness>=0.4.0,<0.5.0",  # `strands-evals optimize --config`
 ]
 
 [tool.ruff]

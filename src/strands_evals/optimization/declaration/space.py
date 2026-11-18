@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -228,8 +229,8 @@ class Space:
     def resolve(self, name: str, values: Values, workspace: Path | None) -> Any:
         """What the factory receives for one declared name: a fresh component, a value, or a path.
 
-        - A choice: a new instance of the chosen component, e.g. `Summary(ratio=0.5)`, or the chosen
-          fixed value as is.
+        - A choice: a new instance of the chosen component, e.g. `Summary(ratio=0.5)`, or a deep
+          copy of the chosen fixed value.
         - `tool_descriptions`: new copies of the tools with the candidate's descriptions.
         - `FileText(as_path=True)`: the path of the file inside `workspace`, or the original path
           when `workspace` is None (the plain call).
@@ -238,7 +239,8 @@ class Space:
         - Any other marker: the value itself, e.g. `0.2` or the prompt text.
 
         `values` must already pass `validate`; nothing is checked here. A component's fixed kwargs
-        pass through as is, so every build shares those objects.
+        and a fixed alternative are deep-copied on every call (see `component()`). Each call copies
+        on its own, so an object two declared names both hold becomes one copy per name.
 
         Args:
             name: A declared name (`"manager"`), not a flat key (`"manager.Summary.ratio"`).
@@ -252,7 +254,7 @@ class Space:
             label = cast(str, values[name])
             alternative = marker.alternatives[label]
             if not isinstance(alternative, Component):
-                return alternative
+                return copy.deepcopy(alternative)
             return alternative.build({arg: values[f"{name}.{label}.{arg}"] for arg in alternative.tunable})
         if isinstance(marker, ToolDescriptions):
             return marker.build({tool: cast(str, values[f"{name}.{tool}"]) for tool in marker.tools})

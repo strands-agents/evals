@@ -31,7 +31,16 @@ from strands.models.model import CacheConfig, Model
 from strands.types.exceptions import MaxTokensReachedException
 from strands.types.tools import AgentTool
 
-from ...types.optimization import CandidateSummary, Observation, Patch, TrialRecord, TrialStatus, Usage, Value
+from ...types.optimization import (
+    CANDIDATE_SPAN_KEY,
+    CandidateSummary,
+    Observation,
+    Patch,
+    TrialRecord,
+    TrialStatus,
+    Usage,
+    Value,
+)
 from ...types.trace import (
     AgentInvocationSpan,
     InferenceSpan,
@@ -913,7 +922,10 @@ def _write_traces(
 def _messages(trajectory: Any) -> list[Any]:
     """The trial's conversation as Strands messages (`{"role", "content": [{"text"} | {"toolUse"} | {"toolResult"}]}`):
     for each agent invocation in the trial, in the order they started, the messages of its last model call (what it
-    sent, then what it answered). A trajectory that isn't a `Session` (a rollout's own list) is kept as is.
+    sent, then what it answered). A trajectory that isn't a `Session` (a rollout's own list) is kept as is. Spans
+    marked as not the candidate's (`CANDIDATE_SPAN_KEY` False: a simulated user, an agent the benchmark built) are
+    left out. A `Session` with no marks (a `build_task` task, a factory that built something it couldn't tag, a
+    record saved before the marks) is read whole.
 
     A model call belongs to the agent invocation its parent spans lead to; when they lead to none, to the innermost
     invocation whose time contains it; model calls under no invocation form one conversation, placed first. An
@@ -927,14 +939,15 @@ def _messages(trajectory: Any) -> list[Any]:
         return list(trajectory) if isinstance(trajectory, list) else []
     conversations: list[list[dict[str, Any]]] = []
     for trace in trajectory.traces:
+        spans = [s for s in trace.spans if (s.metadata or {}).get(CANDIDATE_SPAN_KEY) is not False]
         agents = sorted(
-            (s for s in trace.spans if isinstance(s, AgentInvocationSpan)),
+            (s for s in spans if isinstance(s, AgentInvocationSpan)),
             key=lambda s: _to_aware_utc(s.span_info.start_time),
         )
         index = {id(a): i for i, a in enumerate(agents)}
-        by_id = {s.span_info.span_id: s for s in trace.spans if s.span_info.span_id}
+        by_id = {s.span_info.span_id: s for s in spans if s.span_info.span_id}
         last: dict[int, InferenceSpan] = {}  # agent's index -> its last model call
-        for span in trace.spans:
+        for span in spans:
             if not isinstance(span, InferenceSpan):
                 continue
             owner, current, seen = None, cast(Any, span), set()
