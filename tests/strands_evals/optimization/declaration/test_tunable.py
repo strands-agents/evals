@@ -361,6 +361,39 @@ def test_the_plain_call_builds_the_baseline_component():
     assert isinstance(agent.context_manager, ContextManager) and agent.context_manager.stash is not None
 
 
+class Configured:
+    def __init__(self, size: int = 4, settings=None):
+        self.size = size
+        self.settings = settings
+
+
+SETTINGS = {"threshold": 0.6, "seen": []}
+FIXED = Configured(size=20, settings={"seen": []})
+
+
+@tunable(cm=choice(tuned=component(Configured, size=Int(1, 50), settings=SETTINGS), fixed=FIXED))
+def make_configured(cm=None):
+    return cm
+
+
+def test_the_plain_call_and_every_bound_build_get_their_own_copy_of_a_fixed_kwarg():
+    bound = make_configured.bind({"cm.tuned.size": 7})
+    builds = [make_configured(), make_configured(), bound(), bound()]
+    assert all(build.settings == SETTINGS for build in builds)
+    assert len({id(build.settings) for build in builds} | {id(SETTINGS)}) == 5
+    builds[0].settings["seen"].append("first trial")
+    assert builds[1].settings["seen"] == [] and SETTINGS["seen"] == []
+
+
+def test_every_bound_build_gets_its_own_copy_of_a_fixed_alternative():
+    bound = make_configured.bind({"cm": "fixed"})
+    first, second = bound(), bound()
+    assert isinstance(first, Configured) and first.size == 20
+    assert first is not second and first is not FIXED
+    first.settings["seen"].append("first trial")
+    assert second.settings["seen"] == [] and FIXED.settings["seen"] == []
+
+
 def test_a_build_context_can_be_built_by_hand(tmp_path):
     from strands_evals.optimization import BuildContext
 

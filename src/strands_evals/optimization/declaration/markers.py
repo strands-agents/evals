@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import functools
 import inspect
 import math
@@ -180,7 +181,7 @@ class Component(_Marker):
 
     Attributes:
         factory: The class or callable to construct.
-        fixed: Constructor kwargs passed through as is.
+        fixed: Constructor kwargs that aren't tunable; every build gets its own deep copy of them.
         tunable: Constructor kwargs declared as `Int` / `Float` / `OneOf`, each with a default.
         label: The alternative's label inside a `choice()`; the class name by default.
     """
@@ -198,8 +199,12 @@ class Component(_Marker):
         self.label: str = label if label is not None else getattr(factory, "__name__", type(factory).__name__)
 
     def build(self, values: dict[str, Any]) -> Any:
-        """A fresh instance through the real constructor, with `values` for the tunable kwargs."""
-        return self.factory(**self.fixed, **values)
+        """A fresh instance through the real constructor, with `values` for the tunable kwargs.
+
+        The fixed kwargs are deep-copied together on every call (see `component()`), so two kwargs
+        that name one object still name one (new) object in the build.
+        """
+        return self.factory(**copy.deepcopy(self.fixed), **values)
 
     def _labeled(self, label: str) -> Component:
         """A copy carrying `label`; a copy, because one component may sit in several choices."""
@@ -212,8 +217,8 @@ class Choice(_Marker):
     Create it with `choice()`, which checks the labels; constructing it directly skips that.
 
     Attributes:
-        alternatives: Label -> a `Component` or a fixed value, baseline first; each component's
-            `label` is its key.
+        alternatives: Label -> a `Component` or a fixed value (deep-copied for every build),
+            baseline first; each component's `label` is its key.
     """
 
     def __init__(self, alternatives: dict[str, Component | Any]):
@@ -221,7 +226,7 @@ class Choice(_Marker):
 
 
 def component(factory: Callable[..., Any], /, **kwargs: Any) -> Component:
-    """Declare one constructible alternative; `Int`/`Float`/`OneOf` kwargs are tunable, others pass through.
+    """Declare one constructible alternative; `Int`/`Float`/`OneOf` kwargs are tunable, others are fixed.
 
     `factory` is positional-only, so a constructor kwarg named `factory` can still be passed. An
     `Int` / `Float` / `OneOf` kwarg without `default=` takes the constructor parameter's default
@@ -234,8 +239,16 @@ def component(factory: Callable[..., Any], /, **kwargs: Any) -> Component:
     the factory's `__name__`, so a lambda or a `functools.partial` must be labeled by keyword in
     `choice()`.
 
-    Other kwargs pass through as is, so every build gets the same objects: build stateful ones (an
-    `Agent`, a client) inside the factory, or they are shared across trials.
+    Other kwargs are fixed and copied fresh on every build (`fn()` included): each build gets one
+    deep copy of them all, so builds don't share them, and two kwargs naming one object still name
+    one object. What they refer to is copied too, e.g. the object behind a bound method, and an
+    `object()` sentinel becomes a new object that `is` no longer matches. Functions, classes, and
+    enum members, which `deepcopy` returns as they are, stay shared. A fixed kwarg that can't be
+    deep-copied (such as an `Agent`, which holds a lock) raises here: construct it in the factory
+    instead, e.g. `component(make_judge, temperature=Float(0.0, 1.0))` with a function
+    `make_judge(temperature=0.3)` that builds the `Agent`.
+    The factory is never copied, so an object it refers to is shared: that is how to share one on
+    purpose (a thread-safe client), or to avoid copying a large one for every build.
 
     Args:
         factory: The class or callable to construct.
@@ -245,8 +258,8 @@ def component(factory: Callable[..., Any], /, **kwargs: Any) -> Component:
         TypeError: A kwarg the constructor doesn't take (when its signature can be read), the
             constructor rejects its own defaults (the exception is chained), an `Int` / `Float` kwarg
             has no default anywhere (a constructor default of None counts as none), a default that
-            doesn't fit its marker, or another marker (`TextValue`, a nested component or choice) is
-            passed as a kwarg.
+            doesn't fit its marker, another marker (`TextValue`, a nested component or choice) is
+            passed as a kwarg, or a fixed kwarg can't be deep-copied (the exception is chained).
     """
     if not callable(factory):
         raise TypeError(f"component() needs a class or callable, got {factory!r}")
@@ -271,6 +284,12 @@ def component(factory: Callable[..., Any], /, **kwargs: Any) -> Component:
                 "only Int, Float, and OneOf arguments are tunable"
             )
         else:
+            _check_copyable(
+                value,
+                f"component({name}): {key}=",
+                f"construct it inside the factory instead: pass component() a function that builds the object "
+                f"and its {key} on each call (or that refers to one {key} object, to share it on purpose)",
+            )
             result.fixed[key] = value
     try:
         result.build({key: marker.default for key, marker in result.tunable.items()})
@@ -284,8 +303,10 @@ def choice(*alternatives: Component, **labeled: Component | Any) -> Choice:
 
     Pass components positionally, labeled by class name, or by keyword, labeled by the keyword:
     `choice(truncate=component(...), summarize=component(...))`. The keyword form is needed when the same
-    class appears twice. A keyword alternative may also be a fixed value, passed through as is:
-    `choice(on=component(ToolCallLimiter, max_calls=Int(1, 20)), off=None)`. Labels become key
+    class appears twice. A keyword alternative may also be a fixed value:
+    `choice(on=component(ToolCallLimiter, max_calls=Int(1, 20)), off=None)`. Like a fixed
+    `component()` kwarg, it is deep-copied for every build (`fn()` included), and one that can't be
+    deep-copied raises; declare it with `component()` instead. Labels become key
     segments, so they contain no `.` or `/`. Each component in the result is a copy carrying its
     label, so one component can sit in several choices.
 
@@ -301,8 +322,9 @@ def choice(*alternatives: Component, **labeled: Component | Any) -> Choice:
     Raises:
         TypeError: No alternatives, positional and keyword alternatives mixed, a positional fixed
             value, a positional lambda or `functools.partial` (label it by keyword), a class as a
-            fixed value (wrap it in `component()`), a marker other than a component, the same class
-            twice positionally, or a label with `.` or `/`.
+            fixed value (wrap it in `component()`), a marker other than a component, a fixed value
+            that can't be deep-copied (the exception is chained), the same class twice positionally,
+            or a label with `.` or `/`.
     """
     if alternatives and labeled:
         raise TypeError("choice() takes alternatives either positionally or by keyword, not both")
@@ -332,6 +354,13 @@ def choice(*alternatives: Component, **labeled: Component | Any) -> Choice:
             raise TypeError(
                 f"choice({label}=...) is a {type(alternative).__name__}; an alternative is a component(...) "
                 "or a fixed value"
+            )
+        if not isinstance(alternative, Component):
+            _check_copyable(
+                alternative,
+                f"choice({label}=...)",
+                f"declare it with component() so each build constructs one, or as {label}=component(lambda: ...) "
+                "to share one object on purpose",
             )
     pairs = list(labeled.items()) if labeled else [(alternative.label, alternative) for alternative in alternatives]
     names = [label for label, _ in pairs]
@@ -397,6 +426,25 @@ def _check_str(name: str, value: str | None) -> None:
     """Raise `TypeError` unless `value` is None or a str; `name` is for the message."""
     if value is not None and not isinstance(value, str):
         raise TypeError(f"{name} must be a str, got {type(value).__name__}")
+
+
+def _check_copyable(value: Any, where: str, fix: str) -> None:
+    """Raise `TypeError` unless `value` can be deep-copied, as every build gets its own copy of a fixed value.
+
+    Checked at declaration, so an alternative that can't be copied fails here rather than making every
+    candidate that chooses it unbuildable.
+
+    Args:
+        value: A fixed `component()` kwarg or a fixed `choice()` alternative.
+        where: Error prefix, e.g. `"component(Manager): summarizer="` or `"choice(off=...)"`.
+        fix: What to do instead, appended to the message.
+    """
+    try:
+        copy.deepcopy(value)
+    except Exception as error:  # deepcopy runs the value's code: a lock raises TypeError, a boto3 client RecursionError
+        raise TypeError(
+            f"{where} can't be deep-copied ({type(error).__name__}: {error}), and every build gets its own copy; {fix}"
+        ) from error
 
 
 def _parameters(factory: Callable[..., Any]) -> dict[str, inspect.Parameter] | None:
