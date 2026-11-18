@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Literal, get_args
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict
 
@@ -19,6 +19,7 @@ def near(value: float, end: float) -> bool:
 
 LabelOutcome = Literal["feasible", "infeasible", "ineligible"]  # also the first three ObservationOutcomes
 LABEL_OUTCOMES: tuple[LabelOutcome, ...] = get_args(LabelOutcome)  # the same outcomes, to iterate over
+PickOutcome = Literal["top_finalist", "baseline_best", "no_feasible_finalist", "no_finalists"]  # how the pick ended
 
 
 class CaseSplit(BaseModel):
@@ -163,8 +164,14 @@ class ValidationReport(BaseModel):
         infeasible: Candidate id -> why it can't ship (a constraint not met on validation, or not
             eligible there).
         measured: Candidate id -> every metric measured on validation.
-        problem: Why the validation fit wasn't used, e.g. "fewer than 2 eligible candidates" or
-            "the model raised: <Type>: <message>"; None when it was used.
+        p_met: Candidate id -> constraint (as `run.json` writes it, e.g. "tokens <= 4000") -> P(met) under the
+            validation fit; empty when assessed by measured means.
+        problem: Why the validation fit wasn't used, e.g. "fewer than 2 eligible candidates",
+            "the model raised: <Type>: <message>", or "flagged: <metrics>"; None when it was used.
+        rule: The pick rule's config (`FinalPick.rule.config()`), e.g. `{"kind": "Mean"}`.
+        outcome: How the pick ended: `top_finalist` (a finalist ranks first among the feasible candidates and
+            ships), `baseline_best` (the baseline ranks first and ships), `no_feasible_finalist` (no finalist is
+            feasible, so the baseline ships), or `no_finalists` (the search gave none, so the baseline ships).
         reason: One sentence, e.g. "c3a1 highest on validation: 0.81 vs baseline 0.77".
     """
 
@@ -176,7 +183,10 @@ class ValidationReport(BaseModel):
     estimates: dict[str, dict[str, Estimate]]
     infeasible: dict[str, str]
     measured: dict[str, dict[str, Measured]]
+    p_met: dict[str, dict[str, float]]
     problem: str | None
+    rule: dict[str, Any]
+    outcome: PickOutcome
     reason: str
 
 

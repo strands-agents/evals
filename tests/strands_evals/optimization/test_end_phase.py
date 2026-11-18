@@ -92,9 +92,10 @@ from strands_evals.optimization import (  # noqa: E402
     MetricRegistry,
     Minimize,
     Pareto,
+    p_met,
 )
 from strands_evals.optimization.end_phase import choose_finalists, pick  # noqa: E402
-from strands_evals.types.optimization import CandidateScores  # noqa: E402
+from strands_evals.types.optimization import CandidateScores, Estimate  # noqa: E402
 
 HELP = "HelpfulnessEvaluator"
 TOKENS = "tokens"
@@ -181,6 +182,8 @@ def test_pick_ships_the_feasible_finalist_with_the_highest_objective():
     assert report.objectives["a"] == 0.9 and report.objectives["0"] == 0.6
     assert report.problem is None
     assert "a highest on validation" in report.reason
+    assert report.outcome == "top_finalist" and report.rule == {"kind": "Mean"}
+    assert report.p_met == {"0": {}, "a": {}, "b": {}}  # assessed by measured means
     assert report.front == []  # not Pareto
 
 
@@ -201,7 +204,7 @@ def test_pick_ships_the_baseline_when_no_finalist_meets_the_constraint():
         rule=Mean(),
     )
     assert report.champion_id == "0" and "<= 0.5" in report.infeasible["a"]
-    assert "baseline" in report.reason
+    assert "baseline" in report.reason and report.outcome == "no_feasible_finalist"
 
 
 def test_pick_reports_fewer_than_two_eligible_through_problem():
@@ -220,7 +223,7 @@ def test_pick_reports_fewer_than_two_eligible_through_problem():
         problem="fewer than 2 eligible candidates",
     )
     assert report.champion_id == "0" and report.problem.startswith("fewer than 2")
-    assert "not eligible on validation" in report.infeasible["a"]
+    assert "not eligible on validation" in report.infeasible["a"] and report.outcome == "no_feasible_finalist"
     # no finalist from the search isn't the message here: a finalist was chosen, it just can't be picked.
     assert "a" not in report.objectives or report.objectives["a"] is None
 
@@ -258,7 +261,7 @@ def test_pick_tie_without_trial_counts_goes_to_the_baseline():
         criteria=criteria,
         rule=Mean(),
     )
-    assert report.champion_id == "0"
+    assert report.champion_id == "0" and report.outcome == "baseline_best"
 
 
 def test_pick_under_pareto_a_gain_tie_with_another_trade_off_ships_the_baseline():
@@ -293,7 +296,7 @@ def test_pick_under_pareto_a_gain_tie_with_another_trade_off_ships_the_baseline(
     )
     assert report.objectives["0"] == report.objectives["a"]
     assert set(report.front) == {"0", "a"}
-    assert report.champion_id == "0"
+    assert report.champion_id == "0" and report.outcome == "baseline_best"
 
 
 def test_pick_with_no_finalist_ships_the_baseline():
@@ -309,5 +312,41 @@ def test_pick_with_no_finalist_ships_the_baseline():
         criteria=criteria,
         rule=Mean(),
     )
-    assert report.champion_id == "0"
+    assert report.champion_id == "0" and report.outcome == "no_finalists"
     assert report.reason.startswith("no finalist from the search")
+
+
+class _FixedFit:
+    """A validation fit with fixed estimates per candidate."""
+
+    flagged: list[str] = []
+
+    def __init__(self, table):
+        self.table = table
+
+    @property
+    def candidates(self):
+        return frozenset(self.table)
+
+    def estimates(self, values, candidate=None):
+        return dict(self.table[candidate])
+
+
+def test_a_fitted_pick_records_each_constraints_p_met_and_the_rule():
+    criteria = Criteria(Maximize(HELP), [AtMost(HELP, 0.8)], REGISTRY, feasibility_threshold=0.9)
+    estimates = {"0": Estimate(mean=0.5, sd=0.05), "a": Estimate(mean=0.7, sd=0.05)}
+    report = pick(
+        baseline_id="0",
+        finalist_ids=["a"],
+        validation={c: _val_scores(c, e.mean) for c, e in estimates.items()},
+        fit=_FixedFit({c: {HELP: e} for c, e in estimates.items()}),
+        values={"0": {}, "a": {}},
+        trial_counts={"0": 2, "a": 2},
+        criteria=criteria,
+        rule=LowerBound(q=0.2),
+    )
+    assert report.champion_id == "a" and report.outcome == "top_finalist"
+    assert report.rule == {"kind": "LowerBound", "q": 0.2}
+    constraint = "HelpfulnessEvaluator <= 0.8"
+    assert report.p_met == {c: {constraint: p_met(AtMost(HELP, 0.8), e)} for c, e in estimates.items()}
+    assert report.p_met["a"][constraint] == pytest.approx(0.97725, abs=1e-5)  # 2 sd below the bound

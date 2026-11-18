@@ -683,6 +683,8 @@ class Optimizer:
                 problem = f"the model raised: {type(error).__name__}: {error}"
             else:
                 problem = None if fit is not None else "the model returned no fit"
+                if fit is not None and fit.flagged:  # `assess` then uses measured means, as effects.json says
+                    problem = f"flagged: {', '.join(fit.flagged)}"
         report = pick(
             baseline_id=baseline,
             finalist_ids=finalists,
@@ -747,8 +749,13 @@ class Optimizer:
             test_reason=test_reason,
             front_test=front_test,
             effects=effects,
+            objective=str(criteria.objective),
+            constraints=[str(c) for c in criteria.constraints],
+            feasibility_threshold=criteria.feasibility_threshold,
+            proposers={_block_name(block): type(block.proposer).__name__ for block, _ in self._blocks},
             iterations=list(self._iterations),
             rollouts_spent=self._budget.spent,
+            max_rollouts=self._budget.budget.max_rollouts,
             stop_reason=stop_reason,
             agent_cost=agent_cost,
             search_cost=self._search_cost,
@@ -851,7 +858,7 @@ class Optimizer:
             if not any(r.split == "test" and r.status is TrialStatus.COMPLETED for r in self._records[c].values())
         ]
         if champion in failed or baseline in failed:
-            arm = "the baseline" if baseline in failed else "the champion"
+            arm = "the baseline" if baseline in failed else "the selected candidate"
             return None, f"every test trial of {arm} failed, so there is nothing to compare", {}
         reports = {
             c: self._test_report(c, scores)

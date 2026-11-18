@@ -956,6 +956,21 @@ class _Sequence(ScoreModel):
         return self.fits.pop(0) if self.fits else None
 
 
+async def test_a_flagged_validation_fit_is_the_picks_problem(tmp_path):
+    optimizer = _searching(
+        Block(Scripted({"temperature": 0.5}), "temperature"),
+        schedule=Alternate(),
+        base_dir=tmp_path,
+        score_model=_Sequence(*(_FlaggedFit() for _ in range(5))),  # every fit, the validation fit's included
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+    )
+    result = await optimizer.run_async()
+    assert result.validation.problem == "flagged: Temperature"
+    assert not any(result.validation.estimates.values())  # picked by measured means
+    assert "Validation fit:  flagged: Temperature" in result.summary()
+
+
 async def test_a_flagged_fit_reaches_no_proposer_and_no_selection(tmp_path):
     seen = []
 
@@ -1092,7 +1107,7 @@ async def test_a_test_arm_with_no_completed_trial_skips_the_report(tmp_path):
     result = await optimizer.run_async()
     assert result.best.values["temperature"] == 1.0  # picked on validation, where it ran
     assert result.test is None
-    assert result.test_reason == "every test trial of the champion failed, so there is nothing to compare"
+    assert result.test_reason == "every test trial of the selected candidate failed, so there is nothing to compare"
 
 
 async def test_a_finalist_failing_a_constraint_on_validation_cannot_ship(tmp_path):
@@ -1665,10 +1680,13 @@ async def test_the_result_reloads_whole_without_the_run_folder_and_summarizes(tm
     assert reloaded == result and reloaded.to_rows("case") == result.to_rows("case")
     assert reloaded.reports[result.best.id]["test"] == result.reports[result.best.id]["test"]
 
+    assert (result.objective, result.constraints, result.max_rollouts) == ("Maximize(Temperature)", [], 500)
+    assert result.feasibility_threshold == 0.9 and result.proposers == {"numbers": "Scripted", "block": "Scripted"}
+    assert (result.validation.outcome, result.validation.rule) == ("top_finalist", {"kind": "Mean"})
     text = result.summary()
-    assert f"Ships candidate {result.best.number} ({result.best.id})" in text
-    assert "Validation:" in text and "Test, the champion vs the baseline" in text
-    assert "temperature: 0.0 -> 1.0" in text
+    assert f"Selected:     candidate {result.best.number} " in text and "Proposer:   numbers (Scripted)" in text
+    assert f"candidate {result.best.number} *  {result.best.id}" in text and "Test vs baseline" in text
+    assert "temperature  0.0       1.0" in text and "champion" not in text
     with pytest.raises(ValueError, match="unknown grain"):
         result.to_rows("trial")
 

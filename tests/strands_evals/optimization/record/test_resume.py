@@ -295,7 +295,10 @@ def _validation(champion):
         "estimates": {},
         "infeasible": {},
         "measured": {},
+        "p_met": {},
         "problem": None,
+        "rule": {"kind": "Mean"},
+        "outcome": "top_finalist",
         "reason": "highest estimate",
     }
 
