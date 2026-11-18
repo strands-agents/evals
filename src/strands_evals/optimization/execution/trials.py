@@ -484,6 +484,7 @@ class TrialRunner:
                 judge_usage=Usage.zero(),
                 pass_index=pass_index,
                 rollouts=0,  # Experiment's throttling retries aren't counted against the budget
+                benchmark_usage=self._traces.benchmark_usage(entry.trace_id, span_id),
             )
             for span_id, status, error_type, error in entry.previous_attempts
         ]
@@ -523,6 +524,7 @@ class TrialRunner:
             usage=self._traces.usage(entry.trace_id, entry.attempt_span_id),
             judge_usage=judge_usage,
             rollouts=1,
+            benchmark_usage=self._traces.benchmark_usage(entry.trace_id, entry.attempt_span_id),
         )
 
     def _rejudged(
@@ -539,9 +541,9 @@ class TrialRunner:
 
         `pass_index` is the pass `previous` ran in (0 for a record from an earlier call).
 
-        Each cost stays with what it bought: the new record keeps the output's usage and each kept
-        score's judge spend; the replaced attempt keeps its rollout, no usage, and only its failed
-        judges' spend.
+        Each cost stays with what it bought: the new record keeps the output's usage (its benchmark
+        usage too) and each kept score's judge spend; the replaced attempt keeps its rollout, no usage,
+        and only its failed judges' spend.
         """
         kept = {name: previous.judge_usage[name] for name in previous.evaluations if name in previous.judge_usage}
         evaluations, details, errors, judge_usage = self._judged(
@@ -550,6 +552,7 @@ class TrialRunner:
         replaced = _replaced(previous, pass_index=pass_index).model_copy(
             update={
                 "usage": Usage.zero(),
+                "benchmark_usage": Usage.zero(),
                 "judge_usage": sum(
                     (u for name, u in previous.judge_usage.items() if name in previous.evaluator_errors),
                     Usage.zero(),
@@ -643,6 +646,7 @@ def _replaced(record: TrialRecord, *, pass_index: int) -> AttemptRecord:
         judge_usage=sum(record.judge_usage.values(), Usage.zero()),
         pass_index=pass_index,
         rollouts=record.rollouts,
+        benchmark_usage=record.benchmark_usage,
     )
 
 

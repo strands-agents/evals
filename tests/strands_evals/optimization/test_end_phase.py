@@ -416,6 +416,7 @@ def test_pick_ships_the_feasible_finalist_with_the_highest_objective():
         fit=None,
         values=values,
         trial_counts={c: 2 for c in validation},
+        completed={c: 2 for c in validation},
         criteria=criteria,
         rule=Mean(),
     )
@@ -439,6 +440,7 @@ def test_pick_ships_the_baseline_when_no_finalist_meets_the_constraint():
         fit=None,
         values=values,
         trial_counts={"0": 2, "a": 2},
+        completed={"0": 2, "a": 2},
         criteria=criteria,
         rule=Mean(),
     )
@@ -478,6 +480,7 @@ def test_pick_rejects_a_finalist_whose_constraint_was_never_measured_on_validati
         fit=_PredictingFit(validation, [HELP, grounded], Estimate(mean=0.9, sd=0.01)),
         values={"0": {}, "a": {}},
         trial_counts={"0": 2, "a": 2},
+        completed={"0": 2, "a": 2},
         criteria=criteria,
         rule=Mean(),
     )
@@ -496,6 +499,7 @@ def test_pick_reports_fewer_than_two_eligible_through_problem():
         fit=None,
         values=values,
         trial_counts={"0": 2, "a": 0},
+        completed={"0": 2, "a": 0},
         criteria=criteria,
         rule=Mean(),
         problem="fewer than 2 eligible candidates",
@@ -518,6 +522,7 @@ def test_pick_tie_goes_to_the_candidate_with_the_most_trials_before_the_earlier(
         fit=None,
         values=values,
         trial_counts={"0": 2, "a": 10},
+        completed={"0": 2, "a": 10},
         criteria=criteria,
         rule=Mean(),
     )
@@ -536,6 +541,7 @@ def test_pick_tie_without_trial_counts_goes_to_the_baseline():
         fit=None,
         values=values,
         trial_counts={"0": 2, "a": 2},
+        completed={"0": 2, "a": 2},
         criteria=criteria,
         rule=Mean(),
     )
@@ -569,6 +575,7 @@ def test_pick_under_pareto_a_gain_tie_with_another_trade_off_ships_the_baseline(
         fit=None,
         values={"0": {}, "a": {}},
         trial_counts={"0": 2, "a": 2},
+        completed={"0": 2, "a": 2},
         criteria=criteria,
         rule=Mean(),
     )
@@ -587,8 +594,121 @@ def test_pick_with_no_finalist_ships_the_baseline():
         fit=None,
         values={"0": {}},
         trial_counts={"0": 2},
+        completed={"0": 2},
         criteria=criteria,
         rule=Mean(),
     )
     assert report.champion_id == "0"
     assert report.reason.startswith("no finalist from the search")
+
+
+def test_pick_never_ships_a_finalist_with_no_completed_validation_trial():
+    # "a" crashed on every validation trial; its failure score (agent_failure_score=1.0) would rank it first.
+    criteria = Criteria(Maximize(HELP), [], REGISTRY, agent_failure_score=1.0)
+    validation = {"0": _val_scores("0", 0.5), "a": _val_scores("a", 1.0), "b": _val_scores("b", 0.7)}
+    report = pick(
+        baseline_id="0",
+        finalist_ids=["a", "b"],
+        validation=validation,
+        fit=None,
+        values={c: {} for c in validation},
+        trial_counts={c: 2 for c in validation},
+        completed={"0": 2, "a": 0, "b": 2},
+        criteria=criteria,
+        rule=Mean(),
+    )
+    assert report.champion_id == "b"
+    assert report.infeasible == {"a": "every validation trial failed, so nothing was measured"}
+    assert report.objectives["a"] is None
+    assert "a" in report.measured  # what it did measure (its usage) is still reported
+
+
+def test_pick_ships_the_baseline_when_the_only_finalist_completed_no_validation_trial():
+    criteria = Criteria(Maximize(HELP), [], REGISTRY, agent_failure_score=1.0)
+    validation = {"0": _val_scores("0", 0.5), "a": _val_scores("a", 1.0)}
+    kwargs = dict(
+        baseline_id="0",
+        finalist_ids=["a"],
+        validation=validation,
+        fit=None,
+        values={"0": {}, "a": {}},
+        trial_counts={"0": 2, "a": 2},
+        criteria=criteria,
+        rule=Mean(),
+    )
+    report = pick(**kwargs, completed={"0": 2, "a": 0})
+    assert report.champion_id == "0" and "a" in report.infeasible
+    assert pick(**kwargs, completed={"0": 2}) == report  # a candidate left out counts as 0 completed
+
+
+def test_pick_falls_back_to_a_baseline_with_no_completed_validation_trial_when_nothing_is_feasible():
+    criteria = Criteria(Maximize(HELP), [AtMost(HELP, 0.5)], REGISTRY, agent_failure_score=0.0)
+    validation = {"0": _val_scores("0", 0.0), "a": _val_scores("a", 0.9)}
+    report = pick(
+        baseline_id="0",
+        finalist_ids=["a"],
+        validation=validation,
+        fit=None,
+        values={"0": {}, "a": {}},
+        trial_counts={"0": 2, "a": 2},
+        completed={"0": 0, "a": 2},
+        criteria=criteria,
+        rule=Mean(),
+    )
+    assert report.champion_id == "0" and report.objectives["0"] is None
+    assert report.infeasible["0"] == "every validation trial failed, so nothing was measured"
+    assert "<= 0.5" in report.infeasible["a"]
+
+
+def test_pick_never_ships_a_baseline_with_no_completed_validation_trial_over_a_measured_finalist():
+    criteria = Criteria(Maximize(HELP), [], REGISTRY, agent_failure_score=1.0)
+    validation = {"0": _val_scores("0", 1.0), "a": _val_scores("a", 0.7)}
+    report = pick(
+        baseline_id="0",
+        finalist_ids=["a"],
+        validation=validation,
+        fit=None,
+        values={"0": {}, "a": {}},
+        trial_counts={"0": 2, "a": 2},
+        completed={"0": 0, "a": 2},
+        criteria=criteria,
+        rule=Mean(),
+    )
+    assert report.champion_id == "a" and "0" in report.infeasible
+    assert report.reason.endswith("vs baseline unmeasured")
+
+
+def test_pick_under_pareto_leaves_a_finalist_with_no_completed_validation_trial_off_the_front():
+    # "a" crashed at once on every validation case: the worst score but the fewest tokens, so it would be on the
+    # front, and its weighted gain the highest.
+    criteria = Criteria(Pareto(Maximize(HELP), Minimize(TOKENS, scale=10)), [], REGISTRY)
+
+    def scores(candidate_id, help_value, tokens):
+        cases = ("v1", "v2")
+        objective = criteria.objective_value({HELP: help_value, TOKENS: tokens})
+        return CandidateScores(
+            candidate_id=candidate_id,
+            objective_by_case={c: objective for c in cases},
+            metrics_by_case={c: {HELP: help_value, TOKENS: tokens} for c in cases},
+            unavailable={},
+            objective_by_run={c: [objective] for c in cases},
+            metrics_by_run={c: {HELP: [help_value], TOKENS: [tokens]} for c in cases},
+            objective=objective,
+            is_eligible=True,
+            failures=2 if help_value == 0.0 else 0,
+        )
+
+    validation = {"0": scores("0", 0.5, 6.0), "a": scores("a", 0.0, 0.0), "b": scores("b", 0.85, 9.0)}
+    kwargs = dict(
+        baseline_id="0",
+        finalist_ids=["a", "b"],
+        validation=validation,
+        fit=None,
+        values={c: {} for c in validation},
+        trial_counts={c: 2 for c in validation},
+        criteria=criteria,
+        rule=Mean(),
+    )
+    assert pick(**kwargs, completed={c: 2 for c in validation}).champion_id == "a"  # what the check prevents
+    report = pick(**kwargs, completed={"0": 2, "a": 0, "b": 2})
+    assert report.champion_id == "b" and "a" not in report.front and "a" in report.infeasible

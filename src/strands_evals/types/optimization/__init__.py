@@ -17,10 +17,11 @@ from .scores import (
     near,
 )
 from .search import CandidateSummary, Evidence, Observation, ObservationOutcome, Patch, Value, Values
-from .trials import SPLIT_NAMES, AttemptRecord, SplitName, TrialRecord, TrialStatus, Usage
+from .trials import CANDIDATE_SPAN_KEY, SPLIT_NAMES, AttemptRecord, SplitName, TrialRecord, TrialStatus, Usage
 
 __all__ = [
     "AttemptRecord",
+    "CANDIDATE_SPAN_KEY",
     "CandidateLabel",
     "CandidateScores",
     "CandidateSummary",

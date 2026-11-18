@@ -360,6 +360,39 @@ def test_the_plain_call_builds_the_baseline_component():
     assert isinstance(make_strands_agent().conversation_manager, SummarizingConversationManager)
 
 
+class Configured:
+    def __init__(self, size: int = 4, settings=None):
+        self.size = size
+        self.settings = settings
+
+
+SETTINGS = {"threshold": 0.6, "seen": []}
+WINDOW = SlidingWindowConversationManager(window_size=20)
+
+
+@tunable(manager=choice(tuned=component(Configured, size=Int(1, 50), settings=SETTINGS), fixed=WINDOW))
+def make_configured(manager=None):
+    return manager
+
+
+def test_the_plain_call_and_every_bound_build_get_their_own_copy_of_a_fixed_kwarg():
+    bound = make_configured.bind({"manager.tuned.size": 7})
+    builds = [make_configured(), make_configured(), bound(), bound()]
+    assert all(build.settings == SETTINGS for build in builds)
+    assert len({id(build.settings) for build in builds} | {id(SETTINGS)}) == 5
+    builds[0].settings["seen"].append("first trial")
+    assert builds[1].settings["seen"] == [] and SETTINGS["seen"] == []
+
+
+def test_every_bound_build_gets_its_own_copy_of_a_fixed_alternative():
+    bound = make_configured.bind({"manager": "fixed"})
+    first, second = bound(), bound()
+    assert isinstance(first, SlidingWindowConversationManager) and first.window_size == 20
+    assert first is not second and first is not WINDOW
+    first.removed_message_count = 3
+    assert second.removed_message_count == 0 and WINDOW.removed_message_count == 0
+
+
 def test_a_build_context_can_be_built_by_hand(tmp_path):
     from strands_evals.optimization import BuildContext
 

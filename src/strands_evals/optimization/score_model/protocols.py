@@ -27,7 +27,8 @@ class FitData:
     Attributes:
         space: The declared space.
         text_blocks: Block name -> its text keys (each block's "rewritten?" factor).
-        candidates: Candidate id -> values, in scoring order (baseline first).
+        candidates: Candidate id -> values, in scoring order (the baseline first; the end phase's validation
+            fit leaves out a baseline with no completed validation trial).
         cases: The split's case names (train for the search fit, validation in the end phase).
         scores: Candidate id -> its `CandidateScores` on the split. A model fits the candidates whose
             `is_eligible` is true (constraint violators included), from each one's `metrics_by_run`
@@ -113,8 +114,8 @@ class Fit(Protocol):
     Attributes:
         metrics: Resolved goal metric name -> its model, e.g. "HelpfulnessEvaluator", "tokens".
         candidates: Ids it was fitted on.
-        flagged: Metrics whose held-out check failed; any flagged metric makes every consumer use measured
-            means for every metric.
+        flagged: Metrics whose held-out check failed; no decision uses a fit with any flagged metric (every
+            metric is assessed by measured means, and selection and the proposers get no fit).
         diagnostics: Per metric (z-scores, prior scales, messages); a `BayesBenchModel` fit also gives each
             metric's scaling (noise, unit, offset) and observation count.
     """

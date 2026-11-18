@@ -143,16 +143,17 @@ def pick(
     fit: Fit | None,
     values: Mapping[str, Values],
     trial_counts: Mapping[str, int],
+    completed: Mapping[str, int],
     criteria: Criteria,
     rule: PickRule,
     problem: str | None = None,
 ) -> ValidationReport:
     """The champion: the first feasible candidate on validation, baseline included; else the baseline.
 
-    Feasible = eligible on validation and P(met) >= `criteria.feasibility_threshold` for every
-    constraint (measured means without a fit); a constraint whose metric has no value on any validation
-    case is unmet (`assess`). Ranked by objective resolved to a tenth of its sd; ties -> most trials, then
-    earlier.
+    Feasible = eligible on validation, at least one completed validation trial, and P(met) >=
+    `criteria.feasibility_threshold` for every constraint (measured means without a fit); a constraint whose
+    metric has no value on any validation case is unmet (`assess`). Ranked by objective resolved to a tenth of
+    its sd; ties -> most trials, then earlier.
     Under a `Pareto` objective the same champion (the validated front's highest-gain member) plus
     `ValidationReport.front`.
 
@@ -160,16 +161,21 @@ def pick(
         baseline_id: The baseline.
         finalist_ids: From `choose_finalists`.
         validation: Candidate id -> its validation scores.
-        fit: A fresh fit on the validation runs of the baseline and finalists only (never the search fit);
-            None (fewer than 2 eligible, or the score model raised) -> measured means.
+        fit: A fresh fit on the validation runs of the baseline and finalists only (never the search fit),
+            leaving out those with no completed validation trial; None (fewer than 2 eligible, or the score
+            model raised) -> measured means.
         values: Candidate id -> values.
         trial_counts: Candidate id -> validation trials that count.
+        completed: Candidate id -> validation trials that completed (a missing id counts as 0). A candidate
+            with none is left out of the assessment, so it ships only as the fallback baseline: an
+            `agent_failure` scored by `agent_failure_score` counts, but with no completed trial its scores are
+            that failure value alone (and a crash's usage).
         criteria: The objective, constraints, and feasibility threshold.
         rule: `FinalPick.rule`, passed to `assess`.
         problem: Why `fit` is None, copied to `ValidationReport.problem`.
     """
     ids = list(dict.fromkeys([baseline_id, *finalist_ids]))
-    eligible = [c for c in ids if c in validation and validation[c].is_eligible]
+    eligible = [c for c in ids if c in validation and validation[c].is_eligible and completed.get(c, 0) > 0]
     assessments = assess(eligible, fit=fit, criteria=criteria, values=values, measured=validation, rule=rule)
     # The baseline comes first in `ids`, so with equal objectives and trial counts it wins the tie.
     ranked = rank(assessments, ids, trial_counts=trial_counts)
@@ -177,8 +183,10 @@ def pick(
     champion = feasible[0] if feasible else baseline_id
     infeasible: dict[str, str] = {}
     for c in ids:
-        if c not in assessments:
+        if c not in validation or not validation[c].is_eligible:
             infeasible[c] = "not eligible on validation: a case has no counted run for every goal metric"
+        elif c not in assessments:
+            infeasible[c] = "every validation trial failed, so nothing was measured"
         elif not assessments[c].is_feasible:
             infeasible[c] = label_candidate(validation[c], assessments[c], criteria=criteria).reason
     objectives = {c: assessments[c].objective if c in assessments else None for c in ids}

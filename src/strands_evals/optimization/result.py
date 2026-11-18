@@ -144,6 +144,10 @@ class OptimizationResult(BaseModel):
         front_test: Under a `Pareto` objective, each tested front member against the baseline on test
             (`front_test[best.id]` is `test` when the champion is on the validated front; members not afforded
             or with every test trial failed are absent); `{}` otherwise or when the test report was skipped.
+        test_failed_ids: The tested candidates (the champion, the baseline, and under `Pareto` the front members
+            tested) with no completed test trial, so the test measured nothing for them. The champion is in it
+            when every one of its test trials failed, though it ships. `[]` when every tested candidate
+            completed a test trial or the test didn't run, and in a result written before this field existed.
         effects: `effects.json`: per metric and option from the search fit, or empty with the reason.
         iterations: Every search step, in order.
         rollouts_spent: Rollouts counted against the budget, the end phase's included.
@@ -156,6 +160,10 @@ class OptimizationResult(BaseModel):
         search_cost: Total proposer usage.
         judge_cost: Judge usage per trial's last attempt, as `agent_cost` counts the agent's.
         retry_cost: Agent and judge usage in earlier attempts (`TrialRecord.previous_attempts`).
+        benchmark_cost: Usage of the other agents in the rollouts (`TrialRecord.benchmark_usage`: a
+            simulated user, an agent the environment built), in every attempt; never counted in
+            `agent_cost` or `retry_cost`. Zero when the agents can't be told apart (the `build_task` path, a
+            factory that returned something else).
         reports: Candidate id -> split -> the `EvaluationReport` `Experiment` would have returned for those
             trials (every run's rows, each tagged with `run_index`; failed trials as `Experiment`'s score-0
             rows), for every candidate and split it has trials on. Display only: nothing in the run reads it.
@@ -172,6 +180,7 @@ class OptimizationResult(BaseModel):
     test: TestReport | None
     test_reason: str | None
     front_test: dict[str, TestReport]
+    test_failed_ids: list[str] = Field(default_factory=list)
     effects: dict[str, Any]
     iterations: list[IterationRecord]
     rollouts_spent: int
@@ -180,6 +189,7 @@ class OptimizationResult(BaseModel):
     search_cost: Usage
     judge_cost: Usage
     retry_cost: Usage
+    benchmark_cost: Usage = Field(default_factory=Usage.zero)
     # Left out of the repr: every trial's rows and evaluation data, hundreds of kilobytes on a real run.
     reports: dict[str, dict[SplitName, EvaluationReport]] = Field(repr=False)
     rows: dict[Grain, list[dict[str, Any]]] = Field(repr=False)
@@ -202,13 +212,19 @@ class OptimizationResult(BaseModel):
 
     @property
     def improved(self) -> bool:
-        """Whether something other than the baseline ships (`best.id != baseline_id`)."""
+        """Whether something other than the baseline ships (`best.id != baseline_id`).
+
+        The validation pick decides it; the test never changes it. Check `test` (None when skipped, with
+        `test_reason`) and `test_failed_ids` (holding `best.id` when every test trial of the champion failed)
+        before applying `best`.
+        """
         return self.validation.champion_id != self.baseline_id
 
     def summary(self) -> str:
         """The run in a few lines: why the search stopped, what ships and why, every finalist on validation
         (the validation fit's estimate next to the measured mean), under `Pareto` the validated front, the
-        test report, what changed, and the costs."""
+        test report, what changed, the costs, and why there are no effects or which metrics the held-out
+        check flagged."""
         goals = list(dict.fromkeys(goal["metric"] for goal in self.effects.get("goals", [])))
         v = self.validation
         steps = len(self.iterations)
@@ -280,10 +296,16 @@ class OptimizationResult(BaseModel):
             "",
             f"Agent tokens: {cost['train'].tokens} train (the search), {cost['validation'].tokens} validation, "
             f"{cost['test'].tokens} test. Proposers {self.search_cost.tokens}, judges {self.judge_cost.tokens}, "
-            f"earlier attempts {self.retry_cost.tokens}.",
+            f"earlier attempts {self.retry_cost.tokens}, other agents in the rollouts {self.benchmark_cost.tokens}.",
         ]
+        flagged = [m for m, d in self.effects.get("metrics", {}).items() if d.get("diagnostics", {}).get("flagged")]
         if self.effects.get("reason"):
             lines.append(f"Effects: none ({self.effects['reason']}).")
+        elif flagged:
+            lines.append(
+                f"Effects: the held-out check flagged {', '.join(flagged)}; "
+                "from then on the search ranked by measured means, not the fit."
+            )
         return "\n".join(lines)
 
     def _name(self, candidate_id: str) -> str:
