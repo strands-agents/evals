@@ -5,13 +5,17 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal, get_args
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..evaluation import EnvironmentState, EvaluationOutput, Interaction
 from ..trace import Session
 
 SplitName = Literal["train", "validation", "test"]
 SPLIT_NAMES: tuple[SplitName, ...] = get_args(SplitName)  # the same names, to iterate over
+
+# The key in each span's `metadata` of a trial's `Session` when the trial's agents are told apart: True for the
+# spans of the agents the factory built and of everything under them, False for every other agent in the rollout.
+CANDIDATE_SPAN_KEY = "strands_evals.optimization.candidate"
 
 
 class TrialStatus(str, Enum):
@@ -30,8 +34,11 @@ class TrialStatus(str, Enum):
 class Usage(BaseModel):
     """Model usage summed over `chat` spans (never `invoke_agent` spans, which carry running totals).
 
-    For a trial: the last attempt's agent spans, judge spans excluded. The same type holds
-    `judge_usage`, `search_cost`, `judge_cost`, `retry_cost`, and `agent_cost`.
+    For a trial: the last attempt's spans of the agents the factory built and of everything under them
+    (sub-agents), judge spans excluded; every other agent in the attempt (a simulated user) is in
+    `benchmark_usage`. On the `build_task` path, or when the factory built something other than a strands
+    `Agent` or multi-agent system, every span in the attempt counts. The same type holds `judge_usage`,
+    `benchmark_usage`, `search_cost`, `judge_cost`, `retry_cost`, `benchmark_cost`, and `agent_cost`.
 
     Field names differ from `types.trace.TokenUsage` on purpose: they are the user-facing metric names
     (`USAGE_METRICS`), and `input_tokens` here includes cache tokens, which `TokenUsage.input_tokens`
@@ -47,7 +54,8 @@ class Usage(BaseModel):
             (unmeasured, not 0).
         model_calls: Number of `chat` spans.
         seconds: Duration of the `rollout` span (environment setup and teardown excluded), or of the
-            attempt span when there is none (a `build_task` task).
+            attempt span when there is none (a `build_task` task); the time other agents in the rollout take
+            is part of it. 0 in `benchmark_usage`.
         models: Model ids that made the calls, first use first, from each `chat` span's
             `gen_ai.request.model`; `[]` when no span has it. Summing two usages joins the lists in
             first-use order. For `Patch.usage`, the proposer agent's configured model id.
@@ -118,6 +126,8 @@ class AttemptRecord(BaseModel):
         error: The exception message, if it raised.
         usage: What the agent spent in it; zero when a judge-only re-run reused its output, since that
             usage stays on the new record, so it is counted once.
+        benchmark_usage: What the other agents in it spent, as `TrialRecord.benchmark_usage`; zero for a
+            record a judge-only re-run replaced, as `usage` is.
         judge_usage: What its failed judges spent, as one total (an attempt holds no scores, so unlike
             `TrialRecord.judge_usage` nothing needs it per evaluator); judges whose scores the new
             record kept count there instead, so this is only wasted work. Zero for a throttled attempt
@@ -136,6 +146,7 @@ class AttemptRecord(BaseModel):
     judge_usage: Usage
     pass_index: int
     rollouts: int
+    benchmark_usage: Usage = Field(default_factory=Usage.zero)
 
 
 class TrialRecord(BaseModel):
@@ -164,6 +175,12 @@ class TrialRecord(BaseModel):
     agent side only. `judge_usage` is keyed by evaluator name, like `evaluations`: each judge's spend
     for the score in `evaluations` (a failed evaluator's spend is under its name too), including scores
     kept from a record a judge-only re-run replaced; the trial's judge spend is the sum.
+
+    `benchmark_usage` is what the last attempt's other agents spent: its model calls outside the agents the
+    factory built and their sub-agents (a simulated user, an agent the environment built). It is never a
+    metric, and it is zero when the agents can't be told apart (the `build_task` path, a factory that returned
+    something else). When it is told apart, each span of a `Session`
+    trajectory says in its `metadata` whether it is the candidate's (`CANDIDATE_SPAN_KEY`).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -187,3 +204,4 @@ class TrialRecord(BaseModel):
     usage: Usage
     judge_usage: dict[str, Usage]
     rollouts: int
+    benchmark_usage: Usage = Field(default_factory=Usage.zero)
