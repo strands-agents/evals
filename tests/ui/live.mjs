@@ -79,7 +79,9 @@ ok(asked() === '/api/changes /api/scan', 'the open files are not fetched again w
 // ── the open report is re-run: it is re-read, and the reader keeps their place ──
 await p.openReport();
 await p.click('#rep-seg button[data-f="fail"]');
+p.$('#rep-rows tr.case').focus();
 await p.click('#rep-rows tr.case');
+ok(p.d.activeElement === p.$('#rep-rows tr.case[aria-expanded="true"]'), 'opening a row leaves the keyboard on it', p.d.activeElement.tagName);
 write('r.json', report(false, false));
 asked();
 await p.poll();
@@ -88,6 +90,7 @@ ok(p.text('#r-score') === '0.00' && p.$$('#rep-rows tr.case').length === 2, 'a r
   `${p.text('#r-score')} · ${p.$$('#rep-rows tr.case').length} rows`);
 ok(p.$('#rep-seg button.on').dataset.f === 'fail' && p.$('#rep-rows tr.case[aria-expanded="true"]'),
   'with the filter and the open row left as they were');
+ok(p.d.activeElement === p.$('#rep-rows tr.case[aria-expanded="true"]'), 'and the keyboard still on that row', p.d.activeElement.tagName);
 
 // ── the open experiment changes on disk: a clean editor follows it, keeping the case being read ──
 await p.openExperiment();

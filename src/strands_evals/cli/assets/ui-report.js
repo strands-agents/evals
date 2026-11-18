@@ -247,9 +247,9 @@ function renderReport() {
   $('rep-more').hidden = !hidden;
   $('rep-more').textContent = hidden ? `Show ${plural(hidden, 'more case')}` : '';
 
-  $('rep-rows').innerHTML = visible.map((g, at) => groupHead(visible, at) + g.rows.map((r, k) =>
+  redraw($('rep-rows'), visible.map((g, at) => groupHead(visible, at) + g.rows.map((r, k) =>
     rowLine(g, r, k === 0) + (openRows.has(r.i) ? rowDetail(g.case, r) : '')).join('')).join('')
-    || '<tr><td colspan="4" class="empty">No rows match</td></tr>';
+    || '<tr><td colspan="4" class="empty">No rows match</td></tr>');
 }
 
 $('rep-find').oninput = e => { repQuery = e.target.value.trim().toLowerCase(); repLimit = REP_PAGE; renderReport(); };
