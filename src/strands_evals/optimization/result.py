@@ -144,6 +144,10 @@ class OptimizationResult(BaseModel):
         front_test: Under a `Pareto` objective, each tested front member against the baseline on test
             (`front_test[best.id]` is `test` when the champion is on the validated front; members not afforded
             or with every test trial failed are absent); `{}` otherwise or when the test report was skipped.
+        test_failed_ids: The tested candidates (the champion, the baseline, and under `Pareto` the front members
+            tested) with no completed test trial, so the test measured nothing for them. The champion is in it
+            when every one of its test trials failed, though it ships. `[]` when every tested candidate
+            completed a test trial or the test didn't run, and in a result written before this field existed.
         effects: `effects.json`: per metric and option from the search fit, or empty with the reason.
         iterations: Every search step, in order.
         rollouts_spent: Rollouts counted against the budget, the end phase's included.
@@ -172,6 +176,7 @@ class OptimizationResult(BaseModel):
     test: TestReport | None
     test_reason: str | None
     front_test: dict[str, TestReport]
+    test_failed_ids: list[str] = Field(default_factory=list)
     effects: dict[str, Any]
     iterations: list[IterationRecord]
     rollouts_spent: int
@@ -202,7 +207,12 @@ class OptimizationResult(BaseModel):
 
     @property
     def improved(self) -> bool:
-        """Whether something other than the baseline ships (`best.id != baseline_id`)."""
+        """Whether something other than the baseline ships (`best.id != baseline_id`).
+
+        The validation pick decides it; the test never changes it. Check `test` (None when skipped, with
+        `test_reason`) and `test_failed_ids` (holding `best.id` when every test trial of the champion failed)
+        before applying `best`.
+        """
         return self.validation.champion_id != self.baseline_id
 
     def summary(self) -> str:
