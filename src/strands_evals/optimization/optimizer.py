@@ -52,6 +52,7 @@ from .end_phase import (
     pick,
 )
 from .execution.rollout import EnvironmentFn, RolloutFn, TaskFn, default_rollout, make_task
+from .execution.status import classify
 from .execution.traces import TraceCapture
 from .execution.trials import TrialRunner
 from .record.events import closed_events
@@ -1580,8 +1581,10 @@ class Optimizer:
         A candidate whose factory raises (a constructor rejecting a combination of values) is invalid, redrawn
         at no cost, instead of every trial being an `agent_failure` scored at the worst end. Built with no
         resources and no call kwargs, so a factory that needs a resource from `environment` or a kwarg only the
-        rollout passes can't be built here and isn't checked (its trials run as usual). On the `build_task` path
-        the agent is built inside the task, so nothing is checked.
+        rollout passes can't be built here and isn't checked (its trials run as usual). Neither is a factory that
+        fails on infrastructure (`classify`: expired credentials, a dropped connection): that is no fault of the
+        values, so the proposer isn't told they're invalid; the trials run, and are re-run, as in any outage. On
+        the `build_task` path the agent is built inside the task, so nothing is checked.
         """
         if self._factory is None:
             return None
@@ -1592,7 +1595,9 @@ class Optimizer:
                 await built
         except _FactoryArgumentError:
             return None
-        except Exception as error:  # noqa: BLE001 - any failure to build makes the candidate invalid
+        except Exception as error:  # noqa: BLE001 - any other failure to build makes the candidate invalid
+            if classify(error) is TrialStatus.INFRASTRUCTURE_INVALID:
+                return None
             return f"the agent can't be built: {type(error).__name__}: {error}"
         return None
 

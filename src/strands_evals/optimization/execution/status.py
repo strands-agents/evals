@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+import botocore.exceptions
 from botocore.exceptions import (
     ConnectionClosedError,
     ConnectTimeoutError,
@@ -12,6 +13,7 @@ from botocore.exceptions import (
     NoCredentialsError,
     PartialCredentialsError,
     ReadTimeoutError,
+    RefreshWithMFAUnsupportedError,
     ResponseStreamingError,
     SSOError,
     TokenRetrievalError,
@@ -31,17 +33,11 @@ class InfrastructureError(Exception):
     """
 
 
-# No connection, no credentials, or a response that stopped or broke while read. urllib3's own timeouts
-# reach the agent unwrapped when a streamed response stalls. Credentials that can't be loaded or refreshed
-# (a credential process that fails, an expired SSO session) are the environment's, never the agent's.
+# No connection, or a response that stopped or broke while read. urllib3's own timeouts reach the agent
+# unwrapped when a streamed response stalls.
 _TRANSPORT_ERRORS = (
     ConnectTimeoutError,
     EndpointConnectionError,
-    NoCredentialsError,
-    PartialCredentialsError,
-    CredentialRetrievalError,
-    TokenRetrievalError,
-    SSOError,
     ReadTimeoutError,
     ResponseStreamingError,
     ConnectionClosedError,
@@ -50,8 +46,22 @@ _TRANSPORT_ERRORS = (
     NewConnectionError,
 )
 
-# The model service's own failure codes, lowercased; botocore reports them in `response["Error"]["Code"]`,
-# also for an error inside a streamed response (`EventStreamError`).
+# Credentials that are missing or can't be loaded or refreshed: a credential process that fails, an expired SSO,
+# `aws login`, or MFA role session. The environment's, never the agent's.
+_CREDENTIAL_ERRORS = (
+    NoCredentialsError,
+    PartialCredentialsError,
+    CredentialRetrievalError,
+    TokenRetrievalError,
+    RefreshWithMFAUnsupportedError,
+    SSOError,
+    # botocore >= 1.41 only: the `aws login` provider's errors.
+    *filter(None, [getattr(botocore.exceptions, "LoginError", None)]),
+)
+
+# Error codes of the service's own failures and of expired caller credentials, lowercased; botocore reports them
+# in `response["Error"]["Code"]`, also for an error inside a streamed response (`EventStreamError`). A wrong key
+# (`UnrecognizedClientException`) or missing model access (`AccessDeniedException`) isn't here: no re-run fixes it.
 _SERVICE_ERROR_CODES = frozenset(
     {
         "internalserverexception",
@@ -71,16 +81,19 @@ def classify(error: BaseException) -> TrialStatus:
     1. Unwrap: follow `EventLoopException.original_exception` to the cause.
     2. `InfrastructureError` -> `INFRASTRUCTURE_INVALID`.
     3. `utils.is_throttling_error(cause)` -> `INFRASTRUCTURE_INVALID`.
-    4. A transport or credential error -> `INFRASTRUCTURE_INVALID`: botocore `ConnectTimeoutError`,
-       `EndpointConnectionError`, `NoCredentialsError`, `PartialCredentialsError`, `CredentialRetrievalError`,
-       `TokenRetrievalError`, `SSOError` (its subclasses included), `ReadTimeoutError`, `ResponseStreamingError`,
-       `ConnectionClosedError`; urllib3 `TimeoutError`, `ProtocolError`, `NewConnectionError`.
-    5. The model service's own error code (`response["Error"]["Code"]`, lowercased; read with
-       `getattr`, so it also covers botocore `EventStreamError` in a streamed response):
+    4. A transport error -> `INFRASTRUCTURE_INVALID`: botocore `ConnectTimeoutError`, `EndpointConnectionError`,
+       `ReadTimeoutError`, `ResponseStreamingError`, `ConnectionClosedError`; urllib3 `TimeoutError`,
+       `ProtocolError`, `NewConnectionError`.
+    5. A credential error -> `INFRASTRUCTURE_INVALID`: botocore `NoCredentialsError`, `PartialCredentialsError`,
+       `CredentialRetrievalError`, `TokenRetrievalError`, `RefreshWithMFAUnsupportedError`, and `SSOError` and
+       `LoginError` (botocore >= 1.41) with their subclasses.
+    6. The service's own failure, or expired credentials, by error code (`response["Error"]["Code"]`,
+       lowercased; read with `getattr`, so it also covers botocore `EventStreamError` in a streamed response):
        `internalserverexception`, `serviceunavailableexception`, `modelstreamerrorexception`,
-       `modelnotreadyexception`, `throttlingexception`, and expired credentials (`expiredtokenexception`,
-       `expiredtoken`) -> `INFRASTRUCTURE_INVALID`.
-    6. Anything else -> `AGENT_FAILURE`, a user's own deadline (`asyncio.TimeoutError`) included, so a
+       `modelnotreadyexception`, `throttlingexception`, `expiredtokenexception`, `expiredtoken`
+       -> `INFRASTRUCTURE_INVALID`. A wrong key (`UnrecognizedClientException`) or missing model access
+       (`AccessDeniedException`) is not: no re-run fixes it.
+    7. Anything else -> `AGENT_FAILURE`, a user's own deadline (`asyncio.TimeoutError`) included, so a
        slow agent never sheds its hard cases by being re-run.
 
     Only these two come from an exception: `make_task` raises an environment setup error as
@@ -93,7 +106,7 @@ def classify(error: BaseException) -> TrialStatus:
         cause = cause.original_exception
     if isinstance(cause, InfrastructureError) or is_throttling_error(cause):
         return TrialStatus.INFRASTRUCTURE_INVALID
-    if isinstance(cause, _TRANSPORT_ERRORS):
+    if isinstance(cause, _TRANSPORT_ERRORS + _CREDENTIAL_ERRORS):
         return TrialStatus.INFRASTRUCTURE_INVALID
     response = getattr(cause, "response", None)
     details = response.get("Error") if isinstance(response, Mapping) else None
