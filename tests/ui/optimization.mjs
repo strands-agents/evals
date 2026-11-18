@@ -166,8 +166,8 @@ eq([text('#crumbs'), text('#facts'), $$('#opt-tabs .tab:not([hidden])').map(t =>
   'the page header names the run and holds its six views as a tab strip, the open one marked');
 eq([$$('#sections .tab.on').map(t => t.dataset.view).join(), $('.tab[aria-current="page"]').dataset.view], ['opt-runs', 'opt-overview'],
   'while the sidebar stays on Runs, the list the run was opened from');
-eq([text('#opt-sub'), $('#opt-sub').title], [`${RUN_ID} · stopped: iterations`, 'reached max_iterations=6'],
-  'the subtitle is the run and its stop reason, with the stop message on hover');
+eq(text('#opt-sub'), 'reached max_iterations=6',
+  'the header names the run and its status once, and the subtitle adds only what the stop said for itself');
 eq(text('#opt-method-sum'),
   'Tuned system_prompt, temperature, tool_descriptions, max_tokens · 8 train · 4 validation · 3 test',
   'the method line names the keys the proposals changed and the split sizes');

@@ -141,7 +141,6 @@ function renderOptimization() {
   renderPageHead(currentView());
   if (!d) {
     $('opt-sub').textContent = optError;
-    $('opt-sub').title = '';
     ['opt-hero', 'opt-series-chart', 'opt-series-legend', 'opt-budget-chart', 'opt-status-chart',
       'opt-usage-chart', 'opt-to-chart', 'opt-to-legend', 'opt-result', 'opt-winner', 'opt-cands',
       'opt-explain', 'opt-method-sum', 'opt-setup-kv', 'opt-mech-kv', 'opt-stats']
@@ -152,8 +151,8 @@ function renderOptimization() {
     return;
   }
 
-  $('opt-sub').textContent = run.run_id + (d.stop ? ` · stopped: ${d.stop.reason}` : ' · still running');
-  $('opt-sub').title = (d.stop && d.stop.message) || '';
+  /* The page header names the run and its status: here, only what the stop said for itself. */
+  $('opt-sub').textContent = (d.stop && d.stop.message) || '';
   $('opt-method-sum').innerHTML = methodLine(d);
   $('opt-hero').innerHTML = championHero(d);
   $('opt-stats').innerHTML = [
