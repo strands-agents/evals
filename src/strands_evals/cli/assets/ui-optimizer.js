@@ -15,26 +15,23 @@ let optCases = null;
 const optBlank = (title, body) =>
   `<tr><td colspan="6"><div class="nores"><b>${title}</b>${body}</div></td></tr>`;
 
-/* The tone follows the interval, not the delta: one that straddles zero has shown nothing. */
+/* The objective's interval as the run list reads it: `[tone, words]` by where it sits. The tone
+   follows the interval, not the delta: one that straddles zero has shown nothing. */
+const RUN_READING = {
+  none: ['flat', 'no interval'], point: ['flat', 'no width'],
+  above: ['up', 'clear of zero'], below: ['down', 'below zero'], across: ['flat', 'includes zero'],
+};
+
 function runResultCell(r) {
-  const res = r.result, o = res && res.objective;
-  if (!o || typeof o.mean_diff !== 'number') {
-    return '<span class="empty">not measured</span>';
-  }
-  const interval = typeof o.ci_low === 'number' && typeof o.ci_high === 'number';
-  let tone = 'flat', reading;
-  if (!interval) reading = 'no interval';
-  else if (o.ci_high === o.ci_low) reading = 'no width';
-  else if (o.ci_low > 0) { tone = 'up'; reading = 'clear of zero'; }
-  else if (o.ci_high < 0) { tone = 'down'; reading = 'below zero'; }
-  else reading = 'includes zero';
-  const where = res.held_out ? 'held out' : 'validation';
+  const res = r.result, o = res && res.objective, side = intervalSide(o);
+  if (!side) return '<span class="empty">not measured</span>';
+  const [tone, reading] = RUN_READING[side];
   const hover = `objective ${signed(o.mean_diff)}`
-    + (interval ? `, 95% interval [${fine(o.ci_low)}, ${fine(o.ci_high)}]` : ', no interval recorded')
-    + ` on the ${where === 'held out' ? 'held-out test' : 'validation'} split`
+    + (side === 'none' ? ', no interval recorded' : `, 95% interval [${fine(o.ci_low)}, ${fine(o.ci_high)}]`)
+    + ` on the ${res.held_out ? 'held-out test' : 'validation'} split`
     + (o.n_cases ? `, ${plural(o.n_cases, 'case')}` : '');
   return `<span class="delta ${tone}" title="${esc(hover)}">${esc(signed(o.mean_diff))}</span>`
-    + `<br><span class="path">${esc(where)} · ${esc(reading)}</span>`;
+    + `<br><span class="path">${res.held_out ? 'held out' : 'validation'} · ${reading}</span>`;
 }
 
 function renderOptimizerRuns() {
