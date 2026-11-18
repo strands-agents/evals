@@ -4,13 +4,15 @@ import asyncio
 import json
 import os
 import tempfile
+from types import SimpleNamespace
 
 import pytest
-from strands.types.exceptions import EventLoopException
+from strands.types.exceptions import ContextWindowOverflowException, EventLoopException
 
 from strands_evals.optimization import Criteria, InfrastructureError, Maximize, Reflection, Space, TextValue
 from strands_evals.optimization.candidate import Candidate
 from strands_evals.optimization.search.proposer import ProposalRequest
+from strands_evals.optimization.search.reflection import _ShortenToolResultsOnOverflow
 from strands_evals.types.trace import TextContent, ToolResultContent, UserMessage
 from tests.strands_evals.optimization.scripted_model import ScriptedModel, ToolUse
 from tests.strands_evals.optimization.search.test_reflection_evidence import (
@@ -262,20 +264,31 @@ async def test_no_trial_to_learn_from_proposes_nothing():
     assert await reflection.propose(request(trials=[trial("a", status="infrastructure_invalid")])) == []
 
 
+class Recording(ScriptedModel):
+    """Records each request, reports its size as a provider does (utilization is read from the reported usage),
+    and rejects one over its 4,000-token window, as a provider does, without using up a scripted turn."""
+
+    def __init__(self, turns):
+        super().__init__(turns)
+        self.config["context_window_limit"] = 4000  # tokens: a few large reads fill it
+        self.seen, self.tools, self.rejected = [], set(), 0
+
+    async def stream(self, messages, tool_specs=None, *args, **kwargs):
+        request = [json.dumps(m["content"]) for m in messages]
+        tokens = sum(map(len, request)) // 4
+        if tokens > self.config["context_window_limit"]:
+            self.rejected += 1
+            raise ContextWindowOverflowException(f"{tokens} tokens")
+        self.tools.add(tuple(spec["name"] for spec in tool_specs))
+        self.seen.append(request)
+        self.usage = {**self.usage, "inputTokens": tokens}
+        async for event in super().stream(messages, tool_specs, *args, **kwargs):
+            yield event
+
+
 async def test_a_full_context_elides_old_messages_but_keeps_the_task_message():
     """Past 85% of the context window the oldest messages are elided; the task message stays first through every
     call, the send-back's included, and the tool outputs that remain are whole."""
-
-    class Recording(ScriptedModel):
-        def __init__(self, turns):
-            super().__init__(turns)
-            self.config["context_window_limit"] = 4000  # tokens: a few large reads fill it
-            self.seen = []
-
-        async def stream(self, messages, *args, **kwargs):
-            self.seen.append([json.dumps(m["content"]) for m in messages])
-            async for event in super().stream(messages, *args, **kwargs):
-                yield event
 
     reads = [ToolUse("shell", {"command": "printf 'y%.0s' $(seq 1500)"}) for _ in range(8)]
     turns = [*reads, write("p.txt", "x" * 80), submit(prompt="p.txt"), "Done."]
@@ -288,8 +301,63 @@ async def test_a_full_context_elides_old_messages_but_keeps_the_task_message():
     task = model.seen[0][0]
     assert "Write a new version of the parameters" in task
     assert all(messages[0] == task for messages in model.seen)  # the send-back's call included
-    assert any("elided" in m for messages in model.seen for m in messages)  # the strategy fired
+    elided = next(messages for messages in model.seen if "elided" in "".join(messages[1:2]))
+    assert len(elided) == 5  # the task + the last 4: Reflection's strategy, not the SDK's emergency fallback
+    assert model.tools == {("shell", "submit_optimized_params")}  # no retrieval tool
     assert all("y" * 1500 in m for messages in model.seen for m in messages if "yyyy" in m)  # outputs not cut
+
+
+async def test_a_send_back_is_pinned_so_elision_keeps_it():
+    """A send-back stays in every request until the agent has answered it, though older messages are elided."""
+    reads = [ToolUse("shell", {"command": "printf 'y%.0s' $(seq 1500)"}) for _ in range(8)]
+    turns = [write("p.txt", "x" * 80), submit(prompt="p.txt"), "Done."]
+    turns += [*reads, write("p.txt", "Ask for the number."), submit(prompt="p.txt"), "Shortened."]
+    model = Recording(turns)
+    reflection = Reflection(model)
+    reflection._warned = True
+    (patch,) = await reflection.propose(request())
+    assert patch.updates == {"prompt": "Ask for the number.\n"}
+    start = next(i for i, messages in enumerate(model.seen) if any("its limit 60" in m for m in messages))
+    after = model.seen[start:]
+    assert any("elided" in m for messages in after for m in messages)  # elided during the send-back's turn
+    assert all(any("its limit 60" in m for m in messages) for messages in after)
+
+
+async def test_tool_results_too_large_for_the_window_are_cut_and_the_call_goes_on():
+    """A turn whose tool results alone overflow the window: the provider rejects it once, the results are cut to
+    their first and last 200 characters, and the same call goes on (no retry with a fresh agent)."""
+    big = ToolUse(
+        "shell", {"command": "printf 'a%.0s' $(seq 200); printf 'y%.0s' $(seq 20000); printf 'z%.0s' $(seq 200)"}
+    )
+    turns = [big, write("p.txt", "Ask for the number."), submit(prompt="p.txt"), "Done."]
+    model = Recording(turns)
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    (patch,) = await reflection.propose(request(events=events))
+    assert patch.updates == {"prompt": "Ask for the number.\n"}
+    assert model.rejected == 1 and events == []
+    cut = next(m for messages in model.seen for m in messages if "[cut:" in m)
+    assert "a" * 200 in cut and "z" * 150 in cut and "y" * 200 not in cut  # the tail ends with the exit code
+    assert "characters removed: the context window was full" in cut
+
+
+async def test_tool_results_are_cut_only_on_overflow_oldest_message_first():
+    shorten = _ShortenToolResultsOnOverflow()
+
+    def result(text):
+        return {"role": "user", "content": [{"toolResult": {"toolUseId": "t", "content": [{"text": text}]}}]}
+
+    newer = "... [cut: " + "n" * 1000  # a file that looks like a cut result is still cut
+    messages = [{"role": "user", "content": [{"text": "task " * 200}]}, result("o" * 1000), result(newer)]
+    assert not await shorten.apply(SimpleNamespace(overflow=False, messages=messages))
+    assert await shorten.apply(SimpleNamespace(overflow=True, messages=messages))
+    texts = [m["content"][0].get("toolResult", {}).get("content", [{}])[0].get("text") for m in messages]
+    assert "[cut: 600 characters removed" in texts[1] and texts[2] == newer  # the oldest, alone
+    assert await shorten.apply(SimpleNamespace(overflow=True, messages=messages))  # then the next
+    assert messages[2]["content"][0]["toolResult"]["content"][0]["text"].endswith("n" * 200)
+    assert not await shorten.apply(SimpleNamespace(overflow=True, messages=messages))  # nothing left to cut
+    assert messages[0]["content"][0]["text"] == "task " * 200
 
 
 async def test_the_three_folders_share_one_folder_of_the_call():

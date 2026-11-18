@@ -18,14 +18,14 @@ import time
 import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from botocore.config import Config as BotocoreConfig
 from strands import Agent, tool
-from strands.experimental.context_manager import Offload
 from strands.hooks.events import AfterToolCallEvent
 from strands.models.bedrock import BedrockModel
 from strands.models.model import CacheConfig, Model
+from strands.types.content import Message
 from strands.types.tools import AgentTool
 
 from ...types.optimization import CandidateSummary, Observation, Patch, TrialRecord, TrialStatus, Usage, Value
@@ -50,12 +50,18 @@ from ..prompt_templates.reflection.reflection_v0 import (
 from ..scoring.objectives import AtLeast, AtMost, Maximize, Pareto, WeightedSum
 from .proposer import ProposalRequest, Proposer
 
+if TYPE_CHECKING:
+    from strands.experimental.context_manager import ContextState
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MODEL_ID = "global.anthropic.claude-sonnet-5-5"  # run at temperature 1.0
 
 # A tool result longer than this is cut, with a note telling the agent to read less at once.
 _MAX_TOOL_OUTPUT = 100_000
+
+# On a context window overflow, a tool result keeps this many characters at each end (`_ShortenToolResultsOnOverflow`).
+_OVERFLOW_KEPT_CHARS = 200
 
 # Directories where other work on the machine keeps its files: a command that names a path in one of them, outside
 # the agent's own folders, is refused.
@@ -140,7 +146,10 @@ class Reflection(Proposer):
 
         Args:
             model: The proposer's model; None means Claude Sonnet 5.5 on Bedrock
-                (`global.anthropic.claude-sonnet-5-5`) at temperature 1.0.
+                (`global.anthropic.claude-sonnet-5-5`) at temperature 1.0. For an id Strands has no context window
+                for (an inference-profile or provisioned-model ARN, a model newer than the installed Strands), pass
+                a `Model` with `context_window_limit` set: else Strands assumes 200,000 tokens and warns on almost
+                every model call.
             system_prompt: Replaces the default prompt; each literal `{work_folder}` in it becomes the agent's
                 working folder (the only folder it may write in). The submit instructions are appended either way.
             success_threshold: Reward a trial needs to count as a success; None splits by rank.
@@ -264,6 +273,10 @@ class Reflection(Proposer):
             usage = Usage.zero()
             refused: list[dict[str, Any]] = []
             rejected: list[dict[str, str]] = []
+            # Imported here, not at the top: the API is experimental, so a change upstream breaks only Reflection,
+            # not `import strands_evals.optimization`.
+            from strands.experimental.context_manager import Offload
+
             for attempt in range(_ATTEMPTS):
                 submitted: dict[str, str] = {}
                 agent = Agent(
@@ -274,11 +287,15 @@ class Reflection(Proposer):
                         _submit_tool(work, submitted, parent, rejected, caps),
                     ],
                     # At 85% of the model's context window the oldest messages but the last 4 are elided; the
-                    # first message, the task, is never removed, so a send-back still has it. Tool outputs stay
-                    # whole, nothing calls a model (so `usage` is the whole spend), and with no stash there is no
-                    # retrieval tool: the agent rereads a file through its shell.
+                    # first message, the task, is never removed, nor is a pinned send-back. Tool outputs stay
+                    # whole unless the provider rejects a request as too large, nothing calls a model (so `usage`
+                    # is the whole spend), and with no stash there is no retrieval tool: the agent rereads a file
+                    # through its shell.
                     context_manager={
-                        "strategies": [Offload.truncate("*").when(utilization=0.85, preserve_recent=4)],
+                        "strategies": [
+                            Offload.truncate("*").when(utilization=0.85, preserve_recent=4),
+                            _ShortenToolResultsOnOverflow(),
+                        ],
                         "stash": False,
                     },
                     callback_handler=None,
@@ -357,7 +374,10 @@ class Reflection(Proposer):
             else:
                 break
             before = len(rejected)
-            await agent.invoke_async(text)
+            # Pinned, so the send-back isn't elided while the agent is still answering it (the SDK strips the
+            # metadata before the model call).
+            send_back: Message = {"role": "user", "content": [{"text": text}], "metadata": {"custom": {"pinned": True}}}
+            await agent.invoke_async([send_back])
             if submitted:
                 params = {**(params or {}), **submitted}
                 submitted.clear()
@@ -644,6 +664,42 @@ def _cap_tool_output(event: AfterToolCallEvent) -> None:
                 f"characters. Use targeted commands (grep, head, tail) to extract specific content.]"
             )
             logger.warning("original=<%d>, limit=<%d> | truncated tool output", len(text), _MAX_TOOL_OUTPUT)
+
+
+class _ShortenToolResultsOnOverflow:
+    """Only when the provider rejects a request as too large: cut the tool results of the oldest message with any
+    not yet cut to their first and last `_OVERFLOW_KEPT_CHARS` characters, one message per retry.
+
+    The context manager's own strategies remove whole messages and always keep the newest, so a turn whose tool
+    results alone overflow the window (several large reads at once) could never be sent.
+    """
+
+    name = "reflection:shorten-tool-results-on-overflow"
+
+    def __init__(self) -> None:
+        # The result items already cut, by identity (one strategy per agent): matching the note's text could
+        # also match a file the agent read.
+        self._cut: list[object] = []
+
+    async def apply(self, context: ContextState) -> bool:
+        if not context.overflow:
+            return False
+        for message in context.messages:
+            cut = False
+            for block in message["content"]:
+                for item in block.get("toolResult", {}).get("content", []):
+                    text = item.get("text")
+                    if text and len(text) > 2 * _OVERFLOW_KEPT_CHARS and not any(item is c for c in self._cut):
+                        removed = len(text) - 2 * _OVERFLOW_KEPT_CHARS
+                        item["text"] = (
+                            f"{text[:_OVERFLOW_KEPT_CHARS]}\n\n... [cut: {removed} characters removed: the context "
+                            f"window was full; read less at once] ...\n\n{text[-_OVERFLOW_KEPT_CHARS:]}"
+                        )
+                        self._cut.append(item)
+                        cut = True
+            if cut:
+                return True
+        return False
 
 
 @dataclass(frozen=True)

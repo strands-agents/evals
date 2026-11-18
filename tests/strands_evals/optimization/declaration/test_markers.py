@@ -325,9 +325,9 @@ def test_choice_with_the_same_class_twice_needs_keyword_labels():
 def test_one_component_can_sit_in_two_choices_under_different_labels():
     shared = component(Strategy)
     first = choice(truncate=shared, other=component(OtherStrategy))
-    second = choice(truncate=shared, other=component(OtherStrategy))
+    second = choice(elide=shared, other=component(OtherStrategy))
     assert first.alternatives["truncate"].label == "truncate"
-    assert second.alternatives["truncate"].label == "truncate"
+    assert second.alternatives["elide"].label == "elide"
     assert shared.label == "Strategy"
 
 
