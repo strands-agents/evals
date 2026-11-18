@@ -4,7 +4,6 @@
 
 /* Derived from the append-only `events.jsonl` described in `optimization/record/events.py`. */
 
-const OUTCOMES = ['feasible', 'infeasible', 'ineligible', 'invalid', 'unscored', 'duplicate'];
 const STATUSES = ['completed', 'agent_failure', 'evaluator_invalid', 'infrastructure_invalid'];
 
 /* The case names of one split, in either shape a record writes them: `split.cases.<part>` or `split.<part>`. */
@@ -14,6 +13,13 @@ const splitCases = (split, part) => {
   if (Array.isArray(nested)) return nested;
   return Array.isArray(s[part]) ? s[part] : [];
 };
+
+/* An evaluation and a measured mean are each a bare number, or a record holding one. */
+const scoreOf = v => (v && typeof v === 'object' ? v.score : v);
+const meanOf = v => (v && typeof v === 'object' ? v.mean : v);
+const trialFailed = t => !!t.status && t.status !== 'completed';
+/* A later `trial` for the same candidate, run and case replaces the earlier one. */
+const trialKey = rec => JSON.stringify([rec.candidate_id, rec.run_index, rec.case_name]);
 
 /* `run.json` facts under every name the record has used: schema 1 writes `metrics` roles,
    `search.blocks`, `runs_per_candidate`, and marks a Pareto run only in its objective string. */
@@ -49,6 +55,9 @@ function configFacts(cfg) {
     selection: named(cfg.selection),
   };
 }
+
+/* A goal's direction as the objective states it, whether or not any trial measured the goal. */
+const goalDir = (d, metric) => (d.facts.goals.find(g => g.metric === metric) || {}).dir || null;
 
 function deriveOptimization(events, config) {
   const cfg = config || {};
@@ -88,12 +97,16 @@ function deriveOptimization(events, config) {
   };
   let pending = blankUsage();
 
+  const lastTrial = new Map();
+  events.forEach((e, i) => { if (e && e.event === 'trial') lastTrial.set(trialKey(e.record || {}), i); });
+
   let spent = 0;
-  for (const e of events) {
+  for (const [i, e] of events.entries()) {
     if (!e || typeof e !== 'object') continue;
     switch (e.event) {
       case 'trial': {
         const rec = e.record || {};
+        if (lastTrial.get(trialKey(rec)) !== i) break;
         const status = rec.status || 'unknown';
         statuses[status] = (statuses[status] || 0) + 1;
         const split = rec.split || 'unknown';
@@ -107,7 +120,7 @@ function deriveOptimization(events, config) {
           if (!fromTrials.has(cid)) fromTrials.set(cid, {});
           const totals = fromTrials.get(cid);
           for (const [metric, value] of Object.entries(rec.evaluations || {})) {
-            const score = value && typeof value === 'object' ? value.score : value;
+            const score = scoreOf(value);
             if (typeof score !== 'number' || !isFinite(score)) continue;
             seeMetric(metric);
             if (!totals[metric]) totals[metric] = { sum: 0, n: 0 };
@@ -128,7 +141,7 @@ function deriveOptimization(events, config) {
         if (!e.candidate_id || !label.measured || typeof label.measured !== 'object') break;
         const means = {};
         for (const [metric, value] of Object.entries(label.measured)) {
-          const mean = value && typeof value === 'object' ? value.mean : value;
+          const mean = meanOf(value);
           if (typeof mean !== 'number' || !isFinite(mean)) continue;
           seeMetric(metric);
           means[metric] = mean;
@@ -139,11 +152,9 @@ function deriveOptimization(events, config) {
       case 'iteration_end': {
         const rec = e.record || {};
         const rollouts = typeof rec.rollouts_spent === 'number' ? rec.rollouts_spent : 0;
+        const iteration = rec.iteration != null ? rec.iteration : e.iteration;
         spent += rollouts;
-        iterations.push({
-          iteration: rec.iteration != null ? rec.iteration : e.iteration,
-          rollouts, cumulative: spent, usage: pending,
-        });
+        iterations.push({ iteration, rollouts, cumulative: spent, usage: pending });
         pending = blankUsage();
         if (e.best_after && typeof e.best_after === 'object') bestAfter = e.best_after;
         for (const p of (rec.proposals || [])) {
@@ -151,7 +162,7 @@ function deriveOptimization(events, config) {
           proposals.push({
             candidate_id: p.candidate_id,
             number: p.number,
-            iteration: rec.iteration != null ? rec.iteration : e.iteration,
+            iteration,
             parent_id: p.parent_id,
             origin: p.origin,
             outcome: p.outcome,
@@ -221,10 +232,11 @@ function deriveOptimization(events, config) {
     || (proposals[0] || {}).candidate_id
     || null;
 
-  /* One point per candidate. No `iteration_end` reports the baseline as a proposal, so it is
-     added here. */
+  /* One point per candidate: a duplicate or a rescore is a second proposal of the same one.
+     No `iteration_end` reports the baseline as a proposal, so it is added here. */
   const points = proposals.filter((p, i) =>
     p.candidate_id && proposals.findIndex(q => q.candidate_id === p.candidate_id) === i);
+  const built = points.length;
   if (baselineId && !points.some(p => p.candidate_id === baselineId)) {
     const means = meansOf(baselineId);
     if (Object.keys(means).length) {
@@ -254,11 +266,10 @@ function deriveOptimization(events, config) {
     const order = metrics.filter(m => after[m] != null)
       .concat(Object.keys(after).filter(m => !metrics.includes(m)));
     for (const metric of order) {
-      const mean = v => (v && typeof v === 'object' ? v.mean : v);
       resultMetrics.push({
         metric,
-        before: typeof mean(before[metric]) === 'number' ? mean(before[metric]) : null,
-        after: typeof mean(after[metric]) === 'number' ? mean(after[metric]) : null,
+        before: typeof meanOf(before[metric]) === 'number' ? meanOf(before[metric]) : null,
+        after: typeof meanOf(after[metric]) === 'number' ? meanOf(after[metric]) : null,
         // Only `difference` carries an interval, and only for the metrics the run had a goal for.
         diff: ((report.difference || {})[metric]) || null,
         ratio: ((report.ratio || {})[metric]) || null,
@@ -269,9 +280,8 @@ function deriveOptimization(events, config) {
     heldOut: !!test,
     baselineId: means[baselineId] ? baselineId : null,
     cases: (report.objective && report.objective.n_cases) || null,
-    objective: (report && report.objective) || null,
+    objective: report.objective || null,
     metrics: resultMetrics,
-    reason: (report && report.reason) || '',
   } : null;
 
   /* `propose.values` is the only copy of a candidate's configuration. */
@@ -279,13 +289,15 @@ function deriveOptimization(events, config) {
     const p = proposed.get(id);
     return p && p.values && typeof p.values === 'object' && !Array.isArray(p.values) ? p.values : null;
   };
-  const lineage = [];
-  for (let id = champion, guard = 0; id && guard < 100; guard++) {
-    lineage.push(id);
-    const parent = (proposed.get(id) || {}).parent_id;
-    if (!parent || parent === id || lineage.includes(parent)) break;   // the baseline is its own parent
-    id = parent;
-  }
+  /* `propose` names a candidate's parent, and so does its row in `iteration_end`. */
+  const parentOf = id => (proposed.get(id) || {}).parent_id
+    || (proposals.find(p => p.candidate_id === id) || {}).parent_id;
+  /** A candidate and its ancestors, newest first. Stops at one seen before: a baseline can be its own parent. */
+  const lineageOf = id => {
+    const chain = [];
+    for (let at = id; at && !chain.includes(at); at = parentOf(at)) chain.push(at);
+    return chain;
+  };
   const baselineValues = baselineId ? valuesOf(baselineId) : null;
   /* Diffed against the baseline, not the parent. */
   const diffSettings = id => {
@@ -300,14 +312,12 @@ function deriveOptimization(events, config) {
       changed: !baselineValues || !same(baselineValues[key], own[key]),
     }));
   };
-  const championValues = champion ? valuesOf(champion) : null;
-  const settings = champion ? diffSettings(champion) : null;
   const winner = champion ? {
     id: champion,
-    lineage,
+    lineage: lineageOf(champion),
     baselineId: baselineValues ? baselineId : null,
-    values: championValues,
-    settings,
+    values: valuesOf(champion),
+    settings: diffSettings(champion),
   } : null;
 
   for (const p of proposals) {
@@ -320,9 +330,8 @@ function deriveOptimization(events, config) {
     p.isBaseline = !!baselineId && p.candidate_id === baselineId;
   }
 
-  const split = cfg.split || {};
   const sizes = ['train', 'validation', 'test']
-    .map(name => ({ name, n: splitCases(split, name).length }))
+    .map(name => ({ name, n: splitCases(cfg.split, name).length }))
     .filter(s => s.n);
   const tuned = [];
   for (const p of proposals) {
@@ -333,7 +342,7 @@ function deriveOptimization(events, config) {
     tuned,
     blocks: facts.blocks,
     runs: facts.runs,
-    candidates: proposals.filter(p => p.candidate_id).length,
+    candidates: built,
   };
 
   const blockOf = new Map();
@@ -375,6 +384,7 @@ function deriveOptimization(events, config) {
     space,
     undeclared,
     baselineId,
+    lineageOf,
     trialsBy,
     config: cfg,
     proposals,
@@ -390,7 +400,8 @@ function deriveOptimization(events, config) {
     bySplit,
     trials: Object.values(statuses).reduce((a, b) => a + b, 0),
     best: running,
-    bestCandidate: (proposals.filter(p => p.outcome === 'feasible' && p.objective === running).pop() || null),
+    /* On a tie, the first to get there: a later one did not beat it. */
+    bestCandidate: running == null ? null : proposals.find(p => p.outcome === 'feasible' && p.objective === running),
     spent,
     maxRollouts: typeof budget.max_rollouts === 'number' ? budget.max_rollouts : null,
     champion, stop,

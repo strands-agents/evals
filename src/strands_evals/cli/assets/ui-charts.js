@@ -57,21 +57,19 @@ function objectiveChart(d) {
   const x = i => PAD.l + (n === 1 ? IN_W / 2 : (i / (n - 1)) * IN_W);
   const { y, out: axis } = yAxis(lo, hi, 'objective — higher is better');
 
-  let marks = '', best = null;
+  let marks = '';
   d.proposals.forEach((p, i) => {
     if (p.objective == null) return;    // never plotted as zero: it was not measured
     const cls = p.candidate_id === d.champion ? 'champion'
       : p.outcome === 'feasible' || p.outcome === 'infeasible' ? p.outcome : 'ineligible';
     marks += `<circle class="pt ${cls}" data-cand="${esc(p.candidate_id)}" tabindex="0" cx="${x(i)}" cy="${y(p.objective)}" r="4">`
       + `<title>${esc(`${p.candidate_id} · ${p.outcome} · ${nice(p.objective)}`)}</title></circle>`;
-    if (p.outcome === 'feasible' && (!best || p.objective > best.p.objective)) {
-      best = { p, px: x(i), py: y(p.objective) };
-    }
   });
+  const lead = d.bestCandidate;
   const xticks = candAxis(d.proposals, x)
-    + (best ? flag(best.px, best.py,
+    + (lead ? flag(x(d.proposals.indexOf(lead)), y(lead.objective),
       // Named the way the axis under it names candidates, so the flag and the tick agree.
-      `${candLabel(best.p, IN_W / Math.max(1, d.proposals.length))} · ${nice(best.p.objective)}`) : '');
+      `${candLabel(lead, IN_W / Math.max(1, n))} · ${nice(lead.objective)}`) : '');
 
   /* A step, not a slope: nothing was measured between two candidates. */
   const steps = [];
@@ -91,9 +89,10 @@ function budgetChart(d) {
   const cap = d.maxRollouts;
   const hi = Math.max(d.spent, cap || 0) || 1;
   const { y, out: axis } = yAxis(0, hi, 'rollouts run, cumulative');
-  const pts = [{ iteration: '', cumulative: 0 }].concat(d.iterations);
+  /* The curve starts from nothing spent, a point before the first iteration. */
+  const pts = [{ cumulative: 0 }].concat(d.iterations);
   const n = pts.length;
-  const x = i => PAD.l + (n === 1 ? 0 : (i / (n - 1)) * IN_W);
+  const x = i => PAD.l + (i / (n - 1)) * IN_W;
 
   const path = pts.map((p, i) => `${i ? 'L' : 'M'}${x(i)},${y(p.cumulative)}`).join(' ');
   const area = `${path} L${x(n - 1)},${y(0)} L${x(0)},${y(0)} Z`;
@@ -102,11 +101,7 @@ function budgetChart(d) {
     marks += `<circle class="pt data" cx="${x(i + 1)}" cy="${y(p.cumulative)}" r="3">`
       + `<title>${esc(`iteration ${p.iteration}: +${p.rollouts}, ${p.cumulative} total`)}</title></circle>`;
   });
-  const last = d.iterations[d.iterations.length - 1];
-  const spentFlag = last
-    ? flag(x(d.iterations.length), y(last.cumulative),
-      cap != null ? `${last.cumulative} of ${cap}` : `${last.cumulative}`)
-    : '';
+  const spentFlag = flag(x(n - 1), y(d.spent), cap != null ? `${d.spent} of ${cap}` : `${d.spent}`);
   const capLine = cap != null
     ? `<line class="cap-line" x1="${PAD.l}" y1="${y(cap)}" x2="${PAD.l + IN_W}" y2="${y(cap)}"/>`
       + `<text class="tick" x="${PAD.l + IN_W}" y="${y(cap) - 5}" text-anchor="end">`
@@ -129,9 +124,8 @@ function metricChart(d, metric) {
 
   const n = d.proposals.length;
   const x = i => PAD.l + (n === 1 ? IN_W / 2 : (i / (n - 1)) * IN_W);
-  const goal = d.goals.find(g => g.metric === metric);
-  const { y, out: axis } = yAxis(lo, hi,
-    goal ? `${metric} — ${goal.dir === 'min' ? 'lower' : 'higher'} is better` : metric);
+  const dir = goalDir(d, metric);
+  const { y, out: axis } = yAxis(lo, hi, dir ? `${metric} — ${dir === 'min' ? 'lower' : 'higher'} is better` : metric);
 
   /* Joined only between consecutive measured candidates. */
   let marks = '', segments = '', run = [], champ = null;
@@ -145,7 +139,7 @@ function metricChart(d, metric) {
     run.push(`${run.length ? 'L' : 'M'}${x(i)},${y(v)}`);
     const cls = p.candidate_id === d.champion ? 'champion'
       : p.outcome === 'infeasible' ? 'infeasible' : 'feasible';
-    marks += `<circle class="pt ${esc(cls)}" data-cand="${esc(p.candidate_id)}" tabindex="0" cx="${x(i)}" cy="${y(v)}" r="3.5">`
+    marks += `<circle class="pt ${cls}" data-cand="${esc(p.candidate_id)}" tabindex="0" cx="${x(i)}" cy="${y(v)}" r="3.5">`
       + `<title>${esc(`${p.candidate_id} · ${metric} ${nice(v)}`)}</title></circle>`;
     if (p.candidate_id === d.champion) champ = { px: x(i), py: y(v), v };
   });
@@ -185,9 +179,8 @@ function staircase(marks) {
   return { line, region: `${line}H${PAD.l}Z`, on: edge.length };
 }
 
-function tradeoffChart(d, xg, yg, frontIds) {
-  const plotted = d.points.filter(p =>
-    p.measured[xg.metric] != null && p.measured[yg.metric] != null);
+/* `plotted` is the candidates measured on both goals, `frontIds` the ones to ring and step through. */
+function tradeoffChart(d, plotted, xg, yg, frontIds) {
   if (plotted.length < 2) {
     return '<div class="empty">Fewer than two candidates have both goals measured, so there is '
       + 'nothing to trade off yet.</div>';
@@ -241,9 +234,12 @@ const signed = v => (v > 0 ? '+' : '') + fine(v);
 const pBetter = (e, better) =>
   better === 'lower' ? 1 - (e.p_positive || 0) : (e.p_positive || 0);
 
+/** The estimates of `effects.json` for one metric that have a mean and an interval to draw. */
+const effectRows = (ef, metric) => ef.effects.filter(e => e && e.metric === metric
+  && Array.isArray(e.ci90) && e.ci90.length === 2 && typeof e.mean === 'number');
+
 function effectsChart(ef, goal) {
-  const rows = (ef.effects || []).filter(e => e && e.metric === goal.metric
-    && Array.isArray(e.ci90) && e.ci90.length === 2 && typeof e.mean === 'number');
+  const rows = effectRows(ef, goal.metric);
   if (!rows.length) {
     return '<div class="empty">The model estimated no effect for this metric.</div>';
   }
@@ -338,13 +334,11 @@ const statusClass = s => STATUSES.includes(s) ? s : 'other';
 
 function statusChart(d) {
   if (!d.trials) return '<div class="empty">No trial has been recorded yet.</div>';
-  const present = STATUSES.filter(s => d.statuses[s]);
-  const other = Object.keys(d.statuses).filter(s => !STATUSES.includes(s));
-  const bars = present.concat(other).map(s => {
-    const pctWidth = (d.statuses[s] / d.trials) * 100;
-    return `<span class="${statusClass(s)}" style="width:${pctWidth.toFixed(2)}%" title="${esc(s)}: ${esc(d.statuses[s])}"></span>`;
-  }).join('');
-  const legend = present.concat(other).map(s =>
+  /* The schema's statuses in its order, then any other the log holds. */
+  const found = STATUSES.filter(s => d.statuses[s]).concat(Object.keys(d.statuses).filter(s => !STATUSES.includes(s)));
+  const bars = found.map(s => `<span class="${statusClass(s)}" style="width:${((d.statuses[s] / d.trials) * 100).toFixed(2)}%"`
+    + ` title="${esc(s)}: ${esc(d.statuses[s])}"></span>`).join('');
+  const legend = found.map(s =>
     `<span><i class="${statusClass(s)}"></i>`
     + `${esc(s.replace(/_/g, ' '))} ${esc(d.statuses[s])}</span>`).join('');
   const splits = Object.keys(d.bySplit).sort()
@@ -358,16 +352,12 @@ function statusChart(d) {
 /** What both candidates' trials can be compared on: each evaluator's score, then what a trial cost. */
 function caseMeasures(d) {
   const trials = [d.baselineId, d.champion].flatMap(id => d.trialsBy.get(id) || []);
-  const score = v => (v && typeof v === 'object' ? v.score : v);
   const number = v => (typeof v === 'number' ? v : null);
-  const measures = [...new Set(trials.flatMap(t => Object.keys(t.evaluations || {})))].map(metric => {
-    const goal = d.goals.find(g => g.metric === metric);
-    return {
-      value: 'm:' + metric, label: metric, axis: metric,
-      better: goal && goal.dir === 'min' ? 'lower' : 'higher',
-      of: t => number(score((t.evaluations || {})[metric])),
-    };
-  });
+  const measures = [...new Set(trials.flatMap(t => Object.keys(t.evaluations || {})))].map(metric => ({
+    value: 'm:' + metric, label: metric, axis: metric,
+    better: goalDir(d, metric) === 'min' ? 'lower' : 'higher',
+    of: t => number(scoreOf((t.evaluations || {})[metric])),
+  }));
   for (const [key, label] of [['tokens', 'Tokens'], ['seconds', 'Seconds']]) {
     if (!trials.some(t => (t.usage || {})[key] > 0)) continue;
     measures.push({ value: 'u:' + key, label, axis: key, better: 'lower', of: t => number((t.usage || {})[key]) });
@@ -381,7 +371,7 @@ function caseRows(d, measure) {
   const means = id => {
     const by = new Map();
     for (const t of d.trialsBy.get(id) || []) {
-      const v = t.status && t.status !== 'completed' ? null : measure.of(t);
+      const v = trialFailed(t) ? null : measure.of(t);
       if (v == null) continue;
       const key = `${t.split || ''}\u0000${t.case_name}`;
       by.set(key, (by.get(key) || []).concat(v));
@@ -394,4 +384,11 @@ function caseRows(d, measure) {
     const [split, name] = key.split('\u0000');
     return { name, split, from: before.has(key) ? before.get(key) : null, to: after.has(key) ? after.get(key) : null };
   }).sort((a, b) => rank(a.split) - rank(b.split) || a.name.localeCompare(b.name));
+}
+
+/** Of the cases both candidates ran: how many there are, and how many moved the way the measure calls better or worse. */
+function caseMoves(rows, measure) {
+  const moved = rows.filter(r => r.from != null && r.to != null && r.to !== r.from);
+  const better = moved.filter(r => (r.to > r.from) === (measure.better !== 'lower')).length;
+  return { both: rows.filter(r => r.from != null && r.to != null).length, better, worse: moved.length - better };
 }
