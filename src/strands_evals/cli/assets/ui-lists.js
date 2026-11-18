@@ -39,11 +39,11 @@ function renderLists() {
   $('mode-tag').textContent = MODE === 'server'
     ? (READONLY ? 'served · read-only' : 'served · saves to disk')
     : 'standalone file · saves download';
-  $('mode-tag').className = 'mode ' + (MODE === 'server' ? (READONLY ? 'ro' : 'live') : 'ro');
+  $('mode-tag').className = 'mode ' + (MODE === 'server' && !READONLY ? 'live' : 'ro');
   $('mode-tag').dataset.tip = MODE !== 'server' ? 'Opened without a server, so nothing can be written back. Save downloads a copy.'
     : READONLY ? 'Served with --read-only. Cases can be read but not saved.'
       : 'Served by strands-evals ui. Save writes the experiment file in place.';
-  $('root-path').textContent = ROOT || folderLabel || '';
+  $('root-path').textContent = ROOT || folderLabel;
   const from = MODE === 'server'
     ? `Everything ${DEPTH != null ? DEPTH + ' levels ' : ''}under the directory the CLI was started in.`
     : showingSample
@@ -78,7 +78,8 @@ function renderLists() {
         <td class="ev">${contents(e)}</td>
         <td class="ev">${reportsOf(e).map(r => `${openLink('report', r.path, r.name)} ${fmt(r.overall_score)}`).join('<br>')
           || '<span class="empty">not run yet</span>'}</td>
-        <td class="ev">${when(e.modified)}</td></tr>`).join('') || nothing('experiment', docLink('quickstart/#run-your-first-evaluation', 'empty-experiments', 'Create your first experiment'))));
+        <td class="ev">${when(e.modified)}</td></tr>`).join('')
+    || nothing('experiment', docLink('quickstart/#run-your-first-evaluation', 'empty-experiments', 'Create your first experiment'))));
 
   $('skips').innerHTML = skipped.length
     ? `<details class="skips"><summary>${plural(skipped.length, 'file')} skipped</summary><ul>`
