@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from strands_evals.cli.commands.run import _display_expanded, _print_summary
+from strands_evals.cli.commands.run import EXIT_FAILURES, _decide_exit_code, _display_expanded, _print_summary
 from strands_evals.cli.main import main
-from strands_evals.types import NOT_APPLICABLE, EvaluationOutput
+from strands_evals.types import COULD_NOT_EVALUATE, NOT_APPLICABLE, EvaluationOutput
 from strands_evals.types.evaluation_report import EvaluationReport
 
 
@@ -806,7 +806,7 @@ def test_summary_reports_zero_when_every_case_is_not_applicable(capsys):
     _print_summary(report)
 
     summary = capsys.readouterr().err
-    assert "SkillInstructionFollowingEvaluator: 1/1 passed (0.00)" in summary
+    assert "SkillInstructionFollowingEvaluator: 1/1 passed (n/a)" in summary
     assert "overall: 0.00" in summary
 
 
@@ -912,3 +912,55 @@ def test_run_case_invalid_selector_exits_bad_input(tmp_path: Path, capsys, cases
 def test_run_case_requires_experiment_file(capsys):
     assert main(["run", "--task", "tests.strands_evals.cli.fixtures.tasks:answer", "--case", "0"]) == 2
     assert "--case requires EXPERIMENT_FILE" in capsys.readouterr().err
+
+
+def _report_with_one_unjudged_case() -> EvaluationReport:
+    """One judged pass and one case whose judge overflowed its context window."""
+    unjudged = [
+        EvaluationOutput(
+            score=0.0,
+            test_pass=False,
+            reason="Could not evaluate: judge context window exceeded",
+            label=NOT_APPLICABLE,
+            metadata={COULD_NOT_EVALUATE: "judge_context_window_exceeded"},
+        )
+    ]
+    detailed = [[EvaluationOutput(score=1.0, test_pass=True, reason="judged")], unjudged]
+    return EvaluationReport(
+        overall_score=EvaluationReport.calculate_overall_score([1.0, 0.0], detailed),
+        scores=[1.0, 0.0],
+        cases=[
+            {"name": "small", "evaluator": "HelpfulnessEvaluator"},
+            {"name": "huge", "evaluator": "HelpfulnessEvaluator"},
+        ],
+        test_passes=[True, False],
+        reasons=["judged", "Could not evaluate: judge context window exceeded"],
+        detailed_results=detailed,
+    )
+
+
+def test_fail_on_any_fails_when_a_judge_could_not_evaluate():
+    """A case nothing judged must not pass `--fail-on=any`."""
+    assert _decide_exit_code(_report_with_one_unjudged_case(), ("any", None)) == EXIT_FAILURES
+
+
+def test_summary_counts_unjudged_cases_as_not_passed_and_names_them(capsys):
+    """The unjudged case is not counted as passed, is named separately, and stays out of the average."""
+    report = _report_with_one_unjudged_case()
+
+    _print_summary(report)
+
+    summary = capsys.readouterr().err
+    assert "HelpfulnessEvaluator: 1/2 passed, 1 could not evaluate (1.00)" in summary
+    assert "overall: 1.00" in summary
+
+
+def test_summary_prints_na_when_every_case_was_unjudged(capsys):
+    """An evaluator with no judged case has no average, so it prints "n/a" rather than "(0.00)"."""
+    report = _report_with_one_unjudged_case()
+    report.cases, report.scores, report.test_passes = report.cases[1:], report.scores[1:], report.test_passes[1:]
+    report.reasons, report.detailed_results = report.reasons[1:], report.detailed_results[1:]
+
+    _print_summary(report)
+
+    assert "HelpfulnessEvaluator: 0/1 passed, 1 could not evaluate (n/a)" in capsys.readouterr().err
