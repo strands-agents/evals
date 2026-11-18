@@ -306,6 +306,14 @@ def test_report_summary_counts_declined_rows_apart_from_failing_ones(tmp_path: P
     }
 
 
+def test_report_summary_counts_a_row_with_no_verdict_as_failing(tmp_path: Path):
+    report = _report("ok", "cut-off")
+    report["test_passes"] = [True]
+    _write(tmp_path / "report.json", report)
+
+    assert discover(tmp_path).reports[0]["failing"] == 1
+
+
 def test_discover_lists_a_session_with_what_it_recorded(tmp_path: Path):
     # Two traces ten minutes apart, and one with nothing in it: the wait between them is not the session's time.
     _write(tmp_path / "recorded" / "any-name.json", _session("s-1", [(0, 1.5), (2, 4)], [(600, 600.25)], []))
@@ -529,6 +537,18 @@ def test_discover_pairs_a_report_with_the_experiment_it_was_made_from(tmp_path: 
     assert _pairs(tmp_path) == expected
 
 
+def test_discover_does_not_guess_between_two_experiments_of_a_reports_name(tmp_path: Path):
+    _write(tmp_path / "nightly.exp.json", _experiment("z"))
+    _write(tmp_path / "nightly.experiment.json", _experiment("a"))
+    _write(tmp_path / "nightly.report.json", _report("a"))
+
+    assert discover(tmp_path).reports[0]["experiment"] == "nightly.experiment.json"
+
+    _write(tmp_path / "nightly.exp.json", _experiment("a"))
+
+    assert discover(tmp_path).reports[0]["experiment"] is None
+
+
 def test_discover_leaves_a_report_unpaired_when_no_experiment_holds_all_of_its_cases(tmp_path: Path):
     _write(tmp_path / "suite" / "experiment.json", _experiment("a"))
     _write(tmp_path / "runs" / "latest.json", _report("a", "b"))
@@ -745,6 +765,23 @@ def test_discover_optimizer_runs_needs_a_config_object_beside_an_event_log(tmp_p
         (tmp_path / name).write_text(text)
 
     assert discover_optimizer_runs(tmp_path) == []
+
+
+def test_discover_says_what_an_event_log_with_no_run_json_lacks(tmp_path: Path):
+    _event_log(tmp_path / "half" / "events.jsonl", {"event": "config"})
+    (tmp_path / "half" / "notes.jsonl").write_text("{}\n")
+
+    assert discover(tmp_path).skipped == [{"path": "half/events.jsonl", "why": "no run.json beside it"}]
+
+
+def test_a_run_at_the_root_that_names_itself_nothing_is_called_this_folder(tmp_path: Path):
+    _optimizer_run(tmp_path, {"event": "config"}, config={"objective": "Maximize(Helpfulness)"})
+    _optimizer_run(tmp_path / "nested", {"event": "config"}, config={"objective": "Maximize(Helpfulness)"})
+
+    assert {run["dir"]: run["run_id"] for run in discover_optimizer_runs(tmp_path)} == {
+        ".": "this folder",
+        "nested": "nested",
+    }
 
 
 def test_discover_optimizer_runs_counts_iterations_that_are_not_numbers(tmp_path: Path):

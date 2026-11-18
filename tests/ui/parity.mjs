@@ -44,6 +44,10 @@ const TREE = {
   'partial/experiment.json': experiment('p1', 'p2'),
   'partial/report.json': report(['p1', 'gone']),
   'orphan/report.json': report(['o1']),
+  'twins/nightly.exp.json': experiment('w0'),
+  'twins/nightly.experiment.json': experiment('w1'),
+  'twins/nightly.report.json': report(['w1']),
+  'short/report.json': { ...report(['v1', 'v2']), test_passes: [true] },
   'many/suite.json': experiment('q1', 'q2'),
   'many/other.json': experiment('r1'),
   'many/suite.report.json': report(['q1', 'q2']),
@@ -74,6 +78,10 @@ const TREE = {
   'cached/z-notes.json': { input: 'opens like a result, in a store' },
   'loose/row.json': { input: 'opens like a result, and is not one' },
   'notes.json': { just: 'notes' },
+  'run.json': { objective: 'Maximize(Helpfulness)' },
+  'events.jsonl': '{"event": "config", "iteration": 0}\n',
+  'half/events.jsonl': '{"event": "config", "iteration": 0}\n',
+  'half/notes.jsonl': '{}\n',
   'broken.json': '{"cases": [',
   'a/b/c/too-deep/experiment.json': experiment('deep'),
   'node_modules/pkg/experiment.json': experiment('dependency'),
@@ -139,13 +147,23 @@ try {
 
   const server = normalize({ ...served, optimizer: served.optimizer_runs });
   const client = normalize(folder);
-  ok(server.experiments.length >= 12 && server.reports.length >= 9 && server.optimizer.length === 1,
+  ok(server.experiments.length >= 12 && server.reports.length >= 9 && server.optimizer.length === 2,
     'the tree exercises pairing and a run directory',
     `${server.experiments.length} experiments, ${server.reports.length} reports, ${server.optimizer.length} optimizer runs`);
   const of = Object.fromEntries(server.reports.map(r => [r.path, r.experiment]));
   const paired = ['many/monday.report.json', 'near/runs/k.report.json', 'tie/shared.report.json', 'orphan/report.json'].map(r => of[r]).join();
   ok(paired === 'many/suite.json,near/suite.json,,', 'by cases a report goes to the one experiment that holds them, the nearer of two, and to none on a tie',
     paired);
+  ok(of['twins/nightly.report.json'] === 'twins/nightly.experiment.json',
+    'of two experiments beside a report under its name, it goes to the one holding its cases', of['twins/nightly.report.json']);
+  const short = server.reports.find(r => r.path === 'short/report.json');
+  await p.click('#reports-rows tr[data-report="short/report.json"]');
+  ok(short.failing === 1 && p.text('#r-stats').startsWith('1 / 2Rows passing'), 'a row with no verdict has not passed, in the list and on the page',
+    `${short.failing} failing | ${p.text('#r-stats')}`);
+  ok(server.optimizer.find(r => r.dir === '.').run_id === 'this folder', 'a run at the root that names itself nothing is called this folder',
+    server.optimizer.find(r => r.dir === '.').run_id);
+  const logs = server.skipped.filter(x => /\.jsonl$/.test(x.path)).map(x => `${x.path}: ${x.why}`).join();
+  ok(logs === 'half/events.jsonl: no run.json beside it', 'an event log with no run.json says what it lacks, and other .jsonl files are not the page\'s to read', logs);
   const recorded = Object.fromEntries(server.sessions.map(s => [s.path, s]));
   ok(recorded['recorded/any-name.json'].seconds === 3.75 && recorded['recorded/untimed.json'].seconds === null
     && recorded['recorded/any-name.json'].diagnoses.join() === 'recorded/s1.diagnosis.json',

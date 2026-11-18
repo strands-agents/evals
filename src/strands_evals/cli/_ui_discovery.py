@@ -312,7 +312,7 @@ def _report_summary(obj: dict) -> dict:
         )
         if declined:
             not_applicable += 1
-        elif index < len(passes) and not passes[index]:
+        elif index >= len(passes) or not passes[index]:
             failing += 1
     return {
         "overall_score": obj.get("overall_score"),
@@ -479,12 +479,12 @@ def _nearest(candidates: Sequence[ScannedFile], directory: str) -> ScannedFile |
 def experiment_of(report: ScannedFile, experiments: Sequence[ScannedFile], alone: bool) -> ScannedFile | None:
     """The experiment a report was made from, or `None` when that cannot be told.
 
-    Beside it under the same name first, or as the only pair in the directory when `alone`. Failing that, the
-    nearest experiment holding every case the report has.
+    The one beside it under the same name first, or the only pair in the directory when `alone`. Failing that,
+    the nearest experiment holding every case the report has.
     """
     beside = sorted((e for e in experiments if e.directory == report.directory), key=lambda e: e.path)
     named = [e for e in beside if _stem(e.name) == _stem(report.name)]
-    if named:
+    if len(named) == 1:
         return named[0]
     if alone and len(beside) == 1:
         return beside[0]
@@ -546,11 +546,12 @@ def discover(root: Path, depth: int = DEFAULT_DEPTH) -> Discovery:
 
     # A `run.json` recognised as an optimizer run config is not a scan failure.
     run_configs = {_under(run["dir"], RUN_CONFIG_NAME) for run in optimizer_runs}
+    skipped = [skip for skip in skipped if skip["path"] not in run_configs] + _lone_event_logs(root, depth)
 
     return Discovery(
         experiments=[_file_entry(e, reports=made_from.get(e.path, [])) for e in of_kind[EXPERIMENT]],
         reports=reports,
-        skipped=[skip for skip in skipped if skip["path"] not in run_configs],
+        skipped=skipped,
         truncated=truncated,
         optimizer_runs=optimizer_runs,
         sessions=[_file_entry(s, diagnoses=diagnosed.get(s.path, [])) for s in of_kind[SESSION]],
@@ -634,7 +635,7 @@ def _optimizer_run_summary(
     return {
         "id": directory,
         "dir": directory,
-        "run_id": config.get("run_id") or directory.rsplit("/", 1)[-1],
+        "run_id": config.get("run_id") or ("this folder" if directory == "." else directory.rsplit("/", 1)[-1]),
         "name": config.get("name"),
         "objective": config.get("objective"),
         "constraints": config.get("constraints") or [],
@@ -657,6 +658,15 @@ def _optimizer_run_summary(
         # Filled in by `discover`, which holds the experiments to match the split against.
         "tuned_against": None,
     }
+
+
+def _lone_event_logs(root: Path, depth: int) -> list[dict]:
+    """An `events.jsonl` with no `run.json` beside it is not a run: each is skipped, saying what it lacks."""
+    return [
+        {"path": _under(where, EVENT_LOG_NAME), "why": "no run.json beside it"}
+        for _, where, filenames in _walk(root, depth)
+        if EVENT_LOG_NAME in filenames and RUN_CONFIG_NAME not in filenames
+    ]
 
 
 def discover_optimizer_runs(root: Path, depth: int = DEFAULT_DEPTH) -> list[dict]:

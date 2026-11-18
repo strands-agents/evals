@@ -33,7 +33,7 @@ function reportMeta(obj) {
     const outs = Array.isArray(detailed[i]) ? detailed[i] : [];
     const declined = outs.length > 0 && outs.every(o => o && o.label === 'not_applicable' && o.test_pass);
     if (declined) notApplicable++;
-    else if (i < passes.length && !passes[i]) failing++;
+    else if (!passes[i]) failing++;
   });
   return {
     overall_score: obj.overall_score, rows: rows.length, failing, not_applicable: notApplicable,
@@ -54,7 +54,7 @@ function stepsApart(left, right) {
 function experimentOf(report, experiments, alone) {
   const beside = experiments.filter(e => e.dir === report.dir).sort(byPath);
   const named = beside.filter(e => stem(e.meta.name) === stem(report.meta.name));
-  if (named.length) return named[0];
+  if (named.length === 1) return named[0];
   if (alone && beside.length === 1) return beside[0];
   const holding = experiments.filter(e => linkStatus(e.meta.obj, report.meta.obj).status === 'verified');
   const nearest = Math.min(...holding.map(e => stepsApart(e.dir, report.dir)));
@@ -249,8 +249,8 @@ async function ingest(all, rootDepth = 0) {
     }
     const here = dirOf(path), name = file.name.toLowerCase();
     if (name.endsWith('.jsonl')) {
-      if (name !== 'events.jsonl') skipped.push({ path, why: 'not an optimizer event log' });
-      else if (!runs.has(here)) skipped.push({ path, why: 'no run.json beside it' });
+      if (name !== 'events.jsonl') continue;
+      if (!runs.has(here)) skipped.push({ path, why: 'no run.json beside it' });
       else logs.set(here, { path, size: file.size, modified: modified(file), ...readEventLines(await file.text()) });
       continue;
     }
