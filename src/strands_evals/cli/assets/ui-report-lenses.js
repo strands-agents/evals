@@ -9,8 +9,8 @@ let repGroup = '', repGroupOnly = null;
 const NOT_SET = '(not set)';
 /* A chaos experiment names each case `<case>|<condition>` and records the condition nowhere else. */
 const conditionOf = name => name.lastIndexOf('|') < 0 ? null : name.slice(name.lastIndexOf('|') + 1);
-/* A list of plain values reads as its items; anything deeper is grouped by its JSON. */
 const unset = v => v == null || v === '';
+/* A list of plain values reads as its items; anything deeper is grouped by its JSON. */
 const groupText = v => unset(v) ? NOT_SET
   : Array.isArray(v) && v.length && v.every(x => x == null || typeof x !== 'object') ? v.join(', ')
     : typeof v === 'object' ? JSON.stringify(v) : String(v);
