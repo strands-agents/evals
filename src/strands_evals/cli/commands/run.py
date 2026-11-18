@@ -531,7 +531,9 @@ def add_subparser(
             "Per-case freshness is enforced for strands.Agent only — other "
             "callables (custom agent classes, partials, instances with __call__) "
             "are accepted but cross-case isolation becomes the factory's "
-            "responsibility. For non-standard task shapes use --task instead."
+            "responsibility. Cases with metadata['actor_profile'] run multi-turn "
+            "against a simulated user on the Strands default model. "
+            "For non-standard task shapes use --task instead."
         ),
     )
     target.add_argument(
