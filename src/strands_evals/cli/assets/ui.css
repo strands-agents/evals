@@ -954,3 +954,13 @@ table.cmp a, .facts .chip { overflow-wrap: anywhere; }
 .found h3 { margin: 0 0 8px; font: 400 12px var(--mono); color: var(--ink3); overflow-wrap: anywhere; }
 .stores { margin: 14px 0 0; font-size: 12.5px; line-height: 1.6; color: var(--ink3); }
 .stores code { font-family: var(--mono); color: var(--ink2); overflow-wrap: anywhere; }
+/* ── copy actions (ui-markdown.js) ── */
+.mdacts { display: flex; flex-wrap: wrap; gap: 8px; }
+/* The header's copy buttons are laid out with the picker beside them, as items of the one row. */
+.copy-acts { display: contents; }
+/* The case's actions share its header with its name and id, and go under them when there is no room. */
+.pane > header { flex-wrap: wrap; row-gap: 8px; }
+.rowd + .mdacts, .kv + .mdacts { margin-top: 14px; }
+/* A table wider than a narrow window scrolls sideways: its actions stay within what is showing. */
+.detail .mdacts { position: sticky; left: 0; width: fit-content; max-width: calc(100vw - 56px); }
+.tr-copy { display: block; margin: 0 0 10px; }

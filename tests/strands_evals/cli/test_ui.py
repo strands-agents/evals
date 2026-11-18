@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import threading
 from dataclasses import asdict, dataclass, field
@@ -20,9 +21,11 @@ import pytest
 from strands_evals.cli import _ui_server
 from strands_evals.cli._ui_server import (
     MAX_UPLOAD_BYTES,
+    PAGE_ROOTS,
     UNAUTHORIZED_PAGE,
     EventLog,
     PathOutsideRoot,
+    UIHandler,
     build_server,
     classify,
     discover,
@@ -1204,6 +1207,211 @@ def test_an_unknown_route_is_not_found(client: Client, method):
 
     assert reply.status == HTTPStatus.NOT_FOUND
     assert reply.body == ({"error": "no route for /api/nothing"} if method == "GET" else "")
+
+
+# ── the server: a report or an experiment as Markdown and as JSON, and what the server says of itself ──
+
+REPORT_MARKDOWN = """# Report: report.json
+
+- Overall score: 0.50
+- Rows: 2 (1 passed, 1 failed, 0 not applicable)
+- Cases: 2
+- Evaluators: OutputEvaluator
+- Experiment: experiment.json
+
+## Failing rows
+
+### beta · OutputEvaluator
+
+- Score: 0.00
+- Verdict: failed
+- Label: no_match
+
+## All rows
+
+| Case | Evaluator | Score | Verdict |
+| --- | --- | --- | --- |
+| alpha | OutputEvaluator | 1.00 | passed |
+| beta | OutputEvaluator | 0.00 | failed |
+"""
+EXPERIMENT_MARKDOWN = """# Experiment: experiment.json
+
+- Cases: 2
+- Evaluators: 1
+- Reports: report.json
+
+## Evaluators
+
+### OutputEvaluator
+
+## Cases
+
+### alpha
+
+Input:
+
+```text
+ask about alpha
+```
+
+### beta
+
+Input:
+
+```text
+ask about beta
+```
+"""
+DATA_ADDRESSES = [
+    "/reports/report.json.md",
+    "/reports/report.json.json",
+    "/experiments/experiment.json.md",
+    "/llms.txt",
+]
+
+
+def test_a_report_and_an_experiment_are_served_as_markdown_at_their_page_address(client: Client):
+    report = client.send("GET", "/reports/report.json.md")
+    experiment = client.send("GET", "/experiments/experiment.json.md")
+
+    assert report == Reply(HTTPStatus.OK, REPORT_MARKDOWN)
+    assert experiment == Reply(HTTPStatus.OK, EXPERIMENT_MARKDOWN)
+    assert report.headers["Content-Type"] == experiment.headers["Content-Type"] == "text/markdown; charset=utf-8"
+
+
+def test_a_report_and_an_experiment_are_served_as_json_at_their_page_address(client: Client):
+    assert client.send("GET", "/reports/report.json.json") == Reply(
+        HTTPStatus.OK, _report("alpha", "beta", failing=("beta",))
+    )
+    assert client.send("GET", "/experiments/experiment.json.json") == Reply(HTTPStatus.OK, _experiment("alpha", "beta"))
+
+
+def test_markdown_names_a_file_as_the_scan_does_however_it_was_asked_for(client: Client):
+    _write(client.root / "code" / "nightly.report.json", _report("gamma"))
+
+    roundabout = client.send("GET", "/reports/code/../report.json.md")
+    unpaired = client.send("GET", "/reports/code/nightly%2Ereport.json.md")
+
+    assert roundabout == Reply(HTTPStatus.OK, REPORT_MARKDOWN)
+    assert unpaired.body.startswith("# Report: code/nightly.report.json\n")
+    assert "\n- Experiment: none found, so this report was run from code\n\n## Failing rows\n\nNone.\n" in unpaired.body
+
+
+def test_markdown_survives_a_report_holding_nan(client: Client):
+    (client.root / "odd.report.json").write_text(
+        '{"overall_score": NaN, "cases": [{"name": "a", "evaluator": "E", "input": Infinity}],'
+        ' "scores": [NaN], "test_passes": [false]}'
+    )
+
+    reply = client.send("GET", "/reports/odd.report.json.md")
+
+    assert reply.status == HTTPStatus.OK
+    assert "- Overall score: none\n" in reply.body
+    assert reply.body.endswith(
+        "### a · E\n\n- Score: none\n- Verdict: failed\n\n## All rows\n\n"
+        + ("| Case | Evaluator | Score | Verdict |\n| --- | --- | --- | --- |\n| a | E | none | failed |\n")
+    )
+
+
+@pytest.mark.parametrize("address", DATA_ADDRESSES)
+def test_the_data_at_a_page_address_needs_the_token_itself(client: Client, address):
+    cookie = f"strands_evals_ui_{client.port}={client.token}"
+
+    assert client.send("GET", address, headers={"X-Evals-Token": None}) == _refused(
+        HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL
+    )
+    assert client.send("GET", address, headers={"X-Evals-Token": None, "Cookie": cookie}) == _refused(
+        HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL
+    )
+    assert client.send("GET", f"{address}?t=guessed", headers={"X-Evals-Token": None}) == _refused(
+        HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL
+    )
+    assert client.send("GET", address, headers={"Host": "evals.evil.example.com"}) == _refused(
+        HTTPStatus.FORBIDDEN, HOST_REFUSAL
+    )
+    assert client.send("GET", f"{address}?t={client.token}", headers={"X-Evals-Token": None}).status == HTTPStatus.OK
+
+
+@pytest.mark.parametrize(
+    "address,status,message",
+    [
+        ("/reports/../../etc/passwd.json.md", HTTPStatus.FORBIDDEN, "../../etc/passwd.json is outside {root}"),
+        (
+            "/reports/%2E%2E/%2E%2E/etc/passwd.json.json",
+            HTTPStatus.FORBIDDEN,
+            "../../etc/passwd.json is outside {root}",
+        ),
+        ("/experiments/..%2Foutside.json.md", HTTPStatus.FORBIDDEN, "../outside.json is outside {root}"),
+        ("/reports/leak.json.md", HTTPStatus.FORBIDDEN, "leak.json is outside {root}"),
+        ("/reports/%00.json.md", HTTPStatus.FORBIDDEN, "'\\x00.json' is not a path"),
+        ("/reports/nowhere.json.md", HTTPStatus.NOT_FOUND, "nowhere.json is not a file"),
+        ("/reports/experiment.json.md", HTTPStatus.NOT_FOUND, "experiment.json is not a report"),
+        ("/experiments/report.json.json", HTTPStatus.NOT_FOUND, "report.json is not an experiment"),
+        ("/reports/notes.json.json", HTTPStatus.NOT_FOUND, "notes.json is not a report"),
+    ],
+    ids=[
+        "outside the root",
+        "outside the root, encoded",
+        "outside the root, encoded slash",
+        "a link out of the root",
+        "null byte",
+        "missing file",
+        "an experiment asked for as a report",
+        "a report asked for as an experiment",
+        "neither",
+    ],
+)
+def test_the_data_at_a_page_address_is_refused_for_a_file_it_cannot_serve(client: Client, address, status, message):
+    outside = _write(client.root.parent / "outside.json", _report("secret"))
+    (client.root / "leak.json").symlink_to(outside)
+    _write(client.root / "notes.json", {"just": "notes"})
+
+    reply = client.send("GET", address)
+
+    assert reply == _refused(status, message.replace("{root}", client.settings["root"]))
+
+
+def test_the_data_at_a_page_address_says_when_the_file_is_not_json(client: Client):
+    (client.root / "half.json").write_text('{"cases": [')
+
+    reply = client.send("GET", "/reports/half.json.md")
+
+    assert reply.status == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert reply.body["error"].startswith("half.json could not be parsed: ")
+
+
+def test_llms_txt_describes_every_address_the_server_answers(client: Client):
+    reply = client.send("GET", "/llms.txt")
+    lines = reply.body.splitlines()
+    views = re.findall(
+        r"'opt-[a-z]+': '([a-z-]+)'", resources.files("strands_evals.cli.assets").joinpath("ui-route.js").read_text()
+    )
+
+    assert reply.status == HTTPStatus.OK
+    assert reply.headers["Content-Type"] == "text/plain; charset=utf-8"
+    assert lines[0] == "# strands-evals ui"
+    assert "sent as the `X-Evals-Token` header or as `?t=<token>`" in reply.body
+    assert "The cookie a browser holds opens the page only" in reply.body
+    # Every route the handler has is listed with what it returns, so a route added later cannot go undescribed.
+    for route, handler in UIHandler._GET_ROUTES.items():
+        assert f"- `{route}`: {handler.__doc__}" in lines
+        assert handler.__doc__
+    for line in (
+        "- `/reports/<report file>.md`: its figures, each failing row with its input, expected and actual output "
+        "and the evaluator's reason, then every row",
+        "- `/experiments/<experiment file>.md`: its evaluators with their settings, then every case",
+        "- `/reports/<report file>.json`: the report file's document",
+        "- `/experiments/<experiment file>.json`: the experiment file's document",
+        "- `/reports/<report file>/rows/<case>/<evaluator>`: one row of it, opened and in view",
+        "- `/experiments/<experiment file>/cases/<name>`: the same, on one case",
+        "- `/optimization/<run directory>/candidates/<id>`: one candidate of it, opened and in view",
+    ):
+        assert line in lines
+    for root in PAGE_ROOTS:
+        assert any(line.startswith(f"- `{root}`: ") for line in lines)
+    assert len(views) == 6
+    view_line = next(line for line in lines if line.startswith("- `/optimization/<run directory>/<view>`: "))
+    assert all(re.search(rf"\b{view}\b", view_line) for view in views)
 
 
 # ── the server: saving ──

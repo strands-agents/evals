@@ -291,5 +291,6 @@ function winnerCard(d) {
   return head + body + unchanged
     + '<div class="wacts"><button class="btn" data-act="copy-winner">Copy configuration</button>'
     + '<button class="btn" data-act="save-winner">Download champion.json</button>'
+    + '<button class="btn" data-md="result">Copy result as Markdown</button>'
     + '<span class="said" id="opt-copied"></span></div>';
 }

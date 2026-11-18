@@ -52,6 +52,7 @@ function renderPageHead(view) {
   if (!head) return;
   $('crumbs').innerHTML = crumbs(head[0]);
   $('facts').innerHTML = head[1];
+  $('copy-acts').innerHTML = pageActions(view);
 }
 
 $('crumbs').onclick = e => {

@@ -13,6 +13,8 @@ const OPT_VIEW = Object.fromEntries(Object.entries(OPT_SEGMENT).map(([view, segm
 /* A file or a run directory is named by its path under the root, kept as path segments. The root itself is `.`. */
 const idPath = id => id === '.' ? '' : '/' + String(id).split('/').map(encodeURIComponent).join('/');
 const idOf = segments => segments.join('/') || '.';
+/* A report row is named by its case and its evaluator, the pair that tells it from every other row. */
+const rowPath = r => (r ? `/rows/${encodeURIComponent(r.name)}${r.evaluator == null ? '' : '/' + encodeURIComponent(r.evaluator)}` : '');
 
 /* A comparison names its reports in the query, `?r=<path>&r=<path>`. Every other page is its path alone. */
 const comparedQuery = paths => (paths.length ? '?' + paths.map(path => 'r=' + encodeURIComponent(path)).join('&') : '');
@@ -25,9 +27,11 @@ function routeFor(view) {
     return `/optimization${idPath(opt.id)}/candidates/${encodeURIComponent(repCand)}/report`;
   }
   if (SECTION_OF[view] === 'optimization') {
-    return opt && OPT_SEGMENT[view] ? `/optimization${idPath(opt.id)}/${OPT_SEGMENT[view]}` : '/optimization';
+    /* The candidate opened last, and the report row opened last below, are the ones the address names. */
+    const cand = view === 'opt-candidates' && OPT && [...optOpen].reverse().find(id => OPT.proposals.some(p => p.candidate_id === id));
+    return opt && OPT_SEGMENT[view] ? `/optimization${idPath(opt.id)}/${OPT_SEGMENT[view]}${cand ? '/' + encodeURIComponent(cand) : ''}` : '/optimization';
   }
-  if (view === 'report' && repMeta) return `/reports${idPath(repMeta.path)}`;
+  if (view === 'report' && repMeta) return `/reports${idPath(repMeta.path)}${rowPath(ROWS[[...openRows].pop()])}`;
   if (view === 'compare') return '/reports/compare' + comparedQuery(CMP.map(c => c.meta.path));
   if (view === 'experiment' && expMeta) {
     const name = cases[sel] && cases[sel].name;
@@ -37,7 +41,8 @@ function routeFor(view) {
   return view === 'experiments' ? '/experiments' : view === 'sessions' ? '/sessions' : '/reports';
 }
 
-/** What a path asks for: `{ tab, report, compare, experiment, case, session, opt, cand }`, with only the parts it names.
+/** What a path asks for: `{ tab, report, row, evaluator, compare, experiment, case, session, opt, cand, candidate }`,
+    with only the parts it names.
     A path that names nothing leaves `tab` out, for the page to choose its own first view. */
 function parseRoute(route) {
   const [path, query = ''] = route.split('?');
@@ -50,9 +55,16 @@ function parseRoute(route) {
     if (rest.length >= 3 && last === 'report' && rest[rest.length - 3] === 'candidates') {
       return { tab: 'report', opt: idOf(rest.slice(0, -3)), cand: rest[rest.length - 2] };
     }
-    return OPT_VIEW[last] ? { tab: OPT_VIEW[last], opt: idOf(rest.slice(0, -1)) } : { tab: 'opt-runs' };
+    if (OPT_VIEW[last]) return { tab: OPT_VIEW[last], opt: idOf(rest.slice(0, -1)) };
+    return rest.length >= 2 && rest[rest.length - 2] === 'candidates'
+      ? { tab: 'opt-candidates', opt: idOf(rest.slice(0, -2)), candidate: last } : { tab: 'opt-runs' };
   }
-  if (root === 'reports') return rest.length ? { tab: 'report', report: rest.join('/') } : { tab: 'reports' };
+  if (root === 'reports') {
+    /* As with a case below: `rows` after a file's `.json` can only be one row of it, with or without an evaluator. */
+    const at = [2, 3].find(n => rest.length > n && rest[rest.length - n] === 'rows' && /\.json$/i.test(rest[rest.length - n - 1]));
+    if (at) return { tab: 'report', report: rest.slice(0, -at).join('/'), row: rest[rest.length - at + 1], evaluator: rest[rest.length - at + 2] };
+    return rest.length ? { tab: 'report', report: rest.join('/') } : { tab: 'reports' };
+  }
   if (root === 'sessions') return rest.length ? { tab: 'session', session: rest.join('/') } : { tab: 'sessions' };
   if (root === 'experiments') {
     if (!rest.length) return { tab: 'experiments' };

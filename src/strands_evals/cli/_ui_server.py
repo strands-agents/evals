@@ -37,6 +37,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from ..case import Case
 from ..experiment import _builtin_evaluator_types
+from ._ui_markdown import experiment_markdown, llms_text, report_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,9 @@ RUN_CONFIG_NAME = "run.json"
 SKIPPED_DIRS = frozenset({"node_modules", "__pycache__"})
 # Where the page keeps its views: `/reports/<file>`, `/experiments/<file>`, `/optimization/<directory>/overview`.
 PAGE_ROOTS = ("/reports", "/experiments", "/sessions", "/optimization")
+# A report or an experiment is also served as data: its page address with one of these forms added.
+DATA_ROOTS = {"/reports/": REPORT, "/experiments/": EXPERIMENT}
+DATA_FORMS = (".md", ".json")
 PRINTABLE = re.compile(r"[!-~]+")
 
 # A run directory's own storage. Scanning it would fill the skipped list and spend the file budget.
@@ -108,6 +112,15 @@ def _walk(root: Path, depth: int) -> Iterator[tuple[Path, list[str]]]:
 def is_page_path(path: str) -> bool:
     """Whether a request path is one of the page's own addresses. They all serve the one document."""
     return path in ("/", "/index.html") or any(path == root or path.startswith(f"{root}/") for root in PAGE_ROOTS)
+
+
+def data_form(path: str) -> tuple[str, str, str] | None:
+    """`(kind, file, form)` when a request path is a report's or an experiment's address with a form added."""
+    for root, kind in DATA_ROOTS.items():
+        for form in DATA_FORMS:
+            if path.startswith(root) and path.lower().endswith(f".json{form}"):
+                return kind, unquote(path[len(root) : -len(form)]), form
+    return None
 
 
 def fingerprint(root: Path, depth: int = DEFAULT_DEPTH) -> str:
@@ -1137,9 +1150,11 @@ class UIHandler(BaseHTTPRequestHandler):
     # ── routes ──
 
     def _get_config(self, query: dict[str, list[str]]) -> None:
+        """The served folder, the scan depth, whether saving is off, and the evaluator catalogue."""
         self._json(HTTPStatus.OK, {**self._settings(), "evaluators": evaluator_catalog()})
 
     def _get_scan(self, query: dict[str, list[str]]) -> None:
+        """Every experiment, report and optimizer run found under the served folder, with a fingerprint."""
         # Taken before the scan, so a file written during it reads as a change afterwards.
         mark = fingerprint(self.config.root, self.config.depth)
         result = discover(self.config.root, self.config.depth)
@@ -1160,9 +1175,11 @@ class UIHandler(BaseHTTPRequestHandler):
         )
 
     def _get_changes(self, query: dict[str, list[str]]) -> None:
+        """The fingerprint now. It differs from a scan's once something the scan listed has changed."""
         self._json(HTTPStatus.OK, {"fingerprint": fingerprint(self.config.root, self.config.depth)})
 
     def _get_events(self, query: dict[str, list[str]]) -> None:
+        """With `?path=<events.jsonl>`: the events an optimizer run logged, one per line of the file."""
         requested = self._requested_file(query)
         if requested is None:
             return
@@ -1180,6 +1197,7 @@ class UIHandler(BaseHTTPRequestHandler):
         )
 
     def _get_file(self, query: dict[str, list[str]]) -> None:
+        """With `?path=<file>`: one JSON file under the served folder, with the time it was last modified."""
         requested = self._requested_file(query)
         if requested is None:
             return
@@ -1198,6 +1216,42 @@ class UIHandler(BaseHTTPRequestHandler):
                 "evaluator_notes": check_evaluators(obj.get("evaluators") if isinstance(obj, dict) else None),
             },
         )
+
+    def _get_llms(self, query: dict[str, list[str]]) -> None:
+        """This description of what the server answers."""
+        routes = {route: inspect.getdoc(handler) or "" for route, handler in self._GET_ROUTES.items()}
+        text = llms_text(routes, PAGE_ROOTS, DATA_ROOTS, DATA_FORMS)
+        self._send(HTTPStatus.OK, text.encode("utf-8"), "text/plain; charset=utf-8")
+
+    def _get_data_form(self, kind: str, rel: str, form: str) -> None:
+        """A report or an experiment as Markdown or as JSON, for a reader with no browser."""
+        requested = self._requested_file({"path": [rel]})
+        if requested is None:
+            return
+        target = requested[1]
+        try:
+            obj = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{rel} could not be parsed: {exc}")
+            return
+        if classify(obj) != kind:
+            self._error(HTTPStatus.NOT_FOUND, f"{rel} is not {'an' if kind == EXPERIMENT else 'a'} {kind}")
+            return
+        if form == ".json":
+            self._json(HTTPStatus.OK, obj)
+            return
+        obj = _finite(obj)  # as the page is sent it, so both write the same Markdown
+        # The path as the scan writes it, so the file is found in the listing however it was asked for.
+        path = target.relative_to(self.config.root.resolve()).as_posix()
+        found = discover(self.config.root, self.config.depth)
+        listing = found.reports if kind == REPORT else found.experiments
+        entry = next((e for e in listing if e["path"] == path), {})
+        text = (
+            report_markdown(path, obj, entry.get("experiment"))
+            if kind == REPORT
+            else experiment_markdown(path, obj, entry.get("reports") or [])
+        )
+        self._send(HTTPStatus.OK, text.encode("utf-8", "replace"), "text/markdown; charset=utf-8")
 
     def _put_experiment(self, query: dict[str, list[str]], body: dict) -> None:
         if "document" not in body:
@@ -1289,12 +1343,14 @@ class UIHandler(BaseHTTPRequestHandler):
         "/api/changes": _get_changes,
         "/api/events": _get_events,
         "/api/file": _get_file,
+        "/llms.txt": _get_llms,
     }
 
     def do_GET(self) -> None:  # noqa: N802 - name fixed by BaseHTTPRequestHandler
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
-        is_page = is_page_path(parsed.path)
+        form = data_form(parsed.path)
+        is_page = form is None and is_page_path(parsed.path)
 
         if is_page and self._host_is_admitted():
             self._get_page(query)
@@ -1302,6 +1358,9 @@ class UIHandler(BaseHTTPRequestHandler):
         refusal = self._refusal(query)
         if refusal:
             self._error(*refusal)
+            return
+        if form:
+            self._get_data_form(*form)
             return
 
         route = self._GET_ROUTES.get(parsed.path)

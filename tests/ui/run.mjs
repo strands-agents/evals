@@ -25,6 +25,7 @@ const suites = [
   'compare.mjs',
   'lenses.mjs',
   'sessions.mjs',
+  'markdown.mjs',
 ];
 let failed = 0;
 

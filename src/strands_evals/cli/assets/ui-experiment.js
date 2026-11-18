@@ -227,6 +227,7 @@ function renderList() {
 function renderForm() {
   renderList();
   const c = cases[sel];
+  $('case-acts').hidden = !c;
   if (!c) {
     $('form-title').textContent = '—';
     $('form-sid').textContent = '';

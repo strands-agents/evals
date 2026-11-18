@@ -209,7 +209,7 @@ function traceView(doc, rawLabel = 'the file as written') {
     }
     let first = 0;
     return `<div class="tr-count">${traces.length > 1 ? plural(traces.length, 'trace') + ' · ' : ''}`
-      + `${plural(spans, 'span')} of a recorded session</div>${sum}`
+      + `${plural(spans, 'span')} of a recorded session</div>${sum}${traceCopy(doc)}`
       + traces.map((tr, at) => {
         const section = traceSection(tr, at, traces.length, first);
         first += tr.spans.length;
@@ -218,7 +218,7 @@ function traceView(doc, rawLabel = 'the file as written') {
   }
   if (Array.isArray(doc)) {
     if (!doc.length) return '<div class="empty">This transcript is an empty list.</div>' + raw;
-    return `<div class="tr-count">${plural(doc.length, 'message')}</div>${sum}`
+    return `<div class="tr-count">${plural(doc.length, 'message')}</div>${sum}${traceCopy(doc)}`
       + doc.map(m => messageCard(m)).join('') + raw;
   }
   return '<div class="empty">This file is neither a recorded session nor a list of messages, '
