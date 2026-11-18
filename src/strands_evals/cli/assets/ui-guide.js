@@ -183,33 +183,27 @@ const VIEW_GUIDE = {
 
 const GUIDE_KEY = 'strands-evals-guide';
 
-/* Open until turned off, except on a phone-sized window, where it would fill the first screen. */
-function guideWanted() {
-  const cookie = document.cookie.split('; ').find(pair => pair.startsWith(GUIDE_KEY + '='));
-  if (cookie) return cookie.slice(GUIDE_KEY.length + 1) !== 'off';
-  return !(window.matchMedia && matchMedia('(max-width: 700px)').matches);
+/* Closed until it is asked for, and after that as it was left. */
+const guideWanted = () => document.cookie.split('; ').includes(`${GUIDE_KEY}=on`);
+
+/** Fill the guide panel for a view: what to do there, the terms it uses, and where the docs say more. */
+function renderGuide(view) {
+  const guide = VIEW_GUIDE[view];
+  if (!guide) return;
+  const terms = (guide.terms || []).map(key =>
+    `<dt>${esc(TERMS[key][0])}</dt><dd>${esc(TERMS[key][1])}</dd>`).join('');
+  const links = (guide.links || [['', 'Evals documentation']]).map(([path, label]) =>
+    docLink(path, `guide-${view}`, label)).join('');
+  $('guide-body').innerHTML = `<h2>${esc(app.querySelector(`.tab[data-view="${view}"]`).textContent)}</h2>`
+    + `<ol>${guide.steps.map(step => `<li>${step}</li>`).join('')}</ol>`
+    + (terms ? `<dl>${terms}</dl>` : '')
+    + `<p class="guide-links">${links}</p>`;
 }
 
-/** Put a collapsible guide at the top of every view. It is open until the user turns guidance off. */
-function renderGuides() {
-  const open = guideWanted();
-  app.dataset.guide = open ? 'on' : 'off';
-  for (const [view, guide] of Object.entries(VIEW_GUIDE)) {
-    const section = $(`v-${view}`);
-    const terms = (guide.terms || []).map(key =>
-      `<dt>${esc(TERMS[key][0])}</dt><dd>${esc(TERMS[key][1])}</dd>`).join('');
-    const links = (guide.links || [['', 'Evals documentation']]).map(([path, label]) =>
-      docLink(path, `guide-${view}`, label)).join('');
-    const panel = document.createElement('details');
-    panel.className = 'guide';
-    panel.open = open;
-    panel.innerHTML = '<summary>How to use this view</summary>'
-      + `<ol>${guide.steps.map(step => `<li>${step}</li>`).join('')}</ol>`
-      + (terms ? `<dl>${terms}</dl>` : '')
-      + `<p class="guide-links">${links}</p>`;
-    const anchor = section.querySelector(':scope > .sub') || section.querySelector(':scope > h2');
-    if (anchor) anchor.after(panel); else section.prepend(panel);
-  }
+function setGuide(on) {
+  app.dataset.guide = on ? 'on' : 'off';
+  $('guide').hidden = !on;
+  app.querySelector('[data-guide-toggle]').setAttribute('aria-expanded', String(on));
 }
 
 /* ══════════ help on demand ══════════ */
@@ -288,11 +282,13 @@ app.addEventListener('click', e => {
   } else if (!e.target.closest('.help-pop')) {
     closeHelp();
   }
-  if (e.target.closest('[data-guide-toggle]')) {
+  if (e.target.closest('[data-guide-toggle], [data-guide-close]')) {
     const on = app.dataset.guide !== 'on';
-    app.dataset.guide = on ? 'on' : 'off';
-    app.querySelectorAll('details.guide').forEach(panel => { panel.open = on; });
+    setGuide(on);
     document.cookie = `${GUIDE_KEY}=${on ? 'on' : 'off'}; path=/; max-age=31536000; SameSite=Lax`;
+    /* The content column just changed width, and charts are drawn to the width they have. */
+    if (REP) renderReportCharts();
+    if (OPT) renderOptimization();
   }
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeHelp(); });
@@ -304,4 +300,4 @@ app.querySelectorAll('a[data-doc]').forEach(a => {
   a.target = '_blank';
   a.rel = 'noopener';
 });
-renderGuides();
+setGuide(guideWanted());

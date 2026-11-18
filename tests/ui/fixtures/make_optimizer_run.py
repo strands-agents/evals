@@ -459,7 +459,9 @@ def case_scores(objective: float, cases: list[str]) -> dict[str, float]:
 
 def judged(score: float) -> dict:
     """One evaluator's `EvaluationOutput`, as a trial record serializes it."""
-    return {"score": score, "test_pass": score >= 0.5, "reason": "judged", "label": None, "metadata": None}
+    passed = score >= 0.5
+    reason = "The reply answers what was asked." if passed else "The reply leaves the customer to ask again."
+    return {"score": score, "test_pass": passed, "reason": reason, "label": None, "metadata": None}
 
 
 def text_default(body: str) -> dict:

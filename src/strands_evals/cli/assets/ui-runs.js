@@ -111,7 +111,8 @@ async function selectRun(i, opts) {
   if (!run) return;
   const dirty = countDirty();
   if (!(opts && opts.force) && dirty && i !== selRun
-      && !confirm(`${plural(dirty, 'unsaved change')} will be lost. Switch run?`)) return;
+      && !await ask(`${dirty} unsaved ${dirty === 1 ? 'change' : 'changes'} will be lost if you switch run.`,
+        'Discard and switch', 'Stay')) return;
   selRun = i;
   repDisplaced = null;
   $('rep-borrowed').hidden = true;

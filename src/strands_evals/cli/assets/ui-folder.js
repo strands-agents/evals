@@ -295,6 +295,16 @@ async function ingest(all, rootDepth = 0) {
   return { runs, optimizerRuns };
 }
 
+/* The folder replaces whatever was open, so nothing from before it may stay on screen. */
+async function showFolder(found) {
+  RUNS = found.runs;
+  selRun = -1;
+  clearExperiment(); clearReport();
+  renderRuns();
+  await loadOptimizerRuns(found.optimizerRuns);
+  show('runs');
+}
+
 async function pickFolder() {
   if (window.showDirectoryPicker) {
     let dir;
@@ -313,11 +323,7 @@ async function pickFolder() {
     folderLabel = dir.name;
     showingSample = false;
     const found = await ingest(entries);
-    RUNS = found.runs;
-    selRun = -1;
-    renderRuns();
-    await loadOptimizerRuns(found.optimizerRuns);
-    show('runs');
+    await showFolder(found);
     return;
   }
   // showDirectoryPicker needs a secure context, which file:// is not: fall back to a directory <input>.
@@ -333,9 +339,5 @@ $('dirinput').onchange = async e => {
   showingSample = false;
   const rooted = first.includes('/') && files.every(f => (f.webkitRelativePath || '').startsWith(folderLabel + '/'));
   const found = await ingest(files.map(f => ({ file: f, path: f.webkitRelativePath || f.name })), rooted ? 1 : 0);
-  RUNS = found.runs;
-  selRun = -1;
-  renderRuns();
-  await loadOptimizerRuns(found.optimizerRuns);
-  show('runs');
+  await showFolder(found);
 };

@@ -177,6 +177,45 @@ def report(cases: dict[str, tuple], judged: dict[tuple[str, str], tuple[float, s
     return document
 
 
+def trial_report(events: list[dict], candidate: str, cases: dict[str, dict]) -> dict:
+    """The report `strands-evals run` would write for one configuration, from the trials the optimizer ran on it."""
+    rows = []
+    for event in events:
+        trial = event.get("record", {})
+        judged = (trial.get("evaluations") or {}).get("Helpfulness")
+        if event["event"] != "trial" or trial.get("candidate_id") != candidate or not judged:
+            continue
+        given = cases[trial["case_name"]]
+        row = {
+            "name": given["name"],
+            "input": given["input"],
+            "expected_output": given["expected_output"],
+            "actual_output": trial["output"],
+            "evaluator": "Helpfulness",
+            "evaluator_type": "OutputEvaluator",
+        }
+        output = {
+            "score": judged["score"],
+            "test_pass": judged["test_pass"],
+            "reason": "The reply answers the question."
+            if judged["test_pass"]
+            else "The reply leaves the customer to ask again.",
+            "label": None,
+            "metadata": None,
+        }
+        rows.append((row, output))
+    document = {
+        "overall_score": round(sum(output["score"] for _, output in rows) / len(rows), 3),
+        "cases": [row for row, _ in rows],
+        "scores": [output["score"] for _, output in rows],
+        "test_passes": [output["test_pass"] for _, output in rows],
+        "reasons": [output["reason"] for _, output in rows],
+        "detailed_results": [[output] for _, output in rows],
+    }
+    EvaluationReport.from_dict(copy.deepcopy(document))
+    return document
+
+
 def optimizer_runs(out: Path) -> None:
     """A finished run from the page's own test fixture, the cases it split up, and the same run part-way."""
     path = REPO / "tests" / "ui" / "fixtures" / "make_optimizer_run.py"
@@ -191,13 +230,19 @@ def optimizer_runs(out: Path) -> None:
         case(100 + i, name, fixture.conversation(name)[0], fixture.answer("c10", name)) for i, name in enumerate(names)
     ]
     judge = [{"evaluator_type": "OutputEvaluator", "name": "Helpfulness", "rubric": "Score how helpful the reply is."}]
-    write(out / "tuning" / "support-cases.experiment.json", experiment(cases, judge))
+    events = [json.loads(line) for line in (fixture.OUT / "events.jsonl").read_text().splitlines()]
+
+    # The cases the run was tuned on, run before and after: two reports of one experiment to compare.
+    for folder, candidate in (("agent-before-tuning", "c0"), ("agent-after-tuning", "c10")):
+        write(out / folder / "support-cases.experiment.json", experiment(cases, judge))
+        write(
+            out / folder / "support-cases.report.json", trial_report(events, candidate, {c["name"]: c for c in cases})
+        )
 
     running = out / "tuning" / "still-running"
     shutil.copytree(fixture.OUT / "transcripts", running / "transcripts", dirs_exist_ok=True)
     config = json.loads((fixture.OUT / "run.json").read_text())
     write(running / "run.json", {**config, "run_id": "support-tuning-still-running"})
-    events = [json.loads(line) for line in (fixture.OUT / "events.jsonl").read_text().splitlines()]
     done = ("finalists", "picked", "test", "stop")
     kept = [event for event in events if event.get("iteration", 0) <= 3 and event["event"] not in done]
     (running / "events.jsonl").write_text("".join(json.dumps(event) + "\n" for event in kept))

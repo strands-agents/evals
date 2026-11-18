@@ -113,22 +113,9 @@ function renderHero() {
 }
 
 const words = s => String(s == null ? '' : s).split(/\s+/);
-function diff(expected, actual) {
-  const a = words(expected), b = words(actual), out = [];
-  const lcs = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
-  for (let x = a.length - 1; x >= 0; x--)
-    for (let y = b.length - 1; y >= 0; y--)
-      lcs[x][y] = a[x] === b[y] ? lcs[x + 1][y + 1] + 1 : Math.max(lcs[x + 1][y], lcs[x][y + 1]);
-  let i = 0, j = 0;
-  while (i < a.length && j < b.length) {
-    if (a[i] === b[j]) { out.push(esc(a[i])); i++; j++; }
-    else if (lcs[i + 1][j] >= lcs[i][j + 1]) out.push(`<span class="del"><s>${esc(a[i++])}</s></span>`);
-    else out.push(`<span class="ins">${esc(b[j++])}</span>`);
-  }
-  while (i < a.length) out.push(`<span class="del"><s>${esc(a[i++])}</s></span>`);
-  while (j < b.length) out.push(`<span class="ins">${esc(b[j++])}</span>`);
-  return out.join(' ');
-}
+const diff = (expected, actual) => diffSeq(words(expected), words(actual)).map(([kind, word]) =>
+  kind === 'same' ? esc(word)
+    : kind === 'del' ? `<span class="del"><s>${esc(word)}</s></span>` : `<span class="ins">${esc(word)}</span>`).join(' ');
 
 /* A report trajectory is `list[Any] | Session`, and a Session serializes to an object. */
 function trajectory(v, reference) {
@@ -210,31 +197,43 @@ function renderReport() {
 
     const c = g.case;
     /* Optimizer trial records carry no input. */
-    const kv = [['Input', c.input == null
+    const asked = [['Input', c.input == null
       ? '<span class="empty">not recorded in this report</span>' : esc(c.input)]];
-    if (c.expected_assertion) kv.push(['Assertion', esc(c.expected_assertion)]);
-    ASPECTS.filter(a => a.has(c)).forEach(a => a.rows(c).forEach(row => kv.push(row)));
+    if (c.expected_assertion) asked.push(['Assertion', esc(c.expected_assertion)]);
+    ASPECTS.filter(a => a.has(c)).forEach(a => a.rows(c).forEach(row => asked.push(row)));
+
+    const judged = [];
     if (!r.outputs.length) {
-      kv.push(['Verdict', '<span class="empty">evaluator returned no outputs — '
+      judged.push(['Verdict', '<span class="empty">evaluator returned no outputs — '
         + '_default_aggregator scores that test_pass=false</span>']);
     }
     r.outputs.forEach((o, n) => {
       const tag = r.outputs.length > 1 ? ` ${n + 1}/${r.outputs.length}` : '';
       const label = o && o.label ? `<span class="mono">${esc(o.label)}</span> · ` : '';
-      kv.push([`Verdict${tag}`, `${label}score ${fmt(o && o.score)} · `
-        + (o && o.test_pass ? '<span class="vb pass"><i></i>pass</span>'
-                            : '<span class="vb fail"><i></i>fail</span>')]);
-      if (o && o.reason) kv.push([`Reason${tag}`, esc(o.reason)]);
-      if (o && o.metadata && Object.keys(o.metadata).length) kv.push([`Metadata${tag}`, pre(o.metadata)]);
+      /* One output is the row's own score and verdict, which head the card already. */
+      if (r.outputs.length > 1) {
+        judged.push([`Verdict${tag}`, `${label}score ${fmt(o && o.score)} · `
+          + (o && o.test_pass ? '<span class="vb pass"><i></i>pass</span>'
+                              : '<span class="vb fail"><i></i>fail</span>')]);
+      }
+      if (o && o.reason) judged.push([`Reason${tag}`, esc(o.reason)]);
+      if (o && o.metadata && Object.keys(o.metadata).length) judged.push([`Metadata${tag}`, pre(o.metadata)]);
     });
-    if (r.outputs.length > 1) kv.push(['Aggregated', `score ${fmt(r.score)} · ${esc(r.reason)}`]);
-    if (r.diagnosis) kv.push(['Diagnosis', pre(r.diagnosis)]);
-    if (r.recommendation) kv.push(['Recommendation', esc(r.recommendation)]);
+    if (r.outputs.length > 1) judged.push(['Aggregated', `score ${fmt(r.score)} · ${esc(r.reason)}`]);
+    if (r.diagnosis) judged.push(['Diagnosis', pre(r.diagnosis)]);
+    if (r.recommendation) judged.push(['Recommendation', esc(r.recommendation)]);
 
-    return head + '<tr class="detail"><td colspan="4"><dl class="kv">'
-      + kv.map(([k2, v]) => `<dt>${k2}</dt>`
-        + `<dd${/^(Expected|Actual|Metadata|Diagnosis)/.test(k2) ? ' class="m"' : ''}>${v}</dd>`).join('')
-      + '</dl></td></tr>';
+    /* Two columns: what the case asked and got back, then what this evaluator made of it. */
+    const only = !r.na && r.outputs.length === 1 && r.outputs[0] ? r.outputs[0].label : null;
+    const blocks = rows => rows.map(([k2, v]) => `<dt>${k2}</dt>`
+      + `<dd${/^(Expected|Actual|Metadata|Diagnosis)/.test(k2) ? ' class="m"' : ''}>${v}</dd>`).join('');
+    return head + '<tr class="detail"><td colspan="4"><div class="rowd">'
+      + `<dl class="blocks">${blocks(asked)}</dl>`
+      + `<dl class="blocks judge ${r.na ? 'na' : r.pass ? 'pass' : 'fail'}">`
+      + `<dt class="judge-by">${esc(r.evaluator == null ? 'Evaluator' : r.evaluator)}</dt>`
+      + `<dd class="judge-score">${r.na ? '' : scoreBar(r.score)}${verdictTag(r)}`
+      + `${only && only !== r.evaluator ? `<span class="mono path">${esc(only)}</span>` : ''}</dd>`
+      + `${blocks(judged)}</dl></div></td></tr>`;
   }).join('')).join('')
     || '<tr><td colspan="4" class="empty">No rows match</td></tr>';
 }

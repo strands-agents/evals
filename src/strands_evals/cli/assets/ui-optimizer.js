@@ -249,7 +249,18 @@ function trialVerdict(t) {
   return judged.length ? judged.every(v => v.test_pass) : null;
 }
 
-function candidateReport(p) {
+/* The cases an optimizer run was given, by name, when the experiment holding them is in this folder. */
+async function sourceCases(run) {
+  const named = run.tuned_against && RUNS.find(r => r.experiment && r.experiment.path === run.tuned_against.path);
+  try {
+    const doc = named ? await document_for(named.experiment) : null;
+    return doc ? new Map((doc.cases || []).map(c => [c.name, c])) : null;
+  } catch {
+    return null;
+  }
+}
+
+function candidateReport(p, source) {
   /* An `EvaluationReport`-shaped document for `loadReport`. One row per (case, metric):
      `evaluations` is metric -> {score, reason}. */
   const reportCases = [], scores = [], passes = [], reasons = [], detailed = [], measured = [];
@@ -262,8 +273,13 @@ function candidateReport(p) {
       const failed = t.status && t.status !== 'completed';
       const judged = value && typeof value.test_pass === 'boolean';
       const pass = !failed && (judged ? value.test_pass : typeof score === 'number');
+      /* A trial records what came back, not what was asked: that is read off the experiment's case. */
+      const given = (source && source.get(t.case_name)) || {};
       reportCases.push({
         name: t.case_name,
+        input: given.input,
+        expected_output: given.expected_output,
+        expected_assertion: given.expected_assertion,
         evaluator: metric,
         split: t.split,
         actual_output: t.output == null ? null : t.output,
@@ -299,7 +315,15 @@ function openCandidateReport(p) {
   /* Saved once: a second candidate must not overwrite the Evals report being held. */
   if (!repDisplaced) repDisplaced = { meta: repMeta, doc: REP };
   repDisplaced.cand = p.candidate_id;
-  loadReport({ path: `${run.run_id || 'run'} · ${p.candidate_id}` }, candidateReport(p));
+  const meta = { path: `${run.run_id || 'run'} · ${p.candidate_id}` };
+  loadReport(meta, candidateReport(p, run.sourceCases));
+  if (run.sourceCases === undefined) {
+    sourceCases(run).then(found => {
+      run.sourceCases = found;
+      /* Drawn again only if this candidate is still the one in the panel. */
+      if (found && repMeta === meta) loadReport(meta, candidateReport(p, found), true);
+    });
+  }
   const why = outcomeWhy(p);
   borrowReport(`Candidate <b>${esc(p.candidate_id)}</b> of ${esc(run.run_id || 'this run')}, `
     + 'from Optimization.' + (why ? ` <span class="tag warn">${esc(p.outcome)}</span> ${esc(why)}` : ''));
@@ -332,11 +356,35 @@ function candidateMatches(p) {
   return hay.includes(optQuery);
 }
 
+/* A candidate at a glance: where it came from, its objective and each metric it measured, each
+   beside the baseline's so the change reads without opening anything. */
+function candidateSummary(p, d) {
+  const byId = new Map(d.proposals.map(x => [x.candidate_id, x]));
+  const chain = [];
+  for (let at = p; at && !chain.includes(at.candidate_id); at = byId.get(at.parent_id)) chain.push(at.candidate_id);
+  const base = p.isBaseline ? null : byId.get(d.baselineId) || d.points.find(x => x.candidate_id === d.baselineId);
+  const show = v => Math.abs(v) >= 10 ? nice(v) : fmt(v);
+  const tile = (name, value, was, dir) => {
+    const delta = value != null && was != null ? value - was : null;
+    const cls = !delta || !dir ? '' : (delta > 0) === (dir === 'max') ? ' up' : ' down';
+    return `<div class="stat${cls}"><span class="v">${value == null ? '—' : esc(show(value))}</span>`
+      + `<span class="k">${esc(name)}</span>`
+      + (delta == null ? '' : `<span class="n">${delta > 0 ? '▲ +' : delta < 0 ? '▼ ' : ''}${esc(show(delta))} against ${esc(d.baselineId)}</span>`)
+      + '</div>';
+  };
+  return '<div class="cand-sum">'
+    + tile('Objective', p.objective, base && base.objective, 'max')
+    + Object.keys(p.measured || {}).map(m =>
+      tile(m, p.measured[m], base && (base.measured || {})[m], goalDir(d, m))).join('')
+    + (chain.length > 1 ? `<div class="stat line"><span class="v">${esc(chain.join(' ← '))}</span>`
+      + '<span class="k">Derived from</span></div>' : '')
+    + '</div>';
+}
+
 function candidateDetail(p, d, run) {
   const kv = [];
   if (p.rationale) kv.push(['Why it was tried', esc(p.rationale)]);
   if (outcomeWhy(p)) kv.push([`Why ${p.outcome}`, esc(outcomeWhy(p))]);
-  if (p.parent_id && p.parent_id !== p.candidate_id) kv.push(['Derived from', esc(p.parent_id)]);
 
   /* Diffed against the baseline. `changed_keys` in the row above is the diff against the parent. */
   const changed = (p.settings || []).filter(s => s.changed);
@@ -353,12 +401,6 @@ function candidateDetail(p, d, run) {
   } else {
     kv.push([vs, changed.map(s => `<div class="setting"><span class="skey">${esc(s.key)}</span>`
       + settingDiff(s) + '</div>').join('')]);
-  }
-
-  const metrics = Object.keys(p.measured || {});
-  if (metrics.length) {
-    kv.push(['Measured', metrics.map(m =>
-      `<span class="mono">${esc(m)} ${esc(nice(p.measured[m]))}</span>`).join(' · ')]);
   }
 
   if (!p.trials.length) {
@@ -396,9 +438,9 @@ function candidateDetail(p, d, run) {
     }).join('');
     kv.push(['Per case', `<table class="trials"><tbody>${rows}</tbody></table>`]);
   }
-  return '<tr class="detail"><td colspan="5"><dl class="kv">'
+  return `<tr class="detail"><td colspan="5">${candidateSummary(p, d)}<dl class="kv">`
     + kv.map(([k, v]) => `<dt>${esc(k)}</dt>`
-      + `<dd${/^(Derived|Measured|Per case)/.test(k) ? ' class="m"' : ''}>${v}</dd>`).join('')
+      + `<dd${k === 'Per case' ? ' class="m"' : ''}>${v}</dd>`).join('')
     + '</dl></td></tr>';
 }
 

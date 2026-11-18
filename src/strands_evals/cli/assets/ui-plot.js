@@ -110,7 +110,8 @@ function rowWidth(half) {
   const main = app.querySelector('main'), style = getComputedStyle(main);
   const column = main.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
   if (!(column > 0)) return half ? ROW_W.half : ROW_W.wide;
-  const shared = half && matchMedia('(min-width: 1081px)').matches;
+  const squeezed = app.dataset.guide === 'on' && matchMedia('(max-width: 1500px)').matches;
+  const shared = half && !squeezed && matchMedia('(min-width: 1081px)').matches;
   return Math.max(280, Math.round((shared ? (column - 22) / 2 : column) - 54));
 }
 /* The label column gives way on a narrow card. */

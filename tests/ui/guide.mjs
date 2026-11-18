@@ -24,11 +24,16 @@ const helpLink = p => parse(p.$('.help-pop a'));
 // ── every link into the docs is tagged, names its placement, and opens beside the page ──
 {
   const p = await open();
-  const links = docLinks(p);
-  const untagged = links.filter(a => !parse(a)).map(a => a.href);
-  ok(links.length >= 20 && untagged.length === 0, 'every docs link carries the campaign tags and a placement',
-    `${links.length} links, untagged: ${untagged.join(' ')}`);
-  ok(links.every(a => a.target === '_blank' && a.rel.includes('noopener')), 'and opens in a new tab without an opener');
+  const views = p.$$('main > section.view').map(s => s.id.slice(2));
+  /* The chrome's links, and the guide's for each view in turn: the panel holds one view at a time. */
+  const links = views.flatMap(view => {
+    p.window.renderGuide(view);
+    return docLinks(p).map(a => ({ href: a.href, tagged: parse(a), blank: a.target === '_blank' && a.rel.includes('noopener') }));
+  });
+  const untagged = links.filter(a => !a.tagged).map(a => a.href);
+  ok(new Set(links.map(a => a.href)).size >= 20 && untagged.length === 0, 'every docs link carries the campaign tags and a placement',
+    `${new Set(links.map(a => a.href)).size} links, untagged: ${untagged.join(' ')}`);
+  ok(links.every(a => a.blank), 'and opens in a new tab without an opener');
   const chrome = p.$$('.bar a, .sections a').map(a => parse(a) || a.href);
   ok(JSON.stringify(chrome) === JSON.stringify([
     '|nav-docs|', 'quickstart/|nav-quickstart|', 'evaluators/|nav-evaluators|',
@@ -39,31 +44,32 @@ const helpLink = p => parse(p.$('.help-pop a'));
   ok(links.some(a => /\?utm_source.*#what-an-evaluation-is-made-of$/.test(a.href)),
     'an anchor comes after the tags, where a browser reads it');
   ok(!p.d.documentElement.innerHTML.includes('t=tok'), 'no link carries the page token');
+  ok(views.every(view => { p.window.renderGuide(view); return p.$('#guide-body ol li') && docLinks({ $$: s => p.$$(`#guide-body ${s}`) }).length; }),
+    'every view has a guide, with steps and a way into the docs');
 }
 
-// ── the guide: on every view, open until it is turned off, and that choice is kept ──
+// ── the guide: a panel beside the content, closed until asked for, and that choice is kept ──
 {
   const p = await open();
-  const panels = () => p.$$('details.guide');
-  const views = p.$$('main > section.view').map(s => s.id);
-  ok(panels().length === views.length && views.every(id => p.$(`#${id} > details.guide`)),
-    'every view has a guide', `${panels().length} guides for ${views.length} views`);
-  ok(panels().every(d => d.open && d.querySelector('ol li') && docLinks({ $$: s => [...d.querySelectorAll(s)] }).length),
-    'open to begin with, with steps and a way into the docs');
-  ok(parse(p.$('#v-report details.guide a')) === 'how-evaluation-works/|guide-report|#the-levels-an-evaluator-scores-at',
-    'its links name the view they sit on', parse(p.$('#v-report details.guide a')));
-
+  const state = () => [p.$('#guide').hidden, p.$('.app').dataset.guide, p.$('[data-guide-toggle]').getAttribute('aria-expanded')].join();
+  ok(state() === 'true,off,false' && !p.$('main details.guide'), 'the guide starts closed and takes no room in the view', state());
   await p.click('[data-guide-toggle]');
-  ok(panels().every(d => !d.open) && p.$('.app').dataset.guide === 'off' && p.d.cookie.includes('strands-evals-guide=off'),
-    'the Guide switch closes them all and remembers', p.d.cookie);
-  await p.click('[data-guide-toggle]');
-  ok(panels().every(d => d.open), 'and opens them again');
+  ok(state() === 'false,on,true' && p.d.cookie.includes('strands-evals-guide=on'),
+    'the Guide switch opens it beside the content and remembers', `${state()} ${p.d.cookie}`);
+  ok(p.text('#guide-body h2') === 'Runs' && p.$$('#guide-body ol li').length === 3 && p.$$('#guide-body dt').length === 3
+    && parse(p.$('#guide-body a')) === 'quickstart/|guide-runs|',
+  'it explains the view that is open: what to do, the terms it uses, and where the docs say more', p.text('#guide-body').slice(0, 120));
+  await p.click('.tab[data-view="report"]');
+  ok(p.text('#guide-body h2') === 'Report'
+    && parse(p.$('#guide-body a')) === 'how-evaluation-works/|guide-report|#the-levels-an-evaluator-scores-at',
+  'and follows to the next view, its links naming the view they are for', p.text('#guide-body h2'));
+  await p.click('[data-guide-close]');
+  ok(state() === 'true,off,false' && p.d.cookie.includes('strands-evals-guide=off'), 'its own close button closes it and remembers that too',
+    `${state()} ${p.d.cookie}`);
 
-  const small = await open({ phone: true });
-  ok(small.$$('details.guide').every(d => !d.open) && small.$('.app').dataset.guide === 'off',
-    'on a phone-sized window they start closed, so the view is not pushed off the first screen');
-  await small.click('[data-guide-toggle]');
-  ok(small.$$('details.guide').every(d => d.open), 'and the Guide switch still opens them');
+  const later = await open({ cookie: 'strands-evals-guide=on' });
+  ok(!later.$('#guide').hidden && later.text('#guide-body h2') === 'Runs', 'a page opened after it was left open starts with it open',
+    later.$('#guide').hidden);
 }
 
 // ── a ? on a case field says what it is, what it takes, and where the docs cover it ──
@@ -169,7 +175,7 @@ const helpLink = p => parse(p.$('.help-pop a'));
   ok(tip.hidden, 'and Escape dismisses it');
 
   const explained = sel => p.$$(sel).every(el => el.dataset.term || el.dataset.tip || el.title);
-  ok(explained('main th') && explained('.sections .tab') && explained('.seg button:not([data-f="all"])'),
+  ok(explained('main th') && explained('.sections .tab') && explained('.ctl .seg button:not([data-f="all"])'),
     'every column head, view and filter says what it is');
 }
 

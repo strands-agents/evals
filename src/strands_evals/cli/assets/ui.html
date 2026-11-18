@@ -25,7 +25,7 @@
     <a class="navicon" href="https://github.com/strands-agents/evals" target="_blank" rel="noopener" aria-label="strands-agents/evals on GitHub">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 31.0442 29.9737" fill="none" aria-hidden="true"><path fill="currentColor" d="M13.1271 21.9088C9.12527 21.4253 6.30585 18.5545 6.30585 14.8376C6.30585 13.3266 6.85154 11.6948 7.76104 10.6069C7.36691 9.60966 7.42754 7.49433 7.88231 6.61799C9.09497 6.46688 10.7321 7.1015 11.7022 7.97783C12.8542 7.61521 14.0669 7.43389 15.5524 7.43389C17.0379 7.43389 18.2506 7.61521 19.342 7.94763C20.2818 7.1015 21.9492 6.46688 23.1619 6.61799C23.5863 7.43389 23.6469 9.54923 23.2528 10.5767C24.2229 11.725 24.7383 13.2662 24.7383 14.8376C24.7383 18.5545 21.9189 21.3649 17.8564 21.8786C18.8872 22.5434 19.5845 23.9939 19.5845 25.656V28.7989C19.5845 29.7053 20.3424 30.2191 21.2519 29.8564C26.7392 27.7712 31.0442 22.3017 31.0442 15.5326C31.0442 6.98062 24.0714 0 15.4917 0C6.91218 0 0 6.98059 0 15.5326C0 22.2412 4.27462 27.8015 10.0348 29.8867C10.8533 30.1888 11.6416 29.645 11.6416 28.8292V26.4115C11.2171 26.5928 10.6714 26.7137 10.1864 26.7137C8.18547 26.7137 7.00311 25.6258 6.15425 23.6011C5.82078 22.7852 5.45698 22.3017 4.75968 22.211C4.39589 22.1808 4.27462 22.0297 4.27462 21.8484C4.27462 21.4858 4.88095 21.2138 5.48728 21.2138C6.36648 21.2138 7.12438 21.7577 7.91261 22.8759C8.51894 23.7522 9.1556 24.1451 9.9135 24.1451C10.6714 24.1451 11.1565 23.8731 11.8538 23.178C12.3692 22.6643 12.7633 22.211 13.1271 21.9088Z"/></svg>
     </a>
-    <button class="guide-toggle" type="button" data-guide-toggle aria-label="Show or hide guidance" data-tip="Show or hide the guide at the top of each view.">Guide</button>
+    <button class="guide-toggle" type="button" data-guide-toggle aria-controls="guide" aria-expanded="false" data-tip="How to use the view you are on: what to do, what its terms mean, and where the docs say more.">Guide</button>
     <button class="theme-toggle" type="button" data-theme-toggle aria-label="Toggle color theme" data-tip="Switch between light and dark.">
       <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
       <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
@@ -155,7 +155,7 @@
           <div class="chart">
             <div class="chead">
               <h3>Against another report</h3>
-              <select id="rep-cmp-pick" aria-label="Report to compare against"></select>
+              <div class="pick" id="rep-cmp-pick" role="group" aria-label="Report to compare against"></div>
             </div>
             <p class="cap" id="rep-cmp-cap"></p>
             <div id="rep-cmp"></div>
@@ -166,7 +166,7 @@
           <div class="chart wide">
             <div class="chead">
               <h3>Cost per case</h3>
-              <select id="rep-cost-pick" aria-label="Cost measure to chart"></select>
+              <div class="pick" id="rep-cost-pick" role="group" aria-label="Cost measure to chart"></div>
             </div>
             <p class="cap" id="rep-cost-cap"></p>
             <div id="rep-cost"></div>
@@ -243,7 +243,7 @@
         <div class="chart wide">
           <div class="chead">
             <h3>Case by case</h3>
-            <select id="opt-cases-pick" aria-label="Measure to compare case by case"></select>
+            <div class="pick" id="opt-cases-pick" role="group" aria-label="Measure to compare case by case"></div>
           </div>
           <p class="cap" id="opt-cases-cap"></p>
           <div id="opt-cases-chart"></div>
@@ -258,7 +258,7 @@
           <div class="chart wide">
             <div class="chead">
               <h3>Spend by iteration</h3>
-              <select id="opt-usage-pick" aria-label="Usage measure to chart"></select>
+              <div class="pick" id="opt-usage-pick" role="group" aria-label="Usage measure to chart"></div>
             </div>
             <p class="cap" id="opt-usage-cap"></p>
             <div id="opt-usage-chart"></div>
@@ -282,7 +282,7 @@
         <div class="chart wide">
           <div class="chead">
             <h3 id="opt-series-head">Objective by candidate</h3>
-            <select id="opt-series-pick" aria-label="Series to chart"></select>
+            <div class="pick" id="opt-series-pick" role="group" aria-label="Series to chart"></div>
           </div>
           <p class="cap" id="opt-series-cap"></p>
           <div id="opt-series-chart"></div>
@@ -350,7 +350,7 @@
           <div class="chart wide">
             <div class="chead">
               <h3>Change from each key's reference value</h3>
-              <select id="opt-eff-goal" aria-label="Goal metric to show effects for"></select>
+              <div class="pick" id="opt-eff-goal" role="group" aria-label="Goal metric to show effects for"></div>
             </div>
             <p class="cap" id="opt-eff-cap"></p>
             <div id="opt-eff-chart"></div>
@@ -371,8 +371,8 @@
           <div class="chart wide">
             <div class="chead">
               <h3 id="opt-to-head">Goals against each other</h3>
-              <select id="opt-to-x" aria-label="Goal on the x axis"></select>
-              <select id="opt-to-y" aria-label="Goal on the y axis"></select>
+              <div class="pick" id="opt-to-x" role="group" aria-label="Goal on the x axis"></div>
+              <div class="pick" id="opt-to-y" role="group" aria-label="Goal on the y axis"></div>
             </div>
             <p class="cap" id="opt-to-cap"></p>
             <div id="opt-to-chart"></div>
@@ -383,6 +383,13 @@
       </div>
     </section>
   </main>
+  <aside class="guide-panel" id="guide" aria-label="How to use this view" hidden>
+    <div class="guide-head">
+      <span>How to use this view</span>
+      <button class="guide-close" type="button" data-guide-close aria-label="Close the guide">&times;</button>
+    </div>
+    <div id="guide-body"></div>
+  </aside>
 </div>
 
 <!-- Classic scripts sharing one scope, loaded in this order. `ui-core.js` comes first (every later

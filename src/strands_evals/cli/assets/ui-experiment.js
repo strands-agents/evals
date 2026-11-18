@@ -51,11 +51,12 @@ function clearExperiment() {
   refreshDirty(); note('');
 }
 
-function note(msg, kind) {
+/* `offer` is `[label, action]` for a button beside the message; `stale` and `gone` bring their own. */
+function note(msg, kind, offer) {
   const el = $('saved');
   el.innerHTML = msg ? esc(msg) : '';
   el.classList.toggle('err', kind === 'err');
-  const offer = { stale: ['Reload from disk', () => selectRun(selRun, { force: true })],
+  offer = offer || { stale: ['Reload from disk', () => selectRun(selRun, { force: true })],
     gone: ['Download a copy', downloadExperiment] }[kind];
   if (offer) {
     const btn = document.createElement('button');
@@ -455,13 +456,32 @@ $('form').addEventListener('click', e => {
     if (!cases[sel][k].length) cases[sel][k] = null;
     renderForm(); note(''); refreshDirty();
   } else if (add) {
-    const k = add.dataset.add;
-    const name = prompt('Tool name');
-    if (!name || !name.trim()) return;
-    (cases[sel][k] = cases[sel][k] || []).push(name.trim());
-    renderForm(); note(''); refreshDirty();
+    /* The button becomes the box to type the name in: Enter or leaving it adds, Escape gives up. */
+    const input = document.createElement('input');
+    input.className = 'f chipin';
+    input.placeholder = 'tool name';
+    input.setAttribute('aria-label', 'Tool name');
+    input.dataset.addTo = add.dataset.add;
+    add.replaceWith(input);
+    input.focus();
   }
 });
+function addTool(input, keep) {
+  if (input.dataset.done) return;
+  input.dataset.done = '1';
+  const k = input.dataset.addTo, name = input.value.trim();
+  if (keep && name) {
+    (cases[sel][k] = cases[sel][k] || []).push(name);
+    note(''); refreshDirty();
+  }
+  renderForm();
+}
+$('form').addEventListener('keydown', e => {
+  if (!e.target.dataset.addTo || (e.key !== 'Enter' && e.key !== 'Escape')) return;
+  e.preventDefault();
+  addTool(e.target, e.key === 'Enter');
+});
+$('form').addEventListener('focusout', e => { if (e.target.dataset.addTo) addTool(e.target, true); });
 
 const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
   : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, ch => {
@@ -484,11 +504,16 @@ $('add-case').onclick = () => {
 $('del-case').onclick = () => {
   const c = cases[sel];
   if (!c) return;
-  if (!confirm(`Delete case ${c.name || '(unnamed)'}? It is removed from the file when you save.`)) return;
-  cases.splice(sel, 1); orig.splice(sel, 1);
+  const at = sel, was = orig[at];
+  cases.splice(at, 1); orig.splice(at, 1);
   sel = Math.max(0, Math.min(sel, cases.length - 1));
   renderForm(); refreshDirty();
-  note(`removed ${c.name || '(unnamed)'} — save to write it out`);
+  /* Nothing is written until Save, so a delete is undone rather than asked about first. */
+  note(`Removed ${c.name || '(unnamed)'}. It leaves the file when you save.`, null, ['Undo', () => {
+    cases.splice(at, 0, c); orig.splice(at, 0, was);
+    sel = at;
+    renderForm(); refreshDirty(); note('');
+  }]);
 };
 
 function refreshDirty() {

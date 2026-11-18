@@ -255,8 +255,10 @@ function settingDiff(s) {
     return `<div class="inline">${s.before === undefined ? '' : `<span class="was">${esc(before)}</span> → `}`
       + `${esc(after)}</div>`;
   }
-  return `<pre>${s.before === undefined ? '' : `<span class="del">- ${esc(before)}</span>\n`}`
-    + `<span class="ins">+ ${esc(after)}</span></pre>`;
+  /* Line by line, so what stayed is read once and what changed stands out. */
+  const mark = { same: '  ', del: '- ', ins: '+ ' };
+  return `<pre>${diffSeq(s.before === undefined ? [] : before.split('\n'), after.split('\n'))
+    .map(([kind, line]) => `<span class="${kind}">${mark[kind]}${esc(line)}</span>`).join('\n')}</pre>`;
 }
 
 /* ── the winner ── */

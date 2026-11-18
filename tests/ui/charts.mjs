@@ -37,12 +37,6 @@ async function open(files) {
   return p;
 }
 const tips = (p, selector) => p.$$(selector).map(el => el.querySelector('title').textContent);
-const pick = async (p, selector, value) => {
-  p.$(selector).value = value;
-  p.$(selector).dispatchEvent(new p.window.Event('change', { bubbles: true }));
-  await tick();
-};
-
 const p = await open({
   'now/experiment.json': experiment, 'now/report.json': report(NOW, { a: session(5), c: session(2) }),
   'then/experiment.json': experiment, 'then/report.json': report(THEN),
@@ -70,8 +64,17 @@ ok(p.$$('#rep-spread rect.hbin').length === 4, 'with a bar wherever scores fall'
 
 // ── against another report ──
 ok(!p.$('#rep-cmp svg') && /Pick an earlier report/.test(p.text('#rep-cmp-cap')), 'nothing is compared until a report is picked');
-same(p.$$('#rep-cmp-pick option').map(o => o.value), ['', 'then/report.json'], 'the picker offers the other reports in the folder');
-await pick(p, '#rep-cmp-pick', 'then/report.json');
+same(p.$$('#rep-cmp-pick button').map(o => o.dataset.value), ['', 'then/report.json'], 'the picker offers the other reports in the folder');
+await p.click('#rep-cmp-pick button[data-value="then/report.json"]');
+ok(p.text('#rep-cmp-pick summary') === 'then/report.json' && !p.$('#rep-cmp-pick details').open,
+  'picking from the list names the choice on its button and closes the list', p.text('#rep-cmp-pick summary'));
+const list = () => p.$('#rep-cmp-pick details');
+list().open = true;
+await p.click('#rep-cmp-cap');
+const closedByClick = !list().open;
+list().open = true;
+await p.key('Escape');
+ok(closedByClick && !list().open, 'an open list closes on a click elsewhere and on Escape');
 ok(p.text('#rep-cmp-legend') === '1 now pass1 now fail2 kept their verdict1 only in this report1 only in the other',
   'the rows both reports hold are counted by what happened to their verdict', p.text('#rep-cmp-legend'));
 same(tips(p, '#rep-cmp g.bell'), ['a · Y · 0.90 to 0.20 · now fails', 'c · X · 0.30 to 0.80 · now passes'],
@@ -91,6 +94,14 @@ ok(detail && p.text(detail.querySelector('.tr-count')) === '3 spans of a recorde
   && p.text(detail.querySelector('.tr-sum')) === '1 model call · 1 tool call · 2s'
   && [...detail.querySelectorAll('.call')].some(c => /lookup/.test(c.textContent)),
 'the row shows its session span by span, with the tool call', detail && p.text(detail).slice(0, 200));
+
+// ── an opened row: what the case asked and got back, beside what the evaluator made of it ──
+{
+  const card = p.$('#rep-rows tr.case[data-i="2"] + tr.detail .judge');
+  ok(card.classList.contains('fail') && p.text(card.querySelector('.judge-by')) === 'X' && /^0\.00 ?fail ?judged$/.test(p.text(card.querySelector('.judge-score'))),
+    'the judgement is a card of its own: the evaluator, its score, its verdict and the label it gave', p.text(card));
+  ok(/^Input ?q/.test(p.text('#rep-rows tr.case[data-i="2"] + tr.detail .blocks:not(.judge)')), 'beside the case itself');
+}
 
 // ── a report alone in its folder, with no sessions ──
 {

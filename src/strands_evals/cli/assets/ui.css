@@ -71,7 +71,7 @@ h2, .chart h3, .pane > header .t, .hero .big, .stat .v, .winner .wid {
 }
 .btn:focus-visible, .tab:focus-visible, .sec:focus-visible, .seg button:focus-visible,
 .addchip:focus-visible, .more:focus-visible, .theme-toggle:focus-visible, .x:focus-visible,
-.help:focus-visible, .guide-toggle:focus-visible,
+.help:focus-visible, .guide-toggle:focus-visible, .guide-close:focus-visible,
 .app [tabindex="0"]:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px;
 }
@@ -318,6 +318,29 @@ table.rep tr.case td:first-child { font-weight: 550; }
 .vb.na   { color: var(--ink3); }
 .vb i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; display: inline-block; }
 tr.detail td { background: var(--hair2); }
+/* An opened report row: what the case asked and got back, beside what the evaluator made of it. */
+.rowd { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 22px; align-items: start; padding: 8px 4px 10px; }
+.blocks { margin: 0; font-size: 13px; }
+.blocks dt { margin: 0 0 5px; color: var(--ink3); font: 600 10.5px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+.blocks dd {
+  margin: 0 0 14px; padding: 10px 12px; border: 1px solid var(--hair); border-radius: 8px;
+  background: var(--card); line-height: 1.55; overflow-wrap: anywhere;
+}
+.blocks dd.m { font-family: var(--mono); font-size: 12.5px; }
+.blocks.judge { padding: 16px 16px 4px; border: 1px solid var(--hair); border-left: 4px solid var(--ink3); border-radius: 10px; background: var(--card); }
+.blocks.judge.pass { border-left-color: var(--good); }
+.blocks.judge.fail { border-left-color: var(--bad); }
+.blocks.judge dd { padding: 0; border: 0; background: none; }
+.blocks.judge .judge-by { font: 600 14px var(--sans); letter-spacing: 0; text-transform: none; color: var(--ink1); }
+.blocks.judge .judge-score { display: flex; align-items: center; gap: 14px; font-size: 15px; }
+.blocks.judge .judge-score .num { font: 600 22px var(--mono); }
+/* An opened candidate: its figures beside the baseline's, then why and what changed. */
+.cand-sum { display: flex; flex-wrap: wrap; gap: 10px; margin: 6px 0 18px; }
+.cand-sum .stat { min-width: 120px; padding: 10px 14px; background: var(--card); }
+.cand-sum .stat .v { font-size: 18px; font-family: var(--mono); }
+.cand-sum .stat.line .v { font-size: 13px; padding: 3px 0 2px; }
+.cand-sum .stat.up .n { color: var(--good); }
+.cand-sum .stat.down .n { color: var(--bad); }
 .kv { display: grid; grid-template-columns: 148px 1fr; gap: 4px 14px; font-size: 13px; }
 .kv dt { color: var(--ink2); font-size: 12px; font-weight: 550; padding-top: 1px; }
 .kv dd { margin: 0; }
@@ -509,6 +532,7 @@ button.rmore:hover { color: var(--ink1); }
 }
 .setting pre .del { color: var(--bad); }
 .setting pre .ins { color: var(--good); }
+.setting pre .same { color: var(--ink3); }
 .wacts { display: flex; gap: 10px; align-items: center; margin-top: 14px; flex-wrap: wrap; }
 .wacts .said { font-size: 12px; color: var(--ink3); }
 .unchanged { font-size: 12px; color: var(--ink3); margin: 11px 0 0; }
@@ -551,10 +575,39 @@ table.trials tr:last-child td { border-bottom: 0; }
 }
 .chead { display: flex; align-items: center; gap: 12px; }
 .chead h3 { flex: 1; }
-.chead select {
-  background: var(--bg); color: var(--ink1); border: 1px solid var(--hair);
-  border-radius: 999px; padding: 3px 8px; font: inherit; font-size: 11.5px; max-width: 220px;
+/* A picker in a chart's heading: a few choices side by side, or a list under a button. */
+.pick { flex: none; position: relative; max-width: 100%; }
+.pick.seg button { font-size: 11.5px; padding: 4px 11px; }
+.pick summary {
+  list-style: none; cursor: pointer; max-width: 240px; padding: 4px 26px 4px 12px; border: 1px solid var(--line);
+  border-radius: 999px; background: var(--card); color: var(--ink1); font: 500 11.5px var(--mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.pick summary::-webkit-details-marker { display: none; }
+.pick summary::after { content: "\25BE"; position: absolute; right: 11px; color: var(--ink3); }
+.pick-list {
+  position: absolute; z-index: 20; right: 0; top: calc(100% + 4px); display: grid; width: max-content;
+  min-width: 100%; max-width: min(440px, 80vw); max-height: 280px; overflow: auto; padding: 4px;
+  border: 1px solid var(--edge); border-radius: 10px; background: var(--pop); box-shadow: var(--shadow);
+}
+.pick-list button {
+  appearance: none; border: 0; background: none; cursor: pointer; text-align: left; padding: 6px 10px;
+  border-radius: 6px; font: 12px var(--mono); color: var(--ink1);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pick-list button:hover, .pick-list button.on { background: var(--hair2); }
+/* A question the page asks before something is lost. */
+.ask {
+  position: fixed; z-index: 60; inset: 0; display: grid; place-items: center; padding: 20px;
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+}
+.ask-card {
+  max-width: 420px; padding: 22px 24px; border: 1px solid var(--edge); border-radius: 14px;
+  background: var(--pop); box-shadow: var(--shadow); font-size: 14px; line-height: 1.55;
+}
+.ask-card p { margin: 0 0 18px; }
+.ask-acts { display: flex; justify-content: flex-end; gap: 10px; }
+.chipin { width: 160px; padding: 3px 10px; font-size: 12.5px; border-radius: 999px; }
 details.drawer { border-top: 1px solid var(--hair); margin: 24px 0 0; }
 details.drawer > summary {
   cursor: pointer; padding: 11px 2px; font-size: 12.5px; font-weight: 600; color: var(--ink1);
@@ -692,24 +745,36 @@ details.raw > summary { cursor: pointer; font-size: 11.5px; color: var(--ink3); 
 /* ── guidance: what a view, a field or a setting is, and the docs page that says more ── */
 a.doc { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
 a.doc::after { content: " \2197"; }
-.guide {
-  max-width: 86ch; margin: 0 0 26px; background: var(--card); border: 1px solid var(--hair);
-  border-left: 3px solid var(--brand); border-radius: 0 var(--r) var(--r) 0;
+/* ── the guide: a panel beside the content, so it costs the view no height ── */
+.app[data-guide="on"] {
+  grid-template-columns: 248px minmax(0, 1fr) 340px; grid-template-areas: "bar bar bar" "nav main guide";
 }
-.guide > summary {
-  cursor: pointer; padding: 10px 16px; color: var(--ink2);
-  font: 600 11.5px var(--mono); letter-spacing: .08em; text-transform: uppercase;
+.guide-panel {
+  grid-area: guide; align-self: start; position: sticky; top: var(--bar-h);
+  height: calc(100vh - var(--bar-h)); overflow-y: auto;
+  padding: 26px 22px 40px; border-left: 1px solid var(--hair); background: var(--bg);
 }
-.guide ol { margin: 0; padding: 0 20px 4px 38px; font-size: 13.5px; line-height: 1.6; }
-.guide li { margin-bottom: 6px; }
-.guide code { padding: 1px 5px; border-radius: 4px; background: var(--hair2); font: 12px var(--mono); }
-.guide dl {
-  display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px;
-  margin: 8px 20px 4px; font-size: 12.5px; color: var(--ink2);
+.guide-head {
+  display: flex; align-items: center; justify-content: space-between; color: var(--ink3);
+  font: 600 11px var(--mono); letter-spacing: .12em; text-transform: uppercase;
 }
-.guide dt { font-weight: 600; color: var(--ink1); }
-.guide dd { margin: 0; }
-.guide-links { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 10px 20px 14px; font-size: 13px; }
+.guide-close {
+  appearance: none; cursor: pointer; width: 26px; height: 26px; padding: 0; border: 1px solid var(--line);
+  border-radius: 50%; background: var(--card); color: var(--ink2); font-size: 16px; line-height: 1;
+}
+.guide-close:hover { border-color: var(--accent); color: var(--ink1); }
+.guide-panel h2 { margin: 10px 0 16px; font-size: 20px; }
+.guide-panel ol { margin: 0 0 20px; padding: 0 0 0 20px; font-size: 13.5px; line-height: 1.6; }
+.guide-panel li { margin-bottom: 8px; }
+.guide-panel code { padding: 1px 5px; border-radius: 4px; background: var(--hair2); font: 12px var(--mono); overflow-wrap: anywhere; }
+.guide-panel dl { margin: 0 0 18px; padding-top: 16px; border-top: 1px solid var(--hair); font-size: 12.5px; color: var(--ink2); }
+.guide-panel dt { font-weight: 600; color: var(--ink1); }
+.guide-panel dd { margin: 2px 0 12px; line-height: 1.55; }
+.guide-links { display: flex; flex-direction: column; gap: 8px; margin: 0; font-size: 13px; }
+/* Squeezed between the sidebar and the guide, paired charts stack. */
+@media (max-width: 1500px) {
+  .app[data-guide="on"] .charts { grid-template-columns: minmax(0, 1fr); }
+}
 .help {
   appearance: none; flex: none; width: 18px; height: 18px; padding: 0; cursor: pointer;
   border: 1px solid var(--line); border-radius: 50%; background: var(--card); color: var(--ink2);
@@ -753,6 +818,7 @@ th[data-term], th[data-tip], .cap[data-term] {
 
 /* ── narrow screens: the sidebar becomes a strip under the bar ── */
 @media (max-width: 1080px) {
+  .rowd { grid-template-columns: minmax(0, 1fr); }
   .champ { grid-template-columns: minmax(0, 1fr); padding: 18px; }
   .champ-gain { text-align: left; }
   .champ-name, .champ-delta { font-size: 30px; }
@@ -768,7 +834,13 @@ th[data-term], th[data-tip], .cap[data-term] {
   .ctl .find { width: 100%; }
   .kv { grid-template-columns: 1fr; gap: 1px 0; }
   .kv dt { padding-top: 7px; }
-  .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: 56px auto 1fr; grid-template-areas: "bar" "nav" "main"; }
+  .app, .app[data-guide="on"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: 56px auto 1fr; grid-template-areas: "bar" "nav" "main"; }
+  /* No room beside the content here: the guide slides over it. */
+  .guide-panel {
+    position: fixed; z-index: 30; top: 56px; right: 0; bottom: 0; height: auto; align-self: stretch;
+    width: min(360px, 100%);
+    box-shadow: var(--shadow);
+  }
   .bar { padding: 0 16px; gap: 12px; }
   .bar .path { display: none; }
   .sections {

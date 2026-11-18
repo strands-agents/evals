@@ -121,9 +121,10 @@ const panel = q => kv(q, '#opt-cands .trial-panel > dl');
 const speakers = q => q.$$('#opt-cands .trial-panel .msg').map(m => flat(m.querySelector('.who'))).join(' | ');
 const blockDiff = root => {
   const pre = root.querySelector('.setting pre');
-  return !!pre && /^- You are the support assistant/.test(pre.querySelector('.del').textContent)
-    && /NW-000000/.test(pre.querySelector('.ins').textContent)
-    && !/NW-000000/.test(pre.querySelector('.del').textContent);
+  const lines = kind => (pre ? [...pre.querySelectorAll(`.${kind}`)] : []).map(el => el.textContent).join('\n');
+  /* Line by line: what the baseline already said is kept, and only the new lines are marked added. */
+  return /^ {2}You are the support assistant/.test(lines('same')) && /^\+ .*NW-000000/m.test(lines('ins'))
+    && !/NW-000000/.test(lines('same') + lines('del'));
 };
 
 /* ══════════ the fixture run ══════════ */
@@ -234,7 +235,7 @@ ok(/held-out cases/.test(stripNote(p)) && /nothing to draw for tokens \(no inter
   const tip = name => marks().map(g => g.querySelector('title').textContent).find(t => t.startsWith(name + ' '));
   const validation = EVENTS.find(e => e.event === 'trial' && e.record.candidate_id === 'c10'
     && e.record.case_name === 'val_case_01').record.evaluations.Helpfulness.score;
-  eq(q.$$('#opt-cases-pick option').map(o => o.textContent), ['Helpfulness', 'Tokens', 'Seconds'],
+  eq(q.$$('#opt-cases-pick button').map(o => o.textContent), ['Helpfulness', 'Tokens', 'Seconds'],
     'cases are compared on each evaluator score and on what a trial cost');
   eq([marks().length, tip('test_case_01'), tip('train_case_01'), tip('val_case_01')], [
     15,
@@ -244,7 +245,8 @@ ok(/held-out cases/.test(stripNote(p)) && /nothing to draw for tokens \(no inter
   ], 'one row per case either ran, held-out cases first, each with what both measured');
   has(q.text('#opt-cases-cap'), /Of 11 cases both ran, 11 improved and 0 got worse\. A case only one of them ran has a single mark\./,
     'the caption counts which way the cases went');
-  await pick(q, '#opt-cases-pick', 'u:tokens');
+  await q.click('#opt-cases-pick button[data-value="u:tokens"]');
+  eq(texts(q, '#opt-cases-pick button.on'), ['Tokens'], 'a few choices sit side by side, the chosen one marked');
   ok(marks()[0].classList.contains('down') && /lower is better/.test(q.text('#opt-cases-cap'))
     && tip('test_case_01') === 'test_case_01 · test · baseline 3190 · champion 3340',
   'on tokens a rise is drawn as worse', `${marks()[0].getAttribute('class')} | ${tip('test_case_01')}`);
@@ -254,6 +256,18 @@ ok(/held-out cases/.test(stripNote(p)) && /nothing to draw for tokens \(no inter
     return e;
   }) });
   ok(kept.$('#opt-cases').hidden, 'a run that kept its baseline has nothing to compare case by case');
+
+  // A candidate's cases, opened as a report, are filled in from the experiment the run was tuned against.
+  const asked = Object.fromEntries(CONFIG.split.train.map(name => [name, `What about ${name}?`]));
+  const given = { cases: [...CONFIG.split.train, ...CONFIG.split.validation, ...CONFIG.split.test]
+    .map(name => ({ name, input: asked[name] || 'held out', expected_output: 'the right answer' })), evaluators: [] };
+  const sourced = await openFixture({ tab: 'candidates', files: { 'cases/experiment.json': given } });
+  await openCand(sourced, 'c10');
+  await sourced.click('#opt-cands [data-open]');
+  await tick(4);
+  await sourced.click('#rep-rows tr.case');
+  has(flat(sourced.$('#rep-rows tr.detail')), /Input What about train_case_01\? Expected output the right answer Actual output · diff/,
+    'a candidate\'s report shows what each case asked and expected, read off the experiment the run was tuned against');
 
   // The champion, at the top of the view.
   const hero = (page, part) => texts(page, `#opt-hero ${part}`).join(' | ');
@@ -347,7 +361,7 @@ const series = () => marks(p, '#opt-series-chart');
 const axis = () => ({
   label: text('#opt-series-chart .axlab'), ticks: texts(p, '#opt-series-chart text.tick').map(Number),
 });
-eq([texts(p, '#opt-series-pick option').join(), $('#opt-series-pick').value, text('#opt-series-head')],
+eq([texts(p, '#opt-series-pick button').join(), $('#opt-series-pick').value, text('#opt-series-head')],
   ['Objective,Helpfulness,tokens', 'objective', 'Objective by candidate'],
   'the picker offers the objective, then each metric');
 const objectiveLegend = $$('#opt-series-legend span').length;
@@ -371,7 +385,7 @@ ok(axis().label === 'tokens — lower is better' && Math.min(...axis().ticks) > 
 
 // ── Progress: what each iteration cost ──
 const cols = () => titles(p, '#opt-usage-chart rect.col');
-eq([texts(p, '#opt-usage-pick option').join(), $('#opt-usage-pick').value], ['Tokens,Model calls,Seconds', 'tokens'],
+eq([texts(p, '#opt-usage-pick button').join(), $('#opt-usage-pick').value], ['Tokens,Model calls,Seconds', 'tokens'],
   'every usage measure recorded is on offer, tokens first');
 eq(cols(), ['iteration 0: 25440 over 8 trials', 'iteration 1: 50640 over 16 trials',
   'iteration 2: 26480 over 8 trials', 'iteration 3: 54440 over 16 trials', 'iteration 4: 33680 over 8 trials',
@@ -399,7 +413,7 @@ const effects = () => $$('#opt-eff-chart .eff-row').map(g => ({
 const effZero = () => num($('#opt-eff-chart .eff-zero'), 'x1');
 ok(!$('#opt-effects').hidden && text('#opt-eff-sum') === '3 estimates',
   'a run with a fitted model has the effects drawer', text('#opt-eff-sum'));
-eq(texts(p, '#opt-eff-goal option'), ['Helpfulness · higher is better', 'tokens · lower is better'],
+eq(texts(p, '#opt-eff-goal button'), ['Helpfulness · higher is better', 'tokens · lower is better'],
   'each goal is offered with the direction it wants');
 has(text('#opt-eff-cap'), /for Helpfulness, fitted to 48 observations/,
   'the caption says how much the estimate rests on');
@@ -448,11 +462,14 @@ ok(!candRow(p, 'c4').querySelector('.bar2') && !!candRow(p, 'c8').querySelector(
 // ── Candidates: one candidate, and its trials ──
 await openCand(p, 'c10');
 const c10 = detail(p);
-eq(Object.keys(c10), ['Why it was tried', 'Derived from', 'Versus c0', 'Measured', 'Cases', 'Per case'],
-  'a candidate row opens');
-ok(/^Combine c6's up-front id request/.test(c10['Why it was tried']) && c10['Derived from'] === 'c6'
-  && c10.Measured === 'Helpfulness 0.67 · tokens 3350', 'with its rationale, its parent and what it measured',
-  JSON.stringify(c10).slice(0, 200));
+eq(Object.keys(c10), ['Why it was tried', 'Versus c0', 'Cases', 'Per case'], 'a candidate row opens');
+has(c10['Why it was tried'], /^Combine c6's up-front id request/, 'with its rationale');
+const tiles = $$('#opt-cands tr.detail .cand-sum .stat');
+eq(tiles.map(flat), ['0.67 Objective ▲ +0.16 against c0', '0.67 Helpfulness ▲ +0.16 against c0',
+  '3350 tokens ▲ +170 against c0', 'c10 ← c6 ← c3 ← c1 ← c0 Derived from'],
+'and its figures at a glance: the objective and each metric beside the baseline, and the line it descends from');
+eq(tiles.map(el => el.className), ['stat up', 'stat up', 'stat down', 'stat line'],
+  'a change the goal wanted is marked good, and more tokens is not');
 ok(same(texts(p, '#opt-cands tr.detail .setting .skey'), ['system_prompt', 'temperature'])
   && blockDiff($('#opt-cands tr.detail')) && /0\.7 → 0\.2/.test(c10['Versus c0']),
   'diffed against the baseline, not the parent c6, which has the same temperature', c10['Versus c0'].slice(0, 120));
@@ -465,7 +482,7 @@ eq([...new Set(trials.map(t => t.at(-1)))].sort(), ['fail', 'pass'],
 
 await openTrial(p, 'c10', 'train_case_01');
 eq(pairs(p, '#opt-cands .trial-panel > dl').map(line => line.replace(/^Transcript: .*/, 'Transcript')),
-  ['Ended as: completed', 'Scored: Helpfulness 0.49 fail judged', 'Cost: 3350 tokens · 3 model calls · 4.20s',
+  ['Ended as: completed', 'Scored: Helpfulness 0.49 fail The reply leaves the customer to ask again.', 'Cost: 3350 tokens · 3 model calls · 4.20s',
     'Output: Order NW-104233 was delivered on 2 October. It was left at the front desk.', 'Transcript'],
   'a trial opens: how it ended, each score with its verdict and reason, the cost, the output, the transcript');
 
@@ -622,7 +639,7 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
     && new RegExp(`c10 of ${RUN_ID}.*Back to this run’s report`).test(q.text('#rep-borrowed')),
     'a candidate in the panel is announced by candidate and run, offering back the report it displaced',
     q.text('#rep-borrowed'));
-  eq([texts(q, '#rep-cost-pick option'), q.$$('#rep-cost g.rbar').length, q.$$('#rep-heat rect.cell').length],
+  eq([texts(q, '#rep-cost-pick button'), q.$$('#rep-cost g.rbar').length, q.$$('#rep-heat rect.cell').length],
     [['Seconds', 'Tokens'], 15, 15],
     'and charted like any report, its cost per case read off what each trial recorded');
   await q.click('#rep-borrowed [data-act="unborrow"]');
@@ -891,7 +908,7 @@ const WRITTEN = configWith(c => {
     trial(0.2, { tokens: 100, model_calls: 1, seconds: 1.5 }),
     trial(0.4, { tokens: 300, model_calls: 3, seconds: 2.5 }),
     iterationEnd(0, [prop('c0', 0, 0.3)], 2)]);
-  eq(texts(q, '#opt-series-pick option').join(), 'Objective,Helpfulness', 'the picker offers only what was measured');
+  eq(texts(q, '#opt-series-pick button').join(), 'Objective,Helpfulness', 'the picker offers only what was measured');
   await pick(q, '#opt-series-pick', 'm:Helpfulness');
   ok(same(marks(q, '#opt-series-chart').map(m => m.title), ['c0 · Helpfulness 0.30'])
     && q.$$('#opt-series-chart path.metric-line').length === 0,
@@ -1136,9 +1153,9 @@ const TWO_GOALS = 'Pareto(Maximize(Quality), Minimize(tokens))';
       labelled('c2', { Quality: 0.6, tokens: 100, seconds: 9 }),
       iterationEnd(1, [prop('c1', 1, 0.9), prop('c2', 2, 0.6)], 4)]);
   ok(three.text('#opt-to-sum') === '3 goals' && !three.$('#opt-to-x').hidden
-    && texts(three, '#opt-to-y option').join() === 'tokens ↓,seconds ↓',
+    && texts(three, '#opt-to-y button').join() === 'tokens ↓,seconds ↓',
     'three goals are counted, with a pair to pick and the goal on one axis off the other\'s list',
-    texts(three, '#opt-to-y option').join());
+    texts(three, '#opt-to-y button').join());
   ok(ringed(three) === 'c1,c2' && /worked out here.*front over all 3/.test(three.text('#opt-to-cap')),
     'the front of the pair is computed with each goal\'s direction, and said to be',
     `${ringed(three)}: ${three.text('#opt-to-cap')}`);

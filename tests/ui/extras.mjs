@@ -269,6 +269,41 @@ const badges = p =>
   ok(p.$$('#case-list li[data-i]').length === 2, 'd pressed on another view drops nothing', p.$$('#case-list li[data-i]').length);
 }
 
+// ── with no run open, Experiment and Report open the first run that has one ──
+{
+  const p = await open();
+  await p.openFolder({ 'bare/experiment.json': experiment(CASE), 'full/experiment.json': experiment(CASE), 'full/report.json': report(1, CASE) });
+  await p.click('.tab[data-view="report"]');
+  ok(p.text('#path') === 'full/report.json' && p.text('#rep-count') === '1 of 1 row', 'Report opens the first run with a report, not an empty view',
+    `${p.text('#path')} ${p.text('#rep-count')}`);
+  const none = await open();
+  await none.openFolder({ 'bare/experiment.json': experiment(CASE) });
+  await none.click('.tab[data-view="report"]');
+  ok(/No report in this run/.test(none.text('#rep-rows')), 'and says so when no run has one', none.text('#rep-rows').slice(0, 60));
+}
+
+// ── delete and add-a-tool need no dialog: one is undone, the other typed in place ──
+{
+  const p = await opened(experiment(CASE, { name: 'b', session_id: 's-b', input: 'q', expected_trajectory: ['lookup'] }));
+  const listed = () => p.$$('#case-list li[data-i] .nm').map(el => el.textContent).join();
+  await p.click('#del-case');
+  ok(listed() === 'b' && /^Removed a\./.test(p.text('#saved')), 'Delete removes the case at once and says so', `${listed()} ${p.text('#saved')}`);
+  await p.click('#saved button');
+  ok(listed() === 'a,b' && p.text('#case-list li.on .nm') === 'a' && p.window.eval('countDirty()') === 0,
+    'and Undo puts it back where it was, with nothing left to save', listed());
+
+  await p.click(p.$$('#case-list li[data-i]')[1]);
+  const tools = () => p.text('#form [data-chips="expected_trajectory"]');
+  await p.click('#form [data-add]');
+  await p.type('#form input[data-add-to]', 'refund');
+  await p.key('Enter', p.$('#form input[data-add-to]'));
+  ok(/lookup/.test(tools()) && /refund/.test(tools()) && !p.$('#form input[data-add-to]'), 'a tool is typed where the button was and added on Enter', tools());
+  await p.click('#form [data-add]');
+  await p.type('#form input[data-add-to]', 'never');
+  await p.key('Escape', p.$('#form input[data-add-to]'));
+  ok(!/never/.test(tools()) && !p.$('#form input[data-add-to]'), 'and Escape gives up without adding it', tools());
+}
+
 // ── a long rubric: cut short on its chip, whole in a text block ──
 {
   const rubric = 'Score 1.0 when the reply is polite and names the policy. '.repeat(6).trim();
@@ -330,11 +365,16 @@ const badges = p =>
 
   await p.click(run('two'));
   await p.type('#form [data-k="input"]', 'unsaved');
-  p.window.confirm = () => false;
   await travel(-1);
-  ok(p.$('#form [data-k="input"]').value === 'unsaved' && p.window.location.hash === '#/runs/two/experiment.json/report',
-    'Back to another run does not drop unsaved edits when that is declined, and the address says where the page still is',
-    p.window.location.hash);
+  ok(/1 unsaved change will be lost if you switch run\./.test(p.text('.ask')), 'Back to another run asks before dropping unsaved edits',
+    p.text('.ask'));
+  await p.click('.ask [data-answer="no"]');
+  ok(!p.$('.ask') && p.$('#form [data-k="input"]').value === 'unsaved' && p.window.location.hash === '#/runs/two/experiment.json/report',
+    'Stay keeps them, and the address says where the page still is', p.window.location.hash);
+  await p.click(run('one'));
+  await p.click('.ask [data-answer="yes"]');
+  await tick(6);
+  ok(!p.$('.ask') && /^one\//.test(p.text('#path')), 'choosing another run asks too, and Discard and switch opens it', p.text('#path'));
 
   const fresh = await linked('/runs/experiment.json/report');
   ok(fresh.window.history.length === 1, 'opening a link adds no step of its own', fresh.window.history.length);

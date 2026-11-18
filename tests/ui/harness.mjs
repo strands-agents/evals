@@ -38,9 +38,9 @@ export async function waitFor(cond, what = 'condition', ms = 5000) {
 }
 
 /** Build the page. `fetchImpl` is installed before any script runs, so boot() sees it.
-    `phone` answers the page's small-window media query, which jsdom cannot. `visible` makes the
+    `cookie` is one the browser already holds, as from an earlier visit. `visible` makes the
     document one that is being looked at; without it a served page's polling timer does nothing. */
-export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok', token, phone, visible } = {}) {
+export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok', token, cookie, visible } = {}) {
   const errs = [];
   /* `token` stands in for the server writing it into the document, as it does for a served page. */
   const html = token ? HTML.replace('name="strands-evals-token" content=""', `name="strands-evals-token" content="${token}"`) : HTML;
@@ -50,12 +50,15 @@ export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok', to
     url,
     beforeParse(window) {
       if (fetchImpl) window.fetch = (...a) => fetchImpl(...a);
-      if (phone) window.matchMedia = query => ({ matches: /max-width/.test(query) });
+      if (cookie) window.document.cookie = cookie;
       // A download is the only place a standalone page emits a document: keep the blob for `saved()`.
       window.__blobs = [];
       window.URL.createObjectURL = blob => { window.__blobs.push(blob); return 'blob:stub'; };
       window.URL.revokeObjectURL = () => {};
-      window.confirm = () => true;
+      // The page draws its own questions and menus: a native dialog is a bug.
+      for (const name of ['alert', 'confirm', 'prompt']) {
+        window[name] = () => { throw new Error(`the page opened a native ${name}()`); };
+      }
       // jsdom has no layout to scroll: count the calls instead.
       window.__scrolls = 0;
       window.scrollTo = () => { window.__scrolls += 1; };

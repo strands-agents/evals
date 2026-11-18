@@ -47,12 +47,78 @@ const scoreBar = score => `<span class="bar2"><span class="num">${esc(fmt(score)
   + `<span class="fill" style="width:${Math.round(Math.max(0, Math.min(1, score || 0)) * 100)}%"></span>`
   + '</span></span>';
 
-/** Fill a picker, keeping `want` selected if it is still on offer. Returns what ended up chosen. */
-function fillPick(id, options, want) {
+/** How `b` differs from `a`, in order: `[['same' | 'del' | 'ins', item], ...]`. */
+function diffSeq(a, b) {
+  const lcs = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+  for (let x = a.length - 1; x >= 0; x--)
+    for (let y = b.length - 1; y >= 0; y--)
+      lcs[x][y] = a[x] === b[y] ? lcs[x + 1][y + 1] + 1 : Math.max(lcs[x + 1][y], lcs[x][y + 1]);
+  const out = [];
+  let i = 0, j = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { out.push(['same', a[i]]); i++; j++; }
+    else if (lcs[i + 1][j] >= lcs[i][j + 1]) out.push(['del', a[i++]]);
+    else out.push(['ins', b[j++]]);
+  }
+  while (i < a.length) out.push(['del', a[i++]]);
+  while (j < b.length) out.push(['ins', b[j++]]);
+  return out;
+}
+
+/** Fill a picker, keeping `want` chosen if it is still on offer. Returns what ended up chosen.
+    A few short choices sit side by side; more, or `asList`, open as a list under a button. */
+function fillPick(id, options, want, asList) {
   const chosen = options.some(o => o.value === want) ? want : (options[0] || {}).value;
-  $(id).innerHTML = options.map(o =>
-    `<option value="${esc(o.value)}"${o.value === chosen ? ' selected' : ''}>${esc(o.label)}</option>`).join('');
+  const choice = o => `<button type="button" data-value="${esc(o.value)}" aria-pressed="${o.value === chosen}"`
+    + `${o.value === chosen ? ' class="on"' : ''}>${esc(o.label)}</button>`;
+  const few = !asList && options.length <= 4 && options.reduce((n, o) => n + String(o.label).length, 0) <= 44;
+  const el = $(id);
+  el.value = chosen;
+  el.className = few ? 'pick seg' : 'pick';
+  el.innerHTML = few ? options.map(choice).join('')
+    : `<details><summary>${esc((options.find(o => o.value === chosen) || {}).label)}</summary>`
+      + `<div class="pick-list">${options.map(choice).join('')}</div></details>`;
   return chosen;
+}
+/* The pickers and questions below are drawn by the page. A browser's own menus and dialogs can be
+   suppressed or misplaced by an extension or an attached tool, and then the control does nothing. */
+const closePicks = except => app.querySelectorAll('.pick details[open]').forEach(d => { if (d !== except) d.open = false; });
+app.addEventListener('click', e => {
+  const choice = e.target.closest('.pick button[data-value]');
+  closePicks(choice ? null : e.target.closest('.pick details'));
+  if (!choice) return;
+  const pick = choice.closest('.pick');
+  pick.value = choice.dataset.value;
+  pick.dispatchEvent(new Event('change', { bubbles: true }));
+  const again = $(pick.id).querySelector('.on, summary');
+  if (again) again.focus();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closePicks(); });
+
+/** Ask a yes-or-no question in the page. Resolves true when `yes` is chosen; Escape and a click outside are a no. */
+function ask(message, yes, no) {
+  return new Promise(resolve => {
+    const box = document.createElement('div');
+    box.className = 'ask';
+    box.setAttribute('role', 'alertdialog');
+    box.setAttribute('aria-modal', 'true');
+    box.innerHTML = `<div class="ask-card"><p>${esc(message)}</p><div class="ask-acts">`
+      + `<button class="btn" data-answer="no">${esc(no)}</button>`
+      + `<button class="btn pri" data-answer="yes">${esc(yes)}</button></div></div>`;
+    const onKey = e => { if (e.key === 'Escape') done(false); };
+    const done = answer => {
+      box.remove();
+      document.removeEventListener('keydown', onKey);
+      resolve(answer);
+    };
+    box.onclick = e => {
+      const button = e.target.closest('[data-answer]');
+      if (button || e.target === box) done(!!button && button.dataset.answer === 'yes');
+    };
+    document.addEventListener('keydown', onKey);
+    app.appendChild(box);
+    box.querySelector('[data-answer="no"]').focus();
+  });
 }
 
 const json = v => `<span class="mono">${esc(JSON.stringify(v, null, 1))}</span>`;
@@ -110,12 +176,18 @@ function show(view, opts) {
     'opt-trade': (run && run.events_path) || 'no optimizer run loaded',
   }[view];
   $('path').textContent = where;
+  renderGuide(view);
   if (opts && opts.silent) return;
   /* A view moved to starts at its top, where its heading and any notice are. */
   if (moved) window.scrollTo(0, 0);
   writeAddress(view);
 }
-app.querySelectorAll('.tab').forEach(t => t.onclick = () => show(t.dataset.view));
+/* With no run open, Experiment and Report open the first run that has one rather than an empty view. */
+function openTab(view) {
+  const first = (view === 'experiment' || view === 'report') && selRun < 0 ? RUNS.findIndex(r => r[view]) : -1;
+  return first >= 0 ? selectRun(first, { view }) : show(view);
+}
+app.querySelectorAll('.tab').forEach(t => t.onclick = () => openTab(t.dataset.view));
 app.querySelectorAll('.sec').forEach(s => s.onclick = () => {
   const first = [...app.querySelectorAll('.tab')].find(t => t.dataset.sec === s.dataset.sec && !t.hidden);
   if (first) show(first.dataset.view);

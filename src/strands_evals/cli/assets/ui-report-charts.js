@@ -93,8 +93,8 @@ function renderReportCompare() {
     $('rep-cmp-legend').innerHTML = legend || '';
   };
   $('rep-cmp-pick').hidden = !others.length;
-  $('rep-cmp-pick').innerHTML = '<option value="">Pick a report…</option>' + others.map(m =>
-    `<option value="${esc(m.path)}"${repOther && repOther.path === m.path ? ' selected' : ''}>${esc(m.path)}</option>`).join('');
+  fillPick('rep-cmp-pick', [{ value: '', label: 'Pick a report…' }, ...others.map(m => ({ value: m.path, label: m.path }))],
+    repOther ? repOther.path : '', true);
   if (!others.length) {
     return set('No other report in this folder. Run the experiment again with a different -o name and '
       + 'the two can be compared here.');
