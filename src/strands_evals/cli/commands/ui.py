@@ -11,7 +11,8 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .._common import EXIT_BAD_INPUT, EXIT_OK, resolve_format
-from .._ui_server import DEFAULT_DEPTH, build_server, discover, finite, is_loopback, server_url
+from .._ui_discovery import DEFAULT_DEPTH, discover
+from .._ui_server import build_server, finite, is_loopback, server_url
 
 TOKEN_ENV = "STRANDS_EVALS_UI_TOKEN"
 

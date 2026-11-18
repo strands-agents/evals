@@ -19,23 +19,25 @@ from typing import Any
 
 import pytest
 
-from strands_evals.cli import _ui_server
+from strands_evals.cli import _ui_discovery, _ui_server
+from strands_evals.cli._ui_discovery import (
+    EventLog,
+    classify,
+    discover,
+    discover_optimizer_runs,
+    fingerprint,
+    link_status,
+    read_event_log,
+)
+from strands_evals.cli._ui_evaluators import evaluator_catalog
 from strands_evals.cli._ui_server import (
     MAX_UPLOAD_BYTES,
     PAGE_ROOTS,
     UNAUTHORIZED_PAGE,
-    EventLog,
     PathOutsideRoot,
     UIHandler,
     build_server,
-    classify,
-    discover,
-    discover_optimizer_runs,
-    evaluator_catalog,
-    fingerprint,
-    link_status,
     load_asset,
-    read_event_log,
     resolve_within,
     server_url,
     validate_experiment_payload,
@@ -336,9 +338,9 @@ def test_scan_stops_at_the_file_cap_and_says_so(tmp_path: Path, monkeypatch):
     for name in ("a.json", "b.json", "c.json", "sub/d.json"):
         _write(tmp_path / name, _experiment("a"))
 
-    monkeypatch.setattr(_ui_server, "MAX_SCAN_FILES", 2)
+    monkeypatch.setattr(_ui_discovery, "MAX_SCAN_FILES", 2)
     capped = discover(tmp_path)
-    monkeypatch.setattr(_ui_server, "MAX_SCAN_FILES", 4)
+    monkeypatch.setattr(_ui_discovery, "MAX_SCAN_FILES", 4)
     whole = discover(tmp_path)
 
     assert (capped.truncated, {experiment["path"] for experiment in capped.experiments}) == (True, {"a.json", "b.json"})
@@ -1850,7 +1852,7 @@ def test_a_task_result_store_is_reported_and_its_files_are_neither_skipped_nor_c
     _write(tmp_path / "inputs" / "row.json", {"input": "q", "output": "a"})
 
     # Four files besides the five results: the cap is reached only if a result is counted.
-    monkeypatch.setattr(_ui_server, "MAX_SCAN_FILES", 4)
+    monkeypatch.setattr(_ui_discovery, "MAX_SCAN_FILES", 4)
     found = discover(tmp_path)
 
     assert found.stores == [{"dir": "store", "files": 5}]
@@ -1861,7 +1863,7 @@ def test_a_task_result_store_is_reported_and_its_files_are_neither_skipped_nor_c
     }
     assert _found(tmp_path) == ["experiment.json", "report.json"]
 
-    monkeypatch.setattr(_ui_server, "MAX_SCAN_FILES", 3)
+    monkeypatch.setattr(_ui_discovery, "MAX_SCAN_FILES", 3)
     assert discover(tmp_path).truncated is True
 
 
@@ -2016,7 +2018,7 @@ def test_ui_list_prints_what_it_found_as_text(tmp_path: Path, capsys):
 def test_ui_list_says_when_the_scan_stopped_at_the_file_cap(tmp_path: Path, capsys, monkeypatch):
     for name in ("a.json", "b.json"):
         _write(tmp_path / name, _experiment("a"))
-    monkeypatch.setattr(_ui_server, "MAX_SCAN_FILES", 1)
+    monkeypatch.setattr(_ui_discovery, "MAX_SCAN_FILES", 1)
 
     assert main(["--json", "ui", str(tmp_path), "--list"]) == 0
     listed = json.loads(capsys.readouterr().out)
