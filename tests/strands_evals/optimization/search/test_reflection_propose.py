@@ -129,6 +129,14 @@ async def test_the_first_proposal_warns_that_the_shell_is_not_a_sandbox():
     assert caught[0].filename.endswith("reflection.py")  # not asyncio's: the coroutine's caller is the event loop
 
 
+async def test_the_agents_shell_gets_shell_env_and_not_this_process_environment(monkeypatch):
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "fake-secret")
+    command = 'printf "%s %s" "$GIVEN" "${AWS_SECRET_ACCESS_KEY-unset}" > p.txt'
+    turns = [ToolUse("shell", {"command": command}), submit(prompt="p.txt"), "Done."]
+    (patch,), _, _ = await propose(turns, shell_env={"GIVEN": "given"})
+    assert patch.updates == {"prompt": "given unset\n"}
+
+
 async def test_nothing_submitted_or_nothing_changed_proposes_nothing():
     assert (await propose(["I see nothing to change."]))[0] == []
     unchanged = [write("p.txt", "Be helpful."), submit(prompt="p.txt"), "Same."]

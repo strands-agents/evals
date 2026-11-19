@@ -11,6 +11,7 @@ import math
 import os
 import re
 import select
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -70,6 +71,20 @@ _DEFAULT_MODEL_ID = "global.anthropic.claude-sonnet-5-5"  # run at temperature 1
 # A tool result longer than this is cut, with a note telling the agent to read less at once.
 _MAX_TOOL_OUTPUT = 100_000
 
+# What the shell takes from this process's environment: what bash, coreutils, grep and python need to find programs
+# and read text in the user's locale. The model is called from this process, so the shell needs no credentials.
+_INHERITED_ENV = (
+    "PATH",
+    "LANG",
+    "LC_ALL",
+    "LC_COLLATE",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "LC_MONETARY",
+    "LC_NUMERIC",
+    "LC_TIME",
+)
+
 # Directories where other work on the machine keeps its files: a command that names a path in one of them, outside
 # the agent's own folders, is refused.
 _PRIVATE_DIRS = ("/tmp", "/private", "/home", "/Users", "/root", "/var", "/mnt", "/opt", "/srv", "/data", "/run/user")
@@ -112,9 +127,12 @@ class Reflection(Proposer):
     `DIGEST.md`; of each case only its input, no expected field or metadata) and every measured version
     (`request.candidates`: a versions folder plus a ranked table, re-ranked by the latest refit on every
     request), then rewrites the block's texts in full. The versions table is its only history; it keeps no
-    record of its own attempts. Its tools are a shell confined by a path check to its own folders (not a
-    sandbox: it runs with this process's environment and network) and a submit tool; tool output is cut at
-    100,000 characters.
+    record of its own attempts. Its tools are a shell confined by a path check to its own folders and a submit
+    tool; tool output is cut at 100,000 characters. The shell's environment holds only `PATH`, the locale
+    variables (`LANG`, `LC_ALL` and the six POSIX `LC_` categories) and `shell_env`, with `HOME` and `TMPDIR`
+    set to its working folder. It is not a sandbox: it has this machine's network, it can read every file and
+    process this user can (another process's environment included), and a path built at run time
+    (`$(dirname "$HOME")`) passes the path check.
 
     Which of the parent's train trials went well: each trial gets a reward in [0, 1] from the goal's
     bounded metrics (an `agent_failure` gets 0), and a trial succeeds when reward >= `success_threshold`;
@@ -157,6 +175,7 @@ class Reflection(Proposer):
         system_prompt: str | None = None,
         success_threshold: float | None = 0.5,
         over_limit_retries: int = 2,
+        shell_env: Mapping[str, str] | None = None,
     ):
         """Configure the proposer agent.
 
@@ -168,11 +187,18 @@ class Reflection(Proposer):
             success_threshold: Reward a trial needs to count as a success; None splits by rank.
             over_limit_retries: How many times a submission with a value over its `size_cap` is sent back to be
                 shortened; 0 drops it at once.
+            shell_env: Variables added to the shell's environment, which otherwise holds only `PATH` and the
+                locale variables from this process's environment; it may replace those. `HOME` and `TMPDIR` are
+                always the working folder, and `OLDPWD` is never set. Copied here: `shell_env=os.environ` gives
+                the shell this process's environment as it is now, credentials included. To pass a few through:
+                `{k: os.environ[k] for k in ("LD_LIBRARY_PATH",) if k in os.environ}`.
 
         Raises:
             TypeError: `model` is not a `Model`, a model id, or None, `system_prompt` is not a string,
-                `success_threshold` is not a number or None, or `over_limit_retries` is not an integer.
-            ValueError: `success_threshold` is outside [0, 1], or `over_limit_retries` is below 0.
+                `success_threshold` is not a number or None, `over_limit_retries` is not an integer, or
+                `shell_env` is not a mapping of strings to strings.
+            ValueError: `success_threshold` is outside [0, 1], `over_limit_retries` is below 0, a `shell_env` name
+                holds `=` or NUL or a value holds NUL, or the `PATH` in `shell_env` has no `bash` on it.
         """
         if model is not None and not isinstance(model, (Model, str)):
             raise TypeError(f"Reflection(model=...) takes a Model, a model id, or None, not {model!r}")
@@ -189,11 +215,32 @@ class Reflection(Proposer):
             raise TypeError(f"Reflection(over_limit_retries=...) must be an integer, not {over_limit_retries!r}")
         if over_limit_retries < 0:
             raise ValueError(f"Reflection(over_limit_retries=...) must be 0 or more, not {over_limit_retries!r}")
+        # Error messages name a variable, never print a value: values may be secrets.
+        if shell_env is not None and not isinstance(shell_env, Mapping):
+            raise TypeError(f"Reflection(shell_env=...) must be a mapping or None, not a {type(shell_env).__name__}")
+        env = dict(shell_env or {})
+        for name, value in env.items():
+            if not isinstance(name, str):
+                raise TypeError(f"Reflection(shell_env=...) takes string names, not a {type(name).__name__}")
+            shown = name.partition("=")[0].partition("\0")[0]  # of a `NAME=value` key, the name only
+            if not isinstance(value, str):
+                raise TypeError(
+                    f"Reflection(shell_env=...) takes string values; {shown!r} maps to a {type(value).__name__}"
+                )
+            if "=" in name or "\0" in name or "\0" in value:
+                raise ValueError(
+                    f"Reflection(shell_env=...): {shown!r} can't be passed (a name holds no `=` or NUL, a value no NUL)"
+                )
+        if "PATH" in env and shutil.which("bash", path=env["PATH"]) is None:
+            raise ValueError(
+                "Reflection(shell_env=...) has a PATH with no bash on it: the shell runs each command in bash"
+            )
         self.model = model
         self.system_prompt = system_prompt
         self.success_threshold = success_threshold
         self.over_limit_retries = over_limit_retries
         self.refused: list[dict[str, Any]] = []
+        self._shell_env = env
         self._warned = False
 
     async def propose(self, request: ProposalRequest) -> list[Patch]:
@@ -216,10 +263,12 @@ class Reflection(Proposer):
         if not self._warned:
             self._warned = True
             warnings.warn(
-                "Reflection runs model-written shell commands on this machine, with this process's environment "
-                "(credentials included) and network. Its path check guards a cooperative model's mistakes and is "
-                "not a sandbox, and trace text can carry prompt injection. Run the optimizer in a container or VM "
-                "without credentials it doesn't need.",
+                "Reflection runs model-written shell commands on this machine. Their environment holds only PATH, "
+                "the locale variables and Reflection(shell_env=...), but they have this machine's network (a cloud "
+                "host's metadata service included) and can read every file and process this user can (credential "
+                "files and other processes' environments included). Reflection's path check guards a cooperative "
+                "model's mistakes and is not a sandbox, and trace text can carry prompt injection. Run the optimizer "
+                "in a container or VM without credentials it doesn't need.",
                 UserWarning,
                 stacklevel=1,  # here: `propose` is a coroutine, so the frame above it is the event loop's
             )
@@ -292,7 +341,7 @@ class Reflection(Proposer):
                 model=self._model(),
                 system_prompt=prompt + SUBMIT_INSTRUCTIONS,
                 tools=[
-                    _confined_shell(work, [traces, versions, work], refused, root, running),
+                    _confined_shell(work, [traces, versions, work], refused, root, running, shell_env=self._shell_env),
                     _submit_tool(work, submitted, parent, rejected, caps),
                 ],
                 # Strands' 40-message window, trimmed at the end of each call and on overflow, with the task
@@ -425,7 +474,8 @@ class Reflection(Proposer):
 
     def config(self) -> dict[str, Any]:
         """Model id, the sha256 of the system prompt (None for the default prompt), `success_threshold`, and
-        `over_limit_retries`."""
+        `over_limit_retries`. `shell_env` is left out (its values may be secrets), so a run may resume with a
+        different one."""
         if isinstance(self.model, str):
             model_id: str | None = self.model
         elif self.model is None:
@@ -499,16 +549,24 @@ def _confined_shell(
     refused: list[dict[str, Any]],
     home: str | None = None,
     running: set[subprocess.Popen[bytes]] | None = None,
+    *,
+    shell_env: Mapping[str, str] | None = None,
 ) -> AgentTool:
-    """A shell tool that runs each command with `bash -c` in `work` (also `HOME` and `TMPDIR`), with this process's
-    environment otherwise and no standard input, and refuses a command naming a path outside `roots` and `home`
-    (`_outside`), appending it to `refused`.
+    """A shell tool that runs each command with `bash -c` in `work` (also `HOME` and `TMPDIR`) and no standard input,
+    and refuses a command naming a path outside `roots` and `home` (`_outside`), appending it to `refused`. Its
+    environment, read when the tool is built, is `_INHERITED_ENV` from this process's environment, then
+    `shell_env`, then `HOME` and `TMPDIR`, with no `OLDPWD`: `_outside` reads `~` as `work` and resolves `~-` from
+    it, while bash expands them to `HOME` and to an inherited `OLDPWD`.
 
     Each command runs in its own process group, killed when `bash` exits or its timeout passes, so a process it left
     in the background neither holds the call open until the timeout nor outlives it; `bash` is reaped only after, so
     its process id (the group's) can't be reused first. While it runs it is in `running`, for the caller to kill when
     the call ends early (cancelled). Output that isn't valid UTF-8 (a `head -c` cutting a character) is decoded with
     replacement characters."""
+    env = {name: os.environ[name] for name in _INHERITED_ENV if name in os.environ}
+    env.update(shell_env or {})
+    env.pop("OLDPWD", None)
+    env.update(HOME=work, TMPDIR=work)
 
     @tool
     def shell(command: str, timeout: int = 300) -> str:
@@ -533,7 +591,6 @@ def _confined_shell(
                 f"folders and write only in your working folder, {work}.{shared}"
             )
         timeout = min(max(timeout, 1), 3600)
-        env = {**os.environ, "HOME": work, "TMPDIR": work}
         # Files, not pipes: a background process holding a pipe open would keep the call waiting until it exits.
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
             process = subprocess.Popen(
