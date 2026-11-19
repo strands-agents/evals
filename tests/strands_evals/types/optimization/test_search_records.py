@@ -119,6 +119,7 @@ def _summary(violations):
         term_values=[0.5],
         rank=1,
         estimates={},
+        adjusted_means={},
         violations=violations,
         is_feasible=False,
         is_eligible=True,

@@ -345,6 +345,28 @@ def test_choose_finalists_expects_the_train_measurement_rate_on_validation():
     assert _choose(train, FLOOR, 2, n_validation_cases=30)[0] == ["a", "b"]
 
 
+def test_choose_finalists_judges_the_margin_on_the_adjusted_mean_without_a_fit():
+    # "b" leaves the evaluator nothing to judge on the hard cases t3-t5, where the others drop 0.2. On its judged cases
+    # alone (mean 0.95) it would clear the floor with margin and go first; with those cases filled in it is judged at
+    # 0.85, as "a" is, and neither has margin, so the ranking's order (the cheaper "a" first) stands.
+    criteria = Criteria(Minimize(TOKENS), [AtLeast(HELP, 0.82)], REGISTRY, feasibility_threshold=0.9)
+    train = {
+        "0": _train_scores("0", {f"t{i}": {HELP: 0.4 if i < 3 else 0.2, TOKENS: 50.0} for i in range(6)}, criteria),
+        "a": _train_scores("a", {f"t{i}": {HELP: 0.95 if i < 3 else 0.75, TOKENS: 100.0} for i in range(6)}, criteria),
+        "b": _train_scores(
+            "b",
+            {
+                f"t{i}": {HELP: h, TOKENS: 200.0} if h is not None else {TOKENS: 200.0}
+                for i, h in enumerate([0.9, 1.0, 0.95, None, None, None])
+            },
+            criteria,
+        ),
+    }
+    finalists, ranking, _ = _choose(train, criteria, 1)
+    assert ranking == ["a", "b", "0"]
+    assert finalists == ["a"]
+
+
 def test_choose_finalists_with_one_train_case_keeps_the_ranking_order():
     train = {
         c: _train_scores(c, {"t0": {HELP: helps[0], TOKENS: FLOOR_TOKENS[c]}}, FLOOR) for c, helps in FLOOR_HELP.items()
@@ -546,6 +568,48 @@ def test_pick_tie_without_trial_counts_goes_to_the_baseline():
         rule=Mean(),
     )
     assert report.champion_id == "0"
+
+
+@pytest.mark.parametrize("twins", [0, 1, 2])
+def test_pick_by_measured_means_fills_a_finalist_s_n_a_case_and_the_baseline_wins_the_tie(twins):
+    # Finalist "a" matches the baseline on v1 and leaves the evaluator nothing to judge on v2, where the baseline
+    # (and each twin, a finalist equal to it) scored 0.1; on plain means "a" would ship (0.7 against 0.4). Filled
+    # in, it ties the baseline exactly, whatever the number of other candidates on the case.
+    criteria = Criteria(Maximize(HELP), [], REGISTRY)
+
+    def scores(candidate_id, help_by_case):
+        judged = {c: v for c, v in help_by_case.items() if v is not None}
+        return CandidateScores(
+            candidate_id=candidate_id,
+            objective_by_case=judged,
+            metrics_by_case={c: {HELP: v} for c, v in judged.items()},
+            unavailable={},
+            objective_by_run={c: [v] for c, v in help_by_case.items()},
+            metrics_by_run={c: {HELP: [v]} for c, v in help_by_case.items()},
+            objective=sum(judged.values()) / len(judged),
+            is_eligible=True,
+            failures=0,
+        )
+
+    validation = {
+        "0": scores("0", {"v1": 0.7, "v2": 0.1}),
+        "a": scores("a", {"v1": 0.7, "v2": None}),
+        **{f"t{i}": scores(f"t{i}", {"v1": 0.7, "v2": 0.1}) for i in range(twins)},
+    }
+    report = pick(
+        baseline_id="0",
+        finalist_ids=[c for c in validation if c != "0"],
+        validation=validation,
+        fit=None,
+        values={c: {} for c in validation},
+        trial_counts={c: 2 for c in validation},
+        completed={c: 2 for c in validation},
+        criteria=criteria,
+        rule=Mean(),
+    )
+    assert report.objectives["a"] == report.objectives["0"]
+    assert report.champion_id == "0"
+    assert report.adjusted_means["a"] == {HELP: report.objectives["0"]} == report.adjusted_means["0"]
 
 
 def test_pick_under_pareto_a_gain_tie_with_another_trade_off_ships_the_baseline():
