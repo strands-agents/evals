@@ -1,4 +1,5 @@
-"""`strands-evals optimize` — search for a better agent configuration, or resume a killed search."""
+"""`strands-evals optimize` — search for a better agent configuration, or resume a search that was killed or
+stopped on a proposer error."""
 
 from __future__ import annotations
 
@@ -221,9 +222,9 @@ def _check_agent_flags(args: argparse.Namespace) -> str | None:
 
 
 def _resume(args: argparse.Namespace) -> int:
-    """`optimize resume`: print a finished run's saved result, or rebuild a killed run's inputs from `cli.json`,
-    reopen it with `Optimizer.resume` in its working directory, and print the result. Returns the exit code, as
-    `_run`'s."""
+    """`optimize resume`: print a finished run's saved result, or rebuild the inputs of a run that was killed or
+    stopped on a proposer error from `cli.json`, reopen it with `Optimizer.resume` in its working directory, and
+    print the result. Returns the exit code, as `_run`'s."""
     try:
         from ...optimization import Budget, Optimizer, ProposerError
         from .. import _optimize
@@ -479,7 +480,10 @@ def add_subparser(subparsers: argparse._SubParsersAction, parent: argparse.Argum
         "optimize",
         parents=[parent],
         help="search for a better agent configuration, or resume a search",
-        description="Search for a better configuration of a tunable agent, or resume a killed search.",
+        description=(
+            "Search for a better configuration of a tunable agent, or resume a search that was killed or "
+            "stopped on a proposer error."
+        ),
     )
     commands = parser.add_subparsers(dest="optimize_command", metavar="SUBCOMMAND")
     commands.required = True
@@ -488,12 +492,19 @@ def add_subparser(subparsers: argparse._SubParsersAction, parent: argparse.Argum
     resume = commands.add_parser(
         "resume",
         parents=[parent],
-        help="continue a killed run, or print a finished run's result",
-        description="Rebuild a run's inputs from its cli.json and continue it; a finished run prints its result.",
+        help="continue a run that was killed or stopped on an error, or print a finished run's result",
+        description=(
+            "Rebuild a run's inputs from its cli.json and continue it, whether it was killed or stopped on a "
+            "proposer error; a finished run prints its result."
+        ),
     )
     resume.add_argument("run_dir", metavar="RUN_DIR", help="the run folder `optimize run` printed")
     resume.add_argument(
-        "--max-rollouts", type=int, default=None, metavar="N", help="a new budget for a killed run (default: the run's)"
+        "--max-rollouts",
+        type=int,
+        default=None,
+        metavar="N",
+        help="a new budget for the continued run (default: the run's)",
     )
     resume.add_argument(
         "--max-iterations", type=int, default=None, metavar="N", help="a new iteration limit (default: the run's)"
