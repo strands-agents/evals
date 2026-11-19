@@ -448,6 +448,46 @@ def test_pick_ships_the_baseline_when_no_finalist_meets_the_constraint():
     assert "baseline" in report.reason
 
 
+class _PredictingFit:
+    """A validation fit predicting every metric at `estimate` for every candidate."""
+
+    flagged: list[str] = []
+    diagnostics: dict = {}
+
+    def __init__(self, ids, metrics, estimate):
+        self.candidates = frozenset(ids)
+        self.metrics = dict.fromkeys(metrics)
+        self._estimate = estimate
+
+    def estimates(self, values, candidate=None):
+        return dict.fromkeys(self.metrics, self._estimate)
+
+
+def test_pick_rejects_a_finalist_whose_constraint_was_never_measured_on_validation():
+    grounded = "Grounded"
+    criteria = Criteria(
+        Maximize(HELP), [AtLeast(grounded, 0.5)], MetricRegistry({HELP: (0.0, 1.0), grounded: (0.0, 1.0)})
+    )
+    baseline = _val_scores("0", 0.5)
+    baseline = baseline.model_copy(
+        update={"metrics_by_case": {c: {**m, grounded: 1.0} for c, m in baseline.metrics_by_case.items()}}
+    )
+    validation = {"0": baseline, "a": _val_scores("a", 0.9)}  # Grounded N/A on every case of "a"
+    report = pick(
+        baseline_id="0",
+        finalist_ids=["a"],
+        validation=validation,
+        fit=_PredictingFit(validation, [HELP, grounded], Estimate(mean=0.9, sd=0.01)),
+        values={"0": {}, "a": {}},
+        trial_counts={"0": 2, "a": 2},
+        completed={"0": 2, "a": 2},
+        criteria=criteria,
+        rule=Mean(),
+    )
+    assert report.champion_id == "0"
+    assert report.infeasible == {"a": "Grounded >= 0.5: never measured"}
+
+
 def test_pick_reports_fewer_than_two_eligible_through_problem():
     criteria = Criteria(Maximize(HELP), [], REGISTRY)
     validation = {"0": _val_scores("0", 0.5), "a": _val_scores("a", 0.0, eligible=False)}

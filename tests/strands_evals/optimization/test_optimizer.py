@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import math
 import shutil
 import threading
 import warnings
@@ -1258,6 +1259,51 @@ async def test_the_finalists_are_the_candidates_meeting_a_constraint_with_margin
     finalists = next(e for e in _events(optimizer) if e["event"] == "finalists")
     assert finalists["candidate_ids"] == [by_temperature[1.0]]
     assert result.best.values["temperature"] == 1.0
+
+
+@pytest.mark.parametrize("measured_means", [False, True], ids=["fit", "measured-means"])
+async def test_a_candidate_whose_constraint_is_never_measured_cannot_ship(tmp_path, measured_means):
+    experiment = _experiment(n=14, evaluators=[Temperature()])
+    split = Split(train=experiment.cases[:8], validation=experiment.cases[8:14])
+
+    class Grounded(Evaluator):
+        """Met by every temperature but 1.0, which it finds nothing to judge in, on every case."""
+
+        async def evaluate_async(self, evaluation_case):
+            if evaluation_case.actual_output == "1.0":
+                return [EvaluationOutput(score=0.0, test_pass=True, reason="n/a", label=NOT_APPLICABLE)]
+            return [EvaluationOutput(score=1.0, test_pass=True, reason="g")]
+
+    blocks = [Block(Scripted({"temperature": 0.5}, {"temperature": 1.0}), "temperature"), Block(Scripted(), "manager")]
+    optimizer = _optimizer(
+        Experiment(cases=experiment.cases, evaluators=[Temperature(), Grounded(name="Grounded")]),
+        rollout_fn=_temperature_rollout,
+        search=Search(blocks, schedule=Joint()),
+        max_workers=64,
+        proposals_per_iteration=1,
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=2),
+        objective=Maximize("Temperature"),
+        constraints=[AtLeast("Grounded", 0.5)],
+        split=split,
+        **({"score_model": _Sequence()} if measured_means else {}),  # a model that never fits: measured means
+    )
+    result = await optimizer.run_async()
+    never = next(c.id for c in result.candidates.values() if c.values["temperature"] == 1.0)
+    assert result.best.values["temperature"] == 0.5
+    assert result.validation.infeasible[never] == "Grounded >= 0.5: never measured"
+    (row,) = [r for r in result.to_rows("proposal") if r["candidate_id"] == never]
+    assert row["is_from_fit"] == (not measured_means)
+    assert row["unmet_constraints"] == ["Grounded >= 0.5: never measured"] and row["p_met.Grounded >= 0.5"] is None
+    events = _events(optimizer)
+    (observed,) = [e for e in events if e["event"] == "observe" and e["candidate_id"] == never]
+    assert observed["observation"]["reason"] == "Grounded >= 0.5: never measured"
+    (shared,) = [e for e in events if e["event"] == "evidence" and e["evidence"]["candidate_id"] == never]
+    assert observed["observation"]["violations"] == shared["evidence"]["violations"] == [None]  # infinite, in JSON
+    state = load_state(RunDirectory.open(optimizer._run.root), config=optimizer._config())
+    for event in (observed, shared):
+        (replayed,) = [f for f in state.feedback[event["block"]] if f.candidate_id == never]
+        assert replayed.violations == [math.inf]
 
 
 async def test_validation_and_test_runs_never_reach_the_search(tmp_path):
