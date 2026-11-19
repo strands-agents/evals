@@ -205,6 +205,22 @@ ok(p.$('#cmp-with').hidden, 'and with every report compared there is nothing lef
     'and each mark says which it was');
 }
 
+// ── two rows of one report that share a case name and an evaluator ──
+{
+  const q = await page();
+  await q.openFolder({
+    'old/report.json': report(0.5, [['twin', 'X', 1, 'pass'], ['twin', 'X', 0, 'fail']], '2026-03-01T09:00:00Z'),
+    'new/report.json': report(1, [['twin', 'X', 1, 'pass'], ['twin', 'X', 1, 'pass']], '2026-03-02T09:00:00Z'),
+  });
+  await q.click(box(q, 'old/report.json'));
+  await q.click(box(q, 'new/report.json'));
+  await q.click('#cmp-go');
+  ok(q.text('#cmp-ends-legend') === '1 now pass0 now fail1 kept their verdict',
+    'they are matched in the order the reports hold them, each against its own', q.text('#cmp-ends-legend'));
+  ok(q.text('#cmp-grid-cap').startsWith('1 of 2 rows changed verdict') && q.$$('#cmp-grid .cell').length === 4,
+    'and the grid draws both', `${q.text('#cmp-grid-cap')} ${q.$$('#cmp-grid .cell').length}`);
+}
+
 // ── reports that share no rows ──
 {
   const q = await page();
