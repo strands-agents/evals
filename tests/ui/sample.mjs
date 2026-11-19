@@ -100,6 +100,18 @@ await click('#revert');
 
 }
 
+// ── served with --read-only ──
+{
+  const shut = await served(SAMPLE, { readOnly: true });
+  ok(!shut.$('#read-only').hidden && shut.text('#read-only') === 'read-only', 'a server started with --read-only says so over the lists',
+    shut.text('#folder'));
+  await shut.openExperiment();
+  await shut.type('#form [data-k="input"]', 'an edit with nowhere to go');
+  ok(shut.text('#exp-sub') === 'Read-only: the server was started with --read-only.' && shut.text('#dirty') === '1 unsaved change'
+    && shut.$('#save').disabled && shut.$('#save').title === 'the server was started with --read-only' && shut.$('#review-case').disabled,
+  'and the editor says why an edit cannot be saved', `${shut.text('#exp-sub')} ${shut.text('#dirty')}`);
+}
+
 // ── opened without its server ──
 {
   const lone = await page();
@@ -107,6 +119,10 @@ await click('#revert');
     + 'answering it. Run strands-evals ui FOLDER and open the link it prints.' && !!lone.$('#missing svg.frog'),
   'a page with no server behind it says how to start one', lone.text('#missing'));
   ok(lone.$('.app').classList.contains('unserved') && !lone.$('#reports-rows tr.row'), 'and shows nothing else');
+  /* What a browser does with a request from a file: refused before anything is sent. */
+  const disk = await page({ url: 'file:///home/someone/ui.html', fetchImpl: async () => { throw new TypeError('Failed to fetch'); } });
+  ok(disk.view() === 'v-missing' && /Run strands-evals ui FOLDER/.test(disk.text('#missing')) && disk.$('.app').dataset.ready === '1',
+    'and so does one opened from disk', disk.text('#missing'));
 }
 
 done();
