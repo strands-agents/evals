@@ -6,12 +6,27 @@ const gen = spawnSync(process.env.PYTHON || 'python3',
   [new URL('./fixtures/make_optimizer_run.py', import.meta.url).pathname],
   { stdio: ['ignore', 'ignore', 'inherit'] });
 if (gen.status !== 0) {
-  console.error('could not write fixtures/optimizer-run, which the optimization, server and parity suites read.'
+  console.error('could not write fixtures/optimizer-run, which the optimization, server and markdown suites read.'
     + '\nIt needs a Python 3; override the interpreter with PYTHON=/path/to/python npm test.');
   process.exit(1);
 }
 
-const suites = ['standalone.mjs', 'fileorigin.mjs', 'extras.mjs', 'optimization.mjs', 'server.mjs', 'parity.mjs', 'guide.mjs', 'charts.mjs', 'live.mjs'];
+const suites = [
+  'sample.mjs',
+  'extras.mjs',
+  'optimization.mjs',
+  'server.mjs',
+  'guide.mjs',
+  'charts.mjs',
+  'live.mjs',
+  'fidelity.mjs',
+  'compare.mjs',
+  'lenses.mjs',
+  'sessions.mjs',
+  'markdown.mjs',
+  'editor.mjs',
+  'empty.mjs',
+];
 let failed = 0;
 
 for (const suite of suites) {

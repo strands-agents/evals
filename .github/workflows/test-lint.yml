@@ -72,6 +72,41 @@ jobs:
         id: tests
         run: hatch test tests --cover
         continue-on-error: false
+  ui-test:
+    name: UI Tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: tests/ui/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          pip install --no-cache-dir .
+          npm ci --prefix tests/ui
+
+      # The page suites run the real assets in jsdom, and three of them start the real server.
+      - name: Run UI tests
+        run: npm test --prefix tests/ui
+        env:
+          PYTHON: python
   lint:
     name: Lint
     runs-on: ubuntu-latest

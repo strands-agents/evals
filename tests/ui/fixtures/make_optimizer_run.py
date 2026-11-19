@@ -1,15 +1,13 @@
 """Write a synthetic optimizer run directory for the UI tests.
 
-Nothing writes `events.jsonl` yet — `EventLog.append` and every `RunDirectory` method on
-`workstream/optimizer-workflow` still raise `NotImplementedError`. So the UI's reader is coded
-against the schema documented in `optimization/record/events.py`, and this is the fixture that
-stands in for a real run until the record layer lands. Regenerate with:
+Nothing writes `events.jsonl` yet: the record layer in `optimization/record` still raises
+`NotImplementedError`. The page's reader is coded against the schema documented in
+`optimization/record/events.py`, and this fixture stands in for a real run. Regenerate with:
 
     python tests/ui/fixtures/make_optimizer_run.py
 
-Everything here is deterministic: fixed timestamps, fixed scores, no RNG. The story is a run that
-improves in fits and starts, because a monotonically improving run would not exercise the
-best-so-far line, and one with no gaps would not exercise an objective of None.
+Deterministic: fixed timestamps, fixed scores, no RNG. The run improves in fits and starts, so that
+the best-so-far line and an objective of None are both exercised.
 """
 
 from __future__ import annotations
@@ -115,9 +113,8 @@ PLAN = [
         [],
         "Proposed a tool that is not in the registry, so the patch never became a candidate.",
     ),
-    # Deliberately the highest objective in the run, and infeasible. A best-so-far line that
-    # counts it is wrong: a candidate that breaks a constraint cannot ship, so it can never be
-    # the best. Scoring it below the real best would let that mistake pass unnoticed.
+    # The highest objective in the run, and infeasible: a best-so-far line that counts it is wrong,
+    # and a lower score here would let that mistake pass.
     (
         "c8",
         "c6",
@@ -156,11 +153,8 @@ PLAN = [
 # A couple of trials fail, so the status breakdown is not a single bar.
 FAILED_TRIALS = {("c2", "train_case_05"): "agent_failure", ("c5", "train_case_03"): "evaluator_invalid"}
 
-# The baseline's full configuration, and what each candidate changes about its parent's. A
-# candidate's `values` is the whole typed configuration, not a patch, so these are composed down
-# the lineage: c10's prompt is its own, but its tool descriptions are still c0's. The prompts are
-# real multi-line text because that is what an instruction optimizer actually tunes, and a diff of
-# one is a block of lines rather than a `was → now` on a single line.
+# The baseline's whole configuration, and what each candidate changes about its parent's. A
+# candidate's `values` is whole, not a patch, so `compose_values` applies these down the lineage.
 BASELINE_VALUES = {
     "system_prompt": """You are the support assistant for Northwind Outfitters.
 
@@ -270,18 +264,15 @@ Give the same answer to the same question every time. Do not improvise policy.""
 UPDATES["c9"]["system_prompt"] = UPDATES["c6"]["system_prompt"]
 
 
-# The conversations, by hash, as `transcripts/<hash>.json` holds them. Filled in by `transcript()`
-# and written at the end of `main`, which is also where the one deliberately left out is dropped.
+# The conversations by hash, as `transcripts/<hash>.json` holds them. `transcript()` fills it.
 DOCUMENTS: dict[str, dict | list] = {}
 
-# One trial's transcript is the rollout's own list of Strands messages rather than a recorded
-# session. Both shapes are real, they are read completely differently, and the page has to decide
-# which it is from the document rather than from the `format` the pointer claims.
+# One trial's transcript is a list of Strands messages, not a recorded session. The page must tell
+# the two apart from the document, not from the `format` the pointer claims.
 AS_MESSAGE_LIST = ("c0", "train_case_02", "train")
 
-# One pointer names a file this generator does not write. A run directory can genuinely be missing
-# a transcript — copied without it, or pruned — and "the file is not there" is a different thing to
-# say than "this trial recorded no transcript", which the agent-failure trial below says instead.
+# One pointer names a file `main` does not write: a run copied without a transcript. That is not
+# the same as a trial that recorded none, which the agent-failure trial is.
 LEFT_UNWRITTEN = ("c6", "val_case_02", "validation")
 
 
@@ -349,8 +340,7 @@ def order_of(case: str) -> str:
 def transcript(cid: str, case: str, split: str, output: str | None = None) -> dict[str, str] | None:
     """The `{hash, format}` pointer for one trial, registering the document it points at.
 
-    The hash is the first 16 hex of a sha256, as `RunDirectory` names transcript files. Not
-    `hash()`: that is salted per process, which would make this fixture differ run to run.
+    The hash is the first 16 hex of a sha256, as `RunDirectory` names transcript files.
     """
     key = (cid, case, split)
     digest = hashlib.sha256("/".join(key).encode()).hexdigest()
@@ -360,12 +350,7 @@ def transcript(cid: str, case: str, split: str, output: str | None = None) -> di
 
 
 def session(digest: str, cid: str, case: str, output: str | None) -> dict:
-    """A recorded session: traces of spans, which is what `Session` serializes to.
-
-    Three span kinds, because each says a different thing happened — the agent being invoked, a
-    model call, a tool being run — and rendering them all as "a message" would print a tool's
-    result as though the model had said it out loud.
-    """
+    """A recorded session as `Session` serializes one, with a span of each kind the page reads differently."""
     sid = digest[:32]
     asked = conversation(case)[0]
     spans = [
@@ -402,11 +387,7 @@ def session(digest: str, cid: str, case: str, output: str | None) -> dict:
 
 
 def message_list(cid: str, case: str, output: str | None) -> list[dict]:
-    """The other shape: Strands messages, with the blocks a rollout actually records.
-
-    Reasoning, a tool call and its result, and per-message usage — none of which a span carries in
-    the same place, which is the whole reason the page cannot read one shape as the other.
-    """
+    """The other shape: Strands messages, with reasoning, a tool call and its result, and per-message usage."""
     return [
         {"role": "user", "content": [{"text": conversation(case)[0]}]},
         {
@@ -459,7 +440,9 @@ def case_scores(objective: float, cases: list[str]) -> dict[str, float]:
 
 def judged(score: float) -> dict:
     """One evaluator's `EvaluationOutput`, as a trial record serializes it."""
-    return {"score": score, "test_pass": score >= 0.5, "reason": "judged", "label": None, "metadata": None}
+    passed = score >= 0.5
+    reason = "The reply answers what was asked." if passed else "The reply leaves the customer to ask again."
+    return {"score": score, "test_pass": passed, "reason": reason, "label": None, "metadata": None}
 
 
 def text_default(body: str) -> dict:
@@ -467,10 +450,8 @@ def text_default(body: str) -> dict:
     return {"sha256": hashlib.sha256(body.encode()).hexdigest(), "length": len(body)}
 
 
-# The declared space, one `ParamInfo` per flat key (`optimization/declaration/space.py`). Each kind
-# is here once — a text key with a cap, a float, an int with a step, a text key without a cap — and
-# the last two are the point of the table: a choice the search never touched, and a key that only
-# exists under one of its options, which is why "0 of 11 candidates" is a finding and not a gap.
+# The declared space, one `ParamInfo` per flat key (`optimization/declaration/space.py`), each kind
+# once. The last two are a choice the search never touched and a key that exists under one option only.
 SPACE = [
     {
         "key": "system_prompt",
@@ -559,11 +540,9 @@ SPACE = [
     },
 ]
 
-# `effects.json`, as `RunDirectory.save_effects` writes it: each level's change from its key's
-# reference level, with the 90% interval and the probability the metric went *up*. Written so every
-# branch of the plot is exercised — a settled effect and two the data do not settle, a goal that
-# wants less (where a rise is a loss), a key left out of the model, and one goal whose fit is
-# flagged while the other's is not.
+# `effects.json`, as `RunDirectory.save_effects` writes it. It holds one of everything the plot
+# branches on: a settled effect and two unsettled, a goal that wants less, a key left out of the
+# model, and a goal whose fit is flagged.
 EFFECTS = {
     "effects": [
         {
@@ -668,8 +647,8 @@ EFFECTS = {
 }
 
 
-def main() -> None:
-    OUT.mkdir(parents=True, exist_ok=True)
+def main(out: Path = OUT) -> None:
+    out.mkdir(parents=True, exist_ok=True)
     clock = [START]
 
     def stamp(seconds: int = 7) -> str:
@@ -700,7 +679,7 @@ def main() -> None:
         "agent_failure_score": "worst",
         "feasibility_threshold": 0.9,
     }
-    (OUT / "run.json").write_text(json.dumps(config, indent=2) + "\n")
+    (out / "run.json").write_text(json.dumps(config, indent=2) + "\n")
     emit("config", 0, **config)
 
     by_iteration: dict[int, list[dict]] = {}
@@ -732,7 +711,7 @@ def main() -> None:
             cid, outcome = p["candidate_id"], p["outcome"]
 
             if outcome == "invalid":
-                # No candidate exists, so there is no propose event — only the invalid one.
+                # No candidate exists, so there is an invalid event and no propose event.
                 emit(
                     "invalid",
                     iteration,
@@ -792,17 +771,14 @@ def main() -> None:
                     "error_type": "ToolError" if failed else None,
                     "error": "the refund tool timed out" if failed else None,
                     "attempts": 2 if failed else 1,
-                    # Only the retried trial has any, and it is the half of "attempts: 2" worth
-                    # reading: what went wrong the first time.
+                    # What went wrong the first time, on the one trial that was retried.
                     "previous_attempts": [{"status": "agent_failure", "error_type": "ToolError"}] if failed else [],
                     "output": output,
-                    # The agent never finished, so there was no trajectory to write — which is a
-                    # different thing from a pointer whose file is missing.
+                    # The agent never finished, so there is no pointer at all.
                     "transcript": None if failed else transcript(cid, case, "train", output),
                     "interactions": None,
                     "environment_state": None,
-                    # An evaluator that raised is not an evaluator that scored zero: the trial
-                    # completed and nothing was judged on it.
+                    # The evaluator raised: the trial completed and nothing was judged on it.
                     "evaluations": {} if unjudged else {"Helpfulness": judged(per_case[case])},
                     "details": {},
                     "evaluator_errors": (
@@ -1008,11 +984,10 @@ def main() -> None:
     emit("stop", 5, reason="iterations", message="reached max_iterations=6")
 
     lines = "".join(json.dumps(e) + "\n" for e in events)
-    (OUT / "events.jsonl").write_text(lines)
+    (out / "events.jsonl").write_text(lines)
 
-    # `transcripts/<hash>.json`, one per distinct trajectory, as the run directory holds them.
-    # Rewritten from scratch so a hash that no trial points at any more does not linger.
-    held = OUT / "transcripts"
+    # Rewritten from scratch, so a hash no trial points at any more does not linger.
+    held = out / "transcripts"
     for stale in sorted(held.glob("*.json")) if held.is_dir() else []:
         stale.unlink()
     held.mkdir(exist_ok=True)
@@ -1023,12 +998,12 @@ def main() -> None:
         (held / f"{digest}.json").write_text(json.dumps(document, indent=1) + "\n")
 
     # `effects.json`, fitted after the fact, which is why a run can have a record and no model.
-    (OUT / "effects.json").write_text(json.dumps(EFFECTS, indent=2) + "\n")
+    (out / "effects.json").write_text(json.dumps(EFFECTS, indent=2) + "\n")
 
-    print(f"wrote {OUT}/events.jsonl: {len(events)} events, {len(lines)} bytes")
-    print(f"      {OUT}/run.json")
-    print(f"      {OUT}/transcripts/: {len(DOCUMENTS) - 1} files, 1 pointer left unwritten on purpose")
-    print(f"      {OUT}/effects.json: {len(EFFECTS['effects'])} estimates over {len(EFFECTS['goals'])} goals")
+    print(f"wrote {out}/events.jsonl: {len(events)} events, {len(lines)} bytes")
+    print(f"      {out}/run.json")
+    print(f"      {out}/transcripts/: {len(DOCUMENTS) - 1} files, 1 pointer left unwritten on purpose")
+    print(f"      {out}/effects.json: {len(EFFECTS['effects'])} estimates over {len(EFFECTS['goals'])} goals")
     print(f"      rollouts spent {spent} of {MAX_ROLLOUTS}, champion c10")
 
 

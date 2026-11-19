@@ -25,7 +25,7 @@
     <a class="navicon" href="https://github.com/strands-agents/evals" target="_blank" rel="noopener" aria-label="strands-agents/evals on GitHub">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 31.0442 29.9737" fill="none" aria-hidden="true"><path fill="currentColor" d="M13.1271 21.9088C9.12527 21.4253 6.30585 18.5545 6.30585 14.8376C6.30585 13.3266 6.85154 11.6948 7.76104 10.6069C7.36691 9.60966 7.42754 7.49433 7.88231 6.61799C9.09497 6.46688 10.7321 7.1015 11.7022 7.97783C12.8542 7.61521 14.0669 7.43389 15.5524 7.43389C17.0379 7.43389 18.2506 7.61521 19.342 7.94763C20.2818 7.1015 21.9492 6.46688 23.1619 6.61799C23.5863 7.43389 23.6469 9.54923 23.2528 10.5767C24.2229 11.725 24.7383 13.2662 24.7383 14.8376C24.7383 18.5545 21.9189 21.3649 17.8564 21.8786C18.8872 22.5434 19.5845 23.9939 19.5845 25.656V28.7989C19.5845 29.7053 20.3424 30.2191 21.2519 29.8564C26.7392 27.7712 31.0442 22.3017 31.0442 15.5326C31.0442 6.98062 24.0714 0 15.4917 0C6.91218 0 0 6.98059 0 15.5326C0 22.2412 4.27462 27.8015 10.0348 29.8867C10.8533 30.1888 11.6416 29.645 11.6416 28.8292V26.4115C11.2171 26.5928 10.6714 26.7137 10.1864 26.7137C8.18547 26.7137 7.00311 25.6258 6.15425 23.6011C5.82078 22.7852 5.45698 22.3017 4.75968 22.211C4.39589 22.1808 4.27462 22.0297 4.27462 21.8484C4.27462 21.4858 4.88095 21.2138 5.48728 21.2138C6.36648 21.2138 7.12438 21.7577 7.91261 22.8759C8.51894 23.7522 9.1556 24.1451 9.9135 24.1451C10.6714 24.1451 11.1565 23.8731 11.8538 23.178C12.3692 22.6643 12.7633 22.211 13.1271 21.9088Z"/></svg>
     </a>
-    <button class="guide-toggle" type="button" data-guide-toggle aria-label="Show or hide guidance" data-tip="Show or hide the guide at the top of each view.">Guide</button>
+    <button class="guide-toggle" type="button" data-guide-toggle aria-controls="guide" aria-expanded="false" data-tip="How to use the view you are on: what to do, what its terms mean, and where the docs say more.">Guide</button>
     <button class="theme-toggle" type="button" data-theme-toggle aria-label="Toggle color theme" data-tip="Switch between light and dark.">
       <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
       <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
@@ -37,21 +37,15 @@
     <div class="sgroup">
       <button class="sec on" data-sec="evals">Evals</button>
       <div class="tabs">
-        <button class="tab on" data-view="runs" data-sec="evals" data-tip="Experiments and reports found in this folder.">Runs</button>
-        <button class="tab" data-view="experiment" data-sec="evals" data-tip="The cases and evaluators of the open experiment. Edit and save them here.">Experiment</button>
-        <button class="tab" data-view="report" data-sec="evals" data-tip="How each case scored the last time the open experiment was run.">Report</button>
+        <button class="tab on" data-view="reports" data-sec="evals" data-tip="Every report found in this folder, whether or not an experiment file sits beside it.">Reports</button>
+        <button class="tab" data-view="experiments" data-sec="evals" data-tip="Every experiment file found in this folder, and the reports made from each.">Experiments</button>
+        <button class="tab" data-view="sessions" data-sec="evals" hidden data-tip="Every recorded session found in this folder, and what a diagnosis found in each.">Sessions</button>
       </div>
     </div>
     <div class="sgroup" id="sgroup-opt" hidden>
       <button class="sec" data-sec="optimization" id="sec-opt" hidden>Optimization</button>
       <div class="tabs">
         <button class="tab" data-view="opt-runs" data-sec="optimization" hidden data-tip="Optimizer runs found in this folder.">Runs</button>
-        <button class="tab" data-view="opt-setup" data-sec="optimization" hidden data-tip="What the open run was told to do.">Setup</button>
-        <button class="tab" data-view="opt-overview" data-sec="optimization" hidden data-tip="The result, and the configuration the run picked.">Overview</button>
-        <button class="tab" data-view="opt-progress" data-sec="optimization" hidden data-tip="How the search went, candidate by candidate.">Progress</button>
-        <button class="tab" data-view="opt-candidates" data-sec="optimization" hidden data-tip="Every configuration the run tried, and how each case went.">Candidates</button>
-        <button class="tab" data-view="opt-tunables" data-sec="optimization" hidden data-tip="The settings the run could change, and which ones mattered.">Tunables</button>
-        <button class="tab" data-view="opt-trade" data-sec="optimization" data-multi hidden data-tip="One goal plotted against another.">Trade-off</button>
       </div>
     </div>
     <div class="nav-foot">
@@ -62,30 +56,109 @@
   </nav>
 
   <main>
-    <section class="view on" id="v-runs">
-      <h2>Experiments in this folder</h2>
-      <p class="sub" id="runs-sub"></p>
-      <div class="roots">
-        <span class="mode" id="mode-tag"></span>
-        <span class="path mono" id="root-path"></span>
+    <!-- What is open: where it came from, what it is, and the views that belong to it. -->
+    <header class="pagehead" id="pagehead" hidden>
+      <nav class="crumbs" id="crumbs" aria-label="Where this is"></nav>
+      <div class="headrow">
+        <p class="facts" id="facts"></p>
+        <div class="actions" id="actions">
+          <div class="pick" id="cmp-with" role="group" aria-label="Compare with another report" hidden></div>
+          <span class="copy-acts" id="copy-acts"></span>
+        </div>
       </div>
+      <div class="ptabs" id="opt-tabs" hidden>
+        <button class="tab" data-view="opt-setup" data-sec="optimization" hidden data-tip="What the open run was told to do.">Setup</button>
+        <button class="tab" data-view="opt-overview" data-sec="optimization" hidden data-tip="The result, and the configuration the run picked.">Overview</button>
+        <button class="tab" data-view="opt-progress" data-sec="optimization" hidden data-tip="How the search went, candidate by candidate.">Progress</button>
+        <button class="tab" data-view="opt-candidates" data-sec="optimization" hidden data-tip="Every configuration the run tried, and how each case went.">Candidates</button>
+        <button class="tab" data-view="opt-tunables" data-sec="optimization" hidden data-tip="The settings the run could change, and which ones mattered.">Tunables</button>
+        <button class="tab" data-view="opt-trade" data-sec="optimization" data-multi hidden data-tip="One goal plotted against another.">Trade-off</button>
+      </div>
+    </header>
+
+    <!-- The folder being read: shown over the lists. -->
+    <div class="folder" id="folder">
+      <span class="mode" id="read-only" hidden data-tip="Served with --read-only. Cases can be read but not saved.">read-only</span>
+      <span class="path mono" id="root-path"></span>
+      <span class="grow"></span>
+      <button class="btn" data-act="rescan" data-tip="Read the folder again for new or changed files.">Rescan</button>
+    </div>
+
+    <section class="view on" id="v-reports">
+      <h2>Reports</h2>
+      <p class="sub" id="reports-sub"></p>
       <div class="ctl">
-        <button class="btn" data-act="rescan" data-tip="Read the folder again for new or changed files.">Rescan</button>
-        <button class="btn" data-act="pick">Open folder&hellip;</button>
+        <button class="btn pri" id="cmp-go" hidden data-tip="Open the ticked reports side by side."></button>
+        <span class="path" id="cmp-hint">Tick two or more reports to compare them.</span>
         <span class="grow"></span>
-        <span class="path" id="runs-count"></span>
+        <span class="path" id="reports-count"></span>
       </div>
       <div class="scroll">
         <table class="rep">
           <thead><tr>
-            <th style="width:30%" data-tip="The folder and file this experiment or report was found in.">Run</th><th style="width:24%" data-term="experiment">Experiment</th>
-            <th style="width:30%" data-term="report">Report</th><th data-tip="When the experiment or its report last changed on disk.">Modified</th>
+            <th style="width:34%" data-term="report">Report</th><th style="width:26%" data-term="score">Score</th>
+            <th style="width:26%" data-tip="The experiment file this report was made from. A report made in code has none.">Experiment</th><th data-tip="When the report last changed on disk.">Modified</th>
           </tr></thead>
-          <tbody id="runs-rows"></tbody>
+          <tbody id="reports-rows"></tbody>
         </table>
       </div>
-      <div id="skips"></div>
-      <input type="file" id="dirinput" webkitdirectory directory multiple hidden>
+    </section>
+
+    <section class="view" id="v-compare">
+      <h2>Compare</h2>
+      <p class="sub" id="cmp-sub"></p>
+      <div class="scroll">
+        <table class="rep cmp">
+          <thead><tr>
+            <th data-tip="Its place among the reports compared, oldest first.">#</th><th data-term="report">Report</th><th data-term="overall">Overall</th>
+            <th data-tip="The change in the overall score from the report before it.">Change</th>
+            <th class="n" data-tip="One row is one case scored by one evaluator.">Rows</th><th class="n" data-tip="Rows that passed. A row that was not applicable is neither.">Passing</th>
+            <th class="n" data-tip="Rows that failed.">Failing</th>
+          </tr></thead>
+          <tbody id="cmp-summary"></tbody>
+        </table>
+      </div>
+      <div class="charts">
+        <div class="chart wide">
+          <h3>Each evaluator's mean</h3>
+          <p class="cap">The mean score over the rows an evaluator applied to, in each report, with the change from the report before it that has one.</p>
+          <div class="scroll"><table class="rtab" id="cmp-evals"></table></div>
+        </div>
+      </div>
+      <div class="charts">
+        <div class="chart wide">
+          <h3>Verdict by row and report</h3>
+          <p class="cap" id="cmp-grid-cap"></p>
+          <div id="cmp-grid"></div>
+          <div class="legend"><span><i class="pass"></i>pass</span><span><i class="fail"></i>fail</span><span data-term="not_applicable"><i class="na"></i>not applicable</span></div>
+        </div>
+      </div>
+      <div class="charts">
+        <div class="chart wide">
+          <h3 id="cmp-ends-head"></h3>
+          <p class="cap" id="cmp-ends-cap"></p>
+          <div id="cmp-ends"></div>
+          <div class="legend" id="cmp-ends-legend"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" id="v-experiments">
+      <h2>Experiments</h2>
+      <p class="sub" id="experiments-sub"></p>
+      <div class="ctl">
+        <span class="grow"></span>
+        <span class="path" id="experiments-count"></span>
+      </div>
+      <div class="scroll">
+        <table class="rep">
+          <thead><tr>
+            <th style="width:34%" data-term="experiment">Experiment</th><th style="width:22%" data-term="case">Cases</th>
+            <th style="width:30%" data-tip="The reports made from this experiment, newest first.">Reports</th><th data-tip="When the experiment last changed on disk.">Modified</th>
+          </tr></thead>
+          <tbody id="experiments-rows"></tbody>
+        </table>
+      </div>
     </section>
 
     <section class="view" id="v-experiment">
@@ -113,6 +186,7 @@
             <span class="t" id="form-title"></span>
             <span class="grow"></span>
             <span class="path mono" id="form-sid"></span>
+            <span class="mdacts" id="case-acts" hidden><button class="btn" data-md="case">Copy as Markdown</button><button class="btn" data-md="case-command">Copy command</button></span>
           </header>
           <div class="body" id="form"></div>
           <div class="foot">
@@ -127,7 +201,6 @@
     </section>
 
     <section class="view" id="v-report">
-      <p class="borrowed" id="rep-borrowed" hidden></p>
       <div class="hero">
         <div>
           <div class="big none" id="r-score">&mdash;</div>
@@ -137,7 +210,7 @@
         <div class="stats" id="r-stats"></div>
       </div>
       <details class="drawer" id="rep-charts" open hidden>
-        <summary>Charts<span class="path">verdicts, scores, and what changed since another report</span></summary>
+        <summary>Charts<span class="path">verdicts, scores, and what each case took</span></summary>
         <div class="charts">
           <div class="chart wide">
             <h3>Verdict by case and evaluator</h3>
@@ -147,38 +220,38 @@
           </div>
         </div>
         <div class="charts">
-          <div class="chart" id="rep-spread-card">
+          <div class="chart wide" id="rep-spread-card">
             <h3>Score distribution</h3>
             <p class="cap">How each evaluator's scores are spread over the rows it applied to. The tick is the mean.</p>
             <div id="rep-spread"></div>
-          </div>
-          <div class="chart">
-            <div class="chead">
-              <h3>Against another report</h3>
-              <select id="rep-cmp-pick" aria-label="Report to compare against"></select>
-            </div>
-            <p class="cap" id="rep-cmp-cap"></p>
-            <div id="rep-cmp"></div>
-            <div class="legend" id="rep-cmp-legend"></div>
           </div>
         </div>
         <div class="charts" id="rep-cost-card" hidden>
           <div class="chart wide">
             <div class="chead">
               <h3>Cost per case</h3>
-              <select id="rep-cost-pick" aria-label="Cost measure to chart"></select>
+              <div class="pick" id="rep-cost-pick" role="group" aria-label="Cost measure to chart"></div>
             </div>
             <p class="cap" id="rep-cost-cap"></p>
             <div id="rep-cost"></div>
           </div>
         </div>
       </details>
+      <div class="lens" id="rep-lens" hidden>
+        <div class="chead">
+          <h3>Group by</h3>
+          <div class="pick" id="rep-group-pick" role="group" aria-label="Group the rows by"></div>
+        </div>
+        <p class="cap" id="rep-group-cap"></p>
+        <div id="rep-groups"></div>
+      </div>
       <div class="ctl">
         <input class="find" id="rep-find" placeholder="Search cases and reasons" aria-label="Search cases and reasons" autocomplete="off">
         <div class="seg" id="rep-seg">
           <button class="on" data-f="all">All</button>
           <button data-f="fail" data-tip="Cases where at least one evaluator failed.">Failing</button>
           <button data-f="na" data-term="not_applicable">Not applicable</button>
+          <button data-f="diag" data-tip="Cases with a diagnosis of what went wrong recorded." hidden>Diagnosed</button>
         </div>
         <span class="grow"></span>
         <span class="path" id="rep-count"></span>
@@ -192,6 +265,29 @@
         </table>
       </div>
       <button class="more" id="rep-more" hidden></button>
+    </section>
+
+    <section class="view" id="v-sessions">
+      <h2>Sessions</h2>
+      <p class="sub">A session is the recorded traces of one conversation with an agent. A diagnosis made of one is shown on its page.</p>
+      <div class="ctl">
+        <span class="grow"></span>
+        <span class="path" id="sessions-count"></span>
+      </div>
+      <div class="scroll">
+        <table class="rep">
+          <thead><tr>
+            <th style="width:34%" data-term="session">Session</th><th style="width:34%" data-tip="How many traces and spans the session holds, and what a diagnosis of it found.">Recorded</th>
+            <th style="width:14%" data-tip="How long its traces ran for, added up. The time between traces is not counted.">Duration</th><th data-tip="When the session last changed on disk.">Modified</th>
+          </tr></thead>
+          <tbody id="sessions-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="view" id="v-session">
+      <div id="ses-found"></div>
+      <div class="trace" id="ses-trace"></div>
     </section>
 
     <!-- ── Optimization · Runs ── -->
@@ -217,6 +313,7 @@
     <!-- ── Optimization · Setup ── -->
     <section class="view" id="v-opt-setup">
       <h2>Setup</h2>
+      <div class="optnone"></div>
       <p class="sub" id="opt-setup-sub"></p>
       <p class="explain" id="opt-explain"></p>
       <!-- Source experiment is matched by case id: the run record does not name it. -->
@@ -231,6 +328,7 @@
     <!-- ── Optimization · Overview ── -->
     <section class="view" id="v-opt-overview">
       <h2>Overview</h2>
+      <div class="optnone"></div>
       <p class="sub" id="opt-sub"></p>
       <p class="sub methodline" id="opt-method-sum"></p>
 
@@ -243,7 +341,7 @@
         <div class="chart wide">
           <div class="chead">
             <h3>Case by case</h3>
-            <select id="opt-cases-pick" aria-label="Measure to compare case by case"></select>
+            <div class="pick" id="opt-cases-pick" role="group" aria-label="Measure to compare case by case"></div>
           </div>
           <p class="cap" id="opt-cases-cap"></p>
           <div id="opt-cases-chart"></div>
@@ -258,7 +356,7 @@
           <div class="chart wide">
             <div class="chead">
               <h3>Spend by iteration</h3>
-              <select id="opt-usage-pick" aria-label="Usage measure to chart"></select>
+              <div class="pick" id="opt-usage-pick" role="group" aria-label="Usage measure to chart"></div>
             </div>
             <p class="cap" id="opt-usage-cap"></p>
             <div id="opt-usage-chart"></div>
@@ -277,12 +375,13 @@
     <!-- ── Optimization · Progress ── -->
     <section class="view" id="v-opt-progress">
       <h2>Progress</h2>
-      <p class="sub">What the search did, in the order it did it &mdash; <span id="opt-search-sum"></span>.</p>
+      <div class="optnone"></div>
+      <p class="sub">What the search did, in the order it did it: <span id="opt-search-sum"></span>.</p>
       <div class="charts">
         <div class="chart wide">
           <div class="chead">
             <h3 id="opt-series-head">Objective by candidate</h3>
-            <select id="opt-series-pick" aria-label="Series to chart"></select>
+            <div class="pick" id="opt-series-pick" role="group" aria-label="Series to chart"></div>
           </div>
           <p class="cap" id="opt-series-cap"></p>
           <div id="opt-series-chart"></div>
@@ -301,6 +400,7 @@
     <!-- ── Optimization · Candidates ── -->
     <section class="view" id="v-opt-candidates">
       <h2>Candidates</h2>
+      <div class="optnone"></div>
       <p class="sub" id="opt-cand-sub"></p>
       <div class="ctl">
         <input class="find" id="opt-find" placeholder="Search candidates, settings and rationales" aria-label="Search candidates, settings and rationales" autocomplete="off">
@@ -329,6 +429,7 @@
     <!-- ── Optimization · Tunables ── -->
     <section class="view" id="v-opt-tunables">
       <h2>Tunables</h2>
+      <div class="optnone"></div>
       <p class="sub" id="opt-space-sub"></p>
       <div id="opt-space-wrap" hidden>
         <div class="scroll">
@@ -350,7 +451,7 @@
           <div class="chart wide">
             <div class="chead">
               <h3>Change from each key's reference value</h3>
-              <select id="opt-eff-goal" aria-label="Goal metric to show effects for"></select>
+              <div class="pick" id="opt-eff-goal" role="group" aria-label="Goal metric to show effects for"></div>
             </div>
             <p class="cap" id="opt-eff-cap"></p>
             <div id="opt-eff-chart"></div>
@@ -363,16 +464,16 @@
     <!-- ── Optimization · Trade-off ── -->
     <section class="view" id="v-opt-trade">
       <h2>Trade-off</h2>
-      <!-- Reachable by a saved hash on a single-goal run, where the tab itself is hidden. -->
-      <p class="sub" id="opt-to-none" hidden></p>
+      <div class="optnone"></div>
+      <div id="opt-to-none" hidden></div>
       <div id="opt-tradeoff" hidden>
         <p class="sub">What one goal cost the other: <span id="opt-to-sum"></span></p>
         <div class="charts">
           <div class="chart wide">
             <div class="chead">
               <h3 id="opt-to-head">Goals against each other</h3>
-              <select id="opt-to-x" aria-label="Goal on the x axis"></select>
-              <select id="opt-to-y" aria-label="Goal on the y axis"></select>
+              <div class="pick" id="opt-to-x" role="group" aria-label="Goal on the x axis"></div>
+              <div class="pick" id="opt-to-y" role="group" aria-label="Goal on the y axis"></div>
             </div>
             <p class="cap" id="opt-to-cap"></p>
             <div id="opt-to-chart"></div>
@@ -382,7 +483,19 @@
         </div>
       </div>
     </section>
+    <section class="view" id="v-missing">
+      <div id="missing"></div>
+    </section>
+    <div id="stores"></div>
+    <div id="skips"></div>
   </main>
+  <aside class="guide-panel" id="guide" aria-label="How to use this view" hidden>
+    <div class="guide-head">
+      <span>How to use this view</span>
+      <button class="guide-close" type="button" data-guide-close aria-label="Close the guide">&times;</button>
+    </div>
+    <div id="guide-body"></div>
+  </aside>
 </div>
 
 <!-- Classic scripts sharing one scope, loaded in this order. `ui-core.js` comes first (every later
@@ -393,18 +506,24 @@
 <script src="ui-guide.js"></script>
 <script src="ui-plot.js"></script>
 <script src="ui-trace.js"></script>
-<script src="ui-runs.js"></script>
+<script src="ui-diagnosis.js"></script>
+<script src="ui-lists.js"></script>
+<script src="ui-head.js"></script>
+<script src="ui-missing.js"></script>
 <script src="ui-experiment.js"></script>
 <script src="ui-report.js"></script>
 <script src="ui-report-charts.js"></script>
-<script src="ui-folder.js"></script>
+<script src="ui-compare.js"></script>
+<script src="ui-report-lenses.js"></script>
+<script src="ui-sessions.js"></script>
 <script src="ui-optimizer-record.js"></script>
 <script src="ui-charts.js"></script>
 <script src="ui-tips.js"></script>
 <script src="ui-optimizer-result.js"></script>
 <script src="ui-optimizer.js"></script>
-<script src="ui-sample.js"></script>
+<script src="ui-optimizer-candidates.js"></script>
 <script src="ui-poll.js"></script>
+<script src="ui-markdown.js"></script>
 <script src="ui-boot.js"></script>
 </body>
 </html>

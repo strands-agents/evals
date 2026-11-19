@@ -172,16 +172,121 @@ with someone serving the same folder:
 
 | Address | Shows |
 | --- | --- |
-| `/runs` | The experiments and reports found. |
-| `/runs/<experiment file>/experiment` | Its cases; add `/cases/<name>` for one case. |
-| `/runs/<experiment file>/report` | Its report. |
+| `/reports` | Every report found, each with the experiment it was made from. |
+| `/reports/<report file>` | One report. |
+| `/reports/<report file>/rows/<case>/<evaluator>` | One row of a report, opened and in view. |
+| `/reports/compare?r=<report file>&r=<report file>` | Two or more reports side by side, oldest first. |
+| `/experiments` | Every experiment file found, each with the reports made from it. |
+| `/experiments/<experiment file>` | Its cases; add `/cases/<name>` for one case. |
+| `/sessions` | Every recorded session found. Listed only when there is one. |
+| `/sessions/<session file>` | One session, trace by trace, with any diagnosis made of it. |
 | `/optimization` | The optimizer runs found. |
 | `/optimization/<run directory>/<view>` | One run: `setup`, `overview`, `progress`, `candidates`, `tunables` or `trade-off`. |
+| `/optimization/<run directory>/candidates/<id>` | One candidate of a run, opened and in view. |
 | `/optimization/<run directory>/candidates/<id>/report` | One candidate's cases, as a report. |
+
+An address that names something the folder does not hold is not redirected: the page says what it looked
+for and leaves the address as typed, so it opens on its own once the file is there.
+
+The page is also written to be handed to a coding agent. A report, a report row, a comparison, an
+experiment, a case, a session, a candidate, an optimizer result and a trace each have a **Copy as Markdown**
+action, beside a **Copy path** for the file and a **Copy command** that runs one case again; a report with
+failing rows has **Copy failing rows as a prompt**, which bundles them with the paths of the report and its
+experiment and the command to run one case again, with `MODULE:ATTR` standing for the agent under test: no
+file records which agent was evaluated. The same Markdown is served for a file, so an agent can read what
+the page shows without a browser. `/llms.txt`, the `.md` and `.json` forms, `POST /api/markdown`, the shape
+of the listing below and the wording of the copied prompt are experimental: they may change before a release.
+
+| Address | Returns |
+| --- | --- |
+| `/reports/<report file>.md` | The report as Markdown: its figures, each failing row with its input, expected and actual output and the evaluator's reason, then every row. |
+| `/experiments/<experiment file>.md` | The experiment as Markdown: its evaluators with their settings, then every case. |
+| `/sessions/<session file>.md` | The session as Markdown: what it recorded, each diagnosis made of it, then every span of every trace. A diagnosis file is read the same way. |
+| `/reports/<report file>.json`, `/experiments/<experiment file>.json`, `/sessions/<session file>.json` | The file's document. |
+| `POST /api/markdown` | The Markdown of a document sent to it, or of one row, one case, the failing rows or a trace of one. The page uses it for what has no file of its own. It reads nothing from the folder: a path in the body is only a name to write. |
+| `/llms.txt` | What the server answers: these addresses, the `/api` routes and how the token is sent. |
+
+These need the token itself, as the `X-Evals-Token` header or as `?t=<token>`; the page's cookie does not
+open them. For example: `curl -H "X-Evals-Token: $TOKEN" http://127.0.0.1:PORT/reports/support/support.report.json.md`.
+A page address asked for by something that is not a browser (no `text/html` in its `Accept` header) answers
+`406` with a few lines naming these forms, in place of the page.
+
+In the Markdown, a value longer than 4,000 characters is cut, with a line saying how much was left out; the
+`.json` form has all of it. A report writes each failing row in full, a case that fails under several
+evaluators once, and one table line per row. Every row and every span is written, however many there are. A
+diagnosis file is written whole; a diagnosis held in a report row is cut like any other value.
+
+`/api/scan` and `ui --list --json` give the same listing. Its `schema_version` is `1`, and moves when a field
+is renamed, removed or changes meaning:
+
+| Field | Holds |
+| --- | --- |
+| `experiments[]` | `path`, `name`, `dir`, `size`, `modified`, `cases` (a count), `evaluators` (each evaluator's entry as the file has it), `evaluator_notes`, `reports` (paths). |
+| `reports[]` | `path`, `name`, `dir`, `size`, `modified`, `overall_score`, `rows`, `failing` and `not_applicable` (counts), `evaluators` (names), `experiment` (a path, or null), `link` (`status` and `detail`, or null). |
+| `sessions[]` | `path`, `name`, `dir`, `size`, `modified`, `session_id`, `traces` and `spans` (counts), `seconds`, `diagnoses` (paths). |
+| `diagnoses[]` | `path`, `name`, `dir`, `size`, `modified`, `session_id`, `failures` and `root_causes` (counts), `session` (a path, or null). |
+| `optimizer_runs[]` | One per run directory: its `run.json` as `config`, counts read off its log, `champion_id`, `result`, `stop_reason`, and `tuned_against`, the experiment its split names (`path` is null and `status` is `tie` when several fit equally). |
+| `stores[]` | `dir` and `files` (a count) for each `LocalFileTaskResultStore` directory. |
+| `skipped[]` | `path` and `why`, for each JSON file that is none of the above. |
+| `truncated` | Whether the scan stopped at its cap of 2,000 files. |
+
+`/api/scan` adds `root`, `depth`, `read_only` and `fingerprint`, and `--list --json` adds `root`. The field
+names are this listing's own. They differ from `strands-evals validate --json`, which gives
+`case_count`, `evaluator_count` and the evaluators' names: here `experiments[].cases` is a count,
+`experiments[].evaluators` holds the entries as written, and `reports[].evaluators` holds names.
+
+A report is listed whether or not an experiment file sits beside it, so one made in code with
+`run_evaluations()` and saved with `to_file()` shows up too, marked as run from code. One experiment can have
+many reports. A report is matched to an experiment in this order:
+
+1. The experiment in its directory under the same name (`nightly.experiment.json` for `nightly.report.json`,
+   `experiment.json` for `report.json`), whatever cases the two hold.
+2. Failing that, the nearest experiment in the folder that holds every case the report names. Two that are
+   equally near are not guessed between: the report is marked as not paired and says which ones tie.
+3. Failing that, the only experiment in its directory, when it is the only report there.
+
+Each match carries a status. It compares case identities and nothing else: a report row is identified by its
+`session_id` when it has one and by its `name` otherwise, and an experiment's case by either. Against an
+experiment none of whose cases has a `session_id`, as one written by hand, a row is identified by its `name`.
+
+| Status | Means |
+| --- | --- |
+| `verified` | Every case the report names is in the experiment. It does not show that this file produced the report: another experiment with the same case names fits as well. |
+| `partial` | Some of the report's cases are not in the experiment, as when it was edited after the run. |
+| `mismatch` | None of them are. Only a match by file name, or by being the only pair in a directory, can have this status. |
+| `unverified` | There is nothing to compare: the report's rows or the experiment's cases carry no name. |
+| `tie` | Not paired: several experiments hold every case and are equally near. |
+
+A session saved with `strands-evals fetch ... -o` is listed under Sessions and read one trace after another.
+A diagnosis written by `strands-evals diagnose -o` is shown on the page of the session with its `session_id`,
+or listed on its own when that session is not in the folder. The directory of a `LocalFileTaskResultStore`
+is named on the lists and its files are left out of the scan.
 
 To see every view with data in it, `python examples/make_ui_demo.py DIR` writes a synthetic folder to serve.
 Pass `--read-only` to browse without the Save path at all, and `--host` to serve beyond this machine
 (for example `0.0.0.0` inside a container).
+
+Limits of `ui`:
+
+- The scan reads 2,000 JSON files, 3 directories deep unless `--depth` says otherwise, and says when it
+  stopped at the cap.
+- The check for changes stats every file the scan lists each time the page asks, every few seconds, with no
+  cap. On a folder of tens of thousands of files that takes a noticeable part of a second each time.
+- Each `.md` request scans the whole folder, to find what the file is paired with.
+- The page works only when `strands-evals ui` serves it. Opened from disk, it says how to start the server.
+- A comparison, an optimizer result and a candidate are written by the page and copied from it. They have no
+  `.md` address. Neither do a candidate's report and the failing-rows prompt, which the server writes from
+  what the page sends to `POST /api/markdown`.
+- A document nested more than 200 levels deep is listed, but is not written as Markdown: `.md` and
+  `POST /api/markdown` answer `422`. `--list --json` prints a listing that holds one nested deeper than
+  Python lays out on one line.
+- `POST /api/markdown` takes a body of at most 32 MB. To copy one row, or the failing rows as a prompt, the
+  page sends those rows and leaves the rest of the report out, so a copy is refused only when those rows alone
+  are larger than that, as is a candidate's report or an unsaved experiment of that size. The button says why.
+- Save refuses a file whose modified time differs from the one it was loaded with, and two saves through one
+  server are taken in turn. A write by another program between that check and the write is not detected.
+- An optimizer run that was resumed after a stop still reads as stopped.
+- The page is laid out for windows 360 px wide and up. Below that the top bar overflows.
 
 Run any subcommand with `--help` for the full flag set (custom evaluators via `MODULE:CLASS`, trace attributes, `--fail-on` exit-code rules, output formats, etc.).
 

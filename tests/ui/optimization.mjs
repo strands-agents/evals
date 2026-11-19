@@ -1,7 +1,7 @@
 /* The Optimization section: Runs, Setup, Overview, Progress, Candidates, Tunables, Trade-off.
    Driven from the generated fixture run, variants of it, and small logs written inline. */
 import fs from 'node:fs';
-import { page, runner, tick } from './harness.mjs';
+import { SAMPLE, page, runner, served, tick } from './harness.mjs';
 
 const { ok, done } = runner('optimization');
 
@@ -24,7 +24,6 @@ const eq = (actual, expected, msg) => ok(same(actual, expected), msg, JSON.strin
 const has = (actual, pattern, msg) => ok(pattern.test(actual || ''), msg, actual);
 
 /* ── building pages ── */
-const pages = [];
 const jsonl = events => events.map(e => JSON.stringify(e)).join('\n') + '\n';
 /* The fixture log with every event passed through `change`; returning nothing drops the event. */
 const eventsWith = change => jsonl(EVENTS.map(e => change(structuredClone(e))).filter(Boolean));
@@ -32,9 +31,7 @@ const configWith = change => { const c = structuredClone(CONFIG); change(c); ret
 const go = (q, tab) => q.click(`.tab[data-view="opt-${tab}"]`);
 
 async function open(files, tab) {
-  const q = await page();
-  pages.push(q);
-  await q.openFolder(files);
+  const q = await served(files);
   if (tab) await go(q, tab);
   return q;
 }
@@ -121,33 +118,34 @@ const panel = q => kv(q, '#opt-cands .trial-panel > dl');
 const speakers = q => q.$$('#opt-cands .trial-panel .msg').map(m => flat(m.querySelector('.who'))).join(' | ');
 const blockDiff = root => {
   const pre = root.querySelector('.setting pre');
-  return !!pre && /^- You are the support assistant/.test(pre.querySelector('.del').textContent)
-    && /NW-000000/.test(pre.querySelector('.ins').textContent)
-    && !/NW-000000/.test(pre.querySelector('.del').textContent);
+  const lines = kind => (pre ? [...pre.querySelectorAll(`.${kind}`)] : []).map(el => el.textContent).join('\n');
+  /* Line by line: what the baseline already said is kept, and only the new lines are marked added. */
+  return /^ {2}You are the support assistant/.test(lines('same')) && /^\+ .*NW-000000/m.test(lines('ins'))
+    && !/NW-000000/.test(lines('same') + lines('del'));
 };
 
 /* ══════════ the fixture run ══════════ */
 
-const p = await page();
-pages.push(p);
-const { $, $$, text, click } = p;
-
 // ── section visibility ──
-ok($('#sec-opt').hidden && $$('.tab[data-sec="optimization"]').every(t => t.hidden)
-  && $('#sections').classList.contains('lonely'), 'with no optimizer run the section and its tabs are hidden');
-await p.openFolder({
+{
+  const none = await served(SAMPLE);
+  ok(none.$('#sec-opt').hidden && none.$$('.tab[data-sec="optimization"]').every(t => t.hidden)
+    && none.$('#sections').classList.contains('lonely'), 'with no optimizer run the section and its tabs are hidden');
+}
+const p = await served({
   'demo/run.json': CONFIG, 'demo/events.jsonl': jsonl(EVENTS), 'demo/effects.json': EFFECTS, ...TRANSCRIPTS,
 });
+const { $, $$, text, click } = p;
 ok(!$('#sec-opt').hidden && !$('#sections').classList.contains('lonely'), 'a run directory shows the section');
-eq($$('.tab:not([hidden])').map(t => t.dataset.view).join(),
-  'runs,experiment,report,opt-runs,opt-setup,opt-overview,opt-progress,opt-candidates,opt-tunables,opt-trade',
-  'its seven tabs beside the three Evals tabs');
+eq($$('#sections .tab:not([hidden])').map(t => t.dataset.view).join(), 'reports,experiments,opt-runs',
+  'and the sidebar gains Runs, beside the two lists of Evals');
 eq(skips(p), [], 'the transcripts and effects.json of a run are not reported as unusable files');
 
 // ── Runs ──
 await click('#sec-opt');
 eq([$$('.sec.on').map(s => s.dataset.sec).join(), $$('.tab.on').map(t => t.dataset.view).join()],
   ['optimization', 'opt-runs'], 'the section opens on its run list');
+ok($('#pagehead').hidden, 'which is a list, so no page header names anything');
 eq(rows(p, '#opt-runs-rows tr[data-opt-run]').map(r => r.slice(0, 5)),
   [[`${RUN_ID} / support-tuning demo`, '+0.143 held out · clear of zero', 'c10', '10 candidates 6 iterations',
     'iterations']],
@@ -159,8 +157,14 @@ ok(delta.className === 'delta up' && /\[0\.061, 0\.225\]/.test(delta.title),
 await click('#opt-runs-rows tr[data-opt-run]');
 ok($('#v-opt-overview').classList.contains('on') && text('#path') === 'demo/events.jsonl',
   'a run row opens Overview on its event log', text('#path'));
-eq([text('#opt-sub'), $('#opt-sub').title], [`${RUN_ID} · stopped: iterations`, 'reached max_iterations=6'],
-  'the subtitle is the run and its stop reason, with the stop message on hover');
+eq([text('#crumbs'), text('#facts'), $$('#opt-tabs .tab:not([hidden])').map(t => t.dataset.view).join(), text('#opt-tabs .tab.on')],
+  [`Runs/${RUN_ID}`, 'stopped: iterations · champion c10', 'opt-setup,opt-overview,opt-progress,opt-candidates,opt-tunables,opt-trade',
+    'Overview'],
+  'the page header names the run and holds its six views as a tab strip, the open one marked');
+eq([$$('#sections .tab.on').map(t => t.dataset.view).join(), $('.tab[aria-current="page"]').dataset.view], ['opt-runs', 'opt-overview'],
+  'while the sidebar stays on Runs, the list the run was opened from');
+eq(text('#opt-sub'), 'reached max_iterations=6',
+  'the header names the run and its status once, and the subtitle adds only what the stop said for itself');
 eq(text('#opt-method-sum'),
   'Tuned system_prompt, temperature, tool_descriptions, max_tokens · 8 train · 4 validation · 3 test',
   'the method line names the keys the proposals changed and the split sizes');
@@ -169,7 +173,6 @@ eq(text('#opt-method-sum'),
 await go(p, 'setup');
 ok($('#v-opt-setup').classList.contains('on') && text('#path') === 'demo/run.json', 'Setup reads run.json',
   text('#path'));
-ok($$('#v-opt-setup input, #v-opt-setup textarea, #v-opt-setup select').length === 0, 'Setup is read-only');
 ok($('#opt-source').hidden, 'no experiment is named when the folder holds none');
 has(text('#opt-explain'), /built 10 versions .* searched on train, picked the champion once on validation/,
   'the account counts the candidates built, not the 11 proposals, and says what each split was for');
@@ -191,12 +194,12 @@ eq(lines(p, '#opt-result .rtab tbody tr'),
   'a row per goal metric; one with no interval stops at the change');
 ok($$('#opt-result .delta').every(td => td.classList.contains('flat')),
   'no per-metric change is coloured: only the objective states a direction');
-eq(said(p), 'Objective +0.143, 95% interval [0.061, 0.225] — clear of zero on cases the search never saw.',
+eq(said(p), 'Objective +0.143, 95% interval [0.061, 0.225]: clear of zero on cases the search never saw.',
   'the verdict is the reading of the objective interval');
 eq(strip(p), ['Helpfulness ↑ / good / right of zero'],
   'one bar: the goal with an interval, the objective not drawn twice');
 eq($('#opt-result .rs-row title').textContent,
-  'Helpfulness: +0.143 [0.061, 0.225] — clear of no change, the way the goal wants',
+  'Helpfulness: +0.143 [0.061, 0.225] · clear of no change, the way the goal wants',
   'hovering the bar gives the figures and the reading');
 ok(/held-out cases/.test(stripNote(p)) && /nothing to draw for tokens \(no interval reported\)/.test(stripNote(p))
   && !$('#opt-result .rstrip').classList.contains('weak'),
@@ -210,9 +213,9 @@ ok(/held-out cases/.test(stripNote(p)) && /nothing to draw for tokens \(no inter
   await openCand(q, 'c8');
   eq(detail(q)['Why infeasible'], why, 'an infeasible candidate names the constraint it broke and what it measured');
   await q.click('#opt-cands [data-open]');
-  ok(q.text('#rep-borrowed').includes(`infeasible ${why}`) && q.text('#r-stats').startsWith('8 / 8'),
-    'and says so again above its cases, every one of which passes', `${q.text('#rep-borrowed')} | ${q.text('#r-stats')}`);
-  await q.click('#rep-borrowed [data-act="unborrow"]');
+  ok(q.text('#facts').includes(`infeasible ${why}`) && q.text('#r-stats').startsWith('8 / 8'),
+    'and says so again above its cases, every one of which passes', `${q.text('#facts')} | ${q.text('#r-stats')}`);
+  await q.click('#crumbs [data-go="opt-candidates"]');
   await openCand(q, 'c10');
   ok(!Object.keys(detail(q)).some(k => k.startsWith('Why c') || k === 'Why feasible'), 'a feasible one has nothing to explain',
     Object.keys(detail(q)).join());
@@ -234,7 +237,7 @@ ok(/held-out cases/.test(stripNote(p)) && /nothing to draw for tokens \(no inter
   const tip = name => marks().map(g => g.querySelector('title').textContent).find(t => t.startsWith(name + ' '));
   const validation = EVENTS.find(e => e.event === 'trial' && e.record.candidate_id === 'c10'
     && e.record.case_name === 'val_case_01').record.evaluations.Helpfulness.score;
-  eq(q.$$('#opt-cases-pick option').map(o => o.textContent), ['Helpfulness', 'Tokens', 'Seconds'],
+  eq(q.$$('#opt-cases-pick button').map(o => o.textContent), ['Helpfulness', 'Tokens', 'Seconds'],
     'cases are compared on each evaluator score and on what a trial cost');
   eq([marks().length, tip('test_case_01'), tip('train_case_01'), tip('val_case_01')], [
     15,
@@ -244,7 +247,8 @@ ok(/held-out cases/.test(stripNote(p)) && /nothing to draw for tokens \(no inter
   ], 'one row per case either ran, held-out cases first, each with what both measured');
   has(q.text('#opt-cases-cap'), /Of 11 cases both ran, 11 improved and 0 got worse\. A case only one of them ran has a single mark\./,
     'the caption counts which way the cases went');
-  await pick(q, '#opt-cases-pick', 'u:tokens');
+  await q.click('#opt-cases-pick button[data-value="u:tokens"]');
+  eq(texts(q, '#opt-cases-pick button.on'), ['Tokens'], 'a few choices sit side by side, the chosen one marked');
   ok(marks()[0].classList.contains('down') && /lower is better/.test(q.text('#opt-cases-cap'))
     && tip('test_case_01') === 'test_case_01 · test · baseline 3190 · champion 3340',
   'on tokens a rise is drawn as worse', `${marks()[0].getAttribute('class')} | ${tip('test_case_01')}`);
@@ -254,6 +258,18 @@ ok(/held-out cases/.test(stripNote(p)) && /nothing to draw for tokens \(no inter
     return e;
   }) });
   ok(kept.$('#opt-cases').hidden, 'a run that kept its baseline has nothing to compare case by case');
+
+  // A candidate's cases, opened as a report, are filled in from the experiment the run was tuned against.
+  const asked = Object.fromEntries(CONFIG.split.train.map(name => [name, `What about ${name}?`]));
+  const given = { cases: [...CONFIG.split.train, ...CONFIG.split.validation, ...CONFIG.split.test]
+    .map(name => ({ name, input: asked[name] || 'held out', expected_output: 'the right answer' })), evaluators: [] };
+  const sourced = await openFixture({ tab: 'candidates', files: { 'cases/experiment.json': given } });
+  await openCand(sourced, 'c10');
+  await sourced.click('#opt-cands [data-open]');
+  await tick(4);
+  await sourced.click('#rep-rows tr.case');
+  has(flat(sourced.$('#rep-rows tr.detail')), /Input What about train_case_01\? Expected output the right answer Actual output · diff/,
+    'a candidate\'s report shows what each case asked and expected, read off the experiment the run was tuned against');
 
   // The champion, at the top of the view.
   const hero = (page, part) => texts(page, `#opt-hero ${part}`).join(' | ');
@@ -273,8 +289,9 @@ ok(/held-out cases/.test(stripNote(p)) && /nothing to draw for tokens \(no inter
   eq([unshown.$('#opt-hero .champ-gain').className, hero(unshown, '.champ-read')], ['champ-gain flat', 'not shown'],
     'an interval that includes zero is not dressed as a win');
   const running = await openFixture({ tab: 'overview', events: eventsWith(e => (['picked', 'test', 'finalists'].includes(e.event) ? null : e)) });
-  eq([running.$('#opt-hero .champ').className, hero(running, '.champ-name'), hero(running, '.champ-from')],
-    ['champ none', 'not picked yet', 'Leading on training: c10 at 0.67.'], 'and a run with no champion names who is leading');
+  eq([running.$('#opt-hero .champ').className, hero(running, '.champ-name'), hero(running, '.champ-from'), stats(running)[1]],
+    ['champ none', 'not picked yet', 'Leading on training: c10 at 0.67.', 'Best on training | 0.67 | c10 · highest here'],
+    'and a run with no champion names who is leading, without calling it "not the pick"');
 
   const failed = await openFixture({ tab: 'overview', events: eventsWith(e => {
     if (e.event === 'trial' && e.record.candidate_id === 'c10' && e.record.case_name === 'train_case_01') e.record.status = 'agent_failure';
@@ -302,7 +319,7 @@ await click('#opt-winner [data-act="copy-winner"]');
 ok(text('#opt-copied') === 'copied 4 settings' && same(JSON.parse(copied), champion),
   'copy hands over the whole champion configuration, inherited settings included', copied);
 await click('#opt-winner [data-act="save-winner"]');
-ok(p.window.__downloads.at(-1) === 'champion.json' && same(await p.saved(), champion),
+ok(p.window.__downloads.at(-1) === 'champion.json' && same(await p.downloaded(), champion),
   'download offers the same document as champion.json', p.window.__downloads.join());
 delete p.window.navigator.clipboard;
 await click('#opt-winner [data-act="copy-winner"]');
@@ -347,7 +364,7 @@ const series = () => marks(p, '#opt-series-chart');
 const axis = () => ({
   label: text('#opt-series-chart .axlab'), ticks: texts(p, '#opt-series-chart text.tick').map(Number),
 });
-eq([texts(p, '#opt-series-pick option').join(), $('#opt-series-pick').value, text('#opt-series-head')],
+eq([texts(p, '#opt-series-pick button').join(), $('#opt-series-pick').value, text('#opt-series-head')],
   ['Objective,Helpfulness,tokens', 'objective', 'Objective by candidate'],
   'the picker offers the objective, then each metric');
 const objectiveLegend = $$('#opt-series-legend span').length;
@@ -359,19 +376,19 @@ eq(series().map(m => m.title), ['c0 · Helpfulness 0.51', 'c1 · Helpfulness 0.5
   'c3 · Helpfulness 0.61', 'c5 · Helpfulness 0.59', 'c6 · Helpfulness 0.64', 'c8 · Helpfulness 0.69',
   'c10 · Helpfulness 0.67'],
   'the recorded means (c0 0.51, where its trials average 0.52), and no mark for an unmeasured candidate');
-ok(axis().label === 'Helpfulness — higher is better' && Math.max(...axis().ticks) < 1,
+ok(axis().label === 'Helpfulness, higher is better' && Math.max(...axis().ticks) < 1,
   'the axis carries the goal direction and is scaled to the metric', JSON.stringify(axis()));
 eq($$('#opt-series-chart path.metric-line').map(el => pathPoints(el).length), [4, 2],
   'the joining line breaks at an unmeasured candidate rather than spanning it');
 await pick(p, '#opt-series-pick', 'm:tokens');
 eq([series()[0].title, series()[6].title, series()[6].cls], ['c0 · tokens 3180', 'c8 · tokens 4210', 'infeasible'],
   'a count keeps its decimals off, and c8 is infeasible here too');
-ok(axis().label === 'tokens — lower is better' && Math.min(...axis().ticks) > 1000,
+ok(axis().label === 'tokens, lower is better' && Math.min(...axis().ticks) > 1000,
   'the axis follows the picker, direction and units', JSON.stringify(axis()));
 
 // ── Progress: what each iteration cost ──
 const cols = () => titles(p, '#opt-usage-chart rect.col');
-eq([texts(p, '#opt-usage-pick option').join(), $('#opt-usage-pick').value], ['Tokens,Model calls,Seconds', 'tokens'],
+eq([texts(p, '#opt-usage-pick button').join(), $('#opt-usage-pick').value], ['Tokens,Model calls,Seconds', 'tokens'],
   'every usage measure recorded is on offer, tokens first');
 eq(cols(), ['iteration 0: 25440 over 8 trials', 'iteration 1: 50640 over 16 trials',
   'iteration 2: 26480 over 8 trials', 'iteration 3: 54440 over 16 trials', 'iteration 4: 33680 over 8 trials',
@@ -399,7 +416,7 @@ const effects = () => $$('#opt-eff-chart .eff-row').map(g => ({
 const effZero = () => num($('#opt-eff-chart .eff-zero'), 'x1');
 ok(!$('#opt-effects').hidden && text('#opt-eff-sum') === '3 estimates',
   'a run with a fitted model has the effects drawer', text('#opt-eff-sum'));
-eq(texts(p, '#opt-eff-goal option'), ['Helpfulness · higher is better', 'tokens · lower is better'],
+eq(texts(p, '#opt-eff-goal button'), ['Helpfulness · higher is better', 'tokens · lower is better'],
   'each goal is offered with the direction it wants');
 has(text('#opt-eff-cap'), /for Helpfulness, fitted to 48 observations/,
   'the caption says how much the estimate rests on');
@@ -428,7 +445,7 @@ ok(/The fit is flagged.*under-states the spread of token counts/.test(text('#opt
   text('#opt-eff-note'));
 
 // ── Candidates: the table ──
-const ALL = 'c0,c1,c2,c3,c4,c5,c6,invalid-4-null,c8,c9,c10';
+const ALL = 'c0,c1,c2,c3,c4,c5,c6,invalid-7,c8,c9,c10';
 eq(lines(p, '#opt-cands tr.case'), [
   'c0 #0 baseline | 0 | 0.51 | feasible | —',
   'c1 #1 | 1 | 0.55 | feasible | system_prompt',
@@ -448,11 +465,14 @@ ok(!candRow(p, 'c4').querySelector('.bar2') && !!candRow(p, 'c8').querySelector(
 // ── Candidates: one candidate, and its trials ──
 await openCand(p, 'c10');
 const c10 = detail(p);
-eq(Object.keys(c10), ['Why it was tried', 'Derived from', 'Versus c0', 'Measured', 'Cases', 'Per case'],
-  'a candidate row opens');
-ok(/^Combine c6's up-front id request/.test(c10['Why it was tried']) && c10['Derived from'] === 'c6'
-  && c10.Measured === 'Helpfulness 0.67 · tokens 3350', 'with its rationale, its parent and what it measured',
-  JSON.stringify(c10).slice(0, 200));
+eq(Object.keys(c10), ['Why it was tried', 'Versus c0', 'Cases', 'Per case'], 'a candidate row opens');
+has(c10['Why it was tried'], /^Combine c6's up-front id request/, 'with its rationale');
+const tiles = $$('#opt-cands tr.detail .cand-sum .stat');
+eq(tiles.map(flat), ['0.67 Objective ▲ +0.16 against c0', '0.67 Helpfulness ▲ +0.16 against c0',
+  '3350 tokens ▲ +170 against c0', 'c10 ← c6 ← c3 ← c1 ← c0 Derived from'],
+'and its figures at a glance: the objective and each metric beside the baseline, and the line it descends from');
+eq(tiles.map(el => el.className), ['stat up', 'stat up', 'stat down', 'stat line'],
+  'a change the goal wanted is marked good, and more tokens is not');
 ok(same(texts(p, '#opt-cands tr.detail .setting .skey'), ['system_prompt', 'temperature'])
   && blockDiff($('#opt-cands tr.detail')) && /0\.7 → 0\.2/.test(c10['Versus c0']),
   'diffed against the baseline, not the parent c6, which has the same temperature', c10['Versus c0'].slice(0, 120));
@@ -465,7 +485,7 @@ eq([...new Set(trials.map(t => t.at(-1)))].sort(), ['fail', 'pass'],
 
 await openTrial(p, 'c10', 'train_case_01');
 eq(pairs(p, '#opt-cands .trial-panel > dl').map(line => line.replace(/^Transcript: .*/, 'Transcript')),
-  ['Ended as: completed', 'Scored: Helpfulness 0.49 fail judged', 'Cost: 3350 tokens · 3 model calls · 4.20s',
+  ['Ended as: completed', 'Scored: Helpfulness 0.49 fail The reply leaves the customer to ask again.', 'Cost: 3350 tokens · 3 model calls · 4.20s',
     'Output: Order NW-104233 was delivered on 2 October. It was left at the front desk.', 'Transcript'],
   'a trial opens: how it ended, each score with its verdict and reason, the cost, the output, the transcript');
 
@@ -492,11 +512,11 @@ ok(!$('#opt-cands tr.tdetail'), 'a second click closes the trial');
 
 // ── Candidates: trials with no transcript, a failure, an evaluator error ──
 await openTrial(p, 'c6', 'val_case_02');
-has(panel(p).Transcript, /transcripts\/4ed70e0cfecb415b\.json was not among the files read from the opened folder/,
-  'a pointer whose file the folder did not hold names that file');
+has(panel(p).Transcript, /the log points at demo\/transcripts\/4ed70e0cfecb415b\.json ?, which is not in the run directory/,
+  'a pointer whose file the run directory does not hold names that file');
 await openTrial(p, 'c2', 'train_case_05');
 eq(['Ended as', 'Attempts', 'Output', 'Transcript'].map(k => panel(p)[k]),
-  ['agent_failure ToolError the refund tool timed out', '2 — earlier: agent_failure', 'none recorded',
+  ['agent_failure ToolError the refund tool timed out', '2, earlier: agent_failure', 'none recorded',
     'this trial recorded no transcript'],
   'a failed trial: status and error, earlier attempts, no output, and no transcript pointer at all');
 await openTrial(p, 'c5', 'train_case_03');
@@ -514,7 +534,7 @@ ok(/budget could not afford it/.test(detail(p)['Why it was tried'])
   'an unscored candidate says why it never ran and still shows its configuration');
 ok(/no trial was recorded/.test(detail(p).Cases) && !$('#opt-cands tr.detail [data-open]'),
   'with no trials and no report to open');
-await openCand(p, 'invalid-4-null');
+await openCand(p, 'invalid-7');
 ok(/not in the registry/.test(detail(p)['Why it was tried'])
   && /records no values for this candidate/.test(detail(p)['Versus c0']),
   'the invalid patch shows why it was rejected, and no diff invented from its changed keys');
@@ -522,7 +542,7 @@ await openCand(p, 'c10');
 
 // ── Candidates: filters and search ──
 for (const [filter, ids] of [
-  ['feasible', 'c0,c1,c2,c3,c5,c6,c10'], ['infeasible', 'c8'], ['unscored', 'c4,invalid-4-null,c9'], ['all', ALL],
+  ['feasible', 'c0,c1,c2,c3,c5,c6,c10'], ['infeasible', 'c8'], ['unscored', 'c4,invalid-7,c9'], ['all', ALL],
 ]) {
   await click(`#opt-seg button[data-f="${filter}"]`);
   eq([shown(p), text('#opt-cand-count')], [ids, `${ids.split(',').length} of 11 candidates, 3 never scored`],
@@ -538,9 +558,9 @@ await p.type('#opt-find', '');
 // ── Candidates: open as report ──
 const repDetail = () => flat($('#rep-rows tr.detail'));
 await click('#opt-cands [data-open]');
-eq([text('.tab.on'), text('#path'), text('#rep-count'), text('#r-score')],
-  ['Report', `${RUN_ID} · c10`, '15 of 15 rows', '0.67'],
-  'a candidate opens in the Report tab over its trials, named by run and candidate');
+eq([$('.view.on').id, text('#path'), text('#rep-count'), text('#r-score')],
+  ['v-report', `${RUN_ID} · c10`, '15 of 15 rows', '0.67'],
+  'a candidate opens in the report page over its trials, named by run and candidate');
 eq(lines(p, '#rep-rows tr.case')[0], 'train_case_01 | Helpfulness | 0.49 | fail',
   'a row per trial: case, evaluator, score, verdict');
 await click('#rep-rows tr.case');
@@ -573,6 +593,10 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
     ['two experiments, the fuller match wins',
       { 'a-few/experiment.json': named(all.slice(0, 3)), 'most/experiment.json': named(all.slice(0, 12)) },
       '12 of its 15 cases are cases of most/experiment.json.'],
+    ['two experiments that fit equally, neither guessed',
+      { 'a-copy/experiment.json': named(all), 'b-copy/experiment.json': named(all) },
+      'Not matched to one experiment: 2 experiments hold 15 of its 15 cases and are equally near: '
+        + 'a-copy/experiment.json, b-copy/experiment.json.'],
     ['no case in common', { 'other/experiment.json': named(['something_else']) }, ''],
   ]) {
     const q = await openFixture({ files, tab: 'setup' });
@@ -587,13 +611,13 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
   eq([q.text('#opt-method-sum').replace(/^.*? · /, ''), kv(q, '#opt-setup-kv').Cases, q.text('#opt-source')],
     ['8 train · 4 validation · 3 test', '8 train · 4 validation · 3 test split with seed 0', whole],
     'a split recorded as fractions, with the names under split.cases, is counted and matched by those names');
-  await q.click('#opt-source a[data-exp]');
+  await q.click('#opt-source a[data-experiment]');
   ok(q.$('#v-experiment').classList.contains('on') && q.text('#path') === 'cases/experiment.json'
-    && q.$$('#case-list li[data-i]').length === 15 && !!q.$('#runs-rows tr.run.on'),
-    'the named experiment is a link to its cases on the Experiment tab, with its run marked', q.text('#path'));
+    && q.$$('#case-list li[data-i]').length === 15 && !!q.$('#experiments-rows tr.row.on'),
+    'the named experiment is a link to its cases, with its row marked in Experiments', q.text('#path'));
 }
 
-// ── the report panel is borrowed by a candidate, and given back ──
+// ── a candidate's cases take the report page, under the run they came from ──
 {
   const cases = [{ name: 'a', session_id: 's-a', input: 'q', expected_output: 'yes' },
     { name: 'b', session_id: 's-b', input: 'q2', expected_output: 'no' }];
@@ -606,60 +630,62 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
       detailed_results: cases.map(() => [{ score: 1, test_pass: true, label: 'match' }]),
     },
   };
-  const borrow = async q => {
-    await q.click('#runs-rows tr.run');
+  const candidate = async q => {
     await go(q, 'candidates');
     await openCand(q, 'c10');
     await q.click('#opt-cands [data-open]');
   };
 
   const q = await openFixture({ files: { ...experiment, ...report } });
-  await q.click('#runs-rows tr.run');
-  ok(q.text('#rep-count') === '2 of 2 rows' && q.$('#rep-borrowed').hidden,
-    'Evals has its own report open, and nothing is on loan', q.text('#rep-count'));
-  await borrow(q);
-  ok(!q.$('#rep-borrowed').hidden && q.text('#rep-count') === '15 of 15 rows'
-    && new RegExp(`c10 of ${RUN_ID}.*Back to this run’s report`).test(q.text('#rep-borrowed')),
-    'a candidate in the panel is announced by candidate and run, offering back the report it displaced',
-    q.text('#rep-borrowed'));
-  eq([texts(q, '#rep-cost-pick option'), q.$$('#rep-cost g.rbar').length, q.$$('#rep-heat rect.cell').length],
+  await q.openReport();
+  eq([q.text('#rep-count'), q.text('#crumbs')], ['2 of 2 rows', 'Reports/evals/report.json'],
+    'a report from the folder is open under Reports');
+  await candidate(q);
+  eq([q.text('#rep-count'), q.text('#facts')], ['15 of 15 rows', 'The cases this candidate ran, as a report.'],
+    'a candidate on the page says what its rows are, with nothing to add for one that can ship');
+  eq([q.text('#crumbs'), q.$$('#crumbs a').map(a => a.dataset.go).join(), q.text('.tab.on'), q.$('#opt-tabs').hidden],
+    [`Runs/${RUN_ID}/Candidates/c10`, 'opt-runs,opt-overview,opt-candidates', 'Runs', true],
+    'the header names it Runs / run / Candidates / id, each part a way back, and the sidebar is on Runs');
+  eq([texts(q, '#rep-cost-pick button'), q.$$('#rep-cost g.rbar').length, q.$$('#rep-heat rect.cell').length],
     [['Seconds', 'Tokens'], 15, 15],
     'and charted like any report, its cost per case read off what each trial recorded');
-  await q.click('#rep-borrowed [data-act="unborrow"]');
-  ok(q.$('#rep-borrowed').hidden && q.text('#rep-count') === '2 of 2 rows' && q.text('#path') === 'evals/report.json'
-    && q.$('#runs-rows tr.run').classList.contains('on'),
-    'giving it back restores the Evals report, its path and its marked run', q.text('#path'));
+  ok(!q.$('#reports-rows tr.row.on'), 'no report in the Reports list is marked open while a candidate has the page');
+  await q.click(q.$$('#crumbs a')[2]);
+  ok(q.$('#v-opt-candidates').classList.contains('on') && !q.$('#opt-tabs').hidden, 'the Candidates crumb goes back to the run’s candidates',
+    q.$('.view.on').id);
+  await q.openReport();
+  eq([q.text('#rep-count'), q.text('#crumbs'), q.text('#path'), q.$('#reports-rows tr.row').classList.contains('on')],
+    ['2 of 2 rows', 'Reports/evals/report.json', 'evals/report.json', true],
+    'opening the folder’s report again shows it, with its path, its row marked and the candidate gone');
 
   const q2 = await openFixture({ files: experiment });
-  await borrow(q2);
-  has(q2.text('#rep-borrowed'), /Back to Candidates/, 'with no report displaced, the way back is the Candidates tab');
+  await candidate(q2);
 
   // The address tells the two apart, so Back and Forward land on the report each step was showing.
   const h = await openFixture({ files: { ...experiment, ...report } });
-  await h.click('#runs-rows tr.run');
-  await h.click('.tab[data-view="report"]');
-  await go(h, 'candidates');
-  await openCand(h, 'c10');
-  await h.click('#opt-cands [data-open]');
-  const showing = () => `${h.text('#rep-count')} ${h.$('#rep-borrowed').hidden ? 'own' : 'candidate'}`;
-  const travel = async delta => { h.window.history.go(delta); await tick(6); return `${h.$('.view.on').id} ${showing()}`; };
-  eq(h.window.location.hash, '#/optimization/demo/candidates/c10/report', 'a candidate in the Report view is named in the address');
+  await h.openReport();
+  await candidate(h);
+  const showing = () => `${h.text('#rep-count')} ${h.text('#crumbs').startsWith('Runs') ? 'candidate' : 'own'}`;
+  const travel = async delta => { await h.travel(delta); return `${h.$('.view.on').id} ${showing()}`; };
+  eq(h.window.location.pathname, '/optimization/demo/candidates/c10/report', 'a candidate on the report page is named in the address');
   eq([await travel(-2), await travel(2)], ['v-report 2 of 2 rows own', 'v-report 15 of 15 rows candidate'],
-    'Back to the run\'s own report shows that report, and Forward brings the candidate\'s cases back');
+    'Back to the folder\'s report shows that report, and Forward brings the candidate\'s cases back');
   const reopened = await openFixture({ files: { ...experiment, ...report } });
-  reopened.window.location.hash = h.window.location.hash;
-  await tick(6);
-  eq(`${reopened.$('.view.on').id} ${reopened.text('#rep-count')}`, 'v-report 15 of 15 rows', 'and the address alone reopens them');
-  await q2.click('#rep-borrowed [data-act="unborrow"]');
+  await reopened.visit(h.window.location.pathname);
+  eq([`${reopened.$('.view.on').id} ${reopened.text('#rep-count')}`, reopened.text('#crumbs')],
+    ['v-report 15 of 15 rows', `Runs/${RUN_ID}/Candidates/c10`], 'and the address alone reopens them');
+  await q2.click('#crumbs [data-go="opt-candidates"]');
   ok(q2.$('#v-opt-candidates').classList.contains('on') && q2.text('#rep-count') === '',
-    'and it goes there, leaving no report loaded', q2.text('#rep-count'));
+    'the Candidates crumb goes there, leaving no report loaded', q2.text('#rep-count'));
+  await q2.click('.tab[data-view="reports"]');
+  ok(q2.$('#v-reports').classList.contains('on') && q2.$('#pagehead').hidden, 'so Reports is the list again, with no header', q2.$('.view.on').id);
 }
 
 // ── partial and malformed logs ──
 {
   const cut = jsonl(EVENTS.slice(0, 40)) + JSON.stringify(EVENTS[40]).slice(0, 30);
   const running = await openFixture({ events: cut, tab: 'overview' });
-  ok(running.text('#opt-note') === '' && /still running/.test(running.text('#opt-sub'))
+  ok(running.text('#opt-note') === '' && running.text('#facts') === 'still running'
     && marks(running, '#opt-series-chart').length > 0,
     'a half-written last line is not damage: the run reads as still running and draws what it has',
     running.text('#opt-note'));
@@ -691,13 +717,19 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
   const on = () => q.$$('#opt-runs-rows tr[data-opt-run]').map(tr => tr.classList.contains('on'));
   ok(on().length === 2 && q.text('#opt-runs-count') === '2 runs', 'both runs are listed and counted',
     q.text('#opt-runs-count'));
-  ok(q.text('#opt-sub').startsWith(RUN_ID) && same(on(), [true, false]), 'the first is open, and its row is marked',
-    q.text('#opt-sub'));
+  ok(q.text('#crumbs') === `Runs/${RUN_ID}` && same(on(), [true, false]), 'the first is open, and its row is marked',
+    q.text('#crumbs'));
   await go(q, 'runs');
   await q.click(q.$$('#opt-runs-rows tr[data-opt-run]')[1]);
-  ok(q.text('#opt-sub').startsWith('second-run') && q.$('#v-opt-overview').classList.contains('on')
-    && same(on(), [false, true]), 'picking the other run opens its Overview and moves the mark', q.text('#opt-sub'));
-  eq(q.window.location.hash, '#/optimization/b/overview', 'and the address names that run by its directory');
+  ok(q.text('#crumbs') === 'Runs/second-run' && q.$('#v-opt-overview').classList.contains('on')
+    && same(on(), [false, true]), 'picking the other run opens its Overview and moves the mark', q.text('#crumbs'));
+  eq(q.window.location.pathname, '/optimization/b/overview', 'and the address names that run by its directory');
+  await go(q, 'candidates');
+  await openCand(q, 'c0');
+  await go(q, 'runs');
+  await q.click(q.$$('#opt-runs-rows tr[data-opt-run]')[0]);
+  await go(q, 'candidates');
+  ok(candRow(q, 'c0') && !q.$('#opt-cands tr.detail'), 'a candidate opened in one run is not open in the next, though both have a c0');
 }
 
 // ── a trial's verdict comes from its evaluators, not from having finished ──
@@ -827,13 +859,13 @@ const WRITTEN = configWith(c => {
 // ── Tunables: a space that does not cover the log, and a record with none ──
 {
   const narrowed = configWith(c => {
-    c.space = c.space.filter(r => !['temperature', 'max_tokens'].includes(r.key));
+    c.space = [null, ...c.space.filter(r => !['temperature', 'max_tokens'].includes(r.key))];
   });
   const partial = await openFixture({ config: narrowed, tab: 'tunables' });
   ok(partial.$$('#opt-space-rows tr').length === 4 && partial.$('#opt-space-note').classList.contains('warn')
     && partial.text('#opt-space-note')
       === 'The log also changed temperature, max_tokens, which this space does not declare.',
-    'keys the log changed without the space declaring them are named, as a warning', partial.text('#opt-space-note'));
+    'keys the log changed without the space declaring them are named, as a warning, and a null row is skipped', partial.text('#opt-space-note'));
 
   const spaceless = await openFixture({ config: configWith(c => { delete c.space; }), tab: 'setup' });
   const brief = kv(spaceless, '#opt-setup-kv');
@@ -882,16 +914,16 @@ const WRITTEN = configWith(c => {
 
 // ── a candidate the optimizer never labelled is measured from its trials ──
 {
-  const trial = (score, usage) => ({
+  const trial = (name, score, usage) => ({
     event: 'trial', iteration: 0,
-    record: { candidate_id: 'c0', split: 'train', status: 'completed',
+    record: { candidate_id: 'c0', case_name: name, run_index: 0, split: 'train', status: 'completed',
       evaluations: { Helpfulness: { score, reason: 'judged' } }, usage },
   });
   const q = await openLog({ objective: 'Maximize(Helpfulness)' }, [START,
-    trial(0.2, { tokens: 100, model_calls: 1, seconds: 1.5 }),
-    trial(0.4, { tokens: 300, model_calls: 3, seconds: 2.5 }),
+    trial('a', 0.2, { tokens: 100, model_calls: 1, seconds: 1.5 }),
+    trial('b', 0.4, { tokens: 300, model_calls: 3, seconds: 2.5 }),
     iterationEnd(0, [prop('c0', 0, 0.3)], 2)]);
-  eq(texts(q, '#opt-series-pick option').join(), 'Objective,Helpfulness', 'the picker offers only what was measured');
+  eq(texts(q, '#opt-series-pick button').join(), 'Objective,Helpfulness', 'the picker offers only what was measured');
   await pick(q, '#opt-series-pick', 'm:Helpfulness');
   ok(same(marks(q, '#opt-series-chart').map(m => m.title), ['c0 · Helpfulness 0.30'])
     && q.$$('#opt-series-chart path.metric-line').length === 0,
@@ -900,6 +932,39 @@ const WRITTEN = configWith(c => {
   ok(same(titles(q, '#opt-usage-chart rect.col'), ['iteration 0: 400 over 2 trials'])
     && !/excluding/.test(q.text('#opt-usage-cap')),
     'usage is summed over the iteration, with no caveat when nothing follows it', q.text('#opt-usage-cap'));
+}
+
+// ── a trial recorded again replaces the earlier record ──
+{
+  const trial = (status, score, more) => ({
+    event: 'trial', iteration: 0,
+    record: { candidate_id: 'c0', case_name: 'a', run_index: 0, split: 'train', status,
+      evaluations: score == null ? {} : { H: { score } }, usage: { tokens: 100 }, ...more },
+  });
+  const q = await openLog({ objective: 'Maximize(H)' }, [START, trial('infrastructure_invalid', null),
+    trial('completed', 0.8, { attempts: 2, previous_attempts: [{ status: 'infrastructure_invalid' }] }),
+    iterationEnd(0, [prop('c0', 0, 0.8)], 1)]);
+  eq([q.text('#opt-cost-sum'), q.$$('#opt-status-chart .legend span').map(flat).join(' | ')],
+    ['100 tokens · 1 trial', 'completed 1 | train 1'], 'it is counted once, as it ended, and so is what it spent');
+  await go(q, 'candidates');
+  await openCand(q, 'c0');
+  eq(lines(q, '#opt-cands tr.trial'), ['a | train | H 0.80 | completed'], 'and listed once under its candidate');
+}
+
+// ── proposals that built nothing new: a tie, a duplicate, two invalid patches ──
+{
+  const none = { candidate_id: null, number: null, outcome: 'invalid', objective: null };
+  const q = await openLog({ objective: 'Maximize(H)' }, [START, iterationEnd(0, [prop('c0', 0, 0.4)]),
+    iterationEnd(1, [prop('c1', 1, 0.6), prop('c2', 2, 0.6), prop('c1', 1, 0.6, 'duplicate'), none, none])]);
+  eq([stats(q)[1], texts(q, '#opt-series-chart text.vlab').join()],
+    ['Best on training | 0.60 | c1 · highest here', 'c1 · 0.60'],
+    'of two candidates level at the top, the figure and the flag on the chart name the same one: the first to get there');
+  await go(q, 'setup');
+  has(q.text('#opt-explain'), /built 3 versions/, 'a proposal that repeats a candidate is not another version built');
+  await go(q, 'candidates');
+  await q.click(q.$$('#opt-cands tr.case').at(-1));
+  eq(q.$$('#opt-cands tr.case').map(tr => tr.getAttribute('aria-expanded')).slice(-2), ['false', 'true'],
+    'and of two invalid patches in one iteration, opening one leaves the other closed');
 }
 
 // ── the candidate axis: ids too long for a slot, and more labels than fit ──
@@ -936,17 +1001,17 @@ const openResult = (report, { objective = 'Maximize(H)', extra, ...config } = {}
 
 for (const [name, objective, verdict, bar, listed] of [
   ['straddles zero', interval(0.1, -0.04, 0.24),
-    /\+0\.1, 95% interval \[-0\.04, 0\.24\] — includes zero, so this run has not shown an improvement/,
+    /\+0\.1, 95% interval \[-0\.04, 0\.24\]: includes zero, so this run has not shown an improvement/,
     'H ↑ / flat / across zero', '+0.1 held out · includes zero (flat)'],
   ['is below zero', interval(-0.08, -0.19, -0.02),
     /Objective -0\.08, .* below zero, so shipping the champion would be a regression/,
     'H ↑ / bad / left of zero', '-0.08 held out · below zero (down)'],
-  ['is narrowly clear', interval(0.1071, 0.004, 0.2103), /\[0\.004, 0\.2103\] — clear of zero/,
+  ['is narrowly clear', interval(0.1071, 0.004, 0.2103), /\[0\.004, 0\.2103\]: clear of zero/,
     'H ↑ / good / right of zero', '+0.1071 held out · clear of zero (up)'],
   ['is absent', { mean_diff: 0.1, n_cases: 6 }, /\+0\.1 against the baseline, with no interval in the report/,
     null, '+0.1 held out · no interval (flat)'],
   ['has no width', interval(0.7, 0.7, 0.7),
-    /\+0\.7 against the baseline — the same on every one of 6 test cases, so its 95% interval has no width/,
+    /\+0\.7 against the baseline, the same on every one of 6 test cases, so its 95% interval has no width/,
     null, '+0.7 held out · no width (flat)'],
 ]) {
   const q = await openResult(testReport(objective));
@@ -1088,7 +1153,7 @@ const TWO_GOALS = 'Pareto(Maximize(Quality), Minimize(tokens))';
 {
   const one = await openLog({ objective: 'Maximize(Quality)' }, goalLog(FRONT));
   ok(one.$('#opt-tradeoff').hidden && one.$('.tab[data-view="opt-trade"]').hidden
-    && /one goal — Quality — so it has a best value/.test(one.text('#opt-to-none')),
+    && /^One goal, so nothing to trade offThis run optimized one goal, Quality, so it has a best value/.test(one.text('#opt-to-none')),
     'a run with one goal has no trade-off chart and no tab for it, and the view says why', one.text('#opt-to-none'));
 
   const two = await openLog({ objective: TWO_GOALS }, goalLog(FRONT));
@@ -1104,7 +1169,7 @@ const TWO_GOALS = 'Pareto(Maximize(Quality), Minimize(tokens))';
   ok(at.c2.cy < at.c1.cy && at.c1.cx > at.c2.cx && at.c3.cx < at.c2.cx && at.c3.cy > at.c2.cy,
     'both axes are turned so better is up and right: fewer tokens is higher, and c3, worse on both, is below c2',
     JSON.stringify(at));
-  has(two.text('#opt-to-chart'), /fewer tokens is better — upward along this axis/,
+  has(two.text('#opt-to-chart'), /fewer tokens is better, upward along this axis/,
     'the minimised axis says which way better is');
   eq([ringed(two), at.c0.cls, at.c1.cls], ['c1,c2', 'baseline', 'champion'],
     'the recorded front is ringed, and the baseline and champion are marked');
@@ -1114,6 +1179,10 @@ const TWO_GOALS = 'Pareto(Maximize(Quality), Minimize(tokens))';
   eq(['c0', 'c1', 'c2', 'c3'].map(id => at[id].cand || 'no link'), ['no link', 'c1', 'c2', 'c3'],
     'a mark links to its candidate only when the Candidates table has a row for it, which the baseline here has not');
   has(two.text('#opt-note'), /front is on the Trade-off tab/, 'the Pareto note points at this tab');
+  await go(two, 'candidates');
+  await openCand(two, 'c1');
+  eq(flat(two.$('#opt-cands .cand-sum .stat.line')), 'c1 ← c0 Derived from',
+    'a candidate descends from the baseline though no iteration lists the baseline as a proposal');
   ok(two.$('#opt-effects').hidden, 'a run with no effects.json has no effects drawer');
 
   // Where the front comes from: the end report, else the champion, else the last iteration's snapshot.
@@ -1136,9 +1205,9 @@ const TWO_GOALS = 'Pareto(Maximize(Quality), Minimize(tokens))';
       labelled('c2', { Quality: 0.6, tokens: 100, seconds: 9 }),
       iterationEnd(1, [prop('c1', 1, 0.9), prop('c2', 2, 0.6)], 4)]);
   ok(three.text('#opt-to-sum') === '3 goals' && !three.$('#opt-to-x').hidden
-    && texts(three, '#opt-to-y option').join() === 'tokens ↓,seconds ↓',
+    && texts(three, '#opt-to-y button').join() === 'tokens ↓,seconds ↓',
     'three goals are counted, with a pair to pick and the goal on one axis off the other\'s list',
-    texts(three, '#opt-to-y option').join());
+    texts(three, '#opt-to-y button').join());
   ok(ringed(three) === 'c1,c2' && /worked out here.*front over all 3/.test(three.text('#opt-to-cap')),
     'the front of the pair is computed with each goal\'s direction, and said to be',
     `${ringed(three)}: ${three.text('#opt-to-cap')}`);
@@ -1160,19 +1229,57 @@ const TWO_GOALS = 'Pareto(Maximize(Quality), Minimize(tokens))';
     effects: [{ metric: 'Quality', key: 'prompt', level: 'rewritten', reference: 'default', mean: 0.2,
       ci90: [0.1, 0.3], p_positive: 0.98 }],
   };
+  const aimless = await openLog({ objective: 'Maximize(Quality)' }, goalLog(FRONT), { 'r/effects.json': { ...fitted, goals: [] } });
+  ok(aimless.$('#opt-effects').hidden && aimless.$$('#opt-cands tr.case').length === 4,
+    'estimates with no goal to read them for have no drawer, and the rest of the run still draws', aimless.errs.join());
   const oneGoal = await openLog({ objective: 'Maximize(Quality)' }, goalLog(FRONT), { 'r/effects.json': fitted });
   ok(!oneGoal.$('#opt-effects').hidden && oneGoal.$('#opt-eff-goal').hidden
     && texts(oneGoal, '#opt-eff-chart .eff-row text.tick').join() === '+0.2 · 0.98',
     'one goal still gets the plot, with no goal picker', texts(oneGoal, '#opt-eff-chart .eff-row text.tick').join());
 }
 
-// ── a null row in the declared space, and a run that has picked nothing yet ──
+// ── the run's files are read on request ──
 {
-  const q = await openFixture({ config: configWith(c => { c.space = [null, ...c.space]; }), tab: 'tunables' });
-  eq(q.$$('#opt-space-rows tr').length, CONFIG.space.length, 'a null row in the declared space is skipped');
-  const unpicked = await openFixture({ events: eventsWith(e => (['picked', 'test', 'finalists'].includes(e.event) ? null : e)), tab: 'overview' });
-  const stats = flat(unpicked.$('#opt-stats'));
-  ok(/highest here/.test(stats) && !/not the pick/.test(stats), 'with no champion, the training best is not called "not the pick"', stats);
+  const trial = EVENTS.find(e => e.event === 'trial' && e.record.candidate_id === 'c10' && e.record.case_name === 'train_case_01');
+  const transcript = `demo/transcripts/${trial.record.transcript.hash}.json`;
+  const experiment = { path: 'e.json', name: 'e.json', dir: '.', size: 1, modified: 5, cases: 1, evaluators: [], reports: [] };
+  const run = { id: 'demo', dir: 'demo', run_id: RUN_ID, config: CONFIG, events_path: 'demo/events.jsonl', modified: 1,
+    tuned_against: { path: 'e.json', status: 'verified', split_cases: 15, matched: 15 } };
+  const folder = { root: '/served', depth: 3, read_only: false };
+  /* What is on disk: the experiment's stamp, and whether the transcript has been written yet. */
+  const disk = { stamp: 5, transcript: false };
+  let saved = null;
+  const answer = (body, status = 200) => ({ ok: status < 400, status, statusText: '', json: async () => structuredClone(body) });
+  const q = await page({ fetchImpl: async (url, opts = {}) => {
+    const [route, query] = String(url).split('?');
+    const asked = new URLSearchParams(query).get('path');
+    if (route === '/api/config') return answer(folder);
+    if (route === '/api/scan') return answer({ ...folder, fingerprint: 'f', experiments: [experiment], reports: [], skipped: [], optimizer_runs: [run] });
+    if (route === '/api/events') return answer({ events: EVENTS });
+    if (opts.method === 'PUT') { saved = JSON.parse(opts.body); return answer({ path: asked, modified: 6, cases: 1 }); }
+    if (asked === 'e.json') return answer({ modified: disk.stamp, document: { cases: [{ name: 'train_case_01', input: 'q' }], evaluators: [] } });
+    return asked === transcript && disk.transcript
+      ? answer({ document: JSON.parse(TRANSCRIPTS[transcript]) }) : answer({ error: 'no such file' }, 404);
+  } });
+  await go(q, 'candidates');
+  await openTrial(q, 'c10', 'train_case_01');
+  has(panel(q).Transcript, /which is not in the run directory/, 'a transcript the run directory lacks is named as missing');
+  disk.transcript = true;
+  await q.click('#v-opt-runs [data-act="rescan"]');
+  await tick(4);
+  eq(q.text('#opt-cands .tr-count'), '3 spans of a recorded session', 'and is read once it is there, when the folder is read again with its trial still open');
+
+  await q.openExperiment();
+  await q.type('#form [data-k="input"]', 'edited');
+  disk.stamp = 9;
+  await go(q, 'candidates');
+  await q.click('#opt-cands [data-open]');
+  await tick(4);
+  await q.openExperiment();
+  await q.click('#save');
+  await tick(4);
+  eq(saved && saved.modified, 5,
+    'reading the tuned-against experiment for a candidate\'s cases leaves the editor\'s save guard on the copy it loaded');
 }
 
-done(pages.flatMap(q => q.errs));
+done();
