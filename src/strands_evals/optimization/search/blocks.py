@@ -5,6 +5,7 @@ One module, so `Schedule.next`'s hints resolve without an import cycle.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import logging
 from abc import ABC, abstractmethod
@@ -181,31 +182,93 @@ class Joint(Schedule):
 
 
 class Alternate(Schedule):
-    """One block per iteration, in block order, so each candidate changes one block. No arguments.
+    """One block per iteration, in turn, so each candidate changes one block.
 
-    Ends after a full cycle of steps (one per block) that saved no candidate.
+    Each turn in the turn order is `iterations` consecutive steps of one block, then the next turn begins; a
+    block given twice takes two turns per cycle. Inside a `Nested` round the turns start over from the first,
+    since the round's context holds only its own steps. When the number of turns times `iterations` is more
+    than the round's `inner_iterations`, the round's room runs out before the cycle ends, so the later turns
+    get fewer steps or none (a step that saves nothing uses no room).
+    Ends after a full cycle of steps (every turn in the order taken once) that saved no candidate; each of
+    those steps may ask its proposer up to `Search.redraws + 1` times.
+
+    Attributes:
+        order: The names of the blocks that take turns, in turn order; empty means every block in scope.
+        iterations: Consecutive steps each block's turn gets.
     """
 
     name: ClassVar[str] = "alternate"
 
-    def next(self, ctx: ScheduleContext) -> Step | None:
-        """The next block in turn: block `len(ctx.past) % len(ctx.blocks)`.
+    def __init__(self, *blocks: Block | str, iterations: int = 1):
+        """Set the turn order and the length of a turn.
 
-        Steps that saved nothing still advance the turn, so one stuck block doesn't hold up the others.
-        None when there are no blocks, or when the last `len(ctx.blocks)` steps (a full cycle, every block
-        asked once) saved no candidate.
+        Args:
+            *blocks: The blocks (or their names) that take turns, in this order; a block given twice takes
+                two turns per cycle, and blocks not given never move. None given means every block in scope,
+                in block order. An unnamed `Block` is named by `Search.resolve`, which reaches an `Alternate`
+                given as the schedule, in `within=`, or inside a `Nested`, but not one inside your own
+                `Schedule` subclass: there, give the block `name=` (or pass the name).
+            iterations: Consecutive steps each block gets before the next block's turn.
+
+        Raises:
+            TypeError: A block is not a `Block` or a block name, or `iterations` is not an int.
+            ValueError: An empty name, or `iterations` below 1.
         """
-        if not ctx.blocks:
+        not_blocks = [b for b in blocks if not isinstance(b, (Block, str))]
+        if not_blocks:
+            raise TypeError(f"Alternate(*blocks) takes Blocks or block names, not {not_blocks!r}")
+        if "" in blocks:
+            raise ValueError("Alternate(*blocks) must not hold an empty name")
+        if not isinstance(iterations, int) or isinstance(iterations, bool):
+            raise TypeError(f"Alternate(iterations=...) must be an int, not {iterations!r}")
+        if iterations < 1:
+            raise ValueError(f"Alternate(iterations=...) must be >= 1, not {iterations}")
+        self._blocks: tuple[Block | str, ...] = blocks
+        self.iterations = iterations
+
+    @property
+    def order(self) -> tuple[str, ...]:
+        """The names of the blocks that take turns, in turn order; empty means every block in scope.
+
+        Raises:
+            ValueError: An unnamed `Block` is given; the schedule `Search.resolve` returns holds its name.
+        """
+        names = []
+        for block in self._blocks:
+            name = block if isinstance(block, str) else block.name
+            if name is None:
+                raise ValueError("an Alternate block has no name; use the schedule Search.resolve returns")
+            names.append(name)
+        return tuple(names)
+
+    def next(self, ctx: ScheduleContext) -> Step | None:
+        """The block whose turn it is: turn `len(ctx.past) // iterations`, over the turn order.
+
+        The turn order is `order` narrowed to the blocks in `ctx.blocks` (a `Nested` round holds only the
+        blocks active under its opener), or every block of `ctx.blocks` when `order` is empty. Steps that
+        saved nothing still advance the turn, so one stuck block doesn't hold up the others.
+        None when the turn order is empty, or when the last `len(turn order) * iterations` steps (a full
+        cycle, every turn taken once) saved no candidate.
+        """
+        order = list(ctx.blocks)
+        if self.order:
+            by_name = {_name(block): block for block in ctx.blocks}
+            order = [by_name[name] for name in self.order if name in by_name]
+        if not order:
             return None
         misses = 0
         for record in reversed(ctx.past):
             if _saved(record):
                 break
             misses += 1
-        if misses >= len(ctx.blocks):
+        if misses >= len(order) * self.iterations:
             return None
-        block = ctx.blocks[len(ctx.past) % len(ctx.blocks)]
+        block = order[(len(ctx.past) // self.iterations) % len(order)]
         return Step((block,), ctx.proposals_per_iteration, None, None, "inner", ())
+
+    def config(self) -> dict[str, Any]:
+        """The turn order's block names (empty: every block in scope) and `iterations`."""
+        return {"blocks": list(self.order), "iterations": self.iterations}
 
 
 class Nested(Schedule):
@@ -507,17 +570,19 @@ class Search:
         first (a block whose keys exist only under another block's choice comes after it), around
         `self.within` (default `Alternate()`); when every block is structural, the innermost isn't nested;
         `Joint()` when there is no structural block. Each `Nested` in it is copied with its outer block's
-        resolved name, and the schedule is checked either way.
+        resolved name, each `Alternate` with its blocks' resolved names, and the schedule is checked either
+        way.
 
         Raises:
             ValueError: A variable that is neither a declared name nor a key; a key two blocks name the
                 same way (both directly, or both through a declared name); a block left with no key (or
                 whose declared names reach only keys its proposer can't propose); a key named directly whose
                 kind the block's proposer can't propose (not in `proposer.kinds`, e.g. a text key given to
-                `TPE`), naming the key and the block; or a `Nested` (given, or in `within`) whose
-                outer block is an unnamed `Block` not in this search, is outside its scope, or has keys that
-                exist only under a choice in one of its inner blocks; or, for the default schedule,
-                structural blocks whose choices depend on each other in a cycle.
+                `TPE`), naming the key and the block; a `Nested` (given, or in `within`) whose outer block
+                is an unnamed `Block` not in this search, is outside its scope, or has keys that exist only
+                under a choice in one of its inner blocks; an `Alternate` (given, in `within`, or inside a
+                `Nested`) that gives an unnamed `Block` not in this search or a block outside its scope; or,
+                for the default schedule, structural blocks whose choices depend on each other in a cycle.
         """
         params = space.params()
         order = {info.key: i for i, info in enumerate(params)}
@@ -626,8 +691,19 @@ def _name(block: Block) -> str:
 
 
 def _with_names(schedule: Schedule, names: Mapping[int, str]) -> Schedule:
-    """A copy of `schedule` in which every `Nested` names its outer block, a user's `Block` by the name
-    `Search.resolve` gave it (`names`: id of the block -> name); a schedule other than `Nested` as is."""
+    """A copy of `schedule` in which every `Nested` names its outer block and every `Alternate` its blocks, a
+    user's `Block` by the name `Search.resolve` gave it (`names`: id of the block -> name); any other schedule
+    as is."""
+    if isinstance(schedule, Alternate):
+        order: list[Block | str] = []
+        for block in schedule._blocks:
+            name = block if isinstance(block, str) else names.get(id(block), block.name)
+            if name is None:
+                raise ValueError(f"Alternate({block!r}): that block is not in this Search; add it or name it")
+            order.append(name)
+        named = copy.copy(schedule)  # keeps a subclass and its settings
+        named._blocks = tuple(order)
+        return named
     if not isinstance(schedule, Nested):
         return schedule
     outer = schedule._outer
@@ -706,7 +782,17 @@ def _check(
     space: Space,
     block_of: Mapping[str, str],
 ) -> None:
-    """Raise when a given `Nested` can't run over the blocks in its scope."""
+    """Raise when a given `Nested` or `Alternate` can't run over the blocks in its scope; log the blocks an
+    `Alternate` leaves out of its order."""
+    if isinstance(schedule, Alternate):
+        order = schedule.order
+        outside = [name for name in order if name not in scope]
+        if outside:
+            raise ValueError(f"Alternate names blocks outside its scope: {outside}; the blocks are {list(scope)}")
+        fixed = [name for name in scope if order and name not in order]
+        if fixed:
+            logger.info("blocks=<%s> | blocks left out of the alternate order never move", fixed)
+        return
     if not isinstance(schedule, Nested):
         return
     if schedule.outer not in scope:
