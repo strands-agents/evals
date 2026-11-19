@@ -1626,6 +1626,45 @@ async def test_a_concurrent_proposer_that_raises_cancels_its_sibling_calls(tmp_p
     assert "screened" not in _names(events) and events[-1]["event"] == "stop"
 
 
+async def test_the_spend_a_cancelled_sibling_call_logs_is_counted_and_survives_resume(tmp_path):
+    spend = Usage(
+        input_tokens=90,
+        output_tokens=10,
+        tokens=100,
+        cache_read_tokens=None,
+        cache_write_tokens=None,
+        model_calls=1,
+        seconds=1.0,
+        models=["m"],
+    )
+    started = []
+
+    class Racing(Scripted):
+        concurrent = True
+
+        async def propose(self, request):
+            started.append(request.n)
+            if len(started) == 1:
+                raise RuntimeError("model gone")
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                request.log("proposer_usage", usage=spend)  # the spend made before the cancellation
+                raise
+            return []  # pragma: no cover
+
+    optimizer = _searching(
+        Block(Racing(), "temperature"), schedule=Alternate(), base_dir=tmp_path, proposals_per_iteration=3
+    )
+    reason, events = await _search(optimizer)
+    names = _names(events)
+    assert reason == "proposer_error" and len(started) == 3
+    assert names[names.index("proposer_error") - 2 : names.index("proposer_error")] == ["proposer_usage"] * 2
+    assert optimizer._search_cost.tokens == 2 * 100
+    state = load_state(RunDirectory.open(optimizer._run.root), config=optimizer._config())
+    assert state.search_cost == optimizer._search_cost
+
+
 async def test_an_openers_duplicate_doesnt_drop_the_rest_of_its_batch(tmp_path):
     proposer = Scripted({"temperature": 0.0}, {"temperature": 0.5})  # the first repeats the baseline
     optimizer = _searching(
