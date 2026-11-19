@@ -23,6 +23,7 @@ from .evaluation_data_store import EvaluationDataStore
 from .evaluators.cascade import Cascade
 from .evaluators.coherence_evaluator import CoherenceEvaluator
 from .evaluators.conciseness_evaluator import ConcisenessEvaluator
+from .evaluators.context_utilization_evaluator import ContextUtilizationEvaluator
 from .evaluators.correctness_evaluator import CorrectnessEvaluator
 from .evaluators.deterministic import (
     Contains,
@@ -841,6 +842,7 @@ class Experiment(Generic[InputT, OutputT, ReportT]):
             "InteractionsEvaluator": InteractionsEvaluator,
             "CoherenceEvaluator": CoherenceEvaluator,
             "ConcisenessEvaluator": ConcisenessEvaluator,
+            "ContextUtilizationEvaluator": ContextUtilizationEvaluator,
             "CorrectnessEvaluator": CorrectnessEvaluator,
             "FaithfulnessEvaluator": FaithfulnessEvaluator,
             "GoalSuccessRateEvaluator": GoalSuccessRateEvaluator,
