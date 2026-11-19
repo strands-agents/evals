@@ -133,7 +133,7 @@ class CandidateLabel(BaseModel):
         unmet_constraints: Each constraint not met, as the ranking assessed it, as a sentence (e.g. "tokens <= 4000:
             P(met) 0.62 < 0.9"); unlike the per-constraint margins elsewhere named `violations`.
         estimates: Per goal metric (`Assessment.estimates`); empty when `is_from_fit` is False.
-        p_met: Per constraint (`Assessment.p_met`); empty when `is_from_fit` is False.
+        p_met: Per constraint whose metric was measured (`Assessment.p_met`); empty when `is_from_fit` is False.
         is_from_fit: False when assessed by measured means.
         measured: Every metric measured on train, usage included; a metric with no value is left out.
     """
@@ -157,11 +157,12 @@ class ValidationReport(BaseModel):
         front: Under a `Pareto` objective, the validated front (the baseline included when on it), in ranking
             order, so the champion is first unless the front is empty; `[]` otherwise.
         objectives: Candidate id -> its validation objective under the validation fit, or by measured
-            validation means when `problem` is set; None when it isn't eligible on validation.
+            validation means when `problem` is set; None when it isn't eligible on validation or no
+            validation trial of it completed.
         estimates: Candidate id -> goal metric -> the validation fit's estimate; empty when assessed by
             measured means.
-        infeasible: Candidate id -> why it can't ship (a constraint not met on validation, or not
-            eligible there).
+        infeasible: Candidate id -> why it can't ship (a constraint not met on validation, not eligible
+            there, or no validation trial of it completed).
         measured: Candidate id -> every metric measured on validation.
         problem: Why the validation fit wasn't used, e.g. "fewer than 2 eligible candidates" or
             "the model raised: <Type>: <message>"; None when it was used.

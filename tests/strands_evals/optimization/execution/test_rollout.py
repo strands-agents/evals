@@ -6,10 +6,12 @@ from contextlib import asynccontextmanager, contextmanager
 
 import opentelemetry.trace as trace_api
 import pytest
+from botocore.exceptions import ProfileNotFound
 from opentelemetry.context import Context
 from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider
 from opentelemetry.sdk.trace.sampling import ALWAYS_OFF
-from strands import Agent
+from strands import Agent, tool
+from strands.multiagent import Swarm
 from strands.types.exceptions import EventLoopException, ModelThrottledException
 
 from strands_evals import Case, Experiment
@@ -22,11 +24,11 @@ from strands_evals.optimization.execution.rollout import (
     instrument,
     make_task,
 )
-from strands_evals.optimization.execution.traces import TraceCapture
+from strands_evals.optimization.execution.traces import FACTORY_AGENT, TraceCapture
 from strands_evals.types import EvaluationOutput
-from strands_evals.types.optimization import TrialStatus
+from strands_evals.types.optimization import CANDIDATE_SPAN_KEY, TrialStatus
 from strands_evals.types.trace import AgentInvocationSpan, Session
-from tests.strands_evals.optimization.scripted_model import ScriptedModel
+from tests.strands_evals.optimization.scripted_model import ScriptedModel, ToolUse
 
 
 @pytest.fixture
@@ -84,18 +86,20 @@ async def test_default_rollout_builds_a_fresh_agent_each_time():
 # make_task
 
 
-async def test_make_task_without_environment_passes_the_factory():
-    seen = []
+async def test_make_task_without_environment_builds_through_the_factory():
+    built = []
+
+    def factory(**kwargs):
+        agent = Agent(model=ScriptedModel(["x"]), callback_handler=None)
+        built.append((kwargs, agent))
+        return agent
 
     async def rollout(agent_factory, case):
-        seen.append(agent_factory)
-        return {"output": case.input}
+        return {"output": agent_factory(flavor=case.input)}
 
-    factory = _agent_factory()
     out = await make_task(factory, rollout)(_case(text="hello"))
 
-    assert out == {"output": "hello"}
-    assert seen == [factory]
+    assert built == [({"flavor": "hello"}, out["output"])]
 
 
 async def test_make_task_runs_a_sync_rollout():
@@ -452,6 +456,20 @@ async def test_an_agent_failure_is_logged_and_raised(traces):
     assert entry.error_type == "EventLoopException"
 
 
+async def test_a_credential_error_building_the_agent_is_infrastructure(traces):
+    log = TrialLog()
+
+    def build():
+        raise ProfileNotFound(profile="bedrock")
+
+    with pytest.raises(ProfileNotFound):
+        await _run(instrument(make_task(build, default_rollout), log, traces), _case(), traces)
+
+    entry = log.records()["case-1"]
+    assert entry.status is TrialStatus.INFRASTRUCTURE_INVALID
+    assert entry.error_type == "ProfileNotFound"
+
+
 async def test_an_environment_error_records_its_cause(traces):
     log = TrialLog()
 
@@ -601,11 +619,39 @@ async def test_experiment_agent_failure_is_logged(traces):
     assert log.records()["case-1"].status is TrialStatus.AGENT_FAILURE
 
 
-async def test_usage_covers_every_agent_in_a_multi_agent_rollout(traces):
+def _user(reply="I need more help.", tokens=1000):
+    """A simulated user: an agent the rollout builds itself, outside the factory."""
+    usage = {"inputTokens": tokens - 20, "outputTokens": 20, "totalTokens": tokens}
+    return Agent(model=ScriptedModel([reply], model_id="user-model", usage=usage), callback_handler=None)
+
+
+async def _attempt(task, traces):
+    """Run `task` on one case; return the attempt's usage, benchmark usage, and `Session`."""
+    log = TrialLog()
+    await _run(instrument(task, log, traces), _case(), traces)
+    entry = log.records()["case-1"]
+    return (
+        traces.usage(entry.trace_id, entry.attempt_span_id),
+        traces.benchmark_usage(entry.trace_id, entry.attempt_span_id),
+        traces.session(entry.trace_id, entry.attempt_span_id),
+    )
+
+
+def _marked(session):
+    """Each agent invocation's prompt, with whether its span is marked as the candidate's."""
+    return [
+        (span.user_prompt, span.metadata.get(CANDIDATE_SPAN_KEY))
+        for trace in session.traces
+        for span in trace.spans
+        if isinstance(span, AgentInvocationSpan)
+    ]
+
+
+async def test_usage_counts_only_the_factorys_agents_and_the_rest_is_benchmark_usage(traces):
     async def rollout(agent_factory, case):
         planner = agent_factory()
         plan = await planner.invoke_async(case.input)
-        # A second agent built outside the factory still lands in the trial's trace.
+        # A second agent built outside the factory is the benchmark's, not the candidate's.
         writer = Agent(
             model=ScriptedModel(
                 ["draft", "final"],
@@ -618,20 +664,196 @@ async def test_usage_covers_every_agent_in_a_multi_agent_rollout(traces):
         await writer.invoke_async(str(plan))
         return {"output": str(await writer.invoke_async("polish"))}
 
-    log = TrialLog()
-    task = instrument(make_task(_agent_factory(model_id="planner-model"), rollout), log, traces)
-    await _run(task, _case(), traces)
+    usage, benchmark, session = await _attempt(make_task(_agent_factory(model_id="planner-model"), rollout), traces)
 
-    entry = log.records()["case-1"]
-    session, usage = (
-        traces.session(entry.trace_id, entry.attempt_span_id),
-        traces.usage(entry.trace_id, entry.attempt_span_id),
-    )
+    # The session keeps every agent, for the evaluators; only the planner's spans are the candidate's.
     assert sum(isinstance(span, AgentInvocationSpan) for trace in session.traces for span in trace.spans) == 3
-    assert usage.model_calls == 3
-    assert usage.tokens == 15 + 120 + 120
-    assert usage.output_tokens == 5 + 20 + 20
-    assert usage.input_tokens == usage.tokens - usage.output_tokens
-    assert usage.cache_read_tokens == 80
-    assert usage.cache_write_tokens is None
-    assert usage.models == ["planner-model", "writer-model"]
+    assert [marked for _, marked in _marked(session)] == [True, False, False]
+    assert (usage.model_calls, usage.tokens, usage.output_tokens, usage.models) == (1, 15, 5, ["planner-model"])
+    assert usage.seconds > 0
+    assert benchmark.model_calls == 2
+    assert benchmark.tokens == 120 + 120
+    assert benchmark.output_tokens == 20 + 20
+    assert benchmark.input_tokens == benchmark.tokens - benchmark.output_tokens
+    assert benchmark.cache_read_tokens == 80
+    assert benchmark.cache_write_tokens is None
+    assert benchmark.models == ["writer-model"]
+    assert benchmark.seconds == 0.0
+
+
+async def test_a_simulated_users_turns_are_benchmark_usage(traces):
+    async def conversation(agent_factory, case):
+        agent, user = agent_factory(), _user()
+        message = case.input
+        for _ in range(3):
+            message = str(await user.invoke_async(str(await agent.invoke_async(message))))
+        return {"output": message}
+
+    usage, benchmark, session = await _attempt(make_task(_agent_factory(), conversation), traces)
+
+    assert (usage.model_calls, usage.tokens) == (3, 3 * 15)
+    assert (benchmark.model_calls, benchmark.tokens, benchmark.models) == (3, 3 * 1000, ["user-model"])
+    assert [marked for _, marked in _marked(session)] == [True, False] * 3
+
+
+async def test_a_sync_rollout_building_an_agent_per_turn_splits_the_same_way(traces):
+    def conversation(agent_factory, case):  # runs in a worker thread
+        message = case.input
+        for _ in range(2):
+            message = str(_user()(str(agent_factory()(message))))
+        return {"output": message}
+
+    usage, benchmark, _ = await _attempt(make_task(_agent_factory(), conversation), traces)
+
+    assert (usage.model_calls, usage.tokens) == (2, 2 * 15)
+    assert (benchmark.model_calls, benchmark.tokens) == (2, 2 * 1000)
+
+
+@tunable(system_prompt=TextValue(default="be brief"))
+def _tunable_agent(system_prompt):
+    return Agent(model=ScriptedModel(["answer"]), system_prompt=system_prompt, callback_handler=None)
+
+
+async def test_an_agent_the_environment_runs_is_the_benchmarks(traces):
+    @asynccontextmanager
+    async def environment(case):
+        await _user("a profile").invoke_async(f"describe a customer for {case.name}")  # before the rollout
+        yield {}
+
+    task = make_task(_tunable_agent.bind({}), default_rollout, environment)
+    usage, benchmark, session = await _attempt(task, traces)
+
+    assert (usage.model_calls, usage.tokens) == (1, 15)
+    assert (benchmark.model_calls, benchmark.tokens) == (1, 1000)
+    assert [marked for _, marked in _marked(session)] == [False, True]
+
+
+async def test_a_sub_agent_called_from_the_factorys_agent_is_the_candidates(traces):
+    @tool
+    def ask_expert(question: str) -> str:
+        """Ask the expert."""
+        return str(_user("the expert says yes", tokens=200)(question))
+
+    def factory():
+        model = ScriptedModel([ToolUse("ask_expert", {"question": "is it?"}), "done"])
+        return Agent(model=model, tools=[ask_expert], callback_handler=None)
+
+    usage, benchmark, session = await _attempt(make_task(factory, default_rollout), traces)
+
+    assert (usage.model_calls, usage.tokens, usage.models) == (3, 15 + 200 + 15, ["scripted-model", "user-model"])
+    assert benchmark == benchmark.zero()
+    assert [marked for _, marked in _marked(session)] == [True, True]
+
+
+async def test_an_async_factorys_agent_is_tagged_once_awaited(traces):
+    async def factory():
+        return Agent(model=ScriptedModel(["hi"]), callback_handler=None)
+
+    async def rollout(agent_factory, case):
+        agent = await agent_factory()
+        await _user().invoke_async(str(await agent.invoke_async(case.input)))
+        return {"output": "x"}
+
+    usage, benchmark, _ = await _attempt(make_task(factory, rollout), traces)
+
+    assert (usage.tokens, benchmark.tokens) == (15, 1000)
+
+
+async def test_a_factory_returning_a_task_is_tagged_once_awaited(traces):
+    async def build_agent():
+        return Agent(model=ScriptedModel(["hi"]), callback_handler=None)
+
+    def factory():
+        return asyncio.ensure_future(build_agent())  # awaitable, yet not a coroutine
+
+    async def rollout(agent_factory, case):
+        agent = await agent_factory()
+        await _user().invoke_async(str(await agent.invoke_async(case.input)))
+        return {"output": "x"}
+
+    usage, benchmark, _ = await _attempt(make_task(factory, rollout), traces)
+
+    assert (usage.tokens, benchmark.tokens) == (15, 1000)
+
+
+async def test_a_multi_agent_system_the_factory_builds_is_the_candidates(traces):
+    def factory():
+        return Swarm([Agent(name="solo", model=ScriptedModel(["done"]), callback_handler=None)])
+
+    async def rollout(agent_factory, case):
+        swarm = agent_factory()
+        assert swarm.trace_attributes[FACTORY_AGENT] is True
+        await swarm.invoke_async(case.input)
+        await _user().invoke_async("thanks")
+        return {"output": "x"}
+
+    usage, benchmark, _ = await _attempt(make_task(factory, rollout), traces)
+
+    assert (usage.model_calls, usage.tokens) == (1, 15)
+    assert benchmark.tokens == 1000
+
+
+@pytest.mark.parametrize("builds", [True, False], ids=["built", "never-built"])
+async def test_a_factory_agent_that_never_runs_spends_nothing(traces, builds):
+    async def rollout(agent_factory, case):
+        if builds:
+            agent_factory()
+        await _user().invoke_async(case.input)
+        return {"output": "the user gave up"}
+
+    usage, benchmark, session = await _attempt(make_task(_agent_factory(), rollout), traces)
+
+    assert usage.model_calls == 0
+    assert benchmark.tokens == 1000
+    assert _marked(session) == [("question", False)]
+
+
+async def test_an_untaggable_build_counts_every_agent_with_one_warning(traces, caplog, monkeypatch):
+    monkeypatch.setattr("strands_evals.optimization.execution.rollout._UNTAGGED_WARNED", set())
+
+    def factory():
+        return {"system_prompt": "be brief"}  # the rollout builds the agent from what the factory returns
+
+    async def rollout(agent_factory, case):
+        config = agent_factory()
+        agent = Agent(model=ScriptedModel(["hi"]), callback_handler=None, **config)
+        await _user().invoke_async(str(await agent.invoke_async(case.input)))
+        return {"output": "x"}
+
+    with caplog.at_level(logging.WARNING):
+        usage, benchmark, session = await _attempt(make_task(factory, rollout), traces)
+        await _attempt(make_task(factory, rollout), traces)
+
+    assert (usage.tokens, benchmark.tokens) == (15 + 1000, 0)
+    assert caplog.text.count("built=<dict>") == 1
+    assert [marked for _, marked in _marked(session)] == [None, None]
+
+
+async def test_one_untaggable_build_among_tagged_ones_counts_every_agent(traces, monkeypatch):
+    monkeypatch.setattr("strands_evals.optimization.execution.rollout._UNTAGGED_WARNED", set())
+
+    def factory(part="agent"):
+        agent = Agent(model=ScriptedModel(["hi"]), callback_handler=None)
+        return agent if part == "agent" else {"agent": agent}
+
+    def rollout(agent_factory, case):  # sync: the rollout span is marked from a worker thread
+        reply = agent_factory()(case.input)
+        _user()(str(agent_factory(part="wrapped")["agent"](str(reply))))
+        return {"output": "x"}
+
+    usage, benchmark, session = await _attempt(make_task(factory, rollout), traces)
+
+    assert (usage.model_calls, usage.tokens, benchmark.tokens) == (3, 15 + 15 + 1000, 0)
+    assert all(marked is None for _, marked in _marked(session))
+
+
+async def test_a_build_task_task_counts_every_agent(traces):
+    async def task(case):  # no rollout span: the agent is built outside any factory
+        agent = Agent(model=ScriptedModel(["hi"]), callback_handler=None)
+        await _user().invoke_async(str(await agent.invoke_async(case.input)))
+        return {"output": "x"}
+
+    usage, benchmark, session = await _attempt(task, traces)
+
+    assert (usage.tokens, benchmark.tokens) == (15 + 1000, 0)
+    assert all(CANDIDATE_SPAN_KEY not in span.metadata for trace in session.traces for span in trace.spans)
