@@ -600,8 +600,8 @@ def llms_text(
             "out: the JSON form has all of it. A report writes a case that fails under several evaluators once. "
             "Every row and every span is written, however many there are, and a diagnosis is written whole.",
             "`POST /api/markdown` writes the same Markdown for a document sent to it. The page uses it for what "
-            "has no file of its own: one row, one case, a trace inside a report, a candidate's report, and an "
-            "experiment with edits that are not saved.",
+            "has no file of its own: one row, one case, the failing rows as a prompt, a trace inside a report, a "
+            "candidate's report, and an experiment with edits that are not saved.",
             "## Routes",
             "\n".join(f"- `{route}`: {holds}" for route, holds in routes.items()),
             "## Page addresses",

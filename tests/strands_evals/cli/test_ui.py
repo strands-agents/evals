@@ -543,6 +543,22 @@ def test_a_task_result_store_is_reported_and_its_files_are_neither_skipped_nor_c
     assert discover(tmp_path).truncated is True
 
 
+def test_a_store_counts_what_opens_like_a_result_and_a_report_in_it_is_still_listed(tmp_path: Path):
+    store = LocalFileTaskResultStore(tmp_path / "cached")
+    for name in ("a", "b"):
+        store.save(name, EvaluationData(input=f"ask {name}", actual_output="answer", name=name))
+    _write(tmp_path / "cached" / "c.report.json", _report("c"))
+    # Read after the results, so only how it opens is looked at. The same file elsewhere is read in full.
+    _write(tmp_path / "cached" / "z-notes.json", {"input": "opens like a result"})
+    _write(tmp_path / "loose" / "row.json", {"input": "opens like a result"})
+
+    found = discover(tmp_path)
+
+    assert found.stores == [{"dir": "cached", "files": 3}]
+    assert [report["path"] for report in found.reports] == ["cached/c.report.json"]
+    assert found.skipped == [{"path": "loose/row.json", "why": NOT_RECOGNISED}]
+
+
 @pytest.mark.skipif(os.name == "nt", reason="creating a symlink needs a privilege on Windows")
 def test_a_link_out_of_the_folder_is_not_counted_as_a_task_result(tmp_path: Path):
     result = EvaluationData(input="q", actual_output="a")
@@ -2266,7 +2282,11 @@ def test_llms_txt_describes_every_address_the_server_answers(client: Client):
         "A path in the body is a name to write: nothing is read from the folder. A body over 32 MB is refused."
     )
     assert MAX_UPLOAD_BYTES == 32 * 1024 * 1024
-    assert "`POST /api/markdown` writes the same Markdown for a document sent to it" in reply.body
+    assert (
+        "`POST /api/markdown` writes the same Markdown for a document sent to it. The page uses it for what has no "
+        "file of its own: one row, one case, the failing rows as a prompt, a trace inside a report, a candidate's "
+        "report, and an experiment with edits that are not saved."
+    ) in lines
     for line in (
         "- `/reports/<report file>.md`: its figures, each failing row with its input, expected and actual output "
         "and the evaluator's reason, then every row",
