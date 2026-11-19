@@ -2124,6 +2124,7 @@ def test_a_document_the_page_holds_is_written_as_markdown(client: Client, body, 
     [
         ({"kind": "poem", "document": {}}, "'kind' must be report, row, failing, experiment, case or trace"),
         ({"document": FAILING}, "'kind' must be report, row, failing, experiment, case or trace"),
+        ({"kind": ["report"]}, "'kind' must be report, row, failing, experiment, case or trace"),
         ({"kind": "report", "document": FAILING}, "'path' is missing or is not what a 'report' takes"),
         (
             {"kind": "report", "path": "r.json", "document": [1]},
@@ -2136,16 +2137,22 @@ def test_a_document_the_page_holds_is_written_as_markdown(client: Client, body, 
         ({"kind": "row", "row": 2, "document": FAILING, "report": "r"}, "the report has no row 2"),
         ({"kind": "case", "index": 0, "document": {}}, "'experiment' is missing or is not what a 'case' takes"),
         ({"kind": "trace", "document": "text"}, "'document' is missing or is not what a 'trace' takes"),
+        (
+            {"kind": "report", "path": "r.json", "document": FAILING, "experiment": "e.json", "link": {"status": "x"}},
+            "'link' must hold a 'status' and a 'detail', as a scan gives them",
+        ),
     ],
     ids=[
         "no such kind",
         "no kind",
+        "a kind that is not a name, and nothing else",
         "no path",
         "not a document",
         "a row that is no number",
         "no such row",
         "no file",
         "text",
+        "a pairing that does not say how the two fit",
     ],
 )
 def test_a_render_request_that_does_not_say_what_to_write_is_refused(client: Client, body, message):
@@ -2166,6 +2173,58 @@ def test_rendering_needs_the_token_and_writes_nothing(serve):
     assert client.send("POST", RENDER, body=body).status == HTTPStatus.OK
     assert client.send("POST", "/api/experiment?path=experiment.json", body=SAVE).status == HTTPStatus.NOT_FOUND
     assert _snapshot(client.root) == before
+
+
+def test_rendering_reads_nothing_from_the_folder_on_the_word_of_the_body(client: Client, tmp_path_factory):
+    outside = _write(tmp_path_factory.mktemp("outside") / "secret.json", _report("kept out"))
+    named = {"path": "../secret.json", "report": str(outside), "experiment": "experiment.json"}
+
+    report = client.send("POST", f"{RENDER}?path=experiment.json", body={"kind": "report", "document": {}, **named})
+    row = client.send("POST", RENDER, body={"kind": "row", "row": 0, "document": FAILING, **named})
+
+    assert report.body.startswith("# Report: ../secret.json\n\n- Overall score: none\n- Rows: 0 ")
+    assert "- Experiment: experiment.json\n" in report.body
+    assert f"- Report: `{outside}`\n- Experiment: `experiment.json`\n" in row.body
+    assert "kept out" not in report.body + row.body and "ask about" not in report.body
+
+
+def test_rendering_is_not_opened_to_a_page_of_another_origin(client: Client):
+    body = {"kind": "report", "path": "r.json", "document": FAILING}
+    elsewhere = {"Origin": "http://evil.example", "Content-Type": "text/plain"}
+    asking = {**elsewhere, "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "x-evals-token"}
+
+    preflight = client.send("OPTIONS", RENDER, headers={**NO_TOKEN, **asking})
+    form = client.send("POST", RENDER, body=body, headers={**NO_TOKEN, **elsewhere, "Cookie": client.cookie})
+    answered = client.send("POST", RENDER, body=body, headers=elsewhere)
+
+    assert preflight.status == HTTPStatus.NOT_IMPLEMENTED
+    assert form == _refused(HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL)
+    assert answered.status == HTTPStatus.OK
+    assert not any(
+        name.lower().startswith("access-control-") for reply in (preflight, form, answered) for name in reply.headers
+    )
+
+
+def test_rendering_refuses_a_body_over_the_size_cap(client: Client):
+    reply = client.send("POST", RENDER, headers={"Content-Length": str(MAX_UPLOAD_BYTES + 1)})
+
+    assert reply == _refused(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, f"body over {MAX_UPLOAD_BYTES} bytes")
+    assert reply.headers["Connection"] == "close"
+
+
+def test_rendering_writes_a_number_that_is_not_json_as_a_file_of_it_is_written(client: Client):
+    document = (
+        '{"overall_score": NaN, "cases": [{"name": "a", "evaluator": "E", "input": [Infinity]}],'
+        ' "scores": [NaN], "test_passes": [false]}'
+    )
+    (client.root / "odd.report.json").write_text(document)
+    body = f'{{"kind": "report", "path": "odd.report.json", "document": {document}}}'
+
+    reply = client.send("POST", RENDER, body=body.encode())
+
+    assert reply.status == HTTPStatus.OK
+    assert "Input:\n\n```json\n[\n  null\n]\n```\n" in reply.body
+    assert reply.body == client.send("GET", "/reports/odd.report.json.md").body
 
 
 def test_rendering_says_when_a_document_is_nested_too_deeply_to_write(client: Client):
@@ -2201,9 +2260,12 @@ def test_llms_txt_describes_every_address_the_server_answers(client: Client):
         "saves the experiment over the file it was read from. `modified` is the time `/api/file` gave; a file changed "
         "since is refused, and so is every save when the server was started with `--read-only`."
     ) in lines
-    assert any(
-        line.startswith('- `POST /api/markdown`: With a body of `{"kind": ..., "document": ...}`: ') for line in lines
+    (rendering,) = (line for line in lines if line.startswith("- `POST /api/markdown`: "))
+    assert rendering.startswith('- `POST /api/markdown`: With a body of `{"kind": ..., "document": ...}`: ')
+    assert rendering.endswith(
+        "A path in the body is a name to write: nothing is read from the folder. A body over 32 MB is refused."
     )
+    assert MAX_UPLOAD_BYTES == 32 * 1024 * 1024
     assert "`POST /api/markdown` writes the same Markdown for a document sent to it" in reply.body
     for line in (
         "- `/reports/<report file>.md`: its figures, each failing row with its input, expected and actual output "

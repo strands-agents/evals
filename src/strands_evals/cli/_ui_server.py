@@ -228,29 +228,36 @@ def write_json_atomic(target: Path, payload: dict) -> float:
     return target.stat().st_mtime
 
 
+# What `/api/markdown` writes: a `kind` of its body is one of these.
+RENDERED = ("report", "row", "failing", "experiment", "case", "trace")
+
+
 def _rendered(body: dict) -> str:
     """The Markdown a body sent to `/api/markdown` asks for.
 
     Raises:
         ValueError: If the body does not say what to write, or names a row the report does not have.
     """
-
-    def held(key: str, kind: type | tuple[type, ...], optional: bool = False) -> Any:
-        value = body.get(key)
-        if (value is None and optional) or (isinstance(value, kind) and not isinstance(value, bool)):
-            return value
-        raise ValueError(f"'{key}' is missing or is not what a '{body.get('kind')}' takes")
-
     kind = body.get("kind")
+    if kind not in RENDERED:
+        raise ValueError(f"'kind' must be {', '.join(RENDERED[:-1])} or {RENDERED[-1]}")
+
+    def held(key: str, form: type | tuple[type, ...], optional: bool = False) -> Any:
+        value = body.get(key)
+        if (value is None and optional) or (isinstance(value, form) and not isinstance(value, bool)):
+            return value
+        raise ValueError(f"'{key}' is missing or is not what a '{kind}' takes")
+
     if kind == "trace":
         return trace_markdown(held("document", (dict, list)), held("cost", str, optional=True))
     if kind == "case":
         return case_markdown(held("document", dict), held("index", int), held("experiment", str))
     document = held("document", dict)
     if kind == "report":
-        return report_markdown(
-            held("path", str), document, held("experiment", str, optional=True), held("link", dict, optional=True)
-        )
+        link = held("link", dict, optional=True)
+        if link and not all(isinstance(link.get(key), str) for key in ("status", "detail")):
+            raise ValueError("'link' must hold a 'status' and a 'detail', as a scan gives them")
+        return report_markdown(held("path", str), document, held("experiment", str, optional=True), link)
     if kind == "row":
         text = row_markdown(document, held("row", int), held("report", str), held("experiment", str, optional=True))
         if text is None:
@@ -263,10 +270,8 @@ def _rendered(body: dict) -> str:
             held("experiment", str, optional=True),
             held("command", str, optional=True),
         )
-    if kind == "experiment":
-        reports = held("reports", list)
-        return experiment_markdown(held("path", str), document, [made for made in reports if isinstance(made, str)])
-    raise ValueError("'kind' must be report, row, failing, experiment, case or trace")
+    reports = held("reports", list)
+    return experiment_markdown(held("path", str), document, [made for made in reports if isinstance(made, str)])
 
 
 # Neither refusal says anything of the folder or the token: only how one is sent.
@@ -689,9 +694,10 @@ class UIHandler(BaseHTTPRequestHandler):
         of one, for what has no file to read as `.md`. `kind` is `report` (with `path`, `experiment`, `link`), `row`
         (with `row`, `report`, `experiment`), `failing` (the failing rows as a prompt, with `report`, `experiment`,
         `command`), `experiment` (with `path`, `reports`), `case` (with `index`, `experiment`) or `trace` (with `cost`).
+        A path in the body is a name to write: nothing is read from the folder. A body over 32 MB is refused.
         """
         try:
-            text = _rendered(body)
+            text = _rendered(finite(body))  # as a file is read for `.md`
         except ValueError as exc:
             self._error(HTTPStatus.BAD_REQUEST, str(exc))
             return

@@ -200,7 +200,7 @@ the page shows without a browser:
 | `/experiments/<experiment file>.md` | The experiment as Markdown: its evaluators with their settings, then every case. |
 | `/sessions/<session file>.md` | The session as Markdown: what it recorded, each diagnosis made of it, then every span of every trace. A diagnosis file is read the same way. |
 | `/reports/<report file>.json`, `/experiments/<experiment file>.json`, `/sessions/<session file>.json` | The file's document. |
-| `POST /api/markdown` | The Markdown of a document sent to it, or of one row, one case, the failing rows or a trace of one. The page uses it for what has no file of its own. |
+| `POST /api/markdown` | The Markdown of a document sent to it, or of one row, one case, the failing rows or a trace of one. The page uses it for what has no file of its own. It reads nothing from the folder: a path in the body is only a name to write. |
 | `/llms.txt` | What the server answers: these addresses, the `/api` routes and how the token is sent. |
 
 These need the token itself, as the `X-Evals-Token` header or as `?t=<token>`; the page's cookie does not
