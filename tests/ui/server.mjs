@@ -43,7 +43,7 @@ fs.writeFileSync(path.join(root, 'half-written.json'), '{"cases": [');
 fs.cpSync(new URL('./fixtures/optimizer-run/', import.meta.url).pathname, path.join(root, 'tuning'),
   { recursive: true });
 
-const { base, stop } = await realServer(root, TOKEN);
+const { base } = await realServer(root, TOKEN);
 // jsdom has no fetch: forward the page's relative requests to the real server.
 const requested = [];
 const forward = async (url, opts = {}) => { requested.push(String(url)); return fetch(base + url, opts); };
@@ -59,10 +59,9 @@ try {
   const { $, $$, text, click, type, window } = p;
 
   // ── mode, and the discovery the server did ──
-  ok(/served · saves to disk/.test(text('#mode-tag')) && text('.tab.on') === 'Reports',
-    'boots on Reports, in a mode that saves to disk', text('#mode-tag'));
+  ok($('#read-only').hidden && text('.tab.on') === 'Reports', 'boots on Reports, with nothing said of read-only', text('.tab.on'));
   ok(text('#root-path') === fs.realpathSync(root), 'shows the served directory', text('#root-path'));
-  ok(!$('[data-act="rescan"]').hidden && $('[data-act="pick"]').hidden, 'Rescan is offered in place of the folder picker');
+  ok(!$('[data-act="rescan"]').hidden, 'Rescan is offered');
 
   const found = $$('#reports-rows tr.row');
   ok(found.length === 1 && $$('#experiments-rows tr.row').length === 2
@@ -282,6 +281,5 @@ try {
 
   done();
 } finally {
-  stop();
   fs.rmSync(root, { recursive: true, force: true });
 }

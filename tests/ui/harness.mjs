@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
+import readline from 'node:readline';
 import { JSDOM } from 'jsdom';
 
 const ASSET = process.env.UI_HTML
@@ -11,18 +13,6 @@ const beside = name => fs.readFileSync(new URL(name, ASSET), 'utf8');
 const HTML = fs.readFileSync(ASSET, 'utf8')
   .replace(/<link rel="stylesheet" href="([\w.-]+)">/g, (_, name) => `<style>\n${beside(name)}</style>`)
   .replace(/<script src="([\w.-]+)"><\/script>/g, (_, name) => `<script>\n${beside(name)}</script>`);
-
-/** A File stand-in: jsdom cannot build a real FileList, and only `text()` is used. */
-class FakeFile {
-  constructor(path, text) {
-    this.webkitRelativePath = path;
-    this.name = path.split('/').pop();
-    this._t = text;
-    this.size = text.length;
-    this.lastModified = 1700000000000;
-  }
-  async text() { return this._t; }
-}
 
 /* Every page built. When the suite reports, each one's errors count against it and its window is closed:
    a served page polls on a timer, which would keep Node alive. */
@@ -37,10 +27,8 @@ function track(work) {
   work.then(over, over);
   return work;
 }
-/* The next step through history or change after the `#`, which jsdom takes a few timers later. */
-const arrival = window => new Promise(resolve => {
-  for (const kind of ['popstate', 'hashchange']) window.addEventListener(kind, resolve, { once: true });
-});
+/* The next step through history, which jsdom takes a few timers later. */
+const arrival = window => new Promise(resolve => window.addEventListener('popstate', resolve, { once: true }));
 
 /* Turns of the event loop until nothing is pending. Work that is still pending after `STUCK_TURNS` turns and
    `STUCK_MS` is being held by the test on purpose, and is not waited for again. */
@@ -96,7 +84,7 @@ export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok', to
         window.history[step] = (...a) => { track(arrival(window)); return take(...a); };
       }
       if (cookie) window.document.cookie = cookie;
-      // A download is the only place a standalone page emits a document: keep the blob for `saved()`.
+      // jsdom has no download: keep the blob the page made for `downloaded()`.
       window.__blobs = [];
       window.URL.createObjectURL = blob => { window.__blobs.push(blob); return 'blob:stub'; };
       window.URL.revokeObjectURL = () => {};
@@ -107,7 +95,7 @@ export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok', to
       // jsdom has no layout to scroll: count the calls instead.
       window.__scrolls = 0;
       window.scrollTo = () => { window.__scrolls += 1; };
-      // jsdom has no download: record the anchor the page would have clicked.
+      // And record the name on the anchor the page would have clicked.
       window.__downloads = [];
       window.HTMLAnchorElement.prototype.click = function () { window.__downloads.push(this.download); };
     },
@@ -144,10 +132,9 @@ export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok', to
       window.history.go(delta);
       await tick();
     },
-    /** Put `route` after the `#`, as typing it there would, and let the page follow. */
-    follow: async route => {
-      track(arrival(window));
-      window.location.hash = '#' + route;
+    /** Go to an address of the page as a link in it would, and let the page follow. */
+    visit: async route => {
+      window.visit(route);
       await tick();
     },
     /** Ask the server whether the folder changed, as the page's timer does. */
@@ -162,7 +149,7 @@ export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok', to
     /** Open a session from the Sessions list: the first, or the one whose row says `match`. */
     openSession: match => api.click(listed('#sessions-rows', match)),
     /** The parsed document behind the page's most recent download. */
-    saved: async () => {
+    downloaded: async () => {
       const blob = window.__blobs[window.__blobs.length - 1];
       if (!blob) return null;
       // jsdom's Blob has no `text()`; FileReader is how this jsdom reads one.
@@ -177,17 +164,6 @@ export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok', to
     /** A keystroke on `target`; with none, on the document, where the shortcuts listen. */
     key: async (key, target = d) => {
       target.dispatchEvent(new window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
-      await tick();
-    },
-    /** Feed a tree into the standalone folder reader. */
-    openFolder: async files => {
-      const input = d.querySelector('#dirinput');
-      Object.defineProperty(input, 'files', {
-        value: Object.entries(files).map(([p, o]) =>
-          new FakeFile(p, typeof o === 'string' ? o : JSON.stringify(o))),
-        configurable: true,
-      });
-      await input.onchange({ target: input });
       await tick();
     },
   };
@@ -220,22 +196,82 @@ export function fakeServer({ config = { root: '/served', depth: 3, read_only: fa
   return Object.assign(fetchImpl, { sent });
 }
 
-/** Start the real server over `root` on a port the OS says is free: `{ base, stop }` once it is listening. */
-export async function realServer(root, token) {
-  const port = await new Promise(resolve => {
-    const probe = net.createServer();
-    probe.listen(0, '127.0.0.1', () => {
-      const { port } = probe.address();
-      probe.close(() => resolve(port));
-    });
+/* One Python process serves every folder a suite asks for: starting one costs more than a suite's pages do. */
+let farm = null;
+function servers() {
+  if (farm) return farm;
+  const proc = spawn(process.env.PYTHON || 'python3', [new URL('./serve.py', import.meta.url).pathname],
+    { stdio: ['pipe', 'pipe', 'inherit'] });
+  const answers = readline.createInterface({ input: proc.stdout })[Symbol.asyncIterator]();
+  const gone = new Promise((_, reject) => proc.on('exit', code => reject(new Error('the test server exited ' + code))));
+  gone.catch(() => {});
+  process.on('exit', () => proc.kill());
+  farm = { proc, answers, gone, last: Promise.resolve() };
+  return farm;
+}
+
+/** Start the real server over `root`: `{ base }` once it is listening. */
+export async function realServer(root, token, { readOnly = false } = {}) {
+  const { proc, answers, gone } = servers();
+  /* One at a time, so each answer is read by the request that asked. */
+  const asked = farm.last.then(async () => {
+    proc.stdin.write(JSON.stringify({ root, token, read_only: readOnly }) + '\n');
+    const { value } = await Promise.race([answers.next(), gone]);
+    return { base: `http://127.0.0.1:${JSON.parse(value).port}` };
   });
-  const proc = spawn(process.env.PYTHON || 'python3',
-    [new URL('./serve.py', import.meta.url).pathname, root, String(port), token], { stdio: ['ignore', 'pipe', 'inherit'] });
-  await new Promise((resolve, reject) => {
-    proc.stdout.on('data', chunk => String(chunk).includes('ready') && resolve());
-    proc.on('exit', code => reject(new Error('server exited ' + code)));
+  farm.last = asked.catch(() => {});
+  return asked;
+}
+
+const ROOTS = [];
+/** Write `files`, a map of path to document or to text, as a folder; or copy the folder at a path. Removed when the suite reports.
+    Every file has the same time, so a list is in path order unless a test says otherwise. */
+export function folder(files) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'ui-test-')));
+  ROOTS.push(root);
+  if (typeof files === 'string') {
+    fs.cpSync(files, root, { recursive: true });
+    return root;
+  }
+  for (const [rel, held] of Object.entries(files)) {
+    const at = path.join(root, rel);
+    fs.mkdirSync(path.dirname(at), { recursive: true });
+    fs.writeFileSync(at, typeof held === 'string' ? held : JSON.stringify(held));
+    fs.utimesSync(at, 1700000000, 1700000000);
+  }
+  return root;
+}
+
+/** A folder of one experiment and the report made from it, with enough in both to show every part of the page. */
+export const SAMPLE = new URL('./fixtures/sample/', import.meta.url).pathname;
+
+const TOKEN = 'test-token';
+/** A page over the real server reading `files`, as `folder()` takes them, opened at `route`. Its `root` is the
+    folder, `saved()` the experiment file its last accepted Save wrote, and `puts()` how many saves it sent. */
+export async function served(files, { route = '/', readOnly, ...options } = {}) {
+  const root = folder(files);
+  const { base } = await realServer(root, TOKEN, { readOnly });
+  const sent = { puts: 0, saved: null };
+  const fetchImpl = async (url, opts = {}) => {
+    const answer = await fetch(base + url, opts);
+    if (opts.method === 'PUT') {
+      sent.puts += 1;
+      if (answer.ok) sent.saved = new URL(base + url).searchParams.get('path');
+    }
+    return answer;
+  };
+  const p = await page({ fetchImpl, url: base + route, token: TOKEN, ...options });
+  await waitFor(() => p.$('.app').dataset.ready, 'boot to finish');
+  return Object.assign(p, {
+    root, base, token: TOKEN,
+    puts: () => sent.puts,
+    saved: () => (sent.saved ? JSON.parse(fs.readFileSync(path.join(root, sent.saved), 'utf8')) : null),
+    /** Write a file of the folder, as something other than the page would. */
+    write: (rel, held) => {
+      fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+      fs.writeFileSync(path.join(root, rel), typeof held === 'string' ? held : JSON.stringify(held));
+    },
   });
-  return { base: `http://127.0.0.1:${port}`, stop: () => proc.kill() };
 }
 
 export function runner(name) {
@@ -251,6 +287,8 @@ export function runner(name) {
     done() {
       const errs = PAGES.flatMap(p => p.errs);
       PAGES.forEach(p => p.window.close());
+      if (farm) farm.proc.kill();
+      ROOTS.forEach(root => fs.rmSync(root, { recursive: true, force: true }));
       if (errs.length) { console.log('page errors:', errs); fail += errs.length; }
       console.log(`${fail ? 'FAILED' : 'ok'}  ${name}: ${pass} passed${fail ? `, ${fail} failed` : ''}`);
       if (fail) process.exitCode = 1;

@@ -1,5 +1,5 @@
 /* The cases editor: an edit is written as it was made, or Save says why not. */
-import { fakeServer, page, runner, tick } from './harness.mjs';
+import { fakeServer, page, runner, served, tick } from './harness.mjs';
 
 const { ok, same, done } = runner('editor');
 
@@ -11,8 +11,7 @@ const EXPERIMENT = {
 const DRAFTS = { cases: [draft('a'), draft('b')], evaluators: [] };
 
 async function opened(files, match) {
-  const p = await page();
-  await p.openFolder(files);
+  const p = await served(files);
   await p.openExperiment(match);
   return p;
 }
@@ -31,7 +30,7 @@ const state = p => [p.text('#dirty'), p.$('#save').disabled];
   await p.type(field(p, 'input'), '');
   await p.type(field(p, 'expected_output'), 'x');
   await p.click('#save');
-  ok(/has no input/.test(p.text('#saved')) && !p.window.__blobs.length, 'an emptied input is kept as text and Save says the case needs one',
+  ok(/has no input/.test(p.text('#saved')) && !p.puts(), 'an emptied input is kept as text and Save says the case needs one',
     p.text('#saved'));
 }
 
@@ -54,7 +53,7 @@ const state = p => [p.text('#dirty'), p.$('#save').disabled];
   Object.defineProperty(box, 'validity', { configurable: true, value: { badInput: true } });
   await p.type(box, '');
   await p.click('#save');
-  ok(box.classList.contains('invalid') && !p.window.__blobs.length && /evaluator setting is not a number/.test(p.text('#saved')),
+  ok(box.classList.contains('invalid') && !p.puts() && /evaluator setting is not a number/.test(p.text('#saved')),
     'it is marked, and Save refuses rather than write the setting as cleared', p.text('#saved'));
   delete box.validity;
   await p.type(box, '0.7');

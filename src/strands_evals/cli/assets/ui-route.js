@@ -1,8 +1,7 @@
 'use strict';
 
 /* ── the address ──
-   One path names what is open. Served, it is the URL's path; with no server it follows `#`, since a
-   page opened from disk or a static host has only the one address. */
+   The URL's path names what is open. */
 
 const OPT_SEGMENT = {
   'opt-setup': 'setup', 'opt-overview': 'overview', 'opt-progress': 'progress',
@@ -78,12 +77,11 @@ function parseRoute(route) {
     return named ? { tab: 'experiment', experiment: rest.slice(0, -2).join('/'), case: last }
       : { tab: 'experiment', experiment: rest.join('/') };
   }
-  /* Served, `/index.html` is the page itself. Anything else names no page. */
+  /* `/index.html` is the page itself. Anything else names no page. */
   return !root || root === 'index.html' ? {} : { tab: 'missing' };
 }
 
-const currentRoute = () => MODE === 'server'
-  ? location.pathname + comparedQuery(comparedIn(location.search)) : location.hash.slice(1);
+const currentRoute = () => location.pathname + comparedQuery(comparedIn(location.search));
 const readAddress = () => parseRoute(currentRoute());
 
 /* The route the page last wrote or followed, and whether it is following one now. */
@@ -101,11 +99,5 @@ function writeAddress(view, replace) {
   const others = new URLSearchParams(location.search);
   others.delete('r');
   const kept = others.toString() && (route.includes('?') ? '&' : '?') + others;
-  const url = MODE === 'server' ? route + kept : `${location.pathname}${location.search}#${route}`;
-  /* On file:// the origin is opaque and the History API throws SecurityError: fall back to the hash. */
-  try {
-    history[push ? 'pushState' : 'replaceState'](null, '', url);
-  } catch {
-    if (push) location.hash = route; else location.replace('#' + route);
-  }
+  history[push ? 'pushState' : 'replaceState'](null, '', route + kept);
 }

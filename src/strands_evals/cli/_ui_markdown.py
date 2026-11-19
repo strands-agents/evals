@@ -349,6 +349,10 @@ def _compact(n: float) -> str:
     return f"{_round(n / 1e3)}k" if abs(n) >= 1e4 else str(_round(n))
 
 
+def _not_json(constant: str) -> Any:
+    raise ValueError(f"{constant} is not JSON")
+
+
 def _tool_output(value: Any) -> str:
     """Tool output as the page reads it: JSON in a string is laid out, and a lone `{"output": "..."}` is its text."""
     if not isinstance(value, str):
@@ -357,7 +361,7 @@ def _tool_output(value: Any) -> str:
     if not text or text[0] not in "[{" or text[-1] not in "]}":
         return value
     try:
-        parsed = json.loads(text)
+        parsed = json.loads(text, parse_constant=_not_json)
     except (ValueError, RecursionError):
         return value
     if isinstance(parsed, dict) and len(parsed) == 1 and isinstance(parsed.get("output"), str):

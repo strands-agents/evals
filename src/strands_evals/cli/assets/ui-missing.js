@@ -9,7 +9,7 @@ const GONE = 'It may have been deleted, renamed or moved, or the link may be fro
 
 /* A link to another address of the page, followed in place. */
 const wayTo = (route, label) =>
-  `<a href="${esc(MODE === 'server' ? route : '#' + route)}" data-route="${esc(route)}">${esc(label)}</a>`;
+  `<a href="${esc(route)}" data-route="${esc(route)}">${esc(label)}</a>`;
 const LIST_WAY = {
   reports: ['/reports', 'All reports'], experiments: ['/experiments', 'All experiments'],
   sessions: ['/sessions', 'All sessions'], 'opt-runs': ['/optimization', 'All optimizer runs'],

@@ -2,22 +2,6 @@
 
 /* ══════════ boot ══════════ */
 
-function bundled() {
-  const size = doc => JSON.stringify(doc, null, 2).length;
-  return {
-    experiments: [{
-      path: 'experiment.json', name: 'experiment.json', dir: '.', obj: SAMPLE_EXPERIMENT, modified: 0,
-      size: size(SAMPLE_EXPERIMENT),
-      cases: SAMPLE_EXPERIMENT.cases.length, evaluators: SAMPLE_EXPERIMENT.evaluators, reports: ['report.json'],
-    }],
-    reports: [{
-      path: 'report.json', name: 'report.json', dir: '.', obj: SAMPLE_REPORT, modified: 0,
-      size: size(SAMPLE_REPORT), ...reportMeta(SAMPLE_REPORT),
-      experiment: 'experiment.json', link: linkStatus(SAMPLE_EXPERIMENT, SAMPLE_REPORT),
-    }],
-  };
-}
-
 /* Open what an address names, then show its view. `force` opens without asking about unsaved edits.
    Resolves true when it stopped because the page moved on before a file it asked for arrived. */
 async function goTo(want, force) {
@@ -49,23 +33,25 @@ async function goTo(want, force) {
   if (want.candidate) openCandidate(want.candidate);
 }
 
+/* The page is drawn from what its server reads. Opened any other way, it says how to start one, and nothing else. */
+function unserved() {
+  app.classList.add('unserved');
+  MISSING = { route: currentRoute(), list: 'reports' };
+  $('missing').innerHTML = emptyState('No pond to look in',
+    'This page is served by <code>strands-evals ui</code>, and nothing is answering it. '
+      + 'Run <code>strands-evals ui FOLDER</code> and open the link it prints.');
+  show('missing', { silent: true });
+  app.dataset.ready = '1';
+}
+
 async function boot() {
-  let config = null;
-  try { config = await api('/api/config'); } catch { /* no server behind the page */ }
   clearExperiment(); clearReport();
-  if (config) {
-    MODE = 'server'; ROOT = config.root; READONLY = config.read_only; DEPTH = config.depth;
-    EVALUATOR_INFO = config.evaluators || {};
-    await rescan();
-    startPolling();
-  } else {
-    MODE = 'standalone'; READONLY = false;
-    folderLabel = 'bundled sample';
-    showingSample = true;
-    ({ experiments: EXPERIMENTS, reports: REPORTS } = bundled());
-    setSessions({});
-    renderLists();
-  }
+  let config;
+  try { config = await api('/api/config'); } catch { return unserved(); }
+  ROOT = config.root; READONLY = config.read_only; DEPTH = config.depth;
+  EVALUATOR_INFO = config.evaluators || {};
+  await rescan();
+  startPolling();
 
   await goTo(readAddress(), true);
   refreshDirty();
@@ -95,15 +81,9 @@ let followed = Promise.resolve();
 const followInTurn = () => { followed = followed.then(followAddress, followAddress); };
 /** Go to an address of the page as if it had been typed: a step Back can undo. */
 function visit(route) {
-  try {
-    history.pushState(null, '', MODE === 'server' ? route : `${location.pathname}${location.search}#${route}`);
-  } catch {
-    location.hash = route;                     // file://, where the change of hash is what gets followed
-    return;
-  }
+  history.pushState(null, '', route);
   followInTurn();
 }
 window.addEventListener('popstate', followInTurn);
-window.addEventListener('hashchange', followInTurn);
 
 boot();

@@ -1,6 +1,6 @@
 /* Guidance and outbound links: the per-view guide, the ? help on fields and settings, and the
    documentation links with their campaign tags. */
-import { fakeServer, page, runner, tick } from './harness.mjs';
+import { SAMPLE, fakeServer, page, runner, served, tick } from './harness.mjs';
 
 const { ok, done } = runner('guide');
 
@@ -21,7 +21,7 @@ const helpLink = p => parse(p.$('.help-pop a'));
 
 // ── every link into the docs is tagged, names its placement, and opens beside the page ──
 {
-  const p = await page();
+  const p = await served(SAMPLE);
   const views = p.$$('main > section.view').map(s => s.id.slice(2));
   /* The chrome's links, and the guide's for each view in turn: the panel holds one view at a time. */
   const links = views.flatMap(view => {
@@ -41,7 +41,7 @@ const helpLink = p => parse(p.$('.help-pop a'));
   ]), 'the bar and the sidebar link to the docs and the repository', chrome.join(' , '));
   ok(links.some(a => /\?utm_source.*#what-an-evaluation-is-made-of$/.test(a.href)),
     'an anchor comes after the tags, where a browser reads it');
-  ok(!p.d.documentElement.innerHTML.includes('t=tok'), 'no link carries the page token');
+  ok(!p.$$('a').some(a => a.href.includes(p.token)), 'no link carries the page token');
   const unguided = views.filter(view => {
     p.$('#guide-body').innerHTML = '';
     p.window.renderGuide(view);
@@ -52,7 +52,7 @@ const helpLink = p => parse(p.$('.help-pop a'));
 
 // ── the guide: a panel beside the content, closed until asked for, and that choice is kept ──
 {
-  const p = await page();
+  const p = await served(SAMPLE);
   const state = () => [p.$('#guide').hidden, p.$('.app').dataset.guide, p.$('[data-guide-toggle]').getAttribute('aria-expanded')].join();
   ok(state() === 'true,off,false', 'the guide starts closed', state());
   await p.click('[data-guide-toggle]');
@@ -69,15 +69,14 @@ const helpLink = p => parse(p.$('.help-pop a'));
   ok(state() === 'true,off,false' && p.d.cookie.includes('strands-evals-guide=off'), 'its own close button closes it and remembers that too',
     `${state()} ${p.d.cookie}`);
 
-  const later = await page({ cookie: 'strands-evals-guide=on' });
+  const later = await served(SAMPLE, { cookie: 'strands-evals-guide=on' });
   ok(!later.$('#guide').hidden && later.text('#guide-body h2') === 'Reports', 'a page opened after it was left open starts with it open',
     later.$('#guide').hidden);
 }
 
 // ── a ? on a case field says what it is, what it takes, and where the docs cover it ──
 {
-  const p = await page();
-  await p.openFolder({ 'run/experiment.json': EXPERIMENT });
+  const p = await served({ 'run/experiment.json': EXPERIMENT });
   await p.openExperiment();
   const fields = p.$$('#form .help').map(b => b.dataset.help);
   ok(JSON.stringify(fields) === JSON.stringify(['name', 'input', 'expected_output', 'expected_assertion',
@@ -98,7 +97,7 @@ const helpLink = p => parse(p.$('.help-pop a'));
   ok(p.$('.help-pop').hidden, 'and so does the button itself');
 }
 
-// ── evaluators: described from the library when a server supplies it, linked to their own page either way ──
+// ── evaluators: described from the library, and linked to their own page ──
 {
   const catalog = { Contains: { summary: 'Checks if actual_output contains a substring.', settings: [
     { name: 'value', required: true, default: null }, { name: 'case_sensitive', required: false, default: 'true' },
@@ -127,8 +126,7 @@ const helpLink = p => parse(p.$('.help-pop a'));
     'and its name stays out of the link', parse(p.$('#evform .evsum a')));
 }
 {
-  const p = await page();
-  await p.openFolder({ 'run/experiment.json': { ...EXPERIMENT, evaluators: [{ evaluator_type: 'ToolSelectionAccuracyEvaluator' }, { evaluator_type: 'HelpfulnessEvaluator' }] } });
+  const p = await served({ 'run/experiment.json': { ...EXPERIMENT, evaluators: [{ evaluator_type: 'ToolSelectionAccuracyEvaluator' }, { evaluator_type: 'HelpfulnessEvaluator' }] } });
   await p.openExperiment();
   const pagesFor = [];
   for (const chip of [0, 1]) {
@@ -138,7 +136,7 @@ const helpLink = p => parse(p.$('.help-pop a'));
   ok(JSON.stringify(pagesFor) === JSON.stringify([
     'evaluators/tool_selection_evaluator/|evaluator-ToolSelectionAccuracyEvaluator|',
     'evaluators/helpfulness_evaluator/|evaluator-HelpfulnessEvaluator|',
-  ]), 'with no server, a built-in still links to its own page', pagesFor.join(' , '));
+  ]), 'a built-in links to its own page', pagesFor.join(' , '));
 
   ok(parse(p.$('#facts a')) === 'cli/run/|unrun-experiment|#experiment-file-run', 'an experiment with no report links to how to run it',
     parse(p.$('#facts a')));
@@ -146,8 +144,7 @@ const helpLink = p => parse(p.$('.help-pop a'));
 
 // ── tooltips: a label explains itself on hover or focus, from the glossary or its own text ──
 {
-  const p = await page();
-  await p.openFolder({ 'run/experiment.json': EXPERIMENT });
+  const p = await served({ 'run/experiment.json': EXPERIMENT });
   const tip = p.$('.tip');
   const over = async (el, type = 'mouseover') => {
     el.dispatchEvent(new p.window.MouseEvent(type, { bubbles: true }));

@@ -7,7 +7,7 @@ const optOpen = new Set();
 /* `<candidate_id>|<index into its trials>`, or null. One open at a time. */
 let openTrial = null;
 /* By hash: `{ state, ... }` where state is `loading`, `ok` (with `doc`), `missing` (file not
-   there), `unread` (not in the opened folder) or `error`. Identical trials share one hash. */
+   there) or `error`. Identical trials share one hash. */
 const TRANSCRIPTS = new Map();
 
 const OUTCOME_TAG = { feasible: 'ok', infeasible: 'warn', invalid: 'warn' };
@@ -231,13 +231,7 @@ async function fetchTranscript(run, hash) {
     renderCandidates();
   };
   try {
-    /* A folder run holds its transcripts as Files: a hash with no File was not in the folder. */
-    if (run.transcripts) {
-      const file = run.transcripts.get(hash);
-      done(file ? { state: 'ok', doc: JSON.parse(await file.text()) } : { state: 'unread' });
-    } else {
-      done({ state: 'ok', doc: (await api('/api/file?path=' + encodeURIComponent(transcriptPath(run, hash)))).document });
-    }
+    done({ state: 'ok', doc: (await api('/api/file?path=' + encodeURIComponent(transcriptPath(run, hash)))).document });
   } catch (err) {
     done(err.status === 404 ? { state: 'missing' } : { state: 'error', why: err.message });
   }
@@ -263,12 +257,6 @@ function transcriptSlot(run, t) {
   if (got.state === 'missing') {
     return `<span class="empty">the log points at ${where}, which is not in the run directory`
       + '</span>';
-  }
-  if (got.state === 'unread') {
-    return `<span class="empty">${where} was not among the files read from the opened folder. `
-      + `The picker scans ${SCAN_DEPTH} levels down, so a run nested deeper keeps its transcripts `
-      + 'to itself. Serving the folder with <code>strands-evals ui</code> reads them on '
-      + 'request.</span>';
   }
   if (got.state === 'error') return `<span class="empty">${where} could not be read: ${esc(got.why)}</span>`;
   return traceView(got.doc);

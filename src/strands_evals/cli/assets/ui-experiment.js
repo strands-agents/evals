@@ -20,7 +20,6 @@ const dirtyCases = () => cases.map((c, i) => JSON.stringify(c) !== orig[i] ? i :
 const removedCases = () => savedCases.length - orig.filter(s => s !== NEW_CASE).length;
 const evalsDirty = () => JSON.stringify(evals) !== origEvals;
 const countDirty = () => dirtyCases().length + removedCases() + (evalsDirty() ? 1 : 0);
-const readOnly = () => MODE === 'server' && READONLY;
 /* Text in a field that could not be applied as typed, such as JSON that does not parse yet. */
 const unapplied = () => !!($('form').querySelector('.invalid') || $('evform').querySelector('.invalid'));
 
@@ -31,9 +30,8 @@ function loadExperiment(meta, doc) {
   markSaved();
   sel = 0; evOpen = -1; review = false;
   $('case-find').value = '';
-  $('exp-sub').textContent = readOnly() ? 'Read-only: the server was started with --read-only.'
-    : MODE === 'server' ? `Edits save back to ${meta.path}.`
-      : 'No server, so Save downloads a copy for you to put back yourself.';
+  $('exp-sub').textContent = READONLY ? 'Read-only: the server was started with --read-only.'
+    : `Edits save back to ${meta.path}.`;
   renderEvaluators(); renderForm(); refreshDirty(); note('');
 }
 
@@ -337,7 +335,7 @@ function renderReview() {
   const drafts = draftIdx();
   const btn = $('review-case');
   btn.textContent = drafts.length ? `Review drafts (${drafts.length})` : 'Review drafts';
-  btn.disabled = !drafts.length || readOnly();
+  btn.disabled = !drafts.length || READONLY;
   if (!review) { bar.hidden = true; return; }
   if (!drafts.length) {
     review = false; bar.hidden = true;
@@ -518,8 +516,8 @@ function refreshDirty() {
   el.textContent = d ? plural(d, 'unsaved change') : 'No unsaved changes';
   el.classList.toggle('yes', !!d);
   $('save').textContent = d ? `Save (${d})` : 'Save';
-  $('save').disabled = !d || !EXP || readOnly();
-  $('save').title = readOnly() ? 'the server was started with --read-only' : '';
+  $('save').disabled = !d || !EXP || READONLY;
+  $('save').title = READONLY ? 'the server was started with --read-only' : '';
   $('revert').disabled = !d;
   $('add-case').disabled = !EXP;
   $('del-case').disabled = !cases.length;
@@ -561,39 +559,32 @@ $('save').onclick = async () => {
   if (problem) return note(problem, 'err');
   const document_ = experimentDocument();
 
-  if (MODE === 'server') {
-    /* The editor is inert until the answer arrives, and the answer belongs to the experiment that asked. */
-    const meta = expMeta, editor = $('v-experiment');
-    $('save').disabled = true;
-    editor.inert = true;
-    try {
-      const res = await api('/api/experiment?path=' + encodeURIComponent(meta.path), {
-        method: 'PUT',
-        headers: { 'X-Evals-Token': TOKEN, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ document: document_, modified: meta.modified }),
-      });
-      meta.modified = res.modified;
-      if (res.evaluator_notes) meta.evaluator_notes = res.evaluator_notes;
-      if (expMeta === meta) {
-        markSaved();
-        renderEvaluators(); refreshDirty();
-        note(`saved ${res.path} · ${plural(res.cases, 'case')}`);
-      }
-      rescan(true);
-    } catch (err) {
-      if (expMeta === meta) {
-        refreshDirty();
-        note(err.message, { 409: 'stale', 404: 'gone' }[err.status] || 'err');
-      }
-    } finally {
-      editor.inert = false;
+  /* The editor is inert until the answer arrives, and the answer belongs to the experiment that asked. */
+  const meta = expMeta, editor = $('v-experiment');
+  $('save').disabled = true;
+  editor.inert = true;
+  try {
+    const res = await api('/api/experiment?path=' + encodeURIComponent(meta.path), {
+      method: 'PUT',
+      headers: { 'X-Evals-Token': TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ document: document_, modified: meta.modified }),
+    });
+    meta.modified = res.modified;
+    if (res.evaluator_notes) meta.evaluator_notes = res.evaluator_notes;
+    if (expMeta === meta) {
+      markSaved();
+      renderEvaluators(); refreshDirty();
+      note(`saved ${res.path} · ${plural(res.cases, 'case')}`);
     }
-    return;
+    rescan(true);
+  } catch (err) {
+    if (expMeta === meta) {
+      refreshDirty();
+      note(err.message, { 409: 'stale', 404: 'gone' }[err.status] || 'err');
+    }
+  } finally {
+    editor.inert = false;
   }
-
-  downloadExperiment();
-  markSaved();
-  refreshDirty();
 };
 
 /* The file as it will be written: what the editor changed, and everything else exactly as it was read. */

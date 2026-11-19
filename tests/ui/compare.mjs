@@ -1,6 +1,6 @@
 /* Reports side by side: picking them in the list and from a report's header, the comparison page
    (summary, evaluator means, the verdict grid, oldest against newest), and its address. */
-import { fakeServer, page, runner } from './harness.mjs';
+import { fakeServer, page, runner, served } from './harness.mjs';
 
 const { ok, same, done } = runner('compare');
 
@@ -31,10 +31,10 @@ const THREE = {
 const box = (p, path) => p.$(`#reports-rows input[data-pick="${path}"]`);
 const cells = (p, row) => p.$$('#cmp-summary tr').map(tr => p.text(tr.children[row]));
 const compared = p => p.$$('#facts .chip').map(c => p.text(c).replace(/×$/, '').trim());
-const address = (...paths) => '/reports/compare?' + paths.map(path => 'r=' + encodeURIComponent(path)).join('&');
+const address = (...paths) => '/reports/compare' + (paths.length ? '?' : '') + paths.map(path => 'r=' + encodeURIComponent(path)).join('&');
+const here = p => p.window.location.pathname + p.window.location.search;
 
-const p = await page();
-await p.openFolder(THREE);
+const p = await served(THREE);
 
 // ── the list: tick reports, then compare them ──
 ok(p.$$('#reports-rows input[type="checkbox"]').length === 3 && p.$('#cmp-go').hidden
@@ -64,8 +64,8 @@ ok(p.view() === 'v-compare' && p.text('#crumbs') === 'Reports/Compare' && p.$('.
   'Compare opens the comparison, under Reports', `${p.view()} ${p.text('#crumbs')}`);
 same(compared(p), ['#1 c/report.json', '#2 a/report.json', '#3 b/report.json'],
   'the header names the reports compared, in the order they ran, not the order of their paths');
-ok(p.window.location.hash === '#' + address('c/report.json', 'a/report.json', 'b/report.json') && p.window.history.length === before + 1,
-  'the address names them, and opening the comparison is a step in history', p.window.location.hash);
+ok(here(p) === address('c/report.json', 'a/report.json', 'b/report.json') && p.window.history.length === before + 1,
+  'the address names them, and opening the comparison is a step in history', here(p));
 same(cells(p, 2), ['0.58', '0.45', '0.50'], 'the summary gives each report\'s overall score');
 same(cells(p, 3), ['—', '▼ -0.13', '▲ +0.05'], 'and its change from the report before it');
 same([cells(p, 4), cells(p, 5), cells(p, 6)], [['5', '4', '5'], ['3', '1', '2'], ['2', '3', '2']],
@@ -107,7 +107,7 @@ await p.click(p.$$('#cmp-ends g.bell')[1]);
 ok(p.view() === 'v-report' && p.text('#crumbs') === 'Reports/b/report.json'
   && p.$('#rep-rows tr.case[data-i="4"]').getAttribute('aria-expanded') === 'true',
 'a row that moved opens in the newest report, on that row', `${p.view()} ${p.text('#crumbs')}`);
-ok(p.window.location.hash === '#/reports/b/report.json/rows/c/X', 'which the address names', p.window.location.hash);
+ok(here(p) === '/reports/b/report.json/rows/c/X', 'which the address names', here(p));
 await p.travel(-1);
 ok(p.view() === 'v-compare' && compared(p).length === 3, 'Back from the report returns to the comparison', p.view());
 await p.key('Enter', p.$('#cmp-grid rect.cell'));
@@ -126,25 +126,25 @@ ok(!p.$('#facts [data-cmp-remove]'), 'two reports is the fewest a comparison hol
 same([cells(p, 2), cells(p, 3)], [['0.58', '0.50'], ['—', '▼ -0.08']], 'the change is now from the one before it that is left');
 ok(p.text('#cmp-ends-head') === 'From #1 to #2' && p.$$('#cmp-grid rect.cell').length === 10,
   'and every part of the page follows', `${p.text('#cmp-ends-head')} ${p.$$('#cmp-grid rect.cell').length}`);
-ok(p.window.location.hash === '#' + address('c/report.json', 'b/report.json'), 'as does the address', p.window.location.hash);
+ok(here(p) === address('c/report.json', 'b/report.json'), 'as does the address', here(p));
 
 // ── Back, and the address on its own ──
 await p.travel(-1);
 ok(p.view() === 'v-compare' && compared(p).length === 3, 'Back restores the comparison of three', compared(p).join());
 await p.travel(-1);
-ok(p.view() === 'v-reports' && p.window.location.hash === '#/reports' && box(p, 'c/report.json').checked,
-  'Back again returns to the list, the boxes as they were left', `${p.view()} ${p.window.location.hash}`);
-await p.follow(address('b/report.json', 'a/report.json'));
+ok(p.view() === 'v-reports' && here(p) === '/reports' && box(p, 'c/report.json').checked,
+  'Back again returns to the list, the boxes as they were left', `${p.view()} ${here(p)}`);
+await p.visit(address('b/report.json', 'a/report.json'));
 same([p.view(), compared(p)], ['v-compare', ['#1 a/report.json', '#2 b/report.json']],
   'an address naming two reports opens their comparison, oldest first whatever order it names them in');
-ok(p.window.location.hash === '#' + address('a/report.json', 'b/report.json'), 'and is corrected to that order', p.window.location.hash);
+ok(here(p) === address('a/report.json', 'b/report.json'), 'and is corrected to that order', here(p));
 for (const [named, what, says] of [
   [['a/report.json'], 'one report', 'only a/report.json'], [['a/report.json', 'a/report.json'], 'the same report twice', 'only a/report.json'],
   [[], 'none', 'none'],
 ]) {
-  await p.follow(address(...named));
-  ok(p.view() === 'v-missing' && p.window.location.hash === '#' + address(...named) && p.text('#missing').includes(`this address names ${says}.`),
-    `an address naming ${what} says a comparison needs two, and stays as typed`, `${p.view()} ${p.window.location.hash} ${p.text('#missing')}`);
+  await p.visit(address(...named));
+  ok(p.view() === 'v-missing' && here(p) === address(...named) && p.text('#missing').includes(`this address names ${says}.`),
+    `an address naming ${what} says a comparison needs two, and stays as typed`, `${p.view()} ${here(p)} ${p.text('#missing')}`);
 }
 
 // ── from a report's header ──
@@ -163,8 +163,7 @@ ok(p.$('#cmp-with').hidden, 'and with every report compared there is nothing lef
 
 // ── two reports, one made in code with no experiment file ──
 {
-  const q = await page();
-  await q.openFolder({
+  const q = await served({
     'suite/experiment.json': experiment, 'suite/report.json': NEW,
     'nightly/results.json': report(0.75, [['a', 'X', 1, 'pass'], ['a', 'Y', 0.5, 'pass'], ['zz', 'X', 0.5, 'fail']], '2026-02-01T00:00:00Z'),
   });
@@ -182,8 +181,7 @@ ok(p.$('#cmp-with').hidden, 'and with every report compared there is nothing lef
 
 // ── a row that was not applicable in one report and judged in the other ──
 {
-  const q = await page();
-  await q.openFolder({
+  const q = await served({
     'old/report.json': report(0.5, [['declined', 'X', 1, 'na'], ['judged', 'X', 1, 'na'], ['lapsed', 'X', 1, 'pass'], ['idle', 'X', 1, 'na'], ['held', 'X', 1, 'pass']],
       '2026-03-01T09:00:00Z'),
     'new/report.json': report(0.5, [['declined', 'X', 0, 'fail'], ['judged', 'X', 1, 'pass'], ['lapsed', 'X', 1, 'na'], ['idle', 'X', 1, 'na'], ['held', 'X', 1, 'pass']],
@@ -204,8 +202,7 @@ ok(p.$('#cmp-with').hidden, 'and with every report compared there is nothing lef
 
 // ── two rows of one report that share a case name and an evaluator ──
 {
-  const q = await page();
-  await q.openFolder({
+  const q = await served({
     'old/report.json': report(0.5, [['twin', 'X', 1, 'pass'], ['twin', 'X', 0, 'fail']], '2026-03-01T09:00:00Z'),
     'new/report.json': report(1, [['twin', 'X', 1, 'pass'], ['twin', 'X', 1, 'pass']], '2026-03-02T09:00:00Z'),
   });
@@ -220,8 +217,7 @@ ok(p.$('#cmp-with').hidden, 'and with every report compared there is nothing lef
 
 // ── reports that share no rows ──
 {
-  const q = await page();
-  await q.openFolder({
+  const q = await served({
     'one/report.json': report(1, [['a', 'X', 1, 'pass'], ['b', 'X', 1, 'pass']], '2026-01-01T00:00:00Z'),
     'two/report.json': report(0, [['m', 'Z', 0, 'fail'], ['n', 'Z', 0, 'fail']], '2026-01-02T00:00:00Z'),
   });
@@ -239,8 +235,7 @@ ok(p.$('#cmp-with').hidden, 'and with every report compared there is nothing lef
 
 // ── one report: nothing to compare ──
 {
-  const q = await page();
-  await q.openFolder({ 'only/experiment.json': experiment, 'only/report.json': NEW });
+  const q = await served({ 'only/experiment.json': experiment, 'only/report.json': NEW });
   await q.click(box(q, 'only/report.json'));
   await q.openReport();
   ok(q.$('#cmp-go').hidden && q.$('#cmp-hint').hidden && q.$('#cmp-with').hidden,
@@ -264,7 +259,6 @@ ok(p.$('#cmp-with').hidden, 'and with every report compared there is nothing lef
       skipped: [], optimizer_runs: [] }],
     file: path => ({ path, modified: modified(path), document: tree.files[path] }),
   });
-  const at = q => q.window.location.pathname + q.window.location.search;
 
   const q = await page({ fetchImpl: server(), visible: true });
   await q.click(box(q, 'late.json'));
@@ -273,8 +267,8 @@ ok(p.$('#cmp-with').hidden, 'and with every report compared there is nothing lef
   same(compared(q), ['#1 early.json', '#2 late.json'], 'reports that do not record their run are ordered by their files\' times');
   ok(q.$$('#cmp-summary tr').every(tr => / · by file time$/.test(q.text(tr.children[1]))), 'and the summary says that is what dates them',
     q.text('#cmp-summary tr'));
-  ok(at(q) === address('early.json', 'late.json') + '&t=tok', 'served, the comparison is a path naming its reports, beside whatever else the address held',
-    at(q));
+  ok(here(q) === address('early.json', 'late.json') + '&t=tok', 'served, the comparison is a path naming its reports, beside whatever else the address held',
+    here(q));
 
   // A re-run of a compared report, and one that disappears.
   tree.files['late.json'] = two(0.1, 0.8);
@@ -283,14 +277,14 @@ ok(p.$('#cmp-with').hidden, 'and with every report compared there is nothing lef
   await q.poll();
   same(q.tips('#cmp-ends g.bell'), ['b · X · 0.30 to 0.80', 'a · X · 0.50 to 0.10'], 'a compared report that is run again is re-read where it stands');
   await q.click('.tab[data-view="reports"]');
-  ok(at(q) === '/reports?t=tok', 'leaving the comparison takes its reports out of the address', at(q));
+  ok(here(q) === '/reports?t=tok', 'leaving the comparison takes its reports out of the address', here(q));
   await q.travel(-1);
-  ok(q.view() === 'v-compare' && at(q) === address('early.json', 'late.json') + '&t=tok', 'and Back returns to it', `${q.view()} ${at(q)}`);
+  ok(q.view() === 'v-compare' && here(q) === address('early.json', 'late.json') + '&t=tok', 'and Back returns to it', `${q.view()} ${here(q)}`);
   tree.reports = tree.reports.filter(m => m.path !== 'early.json');
   tree.mark = 'm3';
   await q.poll();
-  ok(q.view() === 'v-reports' && at(q) === '/reports?t=tok', 'a comparison left with one report when the other is deleted gives way to the list',
-    `${q.view()} ${at(q)}`);
+  ok(q.view() === 'v-reports' && here(q) === '/reports?t=tok', 'a comparison left with one report when the other is deleted gives way to the list',
+    `${q.view()} ${here(q)}`);
 
   // Opened from the address alone.
   tree.reports = [listed('late.json', 31, 0.9), listed('early.json', 10, 0.4), listed('mid.json', 20, 0.6)];
@@ -298,10 +292,10 @@ ok(p.$('#cmp-with').hidden, 'and with every report compared there is nothing lef
   const r = await page({ fetchImpl: server(), url: `http://127.0.0.1:9999${link}`, token: 'tok' });
   same([r.view(), compared(r)], ['v-compare', ['#1 early.json', '#2 mid.json', '#3 late.json']],
     'a link to a comparison opens it with nothing clicked');
-  ok(at(r) === address('early.json', 'mid.json', 'late.json'), 'and the address is put in the order shown', at(r));
+  ok(here(r) === address('early.json', 'mid.json', 'late.json'), 'and the address is put in the order shown', here(r));
   same(cells(r, 3), ['—', '▲ +0.20', '▲ +0.30'], 'with each report set against the one before it');
   await r.click('#facts [data-cmp-remove="mid.json"]');
-  ok(at(r) === address('early.json', 'late.json'), 'removing a report rewrites the address', at(r));
+  ok(here(r) === address('early.json', 'late.json'), 'removing a report rewrites the address', here(r));
   await r.travel(-1);
   same(compared(r), ['#1 early.json', '#2 mid.json', '#3 late.json'], 'and Back puts it back');
 
@@ -328,14 +322,14 @@ ok(p.$('#cmp-with').hidden, 'and with every report compared there is nothing lef
   tree.reports[0].modified += 1;
   tree.mark = 'm4';
   await t.poll();
-  ok(t.view() === 'v-compare' && at(t) === address('mid.json', 'late.json') && compared(t).join() === '#1 mid.json,#2 late.json',
-    'a compared report that cannot be re-read leaves the comparison as it was read', `${t.view()} ${at(t)}`);
+  ok(t.view() === 'v-compare' && here(t) === address('mid.json', 'late.json') && compared(t).join() === '#1 mid.json,#2 late.json',
+    'a compared report that cannot be re-read leaves the comparison as it was read', `${t.view()} ${here(t)}`);
   await t.click('.tab[data-view="reports"]');
   ok(/could not re-read: no such file/.test(t.text('#v-reports')), 'and the list says the folder could not be re-read', t.text('#scan-err'));
 
   // An address that names too few reports to compare.
   const one = await page({ fetchImpl: server(), url: 'http://127.0.0.1:9999/reports/compare?r=mid.json', token: 'tok' });
-  same([one.view(), at(one), one.text('#missing')],
+  same([one.view(), here(one), one.text('#missing')],
     ['v-missing', '/reports/compare?r=mid.json', 'It takes two lily pads to compareA comparison sets two or more reports side by side, '
       + 'and this address names only mid.json.Open the reportAll reports'],
     'a comparison of one report says what a comparison needs, at the address as typed');

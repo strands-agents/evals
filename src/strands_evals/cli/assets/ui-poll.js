@@ -46,7 +46,7 @@ async function rereadFolder() {
 }
 
 async function pollNow() {
-  if (MODE !== 'server' || document.hidden || polling) return;
+  if (document.hidden || polling) return;
   polling = true;
   try {
     let mark;

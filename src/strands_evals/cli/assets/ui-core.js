@@ -1,6 +1,3 @@
-/* Two modes. server: served by `strands-evals ui`, Save writes the loaded file in place.
- * standalone: opened from disk, Save downloads a copy because file:// cannot write back. */
-
 'use strict';
 
 const app = document.querySelector('.app');
@@ -164,16 +161,27 @@ function showValue(v) {
 }
 const pre = v => v == null ? '&mdash;' : json(v);
 
-/* `navigator.clipboard` needs a secure context, which `file://` is not, so there is a fallback. */
+/** Put text on the clipboard. `text` may be a promise of it, as when the server is writing it: Safari
+    lets a page write only inside the click that asked, so the clipboard is handed the promise where it takes one. */
 async function copyText(text) {
   try {
+    if (window.ClipboardItem && navigator.clipboard && navigator.clipboard.write) {
+      const blob = Promise.resolve(text).then(now => new Blob([now], { type: 'text/plain' }));
+      await navigator.clipboard.write([new ClipboardItem({ 'text/plain': blob })]);
+      return true;
+    }
+  } catch { /* fall through to the ways that wait for the text */ }
+  let now;
+  try { now = await text; } catch { return false; }
+  try {
     if (navigator.clipboard && navigator.clipboard.writeText) {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(now);
       return true;
     }
   } catch { /* fall through to the selection trick */ }
+  /* `navigator.clipboard` needs a secure context, which a server reached by a name that is not loopback is not. */
   try {
-    const ta = Object.assign(document.createElement('textarea'), { value: text });
+    const ta = Object.assign(document.createElement('textarea'), { value: now });
     ta.style.position = 'fixed';
     ta.style.opacity = '0';
     document.body.appendChild(ta);
@@ -189,7 +197,7 @@ async function copyText(text) {
 /* The server writes the token into the document; a link opened with `?t=` still works without that. */
 const TOKEN = (document.querySelector('meta[name="strands-evals-token"]') || {}).content
   || new URLSearchParams(location.search).get('t') || '';
-let MODE = 'standalone', ROOT = '', READONLY = true, DEPTH = null;
+let ROOT = '', READONLY = true, DEPTH = null;
 
 async function api(path, opts) {
   const res = await fetch(path, Object.assign({ headers: { 'X-Evals-Token': TOKEN } }, opts || {}));
@@ -264,7 +272,7 @@ function show(view, opts) {
     compare: `${CMP.length} reports`,
     'opt-setup': config, 'opt-tunables': config,
     'opt-overview': log, 'opt-progress': log, 'opt-candidates': log, 'opt-trade': log,
-  }[view] || ROOT || folderLabel;
+  }[view] || ROOT;
   renderPageHead(view);
   renderGuide(view);
   if (opts && opts.silent) return;

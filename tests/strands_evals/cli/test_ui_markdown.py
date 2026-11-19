@@ -198,6 +198,7 @@ def test_an_experiment_with_nothing_in_it_says_so():
         ('{"output": 7}', '{\n "output": 7\n}'),
         ('{"output": "a", "more": 1}', '{\n "output": "a",\n "more": 1\n}'),
         ('{"half": ', '{"half": '),
+        ('{"n": NaN}', '{"n": NaN}'),
         ("[] and then some", "[] and then some"),
         ({"status": ["in transit"]}, '{\n "status": [\n  "in transit"\n ]\n}'),
         (None, "null"),

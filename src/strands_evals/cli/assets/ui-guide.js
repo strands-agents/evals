@@ -86,7 +86,7 @@ const EVALUATOR_PAGES = {
   StateEquals: 'deterministic_evaluators', ToolCalled: 'deterministic_evaluators', SkillInvoked: 'deterministic_evaluators',
   TypedRubricEvaluator: '', Evaluator: 'custom_evaluator',
 };
-/* Summary and settings of every built-in evaluator, as the server read them off the library. Empty with no server. */
+/* Summary and settings of every built-in evaluator, as the server read them off the library. */
 let EVALUATOR_INFO = {};
 
 /** The documentation page for an evaluator type; a type the library does not ship gets the custom-evaluator page. */

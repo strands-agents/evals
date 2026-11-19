@@ -1,6 +1,6 @@
 /* Nothing the page does not understand is misprinted or lost: a case's input and outputs of any
    shape, and keys the editor has no field for, at every level of an experiment file. */
-import { fakeServer, page, runner, tick } from './harness.mjs';
+import { fakeServer, page, runner, served, tick } from './harness.mjs';
 
 const { ok, same, done } = runner('fidelity');
 const pretty = v => JSON.stringify(v, null, 2);
@@ -33,8 +33,7 @@ const pairs = el => [...el.querySelectorAll('dt')].map(dt => [dt.textContent, dt
 
 // ── a report row shows a value of any shape ──
 {
-  const p = await page();
-  await p.openFolder({ 'run/experiment.json': EXPERIMENT, 'run/report.json': REPORT });
+  const p = await served({ 'run/experiment.json': EXPERIMENT, 'run/report.json': REPORT });
   await p.openReport('run');
   for (const row of p.$$('#rep-rows tr.case')) await p.click(`#rep-rows tr.case[data-i="${row.dataset.i}"]`);
   const shown = i => Object.fromEntries(pairs(p.$(`#rep-rows tr.case[data-i="${i}"] + tr.detail .blocks`)));
@@ -80,10 +79,19 @@ const pairs = el => [...el.querySelectorAll('dt')].map(dt => [dt.textContent, dt
     'an unnamed case is numbered by its place under its evaluator, so its rows under two evaluators are one case');
 }
 
+// ── a row the report gives no verdict for ──
+{
+  const short = { overall_score: 0.5, scores: [1, 1], test_passes: [true],
+    cases: [{ name: 'judged', evaluator: 'X', input: 'q' }, { name: 'cut off', evaluator: 'X', input: 'q' }] };
+  const p = await served({ 'short/report.json': short });
+  ok(/1 failing/.test(p.text('#reports-rows')), 'a row with no verdict has not passed: the list counts it as failing', p.text('#reports-rows'));
+  await p.openReport();
+  ok(p.text('#r-stats').startsWith('1 / 2Rows passing'), 'and so does the report', p.text('#r-stats'));
+}
+
 // ── the editor keeps a structured field structured ──
 {
-  const p = await page();
-  await p.openFolder({ 'run/experiment.json': EXPERIMENT });
+  const p = await served({ 'run/experiment.json': EXPERIMENT });
   await p.openExperiment();
   const field = k => p.$(`#form [data-k="${k}"]`);
   ok(field('input').dataset.json === '1' && field('input').value === pretty(MULTIMODAL)
@@ -102,13 +110,13 @@ const pairs = el => [...el.querySelectorAll('dt')].map(dt => [dt.textContent, dt
   await p.click('#save');
   same((await p.saved()).cases[0].input, { instruction: 'Now a table', media: [] }, 'a valid JSON edit is saved as the value it parses to, not as text');
 
-  const downloads = p.window.__blobs.length;
+  const saves = p.puts();
   await p.type(field('input'), '{"instruction": ');
   ok(field('input').classList.contains('invalid') && /not valid JSON/.test(p.text('#saved')), 'JSON that does not parse is marked and not applied',
     p.text('#saved'));
   await p.type(field('expected_output'), '{"answer": 43}');
   await p.click('#save');
-  ok(p.window.__blobs.length === downloads && /does not parse/.test(p.text('#saved')), 'and Save refuses while it is on screen', p.text('#saved'));
+  ok(p.puts() === saves && /does not parse/.test(p.text('#saved')), 'and Save refuses while it is on screen', p.text('#saved'));
   await p.type(field('input'), '{"instruction": "Fixed"}');
   await p.click('#save');
   same((await p.saved()).cases[0], { ...EXPERIMENT.cases[0], input: { instruction: 'Fixed' }, expected_output: { answer: 43 } },
@@ -140,8 +148,7 @@ const pairs = el => [...el.querySelectorAll('dt')].map(dt => [dt.textContent, dt
     { event: 'trial', iteration: 0, record: trial },
     { event: 'iteration_end', iteration: 0, record: { iteration: 0, rollouts_spent: 1, proposals: [{ candidate_id: 'c0', number: 0, outcome: 'feasible', objective: 1 }] } },
   ];
-  const p = await page();
-  await p.openFolder({ 'r/run.json': { run_id: 'inline' }, 'r/events.jsonl': events.map(e => JSON.stringify(e)).join('\n') + '\n' });
+  const p = await served({ 'r/run.json': { run_id: 'inline' }, 'r/events.jsonl': events.map(e => JSON.stringify(e)).join('\n') + '\n' });
   await p.click('.tab[data-view="opt-candidates"]');
   await p.click('#opt-cands tr.case');
   await p.click('#opt-cands tr.trial');
