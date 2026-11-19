@@ -28,8 +28,9 @@ class SelectionContext:
         values: Candidate id -> key -> value.
         parents: Candidate id -> parent id (None for the baseline).
         trial_counts: Candidate id -> train trials that count.
-        fit: Read-only; None before 2 candidates are eligible, after a refit that raised, or while any
-            metric is flagged.
+        fit: Read-only; None before 2 candidates are eligible, or after a refit that raised. It can have
+            flagged metrics (`fit.flagged`), whose models failed the held-out check: leave those out, as the
+            ranking does (`assessments` hold only the other metrics' estimates).
         iteration: The current iteration.
         history: Parents chosen so far, oldest first.
         rng: `random.Random(f"{seed}:{iteration}")`, so a resumed run picks the same parents.

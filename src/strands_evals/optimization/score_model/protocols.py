@@ -114,8 +114,9 @@ class Fit(Protocol):
     Attributes:
         metrics: Resolved goal metric name -> its model, e.g. "HelpfulnessEvaluator", "tokens".
         candidates: Ids it was fitted on.
-        flagged: Metrics whose held-out check failed; no decision uses a fit with any flagged metric (every
-            metric is assessed by measured means, and selection and the proposers get no fit).
+        flagged: Metrics whose held-out check failed. The ranking judges a flagged metric by its adjusted
+            mean and the others by the fit (a name that isn't a goal metric sends every metric to measured
+            means); proposers and the parent selection get the fit and leave out the flagged metrics' models.
         diagnostics: Per metric (z-scores, prior scales, messages); a `BayesBenchModel` fit also gives each
             metric's scaling (noise, unit, offset) and observation count.
     """

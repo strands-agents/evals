@@ -69,9 +69,9 @@ from .result import (
 from .score_model.bayesbench import BayesBenchModel
 from .score_model.effects import effects_json
 from .score_model.protocols import Fit, FitData, ScoreModel
-from .score_model.ranking import Assessment, Mean, assess, label_candidate, pareto_front, rank, round_to_sd
+from .score_model.ranking import Assessment, Mean, assess, label_candidate, pareto_front, rank
 from .scoring.metrics import USAGE_METRICS, MetricRegistry
-from .scoring.objectives import Constraint, Criteria, Objective, Pareto, WeightedSum, measured_metrics, score
+from .scoring.objectives import Constraint, Criteria, Maximize, Objective, Pareto, WeightedSum, measured_metrics, score
 from .search.blocks import Block, ScheduleContext, Search, Step
 from .search.proposer import ProposalRequest, Proposer
 from .selection.base import Selection, SelectionContext
@@ -1012,8 +1012,8 @@ class Optimizer:
         )
 
     def _rank(self) -> tuple[list[str], dict[str, Assessment]]:
-        """Every eligible candidate in ranking order (the fit's estimates, else measured means), and each one's
-        assessment."""
+        """Every eligible candidate in ranking order (the fit's estimates, else measured means, metric by metric),
+        and each one's assessment."""
         eligible = [c for c in self._candidates if self._train[c].is_eligible]
         assessments = assess(
             eligible,
@@ -1092,7 +1092,7 @@ class Optimizer:
                 values={c: candidate.values for c, candidate in self._candidates.items()},
                 parents={c: candidate.parent_id for c, candidate in self._candidates.items()},
                 trial_counts={c: self._trial_count(c) for c in self._candidates},
-                fit=self._fit if self._fit is not None and not self._fit.flagged else None,
+                fit=self._fit,
                 iteration=self._iteration,
                 history=list(self._history),
                 rng=random.Random(f"{self._seed}:{self._iteration}"),
@@ -1406,8 +1406,7 @@ class Optimizer:
                 trials=[r for r in self._records[parent.id].values() if r.split == "train"],
                 scores=self._train[parent.id],
                 inputs={c: cases[c].input for c in train},
-                # A fit with a flagged metric isn't used for decisions, so proposers don't get it either.
-                fit=self._fit if self._fit is not None and not self._fit.flagged else None,
+                fit=self._fit,
                 candidates=summaries,
                 n=count,
                 iteration=iteration,
@@ -1543,15 +1542,12 @@ class Optimizer:
         return out
 
     def _term_values(self, a: Assessment) -> list[float] | None:
-        """Each objective term's raw value (the resolved estimate, else the adjusted mean the ranking used), in
-        objective order; None when a term's metric has no adjusted mean."""
+        """`a.terms` as raw values (each `Minimize` term negated back), in objective order; None when `a.terms` is."""
+        if a.terms is None:
+            return None
         objective = self._criteria.objective
         parts = objective.objectives if isinstance(objective, (WeightedSum, Pareto)) else (objective,)
-        if a.is_from_fit:
-            return [round_to_sd(a.estimates[d.metric].mean, a.estimates[d.metric].sd) for d in parts]
-        if any(d.metric not in a.adjusted_means for d in parts):
-            return None
-        return [a.adjusted_means[d.metric] for d in parts]
+        return [t if isinstance(d, Maximize) else -t for d, t in zip(parts, a.terms, strict=True)]
 
     def _tell(
         self,
