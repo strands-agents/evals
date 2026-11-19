@@ -1,6 +1,6 @@
 /* Reports side by side: picking them in the list and from a report's header, the comparison page
    (summary, evaluator means, the verdict grid, oldest against newest), and its address. */
-import { fakeServer, page, runner, tick } from './harness.mjs';
+import { fakeServer, page, runner } from './harness.mjs';
 
 const { ok, same, done } = runner('compare');
 
@@ -108,15 +108,13 @@ ok(p.view() === 'v-report' && p.text('#crumbs') === 'Reports/b/report.json'
   && p.$('#rep-rows tr.case[data-i="4"]').getAttribute('aria-expanded') === 'true',
 'a row that moved opens in the newest report, on that row', `${p.view()} ${p.text('#crumbs')}`);
 ok(p.window.location.hash === '#/reports/b/report.json/rows/c/X', 'which the address names', p.window.location.hash);
-p.window.history.back();
-await tick();
+await p.travel(-1);
 ok(p.view() === 'v-compare' && compared(p).length === 3, 'Back from the report returns to the comparison', p.view());
 await p.key('Enter', p.$('#cmp-grid rect.cell'));
 ok(p.view() === 'v-report' && p.text('#crumbs') === 'Reports/c/report.json'
   && p.$('#rep-rows tr.case[data-i="1"]').getAttribute('aria-expanded') === 'true',
 'a cell of the grid opens its row in the report of its column, from the keyboard too', `${p.view()} ${p.text('#crumbs')}`);
-p.window.history.back();
-await tick();
+await p.travel(-1);
 
 // ── removing a report ──
 same(p.$$('#facts [data-cmp-remove]').map(b => b.getAttribute('aria-label')), [
@@ -131,15 +129,12 @@ ok(p.text('#cmp-ends-head') === 'From #1 to #2' && p.$$('#cmp-grid rect.cell').l
 ok(p.window.location.hash === '#' + address('c/report.json', 'b/report.json'), 'as does the address', p.window.location.hash);
 
 // ── Back, and the address on its own ──
-p.window.history.back();
-await tick();
+await p.travel(-1);
 ok(p.view() === 'v-compare' && compared(p).length === 3, 'Back restores the comparison of three', compared(p).join());
-p.window.history.back();
-await tick();
+await p.travel(-1);
 ok(p.view() === 'v-reports' && p.window.location.hash === '#/reports' && box(p, 'c/report.json').checked,
   'Back again returns to the list, the boxes as they were left', `${p.view()} ${p.window.location.hash}`);
-p.window.location.hash = '#' + address('b/report.json', 'a/report.json');
-await tick();
+await p.follow(address('b/report.json', 'a/report.json'));
 same([p.view(), compared(p)], ['v-compare', ['#1 a/report.json', '#2 b/report.json']],
   'an address naming two reports opens their comparison, oldest first whatever order it names them in');
 ok(p.window.location.hash === '#' + address('a/report.json', 'b/report.json'), 'and is corrected to that order', p.window.location.hash);
@@ -147,8 +142,7 @@ for (const [named, what, says] of [
   [['a/report.json'], 'one report', 'only a/report.json'], [['a/report.json', 'a/report.json'], 'the same report twice', 'only a/report.json'],
   [[], 'none', 'none'],
 ]) {
-  p.window.location.hash = '#' + address(...named);
-  await tick();
+  await p.follow(address(...named));
   ok(p.view() === 'v-missing' && p.window.location.hash === '#' + address(...named) && p.text('#missing').includes(`this address names ${says}.`),
     `an address naming ${what} says a comparison needs two, and stays as typed`, `${p.view()} ${p.window.location.hash} ${p.text('#missing')}`);
 }
@@ -283,18 +277,15 @@ ok(p.$('#cmp-with').hidden, 'and with every report compared there is nothing lef
   tree.files['late.json'] = two(0.1, 0.8);
   tree.reports[0].modified = 31;
   tree.mark = 'm2';
-  await q.window.pollNow();
-  await tick();
+  await q.poll();
   same(q.tips('#cmp-ends g.bell'), ['b · X · 0.30 to 0.80', 'a · X · 0.50 to 0.10'], 'a compared report that is run again is re-read where it stands');
   await q.click('.tab[data-view="reports"]');
   ok(at(q) === '/reports?t=tok', 'leaving the comparison takes its reports out of the address', at(q));
-  q.window.history.back();
-  await tick();
+  await q.travel(-1);
   ok(q.view() === 'v-compare' && at(q) === address('early.json', 'late.json') + '&t=tok', 'and Back returns to it', `${q.view()} ${at(q)}`);
   tree.reports = tree.reports.filter(m => m.path !== 'early.json');
   tree.mark = 'm3';
-  await q.window.pollNow();
-  await tick();
+  await q.poll();
   ok(q.view() === 'v-reports' && at(q) === '/reports?t=tok', 'a comparison left with one report when the other is deleted gives way to the list',
     `${q.view()} ${at(q)}`);
 
@@ -308,8 +299,7 @@ ok(p.$('#cmp-with').hidden, 'and with every report compared there is nothing lef
   same(cells(r, 3), ['—', '▲ +0.20', '▲ +0.30'], 'with each report set against the one before it');
   await r.click('#facts [data-cmp-remove="mid.json"]');
   ok(at(r) === address('early.json', 'late.json'), 'removing a report rewrites the address', at(r));
-  r.window.history.back();
-  await tick();
+  await r.travel(-1);
   same(compared(r), ['#1 early.json', '#2 mid.json', '#3 late.json'], 'and Back puts it back');
 
   // A mark whose report can no longer be read.
@@ -323,10 +313,8 @@ ok(p.$('#cmp-with').hidden, 'and with every report compared there is nothing lef
   await s.click('#cmp-ends g.bell');
   ok(s.view() === 'v-missing' && s.text('#missing') === 'This one would not surfacelate.json could not be read: no such fileAll reports',
     'a mark whose report cannot be read says so on a page of its own', s.text('#missing'));
-  s.window.history.back();
-  await tick();
-  s.window.history.back();
-  await tick();
+  await s.travel(-1);
+  await s.travel(-1);
   ok(s.view() === 'v-report' && s.text('#crumbs') === 'Reports/mid.json' && !s.$('#rep-rows tr.case[aria-expanded="true"]'),
     'and opens no row in the report that was open before', `${s.view()} ${s.text('#crumbs')}`);
 

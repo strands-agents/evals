@@ -662,13 +662,12 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
   await h.openReport();
   await candidate(h);
   const showing = () => `${h.text('#rep-count')} ${h.text('#crumbs').startsWith('Runs') ? 'candidate' : 'own'}`;
-  const travel = async delta => { h.window.history.go(delta); await tick(6); return `${h.$('.view.on').id} ${showing()}`; };
+  const travel = async delta => { await h.travel(delta); return `${h.$('.view.on').id} ${showing()}`; };
   eq(h.window.location.hash, '#/optimization/demo/candidates/c10/report', 'a candidate on the report page is named in the address');
   eq([await travel(-2), await travel(2)], ['v-report 2 of 2 rows own', 'v-report 15 of 15 rows candidate'],
     'Back to the folder\'s report shows that report, and Forward brings the candidate\'s cases back');
   const reopened = await openFixture({ files: { ...experiment, ...report } });
-  reopened.window.location.hash = h.window.location.hash;
-  await tick(6);
+  await reopened.follow(h.window.location.hash.slice(1));
   eq([`${reopened.$('.view.on').id} ${reopened.text('#rep-count')}`, reopened.text('#crumbs')],
     ['v-report 15 of 15 rows', `Runs/${RUN_ID}/Candidates/c10`], 'and the address alone reopens them');
   await q2.click('#crumbs [data-go="opt-candidates"]');
