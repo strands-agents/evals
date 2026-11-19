@@ -55,18 +55,26 @@ async function openCompare(paths, quiet) {
     if (!one) return false;
     read.push(one);
   }
-  CMP = read.sort((a, b) => a.at - b.at || a.meta.path.localeCompare(b.meta.path));
-  renderCompare();
+  setCompared(read);
   if (!quiet) show('compare');
   return true;
 }
 
-/** Re-read the comparison after the folder changed. A report that is gone leaves it. */
+function setCompared(read) {
+  CMP = read.sort((a, b) => a.at - b.at || a.meta.path.localeCompare(b.meta.path));
+  renderCompare();
+}
+
+/** Re-read the comparison after the folder changed. A report that is gone leaves it, and one that
+    cannot be read leaves the comparison as it was. */
 async function refreshCompare() {
   if (!CMP.length) return;
-  const now = CMP.map(c => REPORTS.find(m => m.path === c.meta.path)).filter(Boolean);
-  if (now.length === CMP.length && now.every((m, i) => m.modified === CMP[i].meta.modified)) return;
-  if (!await openCompare(now.map(m => m.path), true) && currentView() === 'compare') show('reports');
+  const was = CMP, now = was.map(c => REPORTS.find(m => m.path === c.meta.path)).filter(Boolean);
+  if (now.length === was.length && now.every((m, i) => m.modified === was[i].meta.modified)) return;
+  const read = now.length < 2 ? [] : await Promise.all(now.map(comparable));
+  if (CMP !== was) return;                   // another comparison was opened while this one was read
+  setCompared(read);
+  if (!read.length && currentView() === 'compare') show('reports');
 }
 
 /* ── the page ── */

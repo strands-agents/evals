@@ -143,13 +143,14 @@ await tick();
 same([p.view(), compared(p)], ['v-compare', ['#1 a/report.json', '#2 b/report.json']],
   'an address naming two reports opens their comparison, oldest first whatever order it names them in');
 ok(p.window.location.hash === '#' + address('a/report.json', 'b/report.json'), 'and is corrected to that order', p.window.location.hash);
-for (const [named, what] of [
-  [['a/report.json'], 'one report'], [['a/report.json', 'a/report.json'], 'the same report twice'], [[], 'none'],
+for (const [named, what, says] of [
+  [['a/report.json'], 'one report', 'only a/report.json'], [['a/report.json', 'a/report.json'], 'the same report twice', 'only a/report.json'],
+  [[], 'none', 'none'],
 ]) {
   p.window.location.hash = '#' + address(...named);
   await tick();
-  ok(p.view() === 'v-reports' && p.window.location.hash === '#/reports', `an address naming ${what} shows the list`,
-    `${p.view()} ${p.window.location.hash}`);
+  ok(p.view() === 'v-missing' && p.window.location.hash === '#' + address(...named) && p.text('#missing').includes(`this address names ${says}.`),
+    `an address naming ${what} says a comparison needs two, and stays as typed`, `${p.view()} ${p.window.location.hash} ${p.text('#missing')}`);
 }
 
 // ── from a report's header ──
@@ -312,6 +313,27 @@ ok(p.$('#cmp-with').hidden, 'and with every report compared there is nothing lef
   await tick();
   ok(s.view() === 'v-report' && s.text('#crumbs') === 'Reports/mid.json' && !s.$('#rep-rows tr.case[aria-expanded="true"]'),
     'and opens no row in the report that was open before', `${s.view()} ${s.text('#crumbs')}`);
+
+  // A compared report that changes and cannot be read again.
+  unread.clear();
+  const t = await page({ fetchImpl: s.window.fetch, url: `http://127.0.0.1:9999${address('mid.json', 'late.json')}`, token: 'tok', visible: true });
+  unread.add('late.json');
+  tree.reports[0].modified += 1;
+  tree.mark = 'm4';
+  await t.poll();
+  ok(t.view() === 'v-compare' && at(t) === address('mid.json', 'late.json') && compared(t).join() === '#1 mid.json,#2 late.json',
+    'a compared report that cannot be re-read leaves the comparison as it was read', `${t.view()} ${at(t)}`);
+  await t.click('.tab[data-view="reports"]');
+  ok(/could not re-read: no such file/.test(t.text('#v-reports')), 'and the list says the folder could not be re-read', t.text('#scan-err'));
+
+  // An address that names too few reports to compare.
+  const one = await page({ fetchImpl: server(), url: 'http://127.0.0.1:9999/reports/compare?r=mid.json', token: 'tok' });
+  same([one.view(), at(one), one.text('#missing')],
+    ['v-missing', '/reports/compare?r=mid.json', 'It takes two lily pads to compareA comparison sets two or more reports side by side, '
+      + 'and this address names only mid.json.Open the reportAll reports'],
+    'a comparison of one report says what a comparison needs, at the address as typed');
+  await one.click('#missing .ways a');
+  ok(one.view() === 'v-report' && one.text('#crumbs') === 'Reports/mid.json', 'and offers the report it names', one.view());
 }
 
 done();
