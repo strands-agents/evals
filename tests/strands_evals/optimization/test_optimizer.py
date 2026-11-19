@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import math
+import pickle
 import shutil
 import threading
 import warnings
@@ -35,6 +36,7 @@ from strands_evals.optimization import (
     Pareto,
     Patch,
     Proposer,
+    ProposerError,
     Schedule,
     ScoreModel,
     Search,
@@ -765,18 +767,25 @@ async def test_a_factory_needing_a_resource_is_not_build_checked(tmp_path):
     assert [o.outcome for o in proposer.observed] == ["feasible"]
 
 
-async def test_a_proposer_that_raises_stops_the_run(tmp_path):
+async def test_a_proposer_that_raises_stops_the_search_before_the_end_phase(tmp_path):
     optimizer = _searching(
         Block(Scripted(RuntimeError("model down")), "temperature"), schedule=Alternate(), base_dir=tmp_path
     )
-    reason, events = await _search(optimizer)
-    assert reason == "proposer_error"
+    with pytest.raises(ProposerError, match="block 'numbers' raised RuntimeError: model down") as raised:
+        await optimizer.run_async()
+    assert (raised.value.block, raised.value.run_dir) == ("numbers", optimizer._run.root)
+    assert "Optimizer.resume" in str(raised.value) and str(raised.value.__cause__) == "model down"
+    assert "to end it with what it found" not in str(raised.value)  # no closed iteration to end with
+    copied = pickle.loads(pickle.dumps(raised.value))
+    assert (str(copied), copied.block, copied.run_dir) == (str(raised.value), "numbers", optimizer._run.root)
+    events = _events(optimizer)
     error = next(e for e in events if e["event"] == "proposer_error")
     assert (error["error_type"], error["error"]) == ("RuntimeError", "model down")
-    assert "iteration_end" not in _names(events) and events[-1]["reason"] == "proposer_error"
+    assert events[-1] == error  # no `stop`: the run is left as a kill leaves it
+    assert {e["record"]["split"] for e in events if e["event"] == "trial"} == {"train"}
 
 
-async def test_a_proposer_returning_more_patches_than_asked_stops_the_run(tmp_path):
+async def test_a_proposer_returning_more_patches_than_asked_stops_the_search(tmp_path):
     class Greedy(Scripted):
         async def propose(self, request):
             return [
@@ -787,8 +796,9 @@ async def test_a_proposer_returning_more_patches_than_asked_stops_the_run(tmp_pa
     optimizer = _searching(
         Block(Greedy(), "temperature"), schedule=Alternate(), base_dir=tmp_path, proposals_per_iteration=1
     )
-    reason, events = await _search(optimizer)
-    assert reason == "proposer_error"
+    with pytest.raises(ProposerError, match="returned 2 patches for a request of 1"):
+        await _search(optimizer)
+    events = _events(optimizer)
     assert "returned 2 patches for a request of 1" in next(e for e in events if e["event"] == "proposer_error")["error"]
 
 
@@ -1525,6 +1535,34 @@ def _events_at(root):
     return [json.loads(line) for line in (root / "events.jsonl").read_text().splitlines()]
 
 
+@pytest.mark.parametrize("failing", [1, 2])
+async def test_a_search_a_proposer_stopped_resumes_and_ends_as_an_uninterrupted_run(tmp_path, failing):
+    updates = [{"temperature": 0.5}, {"temperature": 1.0}]
+    expected = await _two_steps(*updates, base_dir=tmp_path / "runs").run_async()
+    stopped = _two_steps(*updates[: failing - 1], RuntimeError("throttled"), base_dir=tmp_path / "stopped")
+    with pytest.raises(ProposerError, match="throttled"):
+        await stopped.run_async()
+    assert not [e for e in _events(stopped) if e["event"] == "stop"]
+    search = Search(
+        [Block(Scripted(*updates[failing - 1 :]), "temperature"), Block(Scripted(), "manager")], schedule=Joint()
+    )
+    resumed = await _resume(stopped._run.root, search=search).run_async()
+    _assert_same(resumed, expected)
+    assert len(resumed.iterations) == 2 and resumed.best.values["temperature"] == 1.0
+
+
+async def test_a_search_a_proposer_stopped_can_end_with_what_it_found(tmp_path):
+    """A proposer that can't be fixed: resumed with its closed iterations as the cap, the run goes to the end phase."""
+    stopped = _two_steps({"temperature": 0.5}, RuntimeError("no access"), base_dir=tmp_path)
+    with pytest.raises(ProposerError, match=r"also pass budget=Budget\(max_rollouts=500, max_iterations=1\)"):
+        await stopped.run_async()
+    search = Search([Block(Scripted(), "temperature"), Block(Scripted(), "manager")], schedule=Joint())
+    budget = Budget(max_rollouts=500, max_iterations=1)
+    result = await _resume(stopped._run.root, search=search, budget=budget).run_async()
+    assert result.stop_reason == "iterations" and len(result.iterations) == 1
+    assert result.best.values["temperature"] == 0.5 and result.test is not None
+
+
 async def test_costs_after_resume_count_a_killed_iterations_trials(tmp_path):
     original = _two_steps({"temperature": 0.5}, {"temperature": 1.0}, base_dir=tmp_path / "runs")
     await original.run_async()
@@ -1807,9 +1845,11 @@ async def test_a_concurrent_proposer_that_raises_cancels_its_sibling_calls(tmp_p
     optimizer = _searching(
         Block(Racing(), "temperature"), schedule=Alternate(), base_dir=tmp_path, proposals_per_iteration=3
     )
-    reason, events = await _search(optimizer)
-    assert reason == "proposer_error" and len(started) == 3 and finished == []
-    assert "screened" not in _names(events) and events[-1]["event"] == "stop"
+    with pytest.raises(ProposerError, match="model gone"):
+        await _search(optimizer)
+    events = _events(optimizer)
+    assert len(started) == 3 and finished == []
+    assert "screened" not in _names(events) and events[-1]["event"] == "proposer_error"
 
 
 async def test_an_openers_duplicate_doesnt_drop_the_rest_of_its_batch(tmp_path):

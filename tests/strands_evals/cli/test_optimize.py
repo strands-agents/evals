@@ -813,8 +813,9 @@ def test_a_search_stopped_by_a_proposer_error_exits_3(experiment_path, tmp_path,
     monkeypatch.chdir(tmp_path)
     assert main(_config_args(experiment_path, config, tmp_path)) == 3
     out, err = capsys.readouterr()
-    assert json.loads(out)["stop_reason"] == "proposer_error"  # the end phase still ran and the result printed
+    assert out == ""  # the search stopped before the end phase, so there is no result to print
     assert "raised RuntimeError: no model access" in err
+    assert "optimize resume" in err  # how to continue the search with the CLI
 
 
 def test_debug_prints_the_traceback_of_a_bad_hook(experiment_path, tmp_path, capsys):
