@@ -138,9 +138,11 @@ class OptimizationResult(BaseModel):
         test: The champion against the baseline on test, report only: a negative `mean_diff` is possible
             and never changes what ships. When the baseline ships it is compared with itself. None without
             test cases, when it couldn't be afforded, or when every test trial of the champion or the baseline
-            failed (`test_reason` says which).
-        test_reason: Why `test` is None (the `test` event's reason), or under `Pareto` which front members
-            the test report couldn't afford or measured nothing for; None when everything ran.
+            failed (`test_reason` says which). When it couldn't be afforded, or each of the champion and the
+            baseline with no completed test trial has one left `infrastructure_invalid`, the `test` event isn't
+            written, so `Optimizer.resume` on the run runs the test again (with a `Budget` that affords it).
+        test_reason: Why `test` is None, or under `Pareto` which front members the test report couldn't
+            afford or measured nothing for; None when everything ran.
         front_test: Under a `Pareto` objective, each tested front member against the baseline on test
             (`front_test[best.id]` is `test` when the champion is on the validated front; members not afforded
             or with every test trial failed are absent); `{}` otherwise or when the test report was skipped.

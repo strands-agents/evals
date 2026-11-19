@@ -198,27 +198,31 @@ def test_split_shortfall():
 
 
 def test_budget_must_cover_the_baseline_and_the_reserves():
-    # 20 cases: 8 train, 6 validation, 6 test; baseline 8 + validation (3 + 1) x 6 + test 2 x 6 = 44.
-    with pytest.raises(ValueError, match="max_rollouts >= 44"):
-        _optimizer(budget=Budget(max_rollouts=43))
+    # 20 cases: 8 train, 6 validation, 6 test. Each end-phase arm reserves its first pass plus 2 re-run passes
+    # x 1 re-run: baseline 8 + validation (3 + 1) x (6 + 2) + test 2 x (6 + 2) = 56.
+    with pytest.raises(ValueError, match="re-run headroom included\\): give max_rollouts >= 56"):
+        _optimizer(budget=Budget(max_rollouts=55))
     with pytest.warns(UserWarning, match=r"less than one iteration \(32 rollouts\)"):
-        _optimizer(budget=Budget(max_rollouts=44))
+        _optimizer(budget=Budget(max_rollouts=56))
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        _optimizer(budget=Budget(max_rollouts=76))
-    # Twice the runs, twice everything.
-    with pytest.raises(ValueError, match="max_rollouts >= 88"):
-        _optimizer(budget=Budget(max_rollouts=87), runs_per_candidate=2)
+        _optimizer(budget=Budget(max_rollouts=88))
+    # Twice the runs: 16 + 4 x (12 + 2) + 2 x (12 + 2) = 100.
+    with pytest.raises(ValueError, match="max_rollouts >= 100"):
+        _optimizer(budget=Budget(max_rollouts=99), runs_per_candidate=2)
+    # No re-run passes: no headroom, the first passes only.
+    with pytest.raises(ValueError, match="max_rollouts >= 44"):
+        _optimizer(budget=Budget(max_rollouts=43), rerun_passes=0)
     # No test cases: no test reserve.
     optimizer = _optimizer(split=Split(train=0.5, validation=0.5, test=None))
-    assert (optimizer._budget.validation_reserve, optimizer._budget.test_reserve) == (4 * 10, 0)
+    assert (optimizer._budget.validation_reserve, optimizer._budget.test_reserve) == (4 * (10 + 2), 0)
 
 
 def test_pareto_reserves_every_front_member():
     objective = Pareto(Maximize("Score"), Minimize("tokens", scale=1000))
     optimizer = _optimizer(objective=objective)
-    # max(3, 5) finalists + the baseline, on 6 validation and 6 test cases.
-    assert (optimizer._budget.validation_reserve, optimizer._budget.test_reserve) == (36, 36)
+    # max(3, 5) finalists + the baseline, on 6 validation and 6 test cases, each with 2 re-runs of headroom.
+    assert (optimizer._budget.validation_reserve, optimizer._budget.test_reserve) == (48, 48)
 
 
 def test_metrics_record_roles_ranges_and_effective_scale():
@@ -655,13 +659,13 @@ async def test_two_slots_of_one_step_with_equal_values_are_scored_once(tmp_path)
 
 
 async def test_a_step_is_cut_to_what_the_budget_can_score(tmp_path):
-    # 44 needed (baseline 8 + reserves 36), so 52 leaves room for one candidate of 8 rollouts, not two.
+    # 56 needed (baseline 8 + reserves 48), so 64 leaves room for one candidate of 8 rollouts, not two.
     proposer = Scripted({"temperature": 0.5}, {"temperature": 1.0})
     optimizer = _searching(
         Block(proposer, "temperature"),
         schedule=Joint(),
         base_dir=tmp_path,
-        budget=Budget(max_rollouts=52, max_iterations=1),
+        budget=Budget(max_rollouts=64, max_iterations=1),
         proposals_per_iteration=2,
     )
     await _search(optimizer)
@@ -1051,12 +1055,12 @@ async def test_a_model_that_returns_none_keeps_the_fit_in_use(tmp_path):
 
 
 async def test_the_budget_stops_the_search_before_the_end_phases_reserve(tmp_path):
-    # 44 needed (baseline 8 + reserves 36), so 60 leaves room for two candidates of 8 rollouts.
+    # 56 needed (baseline 8 + reserves 48), so 72 leaves room for two candidates of 8 rollouts.
     optimizer = _searching(
         Block(Scripted({"temperature": 0.5}, {"temperature": 1.0}, {"temperature": 0.5}), "temperature"),
         schedule=Alternate(),
         base_dir=tmp_path,
-        budget=Budget(max_rollouts=60, max_iterations=None),
+        budget=Budget(max_rollouts=72, max_iterations=None),
         proposals_per_iteration=1,
     )
     reason, _ = await _search(optimizer)
@@ -1147,6 +1151,7 @@ async def test_a_test_arm_with_no_completed_trial_skips_the_report(tmp_path):
     assert result.best.values["temperature"] == 1.0  # picked on validation, where it ran
     assert result.test is None
     assert result.test_reason == "every test trial of the champion failed, so there is nothing to compare"
+    assert _names(_events(optimizer))[-1] == "test"  # agent failures are final: a resume reuses this
     # The result says which tested candidate measured nothing on test, in result.json and on resume too.
     assert result.test_failed_ids == [result.best.id]
     root = optimizer._run.root
@@ -1198,6 +1203,48 @@ async def test_the_validation_fit_leaves_out_a_candidate_with_no_completed_valid
     # The baseline, then the finalists in ranking order, without the one that crashed (the baseline included).
     expected = [by_temperature[t] for t in (0.0, 1.0, 0.5) if t != crashes]
     assert [ids for cases, ids in fitted if cases == validation_cases] == [expected]
+
+
+@pytest.mark.parametrize("split", ["validation", "test"])
+async def test_the_end_phase_re_runs_a_transient_infrastructure_failure_after_the_search_spent_all_it_may(
+    tmp_path, split
+):
+    # The baseline and two candidates on train, then only the end phase's reserves are left; two finalists, so
+    # validation's reserve has no room for more arms. (On test, validation's unused headroom also reaches the
+    # test arms; the test reserve's own size is pinned in test_budget_must_cover_the_baseline_and_the_reserves.)
+    reserves = _two_steps(final_pick=FinalPick(n_finalists=2))._budget
+    budget = Budget(max_rollouts=8 * 3 + reserves.validation_reserve + reserves.test_reserve, max_iterations=None)
+    optimizer = _two_steps(
+        {"temperature": 0.5},
+        {"temperature": 1.0},
+        base_dir=tmp_path,
+        budget=budget,
+        final_pick=FinalPick(n_finalists=2),
+    )
+    flaky = getattr(optimizer._case_split, split)[0]
+    failed = []
+
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        if temperature == 1.0 and case.name == flaky and not failed:
+            failed.append(case.name)  # fails once, then succeeds when re-run
+            raise InfrastructureError("sandbox failed to start")
+        return str(temperature)
+
+    optimizer._rollout_fn = rollout
+    result = await optimizer.run_async()
+    assert result.stop_reason == "budget" and failed == [flaky]
+    assert result.rollouts_spent <= budget.max_rollouts
+    hottest = next(c.id for c in result.candidates.values() if c.values["temperature"] == 1.0)
+    statuses = [
+        e["record"]["status"]
+        for e in _events(optimizer)
+        if e["event"] == "trial" and e["record"]["candidate_id"] == hottest and e["record"]["case_name"] == flaky
+    ]
+    assert statuses == ["infrastructure_invalid", "completed"]
+    # The best candidate is still eligible on validation and ships, and its test report misses no case.
+    assert result.best.values["temperature"] == 1.0 and result.validation.infeasible == {}
+    assert result.test.missing == {result.best.id: 0, result.baseline_id: 0}
 
 
 async def test_a_finalist_failing_a_constraint_on_validation_cannot_ship(tmp_path):
@@ -1554,13 +1601,152 @@ async def test_resuming_a_finished_run_returns_its_result_and_spends_nothing(tmp
 
 async def test_a_smaller_budget_after_the_pick_skips_the_test_report(tmp_path):
     original_optimizer = _default_search(tmp_path / "runs")
-    await original_optimizer.run_async()
+    original = await original_optimizer.run_async()
     copy = _killed(original_optimizer._run.root, tmp_path, lambda events: _index(events, "picked"))
     spent = sum(1 for e in _events_at(copy) if e["event"] == "trial")  # one rollout each, no re-runs here
     with pytest.raises(ValueError, match="already spent"):
         _resume(copy, budget=Budget(max_rollouts=spent - 1))
     result = await _resume(copy, budget=Budget(max_rollouts=spent)).run_async()
-    assert result.test is None and result.test_reason.startswith("the test report needs")
+    assert result.test is None
+    assert result.test_reason == (
+        f"the test report needs 12 rollouts, 0 are left; resume with max_rollouts >= {spent + 12} to run it"
+    )
+    # Not saved as done: resuming with the budget the reason names runs the test report.
+    assert "test" not in [e["event"] for e in _events_at(copy)]
+    again = await _resume(copy, budget=Budget(max_rollouts=spent + 12)).run_async()
+    assert again.test is not None
+    for field in ("champion_id", "objective", "difference", "ratio", "missing"):  # timings differ
+        assert getattr(again.test, field) == getattr(original.test, field)
+
+
+def _two_step_search():
+    """`_two_steps`'s search, for resuming its runs (`Scripted` proposers compare equal whatever they propose)."""
+    return Search([Block(Scripted(), "temperature"), Block(Scripted(), "manager")], schedule=Joint())
+
+
+@pytest.mark.parametrize("pattern", ["infrastructure", "mixed"])
+async def test_a_test_report_lost_to_infrastructure_is_not_saved_and_resume_runs_it(tmp_path, pattern):
+    optimizer = _two_steps({"temperature": 0.5}, {"temperature": 1.0}, base_dir=tmp_path)
+    test_cases = list(optimizer._case_split.test)
+    down = {"sandbox": True}
+
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        if temperature == 1.0 and case.name in test_cases and down["sandbox"]:
+            if pattern == "infrastructure" or case.name == test_cases[0]:
+                raise InfrastructureError("sandbox down")
+            raise ValueError("crashes on test")
+        return str(temperature)
+
+    optimizer._rollout_fn = rollout
+    result = await optimizer.run_async()
+    assert result.best.values["temperature"] == 1.0 and result.test is None
+    n = 6 if pattern == "infrastructure" else 1
+    assert result.test_reason == (
+        f"every test trial of the champion failed, {n} on infrastructure; resume with max_rollouts >= "
+        f"{result.rollouts_spent + n} to run them again"
+    )
+    root = optimizer._run.root
+    assert "test" not in [e["event"] for e in _events_at(root)]
+
+    # The sandbox is back: a resume re-runs the trials left infrastructure_invalid and saves the report.
+    down["sandbox"] = False
+    resumed = Optimizer.resume(
+        root,
+        experiment=_experiment(evaluators=[Temperature()]),
+        factory=create_agent,
+        rollout_fn=rollout,
+        search=_two_step_search(),
+    )
+    again = await resumed.run_async()
+    assert again.best.id == result.best.id and again.test is not None
+    assert again.test.missing == {result.best.id: 0, result.baseline_id: 0}  # an agent failure counts, at worst
+    # Only the trials left infrastructure_invalid ran again; the agent failures stayed final.
+    statuses = {
+        e["record"]["case_name"]: e["record"]["status"]
+        for e in _events_at(root)
+        if e["event"] == "trial" and e["record"]["candidate_id"] == result.best.id and e["record"]["split"] == "test"
+    }
+    assert sorted(statuses.values()) == ["agent_failure"] * (6 - n) + ["completed"] * n
+    assert again.rollouts_spent == result.rollouts_spent + n
+    assert [e["event"] for e in _events_at(root)][-1] == "test"
+
+
+async def test_a_test_report_lost_to_infrastructure_at_a_tight_budget_names_the_budget_a_resume_needs(tmp_path):
+    # The search spends down to the reserves, and the champion's test re-runs use up most of what is left.
+    reserves = _two_steps(final_pick=FinalPick(n_finalists=2))._budget
+    budget = Budget(max_rollouts=8 * 3 + reserves.validation_reserve + reserves.test_reserve, max_iterations=None)
+    optimizer = _two_steps(
+        {"temperature": 0.5},
+        {"temperature": 1.0},
+        base_dir=tmp_path,
+        budget=budget,
+        final_pick=FinalPick(n_finalists=2),
+    )
+    test_cases = set(optimizer._case_split.test)
+    down = {"sandbox": True}
+
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        if temperature == 1.0 and case.name in test_cases and down["sandbox"]:
+            raise InfrastructureError("sandbox down")
+        return str(temperature)
+
+    def resume(**kwargs):
+        return Optimizer.resume(
+            optimizer._run.root,
+            experiment=_experiment(evaluators=[Temperature()]),
+            factory=create_agent,
+            rollout_fn=rollout,
+            search=_two_step_search(),
+            **kwargs,
+        )
+
+    optimizer._rollout_fn = rollout
+    result = await optimizer.run_async()
+    spent = result.rollouts_spent
+    assert result.test is None and spent < budget.max_rollouts < spent + 6
+    assert result.test_reason == (
+        f"every test trial of the champion failed, 6 on infrastructure; resume with max_rollouts >= {spent + 6} "
+        "to run them again"
+    )
+
+    # The sandbox is back, but the saved budget can't afford the 6 trials: still not saved as done.
+    down["sandbox"] = False
+    again = await resume().run_async()
+    assert again.test is None and again.rollouts_spent == spent
+    assert again.test_reason == (
+        f"the test report needs 6 rollouts, {budget.max_rollouts - spent} are left; resume with max_rollouts >= "
+        f"{spent + 6} to run it"
+    )
+    assert "test" not in [e["event"] for e in _events_at(optimizer._run.root)]
+
+    # With the budget the reason names, the resume runs them and saves the report.
+    final = await resume(budget=Budget(max_rollouts=spent + 6)).run_async()
+    assert final.test is not None and final.test.missing == {final.best.id: 0, final.baseline_id: 0}
+    assert final.rollouts_spent == spent + 6
+    assert [e["event"] for e in _events_at(optimizer._run.root)][-1] == "test"
+
+
+async def test_a_test_report_is_final_when_a_failed_arm_has_only_agent_failures(tmp_path):
+    # The champion crashes on every test case and the baseline's test trials hit infrastructure: re-running
+    # the baseline can't give the champion a completed trial, so the outcome is final.
+    optimizer = _two_steps({"temperature": 0.5}, {"temperature": 1.0}, base_dir=tmp_path)
+    test_cases = set(optimizer._case_split.test)
+
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        if case.name in test_cases and temperature == 1.0:
+            raise ValueError("crashes on test")
+        if case.name in test_cases and temperature == 0.0:
+            raise InfrastructureError("sandbox down")
+        return str(temperature)
+
+    optimizer._rollout_fn = rollout
+    result = await optimizer.run_async()
+    assert result.test is None
+    assert result.test_reason == "every test trial of the baseline failed, so there is nothing to compare"
+    assert _names(_events(optimizer))[-1] == "test"
 
 
 def test_a_ctrl_c_during_the_search_stops_run_and_resume_finishes_it(tmp_path, sigint):
@@ -1759,8 +1945,8 @@ async def test_a_step_with_no_possible_parents_raises(tmp_path):
 
 
 async def test_a_run_killed_during_validation_resumes_with_its_own_budget(tmp_path):
-    # Stops on the budget, so the search leaves only the reserve: 8 baseline + 36 reserve + 3 steps of 16.
-    original_optimizer = _default_search(tmp_path / "runs", budget=Budget(max_rollouts=92))
+    # Stops on the budget, so the search leaves only the reserve: 8 baseline + 48 reserve + 3 steps of 16.
+    original_optimizer = _default_search(tmp_path / "runs", budget=Budget(max_rollouts=104))
     original = await original_optimizer.run_async()
     assert original.stop_reason == "budget"
     copy = _killed(
@@ -1771,7 +1957,7 @@ async def test_a_run_killed_during_validation_resumes_with_its_own_budget(tmp_pa
     resumed_optimizer = _resume(copy)  # no budget given: the saved one still covers what is left
     resumed = await resumed_optimizer.run_async()
     _assert_same(resumed, original)
-    assert resumed_optimizer._budget.spent == original_optimizer._budget.spent <= 92
+    assert resumed_optimizer._budget.spent == original_optimizer._budget.spent <= 104
 
 
 async def test_resume_rebuilds_scores_as_the_closed_iterations_left_them(tmp_path):
@@ -2095,6 +2281,48 @@ async def test_pareto_ships_the_front_s_max_gain_member_and_tests_every_member(t
         (report.champion_id, report.baseline_id) == (member, result.baseline_id)
         for member, report in result.front_test.items()
     )
+
+
+async def test_pareto_a_test_report_the_budget_skipped_names_the_budget_for_every_front_member(tmp_path):
+    def shared():
+        """What the run and its resumes are given alike (fresh proposers each time)."""
+        return {
+            "rollout_fn": _temperature_rollout,
+            "search": Search(
+                [
+                    Block(Scripted({"temperature": 1.0}, {"temperature": 0.5}), "temperature"),
+                    Block(Scripted(), "manager"),
+                ],
+                schedule=Joint(),
+            ),
+            "objective": Pareto(Maximize("Temperature", weight=2), Maximize("Cool")),
+        }
+
+    experiment = _experiment(evaluators=[Temperature(), Cool()])
+    original = await Optimizer(
+        experiment,
+        create_agent,
+        budget=Budget(max_iterations=2),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path / "runs",
+        **shared(),
+    ).run_async()
+    assert len(original.validation.front) == 3  # the champion, the baseline, and one more member
+    copy = _killed(original.run_dir, tmp_path, lambda events: _index(events, "picked"))
+    spent = sum(1 for e in _events_at(copy) if e["event"] == "trial")
+
+    skipped = await Optimizer.resume(
+        copy, experiment=experiment, factory=create_agent, budget=Budget(max_rollouts=spent), **shared()
+    ).run_async()
+    assert skipped.test is None and skipped.test_reason == (
+        f"the test report needs 12 rollouts, 0 are left; resume with max_rollouts >= {spent + 18} to run it with "
+        "every front member"
+    )
+    tested = await Optimizer.resume(
+        copy, experiment=experiment, factory=create_agent, budget=Budget(max_rollouts=spent + 18), **shared()
+    ).run_async()
+    assert list(tested.front_test) == original.validation.front and tested.test_reason is None
 
 
 async def test_a_front_member_with_no_completed_test_trial_is_listed_as_failed(tmp_path):
