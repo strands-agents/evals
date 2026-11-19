@@ -118,4 +118,25 @@ const state = p => [p.text('#dirty'), p.$('#save').disabled];
   same(await awayAndBack(), ['v-experiment', 'c', '#/experiments/e/experiment.json/cases/c'], 'as is the one selected after Revert');
 }
 
+// ── a second save, straight after the first ──
+{
+  let stamp = 5;
+  const sent = [];
+  const p = await page({ fetchImpl: fakeServer({
+    scan: { experiments: [{ path: 'e.json', name: 'e.json', dir: '.', size: 1, modified: 5, cases: 2, evaluators: [], reports: [] }] },
+    file: { path: 'e.json', modified: 5, document: EXPERIMENT },
+    /* As the server does: a save is refused unless it names the time the file was last written. */
+    put: body => {
+      sent.push(body.modified);
+      return body.modified === stamp ? [{ path: 'e.json', modified: ++stamp, cases: 2 }] : [{ error: 'e.json changed on disk since it was loaded' }, 409];
+    },
+  }) });
+  await p.openExperiment();
+  await p.type(field(p, 'input'), 'one');
+  await p.click('#save');
+  await p.type(field(p, 'input'), 'two');
+  await p.click('#save');
+  same([sent, p.text('#saved')], [[5, 6], 'saved e.json · 2 cases'], 'it is checked against the time the first save left the file with, not the time it was read');
+}
+
 done();

@@ -553,4 +553,55 @@ const served = put => fakeServer({
     `${token('--ink3')} on ${token('--card')}`);
 }
 
+// ── names that need encoding in an address, after the # and as a path ──
+{
+  const REPORT = 'odd dir/50% done #1?&+.report.json', EXPERIMENT = 'odd dir/what? #2.json';
+  const CASE = 'c/1 ?#%', EVALUATOR = 'E/x %';
+  const report = { overall_score: 1, cases: [{ name: CASE, evaluator: EVALUATOR, input: 'q' }], scores: [1], test_passes: [true] };
+  const experiment = { cases: [{ name: 'a', session_id: 's-a', input: 'q' }, { name: CASE, session_id: 's-c', input: 'q' }], evaluators: [] };
+  const inReport = '/reports/odd%20dir/50%25%20done%20%231%3F%26%2B.report.json';
+  const inRow = `${inReport}/rows/c%2F1%20%3F%23%25/E%2Fx%20%25`;
+  const inCase = '/experiments/odd%20dir/what%3F%20%232.json/cases/c%2F1%20%3F%23%25';
+  const served = () => fakeServer({
+    scan: {
+      reports: [{ path: REPORT, name: REPORT.split('/')[1], dir: 'odd dir', size: 1, modified: 5, rows: 1, overall_score: 1, experiment: null, link: null }],
+      experiments: [{ path: EXPERIMENT, name: EXPERIMENT.split('/')[1], dir: 'odd dir', size: 1, modified: 5, cases: 2, evaluators: [], reports: [] }],
+    },
+    file: path => ({ path, modified: 5, document: path === REPORT ? report : experiment }),
+  });
+  for (const [mode, at, build] of [
+    ['after the #', q => q.window.location.hash.slice(1), async route => {
+      const q = await page();
+      await q.openFolder({ [REPORT]: report, [EXPERIMENT]: experiment });
+      if (route) { q.window.location.hash = '#' + route; await tick(); }
+      return q;
+    }],
+    ['as a path', q => q.window.location.pathname, route => page({ fetchImpl: served(), url: `http://127.0.0.1:9999${route || '/'}`, token: 'tok' })],
+  ]) {
+    const q = await build();
+    const shown = () => [q.view(), at(q)];
+    const openRow = () => !!q.$('#rep-rows tr.case[aria-expanded="true"]');
+    await q.openReport();
+    ok(JSON.stringify(shown()) === JSON.stringify(['v-report', inReport]), `${mode}, a report's address names its file segment by segment, encoded`, shown());
+    await q.click('#rep-rows tr.case');
+    ok(at(q) === inRow, `${mode}, a row's address encodes its case and its evaluator`, at(q));
+    await q.click('.tab[data-view="experiments"]');
+    await q.travel(-1);
+    ok(at(q) === inRow && openRow() && q.text('#crumbs') === `Reports/${REPORT}`, `${mode}, Back reopens that row of that report`, `${shown()} ${q.text('#crumbs')}`);
+    await q.openExperiment();
+    await q.click(q.$$('#case-list li[data-i]')[1]);
+    ok(at(q) === inCase, `${mode}, a case's address encodes the experiment and the case`, at(q));
+    await q.click('.tab[data-view="reports"]');
+    await q.travel(-1);
+    ok(at(q) === inCase && q.text('#form-title') === CASE, `${mode}, Back returns to that case`, `${shown()} ${q.text('#form-title')}`);
+
+    const typedRow = await build(inRow);
+    ok(typedRow.view() === 'v-report' && !!typedRow.$('#rep-rows tr.case[aria-expanded="true"]') && typedRow.text('#crumbs') === `Reports/${REPORT}`,
+      `${mode}, the row's address opens it with nothing clicked`, `${typedRow.view()} ${typedRow.text('#crumbs')}`);
+    const typedCase = await build(inCase);
+    ok(typedCase.view() === 'v-experiment' && typedCase.text('#form-title') === CASE, `${mode}, and so does the case's`,
+      `${typedCase.view()} ${typedCase.text('#form-title')}`);
+  }
+}
+
 done();
