@@ -35,17 +35,19 @@ class BuildContext:
         values: The candidate's typed flat values.
         resolve: `resolve(name)` returns what the factory path would pass for that declared name:
             a fresh component, a value, or a path inside the candidate's copy.
-        workspace: The candidate's copy of the file-backed folders
-            (`<run>/candidates/<id>/optimization_files/`), or None when the space has no
-            file-backed values. Lets a config-defined agent load the whole edited file, e.g. the
-            `agent.json` a `JsonField` points into. Each file-backed value's whole folder is copied, so
-            the copy is made the first time `workspace` is read (unless a value already reaches the agent
-            as a path); a `build_task` that never reads it copies nothing. Read it in `build_task` itself,
-            not first inside the task, so a copy that fails stops the run instead of failing every trial.
-            The first read makes the copy in the reading thread: `build_task`, and an async task, run on
-            the optimizer's event loop, so other trials wait while it copies (once per candidate; later
-            reads return at once). Keep the tuned file in a small folder of its own: everything beside it is
-            copied for every candidate.
+        workspace: The candidate's copy of the file-backed folders (`<run>/files/<hash>/`), or None
+            when the space has no file-backed values. Lets a config-defined agent load the whole edited
+            file, e.g. the `agent.json` a `JsonField` points into. Every candidate with the same
+            file-backed values shares one copy, so treat it as read-only. Each file-backed value's whole
+            folder is copied (except virtual environments), so the copy is made the first time
+            `workspace` is read (unless a value already reaches the agent as a path); a `build_task` that
+            never reads it copies nothing. Copies are made from a snapshot of the folders that the run's
+            first copy takes, so files edited after that never reach a candidate. Read it in `build_task`
+            itself, not first inside the task, so a copy that fails stops the run instead of failing
+            every trial. The first read makes the copy in the reading thread: `build_task`, and an async
+            task, run on the optimizer's event loop, so other trials wait while it copies (once per
+            candidate; later reads return at once). Keep the tuned file in a small folder of its own:
+            everything beside it is copied once per distinct set of file-backed values.
     """
 
     values: Values
@@ -127,8 +129,8 @@ class TunableFactory:
         object that can't be weakly referenced, e.g. a dict, keeps it until the process exits) and
         deleted after that, or at exit. Only the returned object holds it (for an async function, the
         object its coroutine returns): keep that object, not something taken out of it, such as a
-        wrapper's `.agent`, while the agent still reads the files. A `workspace` holds one candidate's
-        copy; binding other file values to it raises `FileExistsError`.
+        wrapper's `.agent`, while the agent still reads the files. A `workspace` holds the copy for one
+        set of file-backed values; binding other file values to it raises `FileExistsError`.
 
         The bound factory takes values for the function's non-tunable parameters, by two rules:
         resources from `environment()` (handed over through its private `_with_resources(resources)`)
@@ -146,7 +148,8 @@ class TunableFactory:
 
         Raises:
             ValueError: The values fail validation.
-            FileExistsError: `workspace` holds another candidate's copy, or files that aren't a copy.
+            FileExistsError: `workspace` holds a copy of other file-backed values, or files that aren't
+                a copy.
         """
         # complete() last, for its canonical values; an inactive key it drops stays for validate to report.
         bound_values = {**values, **self.space.complete(values)}

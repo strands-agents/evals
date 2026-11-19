@@ -262,7 +262,9 @@ def test_effects_diffs_and_the_result_are_written(tmp_path):
     assert (run.root / "best.diff").read_text() == "--- prompt\n"
     assert json.loads((run.root / "best.values.json").read_text()) == {"x": {"old": 1, "new": 2}}
     assert json.loads((run.root / "front" / "1-abc.values.json").read_text()) == {}
-    assert run.workspace("abc") == run.root / "candidates" / "abc" / "optimization_files"
+    key = "0123456789abcdef" * 4  # a sha256 of file-backed values
+    assert run.file_copy(key) == run.root / "files" / "0123456789abcdef"
+    assert run.file_snapshot() == run.root / "files" / "snapshot"
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows has no POSIX permission bits")

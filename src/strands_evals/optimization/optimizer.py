@@ -1664,16 +1664,17 @@ class Optimizer:
     async def _task_for(self, candidate: Candidate) -> TaskFn:
         """The candidate's task, not yet instrumented; file-backed values copied into its workspace first.
 
-        When a value reaches the agent as a path (`as_path=True`, `SkillLibrary`), the copy is made at once, in a
-        worker thread so concurrent trials keep running. Otherwise, on the `build_task` path, the first read of
-        `BuildContext.workspace` makes it, in the reading thread, so a `build_task` that never reads it copies
-        nothing; later reads don't wait.
+        The workspace is shared by every candidate with the same file-backed values, and every copy is made from
+        the run's snapshot of the folders, which the run's first copy takes. When a value reaches the agent as a
+        path (`as_path=True`, `SkillLibrary`), the copy is made at once, in a worker thread so concurrent trials
+        keep running. Otherwise, on the `build_task` path, the first read of `BuildContext.workspace` makes it, in
+        the reading thread, so a `build_task` that never reads it copies nothing; later reads don't wait.
         """
         assert self._run is not None
-        workspace = self._run.workspace(candidate.id)
         values, space = candidate.values, self._space
+        workspace, snapshot = self._run.file_copy(space._copy_key(values)), self._run.file_snapshot()
         if space._copies_files:
-            await asyncio.to_thread(space.create_candidate_copy, values, workspace)
+            await asyncio.to_thread(space.create_candidate_copy, values, workspace, snapshot=snapshot)
         if self._factory is not None:
             bound = self._factory.bind(values, workspace=workspace)  # the copy exists: bind returns at once
             return make_task(bound, self._rollout_fn or default_rollout, self._environment)
@@ -1687,9 +1688,9 @@ class Optimizer:
             if not space._files:
                 return None
             if not copied:
-                with lock:  # one copy per candidate, however many trials read it first
+                with lock:  # one call per candidate, however many trials read it first
                     if not copied:
-                        space.create_candidate_copy(values, workspace)
+                        space.create_candidate_copy(values, workspace, snapshot=snapshot)
                         copied = True
             return workspace
 

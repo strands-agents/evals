@@ -19,8 +19,10 @@ from .markers import _check_positive_int, _check_str, _Marker
 class FileText(_Marker):
     """Text whose source of truth is a file; the baseline is the file's content.
 
-    With `as_path=True` the factory receives the path of the candidate's copy instead of the text.
-    The file is read once, at declaration, as UTF-8 and kept byte for byte (line endings included).
+    With `as_path=True` the factory receives the path of the candidate's copy instead of the text. In
+    a run, every candidate with the same file-backed values shares that copy, so the agent must not
+    write into it. The file is read once, at declaration, as UTF-8 and kept byte for byte (line
+    endings included).
     """
 
     def __init__(
@@ -242,7 +244,8 @@ class SkillLibrary(_Marker):
     `name` and `description`, parsed as the Strands skills runtime parses it, and a proposed text
     must keep the baseline's `name`, so the skill keeps its identity. The factory receives the path of
     this directory in the candidate's copy (the original directory in the plain call); the copy keeps
-    the directory's name, which the runtime checks against a skill's `name`.
+    the directory's name, which the runtime checks against a skill's `name`. In a run, every candidate
+    with the same file-backed values shares that copy, so the agent must not write into it.
     """
 
     def __init__(
@@ -468,6 +471,28 @@ def _ignore_containing(destinations: tuple[Path, ...]) -> Any:
         for name in names:
             entry = Path(folder, name).resolve()
             if any(destination.is_relative_to(entry) for destination in destinations):
+                skipped.add(name)
+        return skipped
+
+    return ignore
+
+
+def _ignore_on_copy(destinations: tuple[Path, ...], declared: Sequence[Path]) -> Any:
+    """A `copytree` ignore for copying the original folders: `_ignore_containing`, plus virtual environments.
+
+    Skips each Python virtual environment (a folder holding a `pyvenv.cfg`) that holds no `declared` folder.
+    """
+    containing = _ignore_containing(destinations)
+
+    def ignore(folder: str, names: list[str]) -> set[str]:
+        skipped = containing(folder, names)
+        for name in names:
+            entry = Path(folder, name)
+            if (
+                not entry.is_symlink()
+                and (entry / "pyvenv.cfg").is_file()
+                and not any(d.is_relative_to(entry) for d in declared)
+            ):
                 skipped.add(name)
         return skipped
 

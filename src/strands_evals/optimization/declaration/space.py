@@ -22,7 +22,7 @@ from .files import (
     JsonField,
     SkillLibrary,
     _folder_in_copy,
-    _ignore_containing,
+    _ignore_on_copy,
     _location_in_copy,
     _outer_folders,
     _SkillFile,
@@ -124,11 +124,12 @@ class Space:
                 if problem is not None:
                     raise TypeError(f"invalid default: {problem}")
                 self._params[info.key] = info
-        # Folders a candidate's copy holds (a SkillLibrary's whole directory); fixed by the declaration,
-        # so every copy has one layout.
-        self._copy_folders = _outer_folders(
+        # Each file-backed value's folder (a SkillLibrary's whole directory), and the folders a candidate's
+        # copy holds: those not inside another. Fixed by the declaration, so every copy has one layout.
+        self._declared_folders = tuple(
             m.copied if isinstance(m, _SkillFile) else m.path.parent for m in self._files.values()
         )
+        self._copy_folders = _outer_folders(self._declared_folders)
         self._copies_files = any(
             isinstance(m, _SkillFile) or (isinstance(m, FileText) and m.as_path) for m in self._files.values()
         )
@@ -262,7 +263,7 @@ class Space:
             return marker.path if workspace is None else workspace / _location_in_copy(self._copy_folders, marker.path)
         return values[name]
 
-    def create_candidate_copy(self, values: Values, directory: Path) -> Path:
+    def create_candidate_copy(self, values: Values, directory: Path, *, snapshot: Path | None = None) -> Path:
         """Copy each file-backed value's folder into `directory`, then write every active file-backed key.
 
         Each source folder goes to `directory/<short hash of its original path>/<folder name>/`, so it
@@ -274,37 +275,87 @@ class Space:
         empty `directory` is replaced; concurrent calls for the same values all succeed. Originals are
         never written: files are replaced rather than written through, and a folder containing
         `directory` (e.g. the run directory under the project) is left out of the copy. A symlink
-        leads where the original's leads, into the copy when that is copied too.
+        leads where the original's leads, into the copy when that is copied too. Virtual environments
+        are left out (see `create_snapshot`).
 
         Args:
             values: The candidate's values; must already pass `validate`.
-            directory: The candidate's copy, `<run>/candidates/<id>/optimization_files/`.
+            directory: The copy, `<run>/files/<hash>/` in a run, where every candidate with these
+                file-backed values shares it.
+            snapshot: Copy the folders from this snapshot instead of from the original folders, so a
+                file edited after the snapshot was taken never reaches the copy. Taken here by
+                `create_snapshot` when it doesn't exist yet. None copies from the original folders.
 
         Returns:
             `directory`.
 
         Raises:
-            FileExistsError: `directory` holds another candidate's copy, or files that aren't a copy.
+            FileExistsError: `directory` holds a copy of other file-backed values, or files that aren't a
+                copy.
         """
         key = self._copy_key(values)
         if self._has_copy(directory, key):
             return directory
-        directory.parent.mkdir(parents=True, exist_ok=True)
-        building = Path(tempfile.mkdtemp(prefix=f".{directory.name}-", dir=directory.parent))
-        try:
-            destinations = (building.resolve(), directory.resolve())
-            for folder in self._copy_folders:
-                shutil.copytree(
-                    folder, building / _folder_in_copy(folder), symlinks=True, ignore=_ignore_containing(destinations)
-                )
-            _make_folders_writable(building)  # a read-only source folder would block the writes below
-            for folder in self._copy_folders:
-                _relink(building, folder, self._copy_folders)
+        source = None if snapshot is None else self.create_snapshot(snapshot)
+
+        def fill(building: Path) -> None:
+            self._copy_folders_into(building, directory, source)
             for info in self._params.values():
                 if info.source is None or not self.is_active(info.key, values):
                     continue
                 target = building / _location_in_copy(self._copy_folders, info.source.path)
                 self._files[info.key].write(str(values[info.key]), target)
+
+        return self._build(directory, key, fill)
+
+    def create_snapshot(self, directory: Path) -> Path:
+        """Copy each file-backed value's folder, as it is now, into `directory`, writing no value.
+
+        Laid out as a candidate's copy, which `create_candidate_copy(snapshot=directory)` is then made
+        from, so a file edited after this call never reaches a copy made from it, except through a
+        symlink: one leading out of the copied folders, or to something left out, leads to the original.
+        Left out are a folder containing `directory` and each Python virtual environment (a folder
+        holding a `pyvenv.cfg`) that holds no declared file or skill library: a virtual environment
+        can't be moved, since its scripts name its interpreter by absolute path. Version-control
+        metadata is copied as it is, so a copy of a clone's root stays a repository of its own (a
+        linked worktree's `.git` file still names the original's git directory). Built and checked like
+        a candidate's copy: a second call returns at once, and concurrent calls all succeed.
+
+        Args:
+            directory: Where the snapshot goes, `<run>/files/snapshot/` in a run.
+
+        Returns:
+            `directory`.
+
+        Raises:
+            FileExistsError: `directory` holds a candidate's copy, or files that aren't a copy.
+        """
+        if self._has_copy(directory, _SNAPSHOT_KEY):
+            return directory
+        return self._build(directory, _SNAPSHOT_KEY, lambda building: self._copy_folders_into(building, directory))
+
+    def _copy_folders_into(self, building: Path, directory: Path, snapshot: Path | None = None) -> None:
+        """Copy every folder of `_copy_folders` into `building`, from `snapshot` or else from the originals."""
+        ignore = (
+            None
+            if snapshot is not None
+            else _ignore_on_copy((building.resolve(), directory.resolve()), self._declared_folders)
+        )
+        for folder in self._copy_folders:
+            origin = folder if snapshot is None else snapshot / _folder_in_copy(folder)
+            shutil.copytree(origin, building / _folder_in_copy(folder), symlinks=True, ignore=ignore)
+        _make_folders_writable(building)  # a read-only source folder would block the writes after this
+        if snapshot is None:  # a snapshot's links already lead where the originals' do
+            for folder in self._copy_folders:
+                _relink(building, folder, self._copy_folders)
+        _remake_folder_links(building)
+
+    def _build(self, directory: Path, key: str, fill: Callable[[Path], None]) -> Path:
+        """Fill a temp folder beside `directory`, mark it with `key`, and rename it into place."""
+        directory.parent.mkdir(parents=True, exist_ok=True)
+        building = Path(tempfile.mkdtemp(prefix=f".{directory.name}-", dir=directory.parent))
+        try:
+            fill(building)
             (building / _COPY_MARKER).write_bytes(key.encode("ascii"))  # last: only a finished copy has it
         except BaseException:
             shutil.rmtree(building, ignore_errors=True)
@@ -313,7 +364,7 @@ class Space:
             os.rename(building, directory)
         except OSError:
             shutil.rmtree(building, ignore_errors=True)
-            # Another call finished first: fine if it holds these values, else this raises.
+            # Another call finished first: fine if it holds the same key, else this raises.
             if not self._has_copy(directory, key):
                 raise
         return directory
@@ -329,7 +380,7 @@ class Space:
 
         Removes an empty `directory`. A copy only arrives by rename with its marker inside, so a folder
         that isn't empty either holds a copy or holds files that aren't one. Raises `FileExistsError`
-        when it holds another candidate's copy or files that aren't a copy.
+        when it holds a copy of other file-backed values (or the snapshot) or files that aren't a copy.
         """
         held = _read_marker(directory)
         if held is None:
@@ -347,7 +398,9 @@ class Space:
                         f"{directory} exists and is not a candidate copy; pass an empty or new folder"
                     ) from None
         if held != key:
-            raise FileExistsError(f"{directory} holds another candidate's copy; use one folder per candidate")
+            raise FileExistsError(
+                f"{directory} holds a copy of other file-backed values; use one folder per set of file-backed values"
+            )
         return True
 
     def _render_files(self, values: Values) -> dict[Path, str]:
@@ -520,8 +573,9 @@ def _check_value(info: ParamInfo, value: Any) -> str | None:
 
 # ---- Private helpers: the candidate copy -------------------------------------
 
-# Written last into a finished copy: the sha256 of the file-backed values it holds.
+# Written last into a finished copy: the sha256 of the file-backed values it holds, or `_SNAPSHOT_KEY`.
 _COPY_MARKER = ".candidate-copy"
+_SNAPSHOT_KEY = "snapshot"
 
 
 def _read_marker(directory: Path) -> str | None:
@@ -537,8 +591,8 @@ def _relink(building: Path, folder: Path, folders: tuple[Path, ...]) -> None:
 
     `copytree(symlinks=True)` copies a link's text, so a relative link out of the folder would lead
     nowhere in the copy, and the candidate would lose a skill or file the baseline reads through it.
-    A link leading into a copied folder points at the copy (relative, so the copy can be renamed into
-    place), else at the original's real path.
+    A link leading to something the copy holds points at the copy (relative, so the copy can be renamed
+    into place), else at the original's real path: outside every copied folder, or left out of the copy.
     """
     copy = building / _folder_in_copy(folder)
     for here, dirs, files in os.walk(copy):  # never descends into a symlinked folder
@@ -548,12 +602,32 @@ def _relink(building: Path, folder: Path, folders: tuple[Path, ...]) -> None:
                 continue
             real = Path(os.path.realpath(folder / link.relative_to(copy)))
             try:
-                target = os.path.relpath(building / _location_in_copy(folders, real), link.parent)
+                inside = building / _location_in_copy(folders, real)
             except KeyError:  # outside every copied folder
-                target = str(real)
+                inside = None
+            target = (
+                os.path.relpath(inside, link.parent) if inside is not None and os.path.lexists(inside) else str(real)
+            )
             if os.readlink(link) != target:
                 link.unlink()
                 os.symlink(target, link, target_is_directory=real.is_dir())
+
+
+def _remake_folder_links(root: Path) -> None:
+    """Make each symlink under `root` that leads to a folder again, with the same text, as a folder link.
+
+    Windows fixes a link's kind (file or folder) when it is made, and `copytree` makes a link to a
+    folder it hasn't copied yet as a file link, which leads nowhere.
+    """
+    for here, dirs, files in os.walk(root):  # never descends into a symlinked folder
+        for name in dirs + files:
+            link = Path(here, name)
+            if not link.is_symlink():
+                continue
+            target = os.readlink(link)
+            if (link.parent / target).is_dir():
+                link.unlink()
+                os.symlink(target, link, target_is_directory=True)
 
 
 def _make_folders_writable(root: Path) -> None:
