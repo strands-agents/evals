@@ -28,7 +28,39 @@ class FakeFile {
    a served page polls on a timer, which would keep Node alive. */
 const PAGES = [];
 
-export const tick = (n = 3) => new Promise(resolve => setTimeout(resolve, n * 5));
+/* What the pages are waiting on: requests in flight, and steps through history the browser has not taken yet. */
+const PENDING = new Set();
+function track(work) {
+  const waiting = {};
+  PENDING.add(waiting);
+  const over = () => PENDING.delete(waiting);
+  work.then(over, over);
+  return work;
+}
+/* The next step through history or change after the `#`, which jsdom takes a few timers later. */
+const arrival = window => new Promise(resolve => {
+  for (const kind of ['popstate', 'hashchange']) window.addEventListener(kind, resolve, { once: true });
+});
+
+/* Turns of the event loop until nothing is pending. Work that is still pending after `STUCK_TURNS` turns and
+   `STUCK_MS` is being held by the test on purpose, and is not waited for again. */
+const STUCK_TURNS = 40, STUCK_MS = 300;
+async function settled() {
+  const began = Date.now();
+  for (let quiet = 0, turns = 0; quiet < 3; turns += 1) {
+    await new Promise(resolve => setTimeout(resolve, 0));
+    if (!PENDING.size) quiet += 1;
+    else if (turns >= STUCK_TURNS && Date.now() - began >= STUCK_MS) PENDING.clear();
+    else quiet = 0;
+  }
+}
+
+/** Let the page act on what was just done to it. The wait ends when its work has, not after a fixed
+    time, so a busy machine only makes it longer. */
+export async function tick(n = 3) {
+  await new Promise(resolve => setTimeout(resolve, n * 5));
+  await settled();
+}
 
 /** Poll until `cond()` holds; real HTTP round trips outlast a fixed tick. */
 export async function waitFor(cond, what = 'condition', ms = 5000) {
@@ -52,7 +84,17 @@ export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok', to
     pretendToBeVisual: !!visible,
     url,
     beforeParse(window) {
-      if (fetchImpl) window.fetch = (...a) => fetchImpl(...a);
+      if (fetchImpl) {
+        window.fetch = (...a) => {
+          const answer = fetchImpl(...a);
+          track(Promise.resolve(answer));
+          return answer;
+        };
+      }
+      for (const step of ['back', 'forward', 'go']) {
+        const take = window.history[step].bind(window.history);
+        window.history[step] = (...a) => { track(arrival(window)); return take(...a); };
+      }
       if (cookie) window.document.cookie = cookie;
       // A download is the only place a standalone page emits a document: keep the blob for `saved()`.
       window.__blobs = [];
@@ -100,7 +142,13 @@ export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok', to
     /** Go Back or Forward by `delta` steps, and let the page follow. */
     travel: async delta => {
       window.history.go(delta);
-      await tick(6);
+      await tick();
+    },
+    /** Put `route` after the `#`, as typing it there would, and let the page follow. */
+    follow: async route => {
+      track(arrival(window));
+      window.location.hash = '#' + route;
+      await tick();
     },
     /** Ask the server whether the folder changed, as the page's timer does. */
     poll: async () => {

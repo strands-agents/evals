@@ -10,26 +10,36 @@ let CMP = [];
 const cmpPick = new Set();
 const GRID_ROWS = 60;                     // the grid draws this many rows; its caption says how many it left out
 
-const cmpKey = r => `${r.name}\u0000${evaluatorName(r)}`;
+/* A report's rows as `[key, row]`, the key its case and evaluator. Rows that share both are told apart
+   by their order, so the second of them is matched with the second in another report. */
+function cmpKeyed(rows) {
+  const seen = new Map();
+  return rows.map(r => {
+    const key = `${r.name}\u0000${evaluatorName(r)}`, nth = seen.get(key) || 0;
+    seen.set(key, nth + 1);
+    return [nth ? `${key}\u0000${nth}` : key, r];
+  });
+}
 const cmpNo = i => `#${i + 1}`;
 
-/** How the rows two reports share moved from `before` to `after`, matched by case and evaluator. */
+/** How the rows two reports share moved from `before` to `after`, matched by case and evaluator. A row
+    judged only in `after` counts by its verdict there; one judged only in `before` has `lapsed`. */
 function compareRows(before, after) {
   const passed = r => r.na ? null : !!r.pass;
-  const was = new Map(before.map(r => [cmpKey(r), r]));
-  const out = { fixed: 0, broke: 0, same: 0, added: 0, gone: 0, moved: [] };
-  const seen = new Set();
-  for (const r of after) {
-    const old = was.get(cmpKey(r));
-    seen.add(cmpKey(r));
+  const was = new Map(cmpKeyed(before));
+  const out = { fixed: 0, broke: 0, same: 0, lapsed: 0, added: 0, gone: 0, moved: [] };
+  for (const [key, r] of cmpKeyed(after)) {
+    const old = was.get(key);
     if (!old) { out.added += 1; continue; }
-    const flip = passed(old) === false && passed(r) === true ? 'fixed'
-      : passed(old) === true && passed(r) === false ? 'broke' : null;
-    out[flip || 'same'] += 1;
+    was.delete(key);
+    const then = passed(old), now = passed(r);
+    const flip = now === then || now === null ? null : now ? 'fixed' : 'broke';
+    const lapsed = now === null && then !== null;
+    out[flip || (lapsed ? 'lapsed' : 'same')] += 1;
     const from = old.na ? null : old.score, to = r.na ? null : r.score;
-    if ((flip || from !== to) && (from != null || to != null)) out.moved.push({ row: r, from, to, flip });
+    if ((flip || from !== to) && (from != null || to != null)) out.moved.push({ row: r, from, to, flip, lapsed });
   }
-  out.gone = before.filter(r => !seen.has(cmpKey(r))).length;
+  out.gone = was.size;
   return out;
 }
 
@@ -53,18 +63,26 @@ async function openCompare(paths, quiet) {
     if (!one) return false;
     read.push(one);
   }
-  CMP = read.sort((a, b) => a.at - b.at || a.meta.path.localeCompare(b.meta.path));
-  renderCompare();
+  setCompared(read);
   if (!quiet) show('compare');
   return true;
 }
 
-/** Re-read the comparison after the folder changed. A report that is gone leaves it. */
+function setCompared(read) {
+  CMP = read.sort((a, b) => a.at - b.at || a.meta.path.localeCompare(b.meta.path));
+  renderCompare();
+}
+
+/** Re-read the comparison after the folder changed. A report that is gone leaves it, and one that
+    cannot be read leaves the comparison as it was. */
 async function refreshCompare() {
   if (!CMP.length) return;
-  const now = CMP.map(c => REPORTS.find(m => m.path === c.meta.path)).filter(Boolean);
-  if (now.length === CMP.length && now.every((m, i) => m.modified === CMP[i].meta.modified)) return;
-  if (!await openCompare(now.map(m => m.path), true) && currentView() === 'compare') show('reports');
+  const was = CMP, now = was.map(c => REPORTS.find(m => m.path === c.meta.path)).filter(Boolean);
+  if (now.length === was.length && now.every((m, i) => m.modified === was[i].meta.modified)) return;
+  const read = now.length < 2 ? [] : await Promise.all(now.map(comparable));
+  if (CMP !== was) return;                   // another comparison was opened while this one was read
+  setCompared(read);
+  if (!read.length && currentView() === 'compare') show('reports');
 }
 
 /* ── the page ── */
@@ -105,7 +123,7 @@ function compareEvaluators() {
 
 /* Every case-and-evaluator row against every report. The rows that changed come first. */
 function compareGrid() {
-  const held = CMP.map(c => new Map(c.rows.map(r => [cmpKey(r), r])));
+  const held = CMP.map(c => new Map(cmpKeyed(c.rows)));
   const keys = [...new Set(held.flatMap(m => [...m.keys()]))];
   const rowAt = k => held.find(m => m.has(k)).get(k);
   const several = new Set(keys.map(k => evaluatorName(rowAt(k)))).size > 1;
@@ -140,7 +158,7 @@ function compareEnds() {
   const last = CMP.length - 1;
   const c = compareEndRows(), moved = c.moved;
   const several = new Set(CMP[last].rows.map(evaluatorName)).size > 1;
-  const shared = c.fixed + c.broke + c.same;
+  const shared = c.fixed + c.broke + c.same + c.lapsed;
   $('cmp-ends-head').textContent = `From ${cmpNo(0)} to ${cmpNo(last)}`;
   $('cmp-ends-cap').textContent = `${CMP[0].meta.path} against ${CMP[last].meta.path}. `
     + (!shared ? 'The two share no case and evaluator.'
@@ -152,13 +170,14 @@ function compareEnds() {
     sub: several ? evaluatorName(m.row) : '',
     from: m.from, to: m.to,
     tip: `${rowTitle(m.row)} · ${fmt(m.from)} to ${fmt(m.to)}`
-      + (m.flip ? ` · now ${m.flip === 'fixed' ? 'passes' : 'fails'}` : ''),
+      + (m.flip ? ` · now ${m.flip === 'fixed' ? 'passes' : 'fails'}` : m.lapsed ? ' · now not applicable' : ''),
     attrs: rowLink(m.row, true, CMP[last].meta.path),
   })), { axis: 'score' }) : '';
   $('cmp-ends-legend').innerHTML = [
     shared ? `<span><i class="up"></i>${c.fixed} now pass</span>` : '',
     shared ? `<span><i class="down"></i>${c.broke} now fail</span>` : '',
     shared ? `<span><i class="same"></i>${c.same} kept their verdict</span>` : '',
+    c.lapsed ? `<span>${c.lapsed} now not applicable</span>` : '',
     c.added ? `<span>${c.added} only in ${cmpNo(last)}</span>` : '',
     c.gone ? `<span>${c.gone} only in ${cmpNo(0)}</span>` : '',
   ].join('');

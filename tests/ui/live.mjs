@@ -51,15 +51,15 @@ const server = fakeServer({
   },
 });
 const asked = () => server.sent.splice(0).map(r => r.url.split('?')[0]).join(' ');
-/* Hold the answer for one file until the test lets it go, as a slow read would. */
-let slow = null;
+/* Hold the answer for a file until the test lets it go, as a slow read would. */
+const slow = new Map();
 const hold = path => {
   let release;
-  slow = { path, until: new Promise(resolve => { release = resolve; }) };
-  return async () => { slow = null; release(); await tick(); };
+  slow.set(path, new Promise(resolve => { release = resolve; }));
+  return async () => { slow.delete(path); release(); await tick(); };
 };
 const fetchImpl = async (url, opts) => {
-  if (slow && String(url).includes(`path=${slow.path}`)) await slow.until;
+  await slow.get(new URL(String(url), 'http://x').searchParams.get('path'));
   return server(url, opts);
 };
 
@@ -131,6 +131,31 @@ ok(input() === 'rewritten again', 'the offer beside it reloads from disk', input
   await p.click(p.$$('#case-list li[data-i]')[1]);
 }
 
+// ── nor over text that is typed but not applied yet ──
+{
+  const half = '[{"node_name": "search"';
+  await p.type('#form [data-k="expected_interactions"]', half);
+  write('e.json', experiment('rewritten under half-written JSON'));
+  await p.poll();
+  ok(p.$('#form [data-k="expected_interactions"]').value === half && /changed on disk/.test(p.text('#saved')),
+    'JSON that does not parse yet is not an applied edit, and is kept all the same', `${p.$('#form [data-k="expected_interactions"]').value} | ${p.text('#saved')}`);
+  await p.click('#saved .reload');
+  await p.click(p.$$('#case-list li[data-i]')[1]);
+}
+
+// ── the case being read is renamed on disk ──
+{
+  const renamed = experiment('renamed on disk');
+  renamed.cases[1].name = 'z';
+  write('e.json', renamed);
+  await p.poll();
+  ok(p.window.location.pathname === '/experiments/e.json/cases/a' && p.text('#form-title') === 'a',
+    'when the case being read is gone from the file, the address moves to the case shown in its place', p.window.location.pathname);
+  write('e.json', experiment('named as before'));
+  await p.poll();
+  await p.click(p.$$('#case-list li[data-i]')[1]);
+}
+
 // ── Rescan re-reads what is open as well as the lists ──
 write('e.json', experiment('rewritten a third time'));
 await p.click('[data-act="rescan"]');
@@ -184,6 +209,37 @@ ok(input() === 'rewritten a third time', 'Rescan shows the open experiment as it
   await p.click('.tab[data-view="experiments"]');
   await release();
   ok(p.$('#v-experiments').classList.contains('on'), 'nor a comparison whose reports load late', p.$('.view.on').id);
+}
+
+// ── a step through history that a click overtakes ──
+{
+  const at = () => `${p.view()} ${p.window.location.pathname}`;
+  await p.openReport('r.json');
+  await p.openReport('other.json');
+  let release = hold('r.json');
+  await p.travel(-1);
+  await p.click('.tab[data-view="experiments"]');
+  await release();
+  ok(at() === 'v-experiments /experiments', 'Back to a report that is slow to load, then a click elsewhere: the page stays where the click went', at());
+  await p.travel(-1);
+  ok(at() === 'v-report /reports/r.json' && p.text('#crumbs') === 'Reports/r.json', 'and the click was a step of its own, which Back undoes', at());
+
+  release = hold('other.json');
+  p.window.visit('/reports/other.json');
+  await tick();
+  await p.click('.tab[data-view="experiments"]');
+  await release();
+  ok(at() === 'v-experiments /experiments', 'the same when the slow report was asked for by a link in the page', at());
+
+  await p.click('.tab[data-view="reports"]');
+  const first = hold('r.json'), second = hold('other.json');
+  await p.openReport('r.json');
+  await p.openReport('other.json');
+  await first();
+  const early = at();
+  await second();
+  ok(early === 'v-reports /reports' && at() === 'v-report /reports/other.json' && p.text('#crumbs') === 'Reports/other.json',
+    'of two reports asked for in a row the second is the one opened, whichever answers first', `${early} | ${at()}`);
 }
 
 // ── a tab nobody is looking at stays quiet, and catches up when it is looked at ──

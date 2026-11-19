@@ -1,6 +1,6 @@
 /* What the page says when there is nothing to show: an address that names something that is not
    there, a list or a view with nothing in it, a file that will not load. Each says why, under the frog. */
-import { page, fakeServer, runner, tick } from './harness.mjs';
+import { page, fakeServer, runner } from './harness.mjs';
 
 const { ok, done } = runner('empty');
 
@@ -12,7 +12,7 @@ const GONE = 'It may have been deleted, renamed or moved, or the link may be fro
 const frog = (p, within) => !!p.$(`${within} .nores > svg.frog[aria-hidden="true"]:first-child + b`);
 const marked = p => p.$$('.sections .tab.on').map(t => t.textContent).join();
 const ways = p => p.$$('#missing .ways a').map(a => `${a.textContent} ${a.getAttribute('href')}`);
-const follow = async (p, route) => { p.window.location.hash = '#' + route; await tick(6); };
+const follow = (p, route) => p.follow(route);
 const way = (p, label) => p.$$('.ways a').find(a => a.textContent === label);
 
 // ── an address that names something that is not there: the bundled sample, with no server ──

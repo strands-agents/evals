@@ -136,14 +136,18 @@ function openFailed(path, err) {
     `${named(path)} could not be read: ${esc(err.message)}`, [listWay(list)]);
 }
 
+/* Counts the reads begun to open something: of two asked for in a row, the later is the one wanted. */
+let opening = 0;
+
 /* What `read` loads for the file at `path`, or null when it would not load or the page moved on while it did. */
 async function readToOpen(path, read) {
-  const from = moves;
+  const from = moves, mine = ++opening;
+  const wanted = () => moves === from && opening === mine;
   try {
     const got = await read();
-    return moves === from ? got : null;
+    return wanted() ? got : null;
   } catch (err) {
-    if (moves === from) openFailed(path, err);
+    if (wanted()) openFailed(path, err);
     return null;
   }
 }
@@ -154,32 +158,36 @@ async function mayDiscard(doing) {
   return !dirty || ask(`${plural(dirty, 'unsaved change')} will be lost if you ${doing}.`, 'Discard and open', 'Stay');
 }
 
-/** Open one report on its own page. The experiment editor, and any edits in it, are left alone. */
+/** Open one report on its own page. The experiment editor, and any edits in it, are left alone.
+    Like the other opens, resolves false when the file never arrived: it would not load, or the page moved on first. */
 async function openReport(path) {
   const meta = REPORTS.find(r => r.path === path);
   const doc = meta && await readToOpen(path, () => document_for(meta));
-  if (!doc) return;
+  if (!doc) return false;
   repCand = null;
   loadReport(meta, doc);
   scanError = '';
   renderLists();
   show('report');
+  return true;
 }
 
-/** Open one experiment's cases. Asks first when that would drop unsaved edits to another one. */
+/** Open one experiment's cases. Asks first when that would drop unsaved edits to another one, and
+    staying with those is not a file that never arrived. */
 async function openExperiment(path, opts) {
   const meta = EXPERIMENTS.find(e => e.path === path);
-  if (!meta) return;
+  if (!meta) return false;
   const force = opts && opts.force;
   /* Opening the one already open again would re-read it from disk and drop unsaved edits. */
-  if (expMeta && expMeta.path === path && !force) return show('experiment');
-  if (!force && !await mayDiscard('open another experiment')) return;
+  if (expMeta && expMeta.path === path && !force) { show('experiment'); return true; }
+  if (!force && !await mayDiscard('open another experiment')) return true;
   const read = await readToOpen(path, () => readFile(meta));
-  if (!read) return;
+  if (!read) return false;
   loadExperimentFile(meta, read);
   scanError = '';
   renderLists();
   show('experiment');
+  return true;
 }
 
 /* A row, or a link naming a report or an experiment anywhere on the page, opens it. */

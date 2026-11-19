@@ -18,17 +18,20 @@ function bundled() {
   };
 }
 
-/* Open what an address names, then show its view. `force` opens without asking about unsaved edits. */
+/* Open what an address names, then show its view. `force` opens without asking about unsaved edits.
+   Resolves true when it stopped because the page moved on before a file it asked for arrived. */
 async function goTo(want, force) {
   /* Opening things on the way can move the address, and a not-found page keeps the one asked for. */
   const asked = currentRoute(), was = MISSING;
   const lost = notThere(want);
   if (lost) return showMissing(asked, ...lost);
-  if (want.report && (repCand || !repMeta || repMeta.path !== want.report)) await openReport(want.report);
-  if (want.experiment && (!expMeta || expMeta.path !== want.experiment)) await openExperiment(want.experiment, { force });
-  if (want.compare) await openCompare(want.compare, true);
-  if (want.session && (!sesMeta || sesMeta.path !== want.session)) await openSession(want.session);
-  if (MISSING && MISSING !== was) return;      // one of them would not load, and the page says so
+  /* A file that never arrived either would not load, which the page now says, or was overtaken. */
+  const overtaken = () => MISSING === was;
+  if (want.report && (repCand || !repMeta || repMeta.path !== want.report) && !await openReport(want.report)) return overtaken();
+  if (want.experiment && (!expMeta || expMeta.path !== want.experiment)
+    && !await openExperiment(want.experiment, { force })) return overtaken();
+  if (want.compare && !await openCompare(want.compare, true)) return overtaken();
+  if (want.session && (!sesMeta || sesMeta.path !== want.session) && !await openSession(want.session)) return overtaken();
   const opt = want.opt ? OPT_RUNS.findIndex(r => r.id === want.opt) : -1;
   if (opt >= 0 && opt !== optSel) await selectOptimizerRun(opt);
   const inside = notInside(want);
@@ -77,13 +80,15 @@ async function followAddress() {
   if (currentRoute() === lastRoute) return;
   lastRoute = currentRoute();
   following = true;
+  let overtaken;
   try {
-    await goTo(readAddress());
+    overtaken = await goTo(readAddress());
   } finally {
     following = false;
   }
-  /* Where the address could not be followed (unsaved edits kept, a file that is gone), it is corrected. */
-  writeAddress(currentView(), true);
+  /* Where the address could not be followed (unsaved edits kept, a file that is gone), it is corrected.
+     Where a click overtook it, the click is a step of its own. */
+  writeAddress(currentView(), !overtaken);
 }
 /* One at a time: a step taken while the one before it is still loading waits its turn. */
 let followed = Promise.resolve();
