@@ -1,4 +1,5 @@
-"""`strands-evals optimize` — search for a better agent configuration, or resume a killed search."""
+"""`strands-evals optimize` — search for a better agent configuration, or resume a search that was killed or
+stopped on a proposer error."""
 
 from __future__ import annotations
 
@@ -30,8 +31,7 @@ def _print_result(result: OptimizationResult, args: argparse.Namespace, run_dir:
 
 
 def _finish(result: OptimizationResult, args: argparse.Namespace, run_dir: Path) -> int:
-    """Print the result; exit 3 with the proposer's error when the search stopped on one (the end phase still ran,
-    so the result is printed, but a script checking the exit code shouldn't read a dead search as success).
+    """Print the result.
 
     `run_dir` is the folder as found now, not `result.run_dir`, which is where the run was written (a folder may
     have moved since)."""
@@ -44,14 +44,17 @@ def _finish(result: OptimizationResult, args: argparse.Namespace, run_dir: Path)
             file=sys.stderr,
         )
         return EXIT_INTERRUPTED
-    if result.stop_reason != "proposer_error":
-        return EXIT_OK
-    events = (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
-    failures = [event for event in map(json.loads, events) if event.get("event") == "proposer_error"]
-    failure = failures[-1] if failures else None
-    cause = f"{failure['error_type']}: {failure['error']}" if failure else "see events.jsonl"
-    block = f" (block {failure['block']!r})" if failure else ""
-    emit_error(f"the search stopped: a proposer{block} raised {cause}")
+    return EXIT_OK
+
+
+def _proposer_stopped(error: Exception, run_dir: Path, *, debug: bool) -> int:
+    """`ProposerError`: the search stopped before the end phase, so there is no result to print; exit 3 with the
+    proposer's error (a script checking the exit code shouldn't read a dead search as success) and say how to
+    continue with the CLI."""
+    emit_error(str(error), debug=debug, exc=error)
+    print(  # noqa: T201
+        f"strands-evals optimize: continue with `strands-evals optimize resume {run_dir}`", file=sys.stderr
+    )
     return EXIT_RUNTIME_ERROR
 
 
@@ -91,7 +94,7 @@ def _run(args: argparse.Namespace) -> int:
     result; `cli.json` is written as soon as the run folder exists. Returns the exit code (2 on bad input, 3 when
     the search stopped on a proposer error, 130 on Ctrl-C)."""
     try:
-        from ...optimization import Budget, FinalPick, Optimizer
+        from ...optimization import Budget, FinalPick, Optimizer, ProposerError
         from .. import _optimize
     except ImportError as missing:  # the `optimization` extra isn't installed
         emit_error(str(missing))
@@ -183,6 +186,8 @@ def _run(args: argparse.Namespace) -> int:
         result = asyncio.run(_optimize.drive(optimizer, on_folder))
     except KeyboardInterrupt:
         return _interrupted(optimizer.run_dir)
+    except ProposerError as error:
+        return _proposer_stopped(error, error.run_dir, debug=debug)
     return _finish(result, args, Path(result.run_dir))
 
 
@@ -217,11 +222,11 @@ def _check_agent_flags(args: argparse.Namespace) -> str | None:
 
 
 def _resume(args: argparse.Namespace) -> int:
-    """`optimize resume`: print a finished run's saved result, or rebuild a killed run's inputs from `cli.json`,
-    reopen it with `Optimizer.resume` in its working directory, and print the result. Returns the exit code, as
-    `_run`'s."""
+    """`optimize resume`: print a finished run's saved result, or rebuild the inputs of a run that was killed or
+    stopped on a proposer error from `cli.json`, reopen it with `Optimizer.resume` in its working directory, and
+    print the result. Returns the exit code, as `_run`'s."""
     try:
-        from ...optimization import Budget, Optimizer
+        from ...optimization import Budget, Optimizer, ProposerError
         from .. import _optimize
     except ImportError as missing:  # the `optimization` extra isn't installed
         emit_error(str(missing))
@@ -255,6 +260,8 @@ def _resume(args: argparse.Namespace) -> int:
             result = asyncio.run(_optimize.drive(optimizer, lambda _: None))
         except KeyboardInterrupt:
             return _interrupted(run_dir)
+        except ProposerError as error:
+            return _proposer_stopped(error, run_dir, debug=debug)
     return _finish(result, args, run_dir)
 
 
@@ -473,7 +480,10 @@ def add_subparser(subparsers: argparse._SubParsersAction, parent: argparse.Argum
         "optimize",
         parents=[parent],
         help="search for a better agent configuration, or resume a search",
-        description="Search for a better configuration of a tunable agent, or resume a killed search.",
+        description=(
+            "Search for a better configuration of a tunable agent, or resume a search that was killed or "
+            "stopped on a proposer error."
+        ),
     )
     commands = parser.add_subparsers(dest="optimize_command", metavar="SUBCOMMAND")
     commands.required = True
@@ -482,12 +492,19 @@ def add_subparser(subparsers: argparse._SubParsersAction, parent: argparse.Argum
     resume = commands.add_parser(
         "resume",
         parents=[parent],
-        help="continue a killed run, or print a finished run's result",
-        description="Rebuild a run's inputs from its cli.json and continue it; a finished run prints its result.",
+        help="continue a run that was killed or stopped on an error, or print a finished run's result",
+        description=(
+            "Rebuild a run's inputs from its cli.json and continue it, whether it was killed or stopped on a "
+            "proposer error; a finished run prints its result."
+        ),
     )
     resume.add_argument("run_dir", metavar="RUN_DIR", help="the run folder `optimize run` printed")
     resume.add_argument(
-        "--max-rollouts", type=int, default=None, metavar="N", help="a new budget for a killed run (default: the run's)"
+        "--max-rollouts",
+        type=int,
+        default=None,
+        metavar="N",
+        help="a new budget for the continued run (default: the run's)",
     )
     resume.add_argument(
         "--max-iterations", type=int, default=None, metavar="N", help="a new iteration limit (default: the run's)"

@@ -8,7 +8,7 @@ from botocore.exceptions import ClientError, EventStreamError
 from strands.types.exceptions import EventLoopException, ModelThrottledException
 
 from strands_evals.optimization import InfrastructureError
-from strands_evals.optimization.execution.status import classify
+from strands_evals.optimization.execution.status import classify, is_credential_error
 from strands_evals.types.optimization import TrialStatus
 
 INFRASTRUCTURE = TrialStatus.INFRASTRUCTURE_INVALID
@@ -108,3 +108,28 @@ def test_classify_ignores_a_response_that_is_not_a_mapping():
     error = ValueError("odd")
     error.response = "not a dict"  # type: ignore[attr-defined]
     assert classify(error) is AGENT
+
+
+CREDENTIAL_IDS = {
+    "NoCredentialsError",
+    "PartialCredentials",
+    "CredentialRetrievalError",
+    "TokenRetrieval",
+    "UnauthorizedSSOTokenError",
+    "SSOTokenLoadError",
+    "SSOError",
+    "RefreshWithMFAUnsupported",
+    "LoginRefreshRequired",
+    "LoginTokenLoad",
+    "ProfileNotFound",
+    "ClientError-ExpiredTokenException",
+    "ClientError-ExpiredToken",
+    "ClientError-RequestExpired",
+}
+
+
+@pytest.mark.parametrize(("error", "status"), CASES)
+def test_is_credential_error_picks_exactly_the_credential_family(error, status, request):
+    expected = request.node.callspec.id in CREDENTIAL_IDS
+    assert is_credential_error(error) is expected
+    assert is_credential_error(EventLoopException(error)) is expected  # unwraps like classify
