@@ -157,7 +157,7 @@ class Optimizer:
             final_pick: How many finalists go to validation and how the pick values them; None means
                 `FinalPick(n_finalists=3)`.
             split: Train / validation / test; None means `Split(train=0.4, validation=0.3, test=0.3)`.
-            budget: Rollout and iteration caps; None means `Budget()`.
+            budget: Rollout, iteration, and proposer token caps; None means `Budget()`.
             runs_per_candidate: Times every candidate is scored on each case.
             agent_failure_score: What an `agent_failure` run's evaluator metrics count as: "worst" (each metric's
                 worst end), a number, or None (missing data).
@@ -432,7 +432,11 @@ class Optimizer:
             "final_pick": self._final_pick.config(),
             "proposals_per_iteration": self._proposals_per_iteration,
             "rerun_passes": self._rerun_passes,
-            "budget": {"max_rollouts": budget.max_rollouts, "max_iterations": budget.max_iterations},
+            "budget": {
+                "max_rollouts": budget.max_rollouts,
+                "max_iterations": budget.max_iterations,
+                "max_proposer_tokens": budget.max_proposer_tokens,
+            },
             "max_workers": self._max_workers,
             "agent": {
                 "factory": qualified(getattr(self._factory, "__wrapped__", None)),
@@ -487,7 +491,11 @@ class Optimizer:
                 "resume",
                 iteration=self._resumed.iteration,
                 spent=self._resumed.spent,
-                budget={"max_rollouts": budget.max_rollouts, "max_iterations": budget.max_iterations},
+                budget={
+                    "max_rollouts": budget.max_rollouts,
+                    "max_iterations": budget.max_iterations,
+                    "max_proposer_tokens": budget.max_proposer_tokens,
+                },
                 code=code_version(),
             )
         if self._resumed is not None and self._resumed.candidates:
@@ -591,7 +599,8 @@ class Optimizer:
         self._iteration = state.iteration
 
     async def _run_search(self) -> StopReason:
-        """Run iterations until a stop: budget, iteration cap, the schedule's None, or a proposer raising."""
+        """Run iterations until a stop: budget, iteration cap, proposer token cap, the schedule's None, or a
+        proposer raising."""
         assert self._run is not None
         per_candidate = len(self._case_split.train) * self._runs_per_candidate
         blocks = [block for block, _ in self._blocks]
@@ -605,6 +614,8 @@ class Optimizer:
                     return "iterations"
             if self._budget.allowance(phase="train") < per_candidate:
                 return "budget"
+            if self._proposer_cap_reached():
+                return "proposer_budget"
             self._iteration += 1
             ranking, assessments = self._rank()
             step = self._schedule.next(
@@ -646,13 +657,22 @@ class Optimizer:
         ranking, assessments = self._rank()
         self._close_rounds(None, ranking, assessments)
         cap = self._budget.budget.max_iterations
+        token_cap = self._budget.budget.max_proposer_tokens
         messages = {
             "budget": "the rollout budget left after the end phase's reserve can't score another candidate",
             "iterations": f"used Budget(max_iterations={cap})'s candidate slots ({cap} steps' worth)",
+            "proposer_budget": f"proposers used {self._search_cost.tokens} tokens, reaching "
+            f"Budget(max_proposer_tokens={token_cap})",
             "exhausted": "the schedule has nothing left to try",
             "proposer_error": "a proposer raised; see the proposer_error event",
         }
         self._run.events.append("stop", iteration=self._iteration, reason=reason, message=messages.get(reason, ""))
+
+    def _proposer_cap_reached(self) -> bool:
+        """Whether the proposers' tokens so far (`search_cost`, restored on resume) reached
+        `Budget.max_proposer_tokens`; never with no cap."""
+        cap = self._budget.budget.max_proposer_tokens
+        return cap is not None and self._search_cost.tokens >= cap
 
     async def _end_phase(self, stop_reason: StopReason) -> OptimizationResult:
         """Finalists from the search ranking (E1), measured with the baseline on validation (E2), the champion
@@ -1069,8 +1089,9 @@ class Optimizer:
         ranking: list[str],
         assessments: Mapping[str, Assessment],
     ) -> IterationRecord:
-        """Propose `n` candidates (redrawing a slot that is invalid, a duplicate, or empty), score the new
-        ones on train at once, refit, label, and tell the proposers; write `iteration_end`.
+        """Propose `n` candidates (redrawing a slot that is invalid, a duplicate, or empty, unless the proposers
+        have reached `Budget.max_proposer_tokens`), score the new ones on train at once, refit, label, and tell
+        the proposers; write `iteration_end`.
 
         Raises:
             _ProposerFailed: A proposer raised (its `proposer_error` event is written).
@@ -1084,7 +1105,7 @@ class Optimizer:
         opened: _Draw | None = None  # an opener repeating a measured candidate: the round opens on it
         need = n
         for redraw in range(self._search.redraws + 1):
-            if need <= 0 or opened is not None:
+            if need <= 0 or opened is not None or self._proposer_cap_reached():
                 break
             for draw in await self._draw(step, parent, need, redraw, ranking, assessments, summaries):
                 candidate = draw.candidate
@@ -1858,13 +1879,13 @@ class Optimizer:
         Resume continues a run that was killed; it never extends a finished one. Every stop runs the end
         phase, so a finished run only finishes or returns its end phase. To search more, start a new run.
         A killed search may get a larger `Budget`, which only moves where it stops. The resumed run proposes what
-        an uninterrupted one would, with two exceptions: near the rollout cap, what the killed iteration spent
-        counts from the start, while its trials are reused at no cost, so a step can be cut narrower or the
-        search stop a step earlier than without the kill; and a refit that succeeded in the run but raises when
-        replayed (e.g. under another numpy) is replaced by measured means until a refit succeeds, with a
-        warning. If you changed cases,
-        evaluators, judge settings, or agent code, start a new run instead: resuming would mix results from
-        the old and new setups.
+        an uninterrupted one would, with two exceptions: what the killed iteration spent counts from the start,
+        so near the rollout cap (its trials are reused at no cost) a step can be cut narrower or the search stop
+        a step earlier than without the kill, and near `max_proposer_tokens` (running it again pays its
+        proposers again) the search can stop earlier; and a refit that succeeded in the run but raises when
+        replayed (e.g. under another numpy) is replaced by measured means until a refit succeeds, with a warning.
+        If you changed cases, evaluators, judge settings, or agent code, start a new run instead: resuming would
+        mix results from the old and new setups.
 
         Args:
             run_dir: The run directory to reopen.
@@ -1879,7 +1900,8 @@ class Optimizer:
             selection: As in `__init__`; must match the run.
             score_model: As in `__init__`; must match the run.
             environment: As in `__init__`.
-            budget: A new budget for a killed search; None keeps the saved one.
+            budget: A new budget for a killed search; None keeps the saved one. A given `Budget` replaces every
+                saved limit, so pass `max_proposer_tokens` again to keep a token cap.
             max_workers: None keeps the saved value.
             on_iteration: Called only for iterations run after the resume.
 

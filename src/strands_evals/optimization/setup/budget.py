@@ -1,4 +1,5 @@
-"""The rollout budget: one rollout = one case executed once; the end phase's cost is reserved up front."""
+"""The run's limits: rollouts (one rollout = one case executed once; the end phase's cost is reserved up front),
+candidate slots, and proposer tokens."""
 
 from __future__ import annotations
 
@@ -9,23 +10,43 @@ from ...types.optimization import SplitName
 
 @dataclass(frozen=True, kw_only=True)
 class Budget:
-    """`max_rollouts` always applies; `max_iterations=None` means no iteration cap.
+    """The run's limits. The search stops at the first limit it reaches, and the end phase runs after any stop.
 
-    `max_iterations=n` is n steps' worth of candidates: `n x proposals_per_iteration` candidate slots, charged as
-    a `Nested` round charges its own. A step that saved a candidate uses the `n_candidates` it was given, a round's
-    opener 1 (none when it repeats a measured candidate), and a step that saved nothing (every proposal a
-    duplicate or invalid) none, so a run can have more than n steps. The last step is cut to the slots left.
+    `max_rollouts` always applies. It counts agent rollouts, re-runs included, in the search and the end phase.
+    The end phase's share is reserved up front (`BudgetTracker`), so the search stops once what's left after
+    that reserve can't score another candidate. Judges run inside each trial and add no rollouts of their own;
+    proposer calls aren't rollouts.
+
+    `max_iterations=None` means no iteration cap. `max_iterations=n` is n steps' worth of candidates:
+    `n x proposals_per_iteration` candidate slots, charged as a `Nested` round charges its own. A step that saved
+    a candidate uses the `n_candidates` it was given, a round's opener 1 (none when it repeats a measured
+    candidate), and a step that saved nothing (every proposal a duplicate or invalid) none, so a run can have
+    more than n steps. The last step is cut to the slots left.
+
+    `max_proposer_tokens=None` means no cap on proposer spend. `max_proposer_tokens=t` stops the search once
+    the proposers' reported usage, summed over every block, reaches t tokens (`Usage.tokens`, the total in
+    `search_cost`: raw tokens with cache reads included, so it overstates what cached input costs). Usage counts
+    when a proposer reports it, on a returned `Patch.usage` or in a `proposer_usage` event; a proposer that
+    reports none (TPE, Thompson) never counts. The cap is checked before each step and before each redraw, so
+    a step that reaches it stops redrawing and is still scored. The total can pass t by one round of proposer
+    calls (up to `proposals_per_iteration` calls per block of the step). That bound counts calls, not tokens;
+    one call's spend has no limit here, and a call can retry its agent.
+
+    Nothing caps the agent's or the judges' tokens directly, or wall-clock time.
     """
 
     max_rollouts: int = 500
     max_iterations: int | None = None
+    max_proposer_tokens: int | None = None
 
     def __post_init__(self) -> None:
-        """`max_rollouts` >= 1 and `max_iterations` None or >= 1, else `ValueError`."""
+        """`max_rollouts` >= 1, and `max_iterations` and `max_proposer_tokens` None or >= 1, else `ValueError`."""
         if self.max_rollouts < 1:
             raise ValueError(f"Budget: max_rollouts must be at least 1, got {self.max_rollouts}")
         if self.max_iterations is not None and self.max_iterations < 1:
             raise ValueError(f"Budget: max_iterations must be None or at least 1, got {self.max_iterations}")
+        if self.max_proposer_tokens is not None and self.max_proposer_tokens < 1:
+            raise ValueError(f"Budget: max_proposer_tokens must be None or at least 1, got {self.max_proposer_tokens}")
 
 
 class BudgetTracker:

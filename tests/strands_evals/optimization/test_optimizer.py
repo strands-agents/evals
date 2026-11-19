@@ -104,7 +104,7 @@ def test_defaults_build():
     assert config["selection"] == {"name": "top_ranked", "config": {}}
     assert config["score_model"]["name"] == "bayesbench"
     assert config["final_pick"] == {"n_finalists": 3, "rule": {"kind": "Mean"}}
-    assert config["budget"] == {"max_rollouts": 500, "max_iterations": None}
+    assert config["budget"] == {"max_rollouts": 500, "max_iterations": None, "max_proposer_tokens": None}
     assert config["split"]["seed"] == 0
     assert {role: len(names) for role, names in config["split"]["cases"].items()} == {
         "train": 8,
@@ -1052,6 +1052,130 @@ async def test_the_budget_stops_the_search_before_the_end_phases_reserve(tmp_pat
     reason, _ = await _search(optimizer)
     # Iterations: temperature 0.5, the empty manager block, temperature 1.0; then the reserve is all that's left.
     assert reason == "budget" and optimizer._budget.spent == 24 and len(optimizer._iterations) == 3
+
+
+_TEN_TOKENS = Usage(
+    input_tokens=9,
+    output_tokens=1,
+    tokens=10,
+    cache_read_tokens=None,
+    cache_write_tokens=None,
+    model_calls=1,
+    seconds=1.0,
+    models=["m"],
+)
+
+
+class Paid(Scripted):
+    """`Scripted`, with 10 tokens of usage on every patch it returns."""
+
+    async def propose(self, request):
+        return [p.model_copy(update={"usage": _TEN_TOKENS}) for p in await super().propose(request)]
+
+
+async def test_the_proposer_token_cap_stops_the_search(tmp_path):
+    proposer = Paid({"temperature": 0.5}, {"temperature": 1.0}, {"temperature": 0.5})
+    optimizer = _searching(
+        Block(proposer, "temperature"),
+        schedule=Joint(),
+        base_dir=tmp_path,
+        budget=Budget(max_proposer_tokens=15),
+        proposals_per_iteration=1,
+    )
+    reason, events = await _search(optimizer)
+    # The second step's call reaches the cap (20 >= 15), so no third step is planned and its update is never asked.
+    assert reason == "proposer_budget" and len(optimizer._iterations) == 2
+    assert optimizer._search_cost.tokens == 20 and len(proposer.updates) == 1
+    assert events[-1]["event"] == "stop" and events[-1]["reason"] == "proposer_budget"
+    assert events[-1]["message"] == "proposers used 20 tokens, reaching Budget(max_proposer_tokens=15)"
+    assert events[0]["config"]["budget"]["max_proposer_tokens"] == 15
+
+
+async def test_a_step_that_reaches_the_proposer_token_cap_stops_redrawing_and_scores_what_it_has(tmp_path):
+    # Two slots: a new value and a repeat of the baseline. With the `manager` block `_searching` adds, `Joint`
+    # asks this proposer once per slot. Their 20 tokens reach the cap, so the repeat's slot isn't redrawn (that
+    # would ask for the third update) and the new candidate is still scored.
+    proposer = Paid({"temperature": 0.5}, {"temperature": 0.0}, {"temperature": 1.0})
+    optimizer = _searching(
+        Block(proposer, "temperature"),
+        schedule=Joint(),
+        base_dir=tmp_path,
+        budget=Budget(max_proposer_tokens=15),
+        proposals_per_iteration=2,
+    )
+    reason, _ = await _search(optimizer)
+    assert reason == "proposer_budget" and optimizer._search_cost.tokens == 20
+    assert len(proposer.requests) == 2 and proposer.updates == [{"temperature": 1.0}]
+    (step,) = optimizer._iterations
+    assert sorted(p.outcome == "duplicate" for p in step.proposals) == [False, True]
+    assert step.rollouts_spent == 8
+    assert sorted(c.values["temperature"] for c in optimizer._candidates.values()) == [0.0, 0.5]
+
+
+async def test_spend_a_concurrent_proposer_logs_counts_toward_the_cap(tmp_path):
+    class Logged(Scripted):
+        """Spends 10 tokens per call and returns nothing, logging the spend itself."""
+
+        concurrent = True
+
+        async def propose(self, request):
+            self.requests.append(request)
+            request.log("proposer_usage", usage=_TEN_TOKENS)
+            return []
+
+    proposer = Logged()
+    optimizer = _searching(
+        Block(proposer, "temperature"),
+        schedule=Joint(),
+        base_dir=tmp_path,
+        budget=Budget(max_proposer_tokens=25),
+        proposals_per_iteration=4,
+    )
+    reason, _ = await _search(optimizer)
+    # The first round's 4 calls at once pass the cap (40 >= 25), so none of the step's 3 redraws runs.
+    assert reason == "proposer_budget" and len(proposer.requests) == 4
+    assert optimizer._search_cost.tokens == 40
+
+
+async def _killed_after_second_call(tmp_path):
+    """A run capped at 15 proposer tokens, killed once its second step's proposal was paid for (20 tokens)."""
+    original = _searching(
+        Block(Paid({"temperature": 0.5}, {"temperature": 1.0}), "temperature"),
+        schedule=Joint(),
+        base_dir=tmp_path / "runs",
+        budget=Budget(max_proposer_tokens=15),
+        proposals_per_iteration=1,
+    )
+    finished = await original.run_async()
+    assert finished.stop_reason == "proposer_budget" and len(finished.iterations) == 2
+    return _killed(original._run.root, tmp_path, lambda events: _index(events, "proposer_usage", nth=2))
+
+
+async def test_a_resumed_run_counts_the_proposer_tokens_its_killed_iteration_spent(tmp_path):
+    copy = await _killed_after_second_call(tmp_path)
+    proposer = Paid({"temperature": 1.0})
+    search = Search([Block(proposer, "temperature"), Block(Scripted(), "manager")], schedule=Joint())
+    # The resumed run keeps the saved cap and the killed iteration's spend, so it stops before asking for anything.
+    result = await _resume(copy, search=search).run_async()
+    assert result.stop_reason == "proposer_budget" and proposer.requests == []
+    assert len(result.iterations) == 1 and result.search_cost.tokens == 20
+    assert OptimizationResult.from_file(copy / "result.json").stop_reason == "proposer_budget"
+    resume = next(e for e in _events_at(copy) if e["event"] == "resume")
+    assert resume["budget"]["max_proposer_tokens"] == 15
+
+
+async def test_a_run_saved_without_the_proposer_token_field_resumes_with_no_cap(tmp_path):
+    copy = await _killed_after_second_call(tmp_path)
+    lines = (copy / "events.jsonl").read_text().splitlines()
+    config = json.loads(lines[0])
+    del config["config"]["budget"]["max_proposer_tokens"]  # as a run saved before the field existed
+    (copy / "events.jsonl").write_text("\n".join([json.dumps(config), *lines[1:]]) + "\n")
+    proposer = Paid({"temperature": 1.0})
+    search = Search([Block(proposer, "temperature"), Block(Scripted(), "manager")], schedule=Joint())
+    resumed = _resume(copy, search=search)
+    assert resumed._budget.budget == Budget()
+    result = await resumed.run_async()
+    assert proposer.requests and result.stop_reason == "exhausted"
 
 
 async def test_a_selection_outside_the_pool_raises(tmp_path):
