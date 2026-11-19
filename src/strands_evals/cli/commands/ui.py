@@ -10,7 +10,7 @@ import webbrowser
 from pathlib import Path
 
 from .._common import EXIT_BAD_INPUT, EXIT_OK, resolve_format
-from .._ui_discovery import DEFAULT_DEPTH, discover
+from .._ui_discovery import DEFAULT_DEPTH, SCAN_SCHEMA_VERSION, discover
 from .._ui_server import build_server, finite, is_loopback, server_url
 
 TOKEN_ENV = "STRANDS_EVALS_UI_TOKEN"
@@ -19,7 +19,7 @@ TOKEN_ENV = "STRANDS_EVALS_UI_TOKEN"
 def _print_listing(root: Path, args: argparse.Namespace) -> None:
     result = discover(root, args.depth)
     if resolve_format(args) == "json":
-        listing = finite({"root": str(root.resolve()), **vars(result)})
+        listing = finite({"schema_version": SCAN_SCHEMA_VERSION, "root": str(root.resolve()), **vars(result)})
         try:
             print(json.dumps(listing, indent=2))  # noqa: T201
         except RecursionError:  # a document nested past what laying it out follows: one line has no such limit
@@ -78,6 +78,10 @@ def _run(args: argparse.Namespace) -> int:
     mode = " (read-only)" if args.read_only else ""
     print(f"strands-evals ui{mode}: serving {root.resolve()}", file=sys.stderr)  # noqa: T201
     print(f"  {url}", file=sys.stderr)  # noqa: T201
+    print(  # noqa: T201
+        "  without a browser: send that token as the X-Evals-Token header; /llms.txt says what is answered",
+        file=sys.stderr,
+    )
     if token:
         print(  # noqa: T201
             "  that token was supplied, not generated: any process on this machine that guesses"

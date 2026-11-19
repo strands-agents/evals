@@ -1166,7 +1166,9 @@ def test_write_json_atomic_creates_a_file_that_is_not_there(tmp_path: Path):
 
 PAGE = "<html>page</html>"
 HOST_REFUSAL = "this server only answers requests addressed to the host it is serving on"
-TOKEN_REFUSAL = "missing or wrong token"
+TOKEN_REFUSAL = (
+    "missing or wrong token: send it as the X-Evals-Token header or as ?t=<token>; /llms.txt says what is answered"
+)
 LENGTH_REFUSAL = "send the body with a Content-Length"
 WRONG_TOKEN = {"X-Evals-Token": "wrong"}
 NO_TOKEN = {"X-Evals-Token": None}
@@ -1211,7 +1213,11 @@ class Client:
         the computed `Content-Length`, so a test can omit the token or lie about the body.
         """
         payload = body if isinstance(body, bytes | None) else json.dumps(body).encode()
-        sent: dict[str, str | None] = {"Host": f"127.0.0.1:{self.port}", "X-Evals-Token": self.token}
+        sent: dict[str, str | None] = {
+            "Host": f"127.0.0.1:{self.port}",
+            "X-Evals-Token": self.token,
+            "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",  # what a browser asks a page for
+        }
         if payload is not None:
             sent["Content-Length"] = str(len(payload))
         sent.update(headers or {})
@@ -1354,6 +1360,47 @@ def test_page_needs_the_token(client: Client):
     assert client.send("GET", "/") == Reply(HTTPStatus.OK, PAGE)
 
 
+def test_a_refusal_says_how_the_token_is_sent_and_nothing_of_the_folder(client: Client):
+    page = client.send("GET", "/reports/report.json", headers=NO_TOKEN)
+    data = client.send("GET", "/reports/report.json.md", headers=WRONG_TOKEN)
+
+    assert data == _refused(HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL)
+    for body in (page.body, data.body["error"]):
+        assert "X-Evals-Token" in body and "/llms.txt" in body
+        assert client.token not in body and str(client.root) not in body and "report.json" not in body
+
+
+@pytest.mark.parametrize(
+    "path,told",
+    [
+        ("/reports", "/reports is a page"),
+        ("/reports/report.md", "Did you mean /reports/report.json.md?"),
+        (
+            "/experiments/experiment",
+            "Did you mean /experiments/experiment.json.md or /experiments/experiment.json.json?",
+        ),
+        ("/reports/compare.md?r=report.json&r=report.json", "/reports/compare.md is a page"),
+    ],
+    ids=["a list", "a form with the file's .json left out", "a file with its .json left out", "a comparison"],
+)
+@pytest.mark.parametrize("accept", ["*/*", "application/json", None], ids=["anything", "json", "no header"])
+def test_a_page_address_tells_a_reader_with_no_browser_where_the_data_is(client: Client, path, told, accept):
+    reply = client.send("GET", path, headers={"Accept": accept})
+
+    assert (reply.status, reply.headers.get_content_type()) == (HTTPStatus.NOT_ACCEPTABLE, "text/plain")
+    assert told in reply.body and "/llms.txt" in reply.body and ".json.md" in reply.body
+    assert len(reply.body) < 1000
+
+
+def test_a_reader_with_no_browser_is_refused_like_any_other_without_the_token(client: Client):
+    plain = {"Accept": "*/*"}
+
+    assert client.send("GET", "/reports", headers={**NO_TOKEN, **plain}).status == HTTPStatus.UNAUTHORIZED
+    assert client.send("GET", "/reports/report.md", headers={**WRONG_TOKEN, **plain}).status == HTTPStatus.UNAUTHORIZED
+    with_link = client.send("GET", f"/reports?t={client.token}", headers={**NO_TOKEN, **plain})
+    assert (with_link.status, with_link.headers["Set-Cookie"]) == (HTTPStatus.NOT_ACCEPTABLE, None)
+
+
 def test_a_link_with_the_wrong_token_gets_no_cookie(client: Client):
     reply = client.send("GET", "/reports?t=guessed", headers=NO_TOKEN)
 
@@ -1469,7 +1516,8 @@ def test_the_token_redirect_never_points_off_the_server(client: Client):
 
 
 def test_the_token_redirect_does_not_echo_a_path_that_is_not_printable(client: Client):
-    request = f"GET /reports/\u00e9?t={client.token} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+    asked = f"GET /reports/\u00e9?t={client.token} HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/html\r\n"
+    request = f"{asked}Connection: close\r\n\r\n"
 
     with socket.create_connection((client.host, client.port), timeout=5) as raw:
         raw.sendall(request.encode("latin-1"))
@@ -1625,7 +1673,9 @@ def test_scan_endpoint_serves_the_discovery_with_the_settings(client: Client):
     assert {name: len(listed) for name, listed in found.items() if name != "truncated"} == dict.fromkeys(
         ("experiments", "reports", "skipped", "optimizer_runs", "sessions", "diagnoses", "stores"), 1
     )
-    assert reply == Reply(HTTPStatus.OK, {**client.settings, "fingerprint": fingerprint(client.root), **found})
+    assert reply == Reply(
+        HTTPStatus.OK, {"schema_version": 1, **client.settings, "fingerprint": fingerprint(client.root), **found}
+    )
 
 
 def test_scan_endpoint_survives_a_report_holding_nan(client: Client):
@@ -2002,8 +2052,8 @@ def test_llms_txt_describes_every_address_the_server_answers(client: Client):
     assert "The cookie a browser holds opens the page only" in reply.body
     # Every route the handler has is listed with what it returns, so a route added later cannot go undescribed.
     for route, handler in UIHandler._GET_ROUTES.items():
-        assert f"- `{route}`: {handler.__doc__}" in lines
         assert handler.__doc__
+        assert f"- `{route}`: {' '.join(handler.__doc__.split())}" in lines
     assert (
         '- `PUT /api/experiment`: With `?path=<experiment file>` and a body of `{"document": ..., "modified": ...}`: '
         "saves the experiment over the file it was read from. `modified` is the time `/api/file` gave; a file changed "
@@ -2326,7 +2376,7 @@ def test_ui_list_prints_what_it_found_as_json(tmp_path: Path, capsys):
         "diagnoses": 2,
         "stores": 1,
     }
-    assert json.loads(capsys.readouterr().out) == {"root": str(tmp_path.resolve()), **found}
+    assert json.loads(capsys.readouterr().out) == {"schema_version": 1, "root": str(tmp_path.resolve()), **found}
 
 
 def test_ui_list_prints_what_it_found_as_text(tmp_path: Path, capsys):
@@ -2487,6 +2537,7 @@ def test_ui_says_what_the_link_exposes(tmp_path: Path, launched, capsys, flags, 
     assert capsys.readouterr().err.splitlines() == [
         f"strands-evals ui{mode}: serving {tmp_path.resolve()}",
         f"  {FAKE_URL}",
+        "  without a browser: send that token as the X-Evals-Token header; /llms.txt says what is answered",
         *notes,
     ]
 

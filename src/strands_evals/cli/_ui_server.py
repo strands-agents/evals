@@ -39,6 +39,7 @@ from ._ui_discovery import (
     EXPERIMENT,
     NOT_JSON,
     REPORT,
+    SCAN_SCHEMA_VERSION,
     SESSION,
     classify,
     discover,
@@ -217,11 +218,24 @@ def write_json_atomic(target: Path, payload: dict) -> float:
     return target.stat().st_mtime
 
 
+# Neither refusal says anything of the folder or the token: only how one is sent.
+TOKEN_REFUSAL = (
+    "missing or wrong token: send it as the X-Evals-Token header or as ?t=<token>; /llms.txt says what is answered"
+)
 UNAUTHORIZED_PAGE = (
     b"<!doctype html><meta charset=utf-8><title>strands-evals</title>"
     b"<body style='font:14px \"Space Grotesk\",system-ui,sans-serif;padding:40px'>"
     b"<h3 style='font:600 18px \"JetBrains Mono\",ui-monospace,monospace'>Open the link the CLI printed</h3>"
     b"<p>This page needs the token in the URL that <code>strands-evals ui</code> printed.</p>"
+    b"<p>Without a browser, send that token as the <code>X-Evals-Token</code> header. "
+    b"<code>/llms.txt</code> says what is answered.</p>"
+)
+PAGE_ONLY = (
+    "{path} is a page of strands-evals ui, made for a browser.\n\n"
+    "Without one, a report, an experiment or a session is read as Markdown or as JSON at the address of its file\n"
+    "with .md or .json added. A file's address ends in .json, so the two forms end in .json.md and .json.json.\n"
+    "{meant}"
+    "/llms.txt lists every address, and /api/scan lists the files. Each needs the token, as this did.\n"
 )
 
 
@@ -346,7 +360,7 @@ class UIHandler(BaseHTTPRequestHandler):
         if not self._host_is_admitted():
             return HTTPStatus.FORBIDDEN, "this server only answers requests addressed to the host it is serving on"
         if not self._authorized(query):
-            return HTTPStatus.UNAUTHORIZED, "missing or wrong token"
+            return HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL
         return None
 
     def _settings(self) -> dict:
@@ -437,12 +451,14 @@ class UIHandler(BaseHTTPRequestHandler):
         self._json(HTTPStatus.OK, {**self._settings(), "evaluators": evaluator_catalog()})
 
     def _get_scan(self, query: dict[str, list[str]]) -> None:
-        """What a scan of the served folder finds, to its depth and its file cap, and a fingerprint of the folder."""
+        """What a scan of the served folder finds, to its depth and its file cap, and a fingerprint of the folder.
+        `schema_version` moves when a field of it is renamed, removed or changes meaning."""
         # Taken before the scan, so a file written during it reads as a change afterwards.
         mark = fingerprint(self.config.root, self.config.depth)
         result = discover(self.config.root, self.config.depth)
         # `vars`, not `asdict`: that copies every listed document level by level, and one nested deeply stops it.
-        self._json(HTTPStatus.OK, {**self._settings(), "fingerprint": mark, **vars(result)})
+        listing = {"schema_version": SCAN_SCHEMA_VERSION, **self._settings(), "fingerprint": mark, **vars(result)}
+        self._json(HTTPStatus.OK, listing)
 
     def _get_changes(self, query: dict[str, list[str]]) -> None:
         """The fingerprint now. It differs from a scan's once something the scan listed has changed."""
@@ -616,13 +632,48 @@ class UIHandler(BaseHTTPRequestHandler):
             },
         )
 
+    def _wants_html(self) -> bool:
+        """Whether a browser is opening a page: one asks for `text/html`, and a program fetching data does not."""
+        return "text/html" in (self.headers.get("Accept") or "").lower()
+
+    def _meant(self, path: str) -> list[str]:
+        """The data addresses a page address most likely stood for: a file's forms, or one with its `.json` put back."""
+        root = next((root for root in DATA_ROOTS if path.startswith(root)), None)
+        if root is None:
+            return []
+
+        def is_file(address: str) -> bool:
+            try:
+                return os.path.isfile(resolve_within(self.config.root, unquote(address[len(root) :])))
+            except PathOutsideRoot:
+                return False
+
+        if is_file(path):
+            return [path + form for form in DATA_FORMS]
+        if path.lower().endswith(".md") and is_file(path[:-3] + ".json"):
+            return [path[:-3] + ".json.md"]
+        return [f"{path}.json{form}" for form in DATA_FORMS] if is_file(path + ".json") else []
+
+    def _page_only(self, query: dict[str, list[str]]) -> None:
+        """Tell a reader with no browser that this address is a page, and where the data is, in a few lines."""
+        path = urlparse(self.path).path
+        # Which files exist is told to a request with the token itself, as on the data routes.
+        meant = self._meant(path) if self._authorized(query) else []
+        hint = f"Did you mean {' or '.join(meant)}?\n" if meant else ""
+        text = PAGE_ONLY.format(path=path, meant=hint)
+        self._send(HTTPStatus.NOT_ACCEPTABLE, text.encode("utf-8", "replace"), "text/plain; charset=utf-8")
+
     def _get_page(self, query: dict[str, list[str]], status: HTTPStatus = HTTPStatus.OK) -> None:
         """Serve the page to a request that has the token or the cookie.
 
         The printed link is answered with the cookie and a redirect to the same address without the token,
-        so the token is not left in the address bar, the history or a shared link.
+        so the token is not left in the address bar, the history or a shared link. A request that has either
+        and is not a browser's gets a few lines of text in place of the page.
         """
         html_type = "text/html; charset=utf-8"
+        if (self._authorized(query) or self._has_page_cookie()) and not self._wants_html():
+            self._page_only(query)
+            return
         if "t" in query and self._authorized(query):
             cookie = f"{self._cookie_name()}={quote(self.config.token, safe='')}; Path=/; HttpOnly; SameSite=Lax"
             # The same address without the token, so a link into the page lands where it pointed.
@@ -698,7 +749,7 @@ class UIHandler(BaseHTTPRequestHandler):
             return
         # A browser holding the cookie, at an address the page does not have, gets the page, which says so.
         stray = form is None and parsed.path not in self._GET_ROUTES and not f"{parsed.path}/".startswith("/api/")
-        if stray and self._has_page_cookie() and self._host_is_admitted():
+        if stray and self._wants_html() and self._has_page_cookie() and self._host_is_admitted():
             self._get_page({}, HTTPStatus.NOT_FOUND)
             return
         refusal = self._refusal(query)

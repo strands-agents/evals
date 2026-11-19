@@ -23,6 +23,8 @@ from ._ui_evaluators import check_evaluators
 
 DEFAULT_DEPTH = 3
 MAX_SCAN_FILES = 2000
+# Of what `/api/scan` and `ui --list --json` print. It moves when a field is renamed, removed or changes meaning.
+SCAN_SCHEMA_VERSION = 1
 
 # Capped on lines, not bytes: a cut log is reported as partial, and lines are what the page counts.
 MAX_EVENT_LINES = 50_000
