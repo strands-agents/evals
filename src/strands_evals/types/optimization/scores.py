@@ -133,7 +133,7 @@ class CandidateLabel(BaseModel):
         unmet_constraints: Each constraint not met, as the ranking assessed it, as a sentence (e.g. "tokens <= 4000:
             P(met) 0.62 < 0.9"); unlike the per-constraint margins elsewhere named `violations`.
         estimates: Per goal metric (`Assessment.estimates`); empty when `is_from_fit` is False.
-        p_met: Per constraint (`Assessment.p_met`); empty when `is_from_fit` is False.
+        p_met: Per constraint whose metric was measured (`Assessment.p_met`); empty when `is_from_fit` is False.
         is_from_fit: False when assessed by measured means.
         measured: Every metric measured on train, usage included; a metric with no value is left out.
     """

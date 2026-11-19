@@ -103,6 +103,9 @@ class TrialLog:
 async def default_rollout(agent_factory: Callable[..., Any], case: Case) -> dict[str, Any]:
     """Build an agent and return `{"output": str(await agent.invoke_async(case.input))}`.
 
+    The factory runs once per attempt, so models it builds should share one `boto3.Session` rather than
+    each make their own (see `Optimizer`).
+
     Args:
         agent_factory: Builds a fresh agent; called with no arguments.
         case: The case to run.
