@@ -7,7 +7,6 @@ import hashlib
 import inspect
 import json
 import random
-import statistics
 import threading
 import warnings
 from collections import Counter
@@ -1519,9 +1518,10 @@ class Optimizer:
                         if r.split == "train" and r.status is TrialStatus.AGENT_FAILURE
                     ),
                     ranking_objective=None if a is None else a.objective,
-                    term_values=None if a is None or a.objective is None else self._term_values(c, a),
+                    term_values=None if a is None or a.objective is None else self._term_values(a),
                     rank=position.get(c),
                     estimates={} if a is None else dict(a.estimates),
+                    adjusted_means={} if a is None else dict(a.adjusted_means),
                     violations=None if a is None else list(a.violations),
                     is_feasible=None if a is None else a.is_feasible,
                     is_eligible=scores.is_eligible,
@@ -1532,17 +1532,16 @@ class Optimizer:
             )
         return out
 
-    def _term_values(self, candidate_id: str, a: Assessment) -> list[float] | None:
-        """Each objective term's raw value (the resolved estimate, else the measured mean), in objective order."""
+    def _term_values(self, a: Assessment) -> list[float] | None:
+        """Each objective term's raw value (the resolved estimate, else the adjusted mean the ranking used), in
+        objective order; None when a term's metric has no adjusted mean."""
         objective = self._criteria.objective
-        metrics = [
-            d.metric for d in (objective.objectives if isinstance(objective, (WeightedSum, Pareto)) else (objective,))
-        ]
+        parts = objective.objectives if isinstance(objective, (WeightedSum, Pareto)) else (objective,)
         if a.is_from_fit:
-            return [round_to_sd(a.estimates[m].mean, a.estimates[m].sd) for m in metrics]
-        by_case = self._train[candidate_id].metrics_by_case.values()
-        means = [[case[m] for case in by_case if m in case] for m in metrics]
-        return None if any(not v for v in means) else [statistics.fmean(v) for v in means]
+            return [round_to_sd(a.estimates[d.metric].mean, a.estimates[d.metric].sd) for d in parts]
+        if any(d.metric not in a.adjusted_means for d in parts):
+            return None
+        return [a.adjusted_means[d.metric] for d in parts]
 
     def _tell(
         self,
@@ -1567,7 +1566,7 @@ class Optimizer:
             source_id=source_id,
             round_candidate_ids=None if round_candidate_ids is None else list(round_candidate_ids),
             objective=assessment.objective if measured and assessment is not None else None,
-            term_values=self._term_values(source_id or candidate_id, assessment)  # type: ignore[arg-type]
+            term_values=self._term_values(assessment)
             if measured and assessment is not None and assessment.objective is not None
             else None,
             outcome=outcome,
@@ -1587,7 +1586,7 @@ class Optimizer:
             values=dict(candidate.values),
             origin=list(candidate.origin),
             objective=None if a is None else a.objective,
-            term_values=None if a is None or a.objective is None else self._term_values(candidate.id, a),
+            term_values=None if a is None or a.objective is None else self._term_values(a),
             violations=None if a is None else list(a.violations),
             outcome=outcome,
         )

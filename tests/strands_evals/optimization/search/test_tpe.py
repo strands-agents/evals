@@ -139,6 +139,7 @@ def summary(cid, objective, *, violations=(), term_values=None, is_eligible=True
         term_values=term_values if is_eligible else None,
         rank=1 if is_eligible else None,
         estimates={},
+        adjusted_means={},
         violations=list(violations) if is_eligible else None,
         is_feasible=all(v <= 0 for v in violations) if is_eligible else None,
         is_eligible=is_eligible,
