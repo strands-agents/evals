@@ -551,7 +551,7 @@ Expected interactions:
     'its command runs that one case of the experiment, with the name quoted for a shell');
 
   await p.click(row(p, 2));
-  is(p.window.location.pathname, '/reports/support/support.report.json/rows/%232/Equals', 'a row with no name is addressed by its number');
+  is(p.window.location.pathname, '/reports/support/support.report.json/rows/%231/Equals', 'a row with no name is addressed by its number among its evaluator'''s rows');
   ok(!p.$(`${beside(p, 2)} [data-md="row-command"]`), 'and has no command, since there is no name to run it by');
   is(await p.copy(`${beside(p, 2)} [data-md="trace"]`), SESSION_TRACE, 'a recorded session copies span by span');
   ok((await p.copy(`${beside(p, 2)} .mdacts [data-md="row"]`)).includes('Actual trajectory: a recorded session of 3 spans, kept in the report file.'),

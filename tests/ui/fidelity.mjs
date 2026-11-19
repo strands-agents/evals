@@ -66,6 +66,20 @@ const pairs = el => [...el.querySelectorAll('dt')].map(dt => [dt.textContent, dt
   'nothing on the page, in the report or the editor, prints a value as [object Object]');
 }
 
+// ── a case with no name is one case, whichever evaluator judged it ──
+{
+  const unnamed = { overall_score: 0.5, scores: [1, 0, 1, 0, 1, 0], test_passes: [true, false, true, false, true, false],
+    cases: ['Eq', 'Len'].flatMap(evaluator => [{ input: 'first', evaluator }, { input: 'second', evaluator }, { name: 'c', input: 'third', evaluator }]) };
+  const p = await page({ fetchImpl: fakeServer({
+    scan: { reports: [{ path: 'r.json', name: 'r.json', dir: '.', size: 1, modified: 5, overall_score: 0.5, rows: 6, failing: 3,
+      experiment: null, link: null }] },
+    file: { path: 'r.json', modified: 5, document: unnamed },
+  }) });
+  await p.openReport();
+  same(p.$$('#rep-rows tr.case').map(r => p.text(r.querySelector('td'))), ['#0', '', '#1', '', 'c', ''],
+    'an unnamed case is numbered by its place under its evaluator, so its rows under two evaluators are one case');
+}
+
 // ── the editor keeps a structured field structured ──
 {
   const p = await page();
