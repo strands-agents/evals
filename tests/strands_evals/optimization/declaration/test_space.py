@@ -92,7 +92,10 @@ def test_param_infos_carry_log_and_edit_instructions():
     assert space.param("steps").log and space.param("rate").log and space.param("manager.Window.size").log
     assert not make_space().param("temperature").log
     assert space.param("prompt").edit_instructions == "be brief"
-    assert space.param("tools.lookup").edit_instructions == "keep it short"
+    assert space.param("tools.lookup").edit_instructions == (
+        "the description of the lookup tool: what the model reads to decide when to call it, how to fill its inputs "
+        "and how to read its result. keep it short"
+    )
 
 
 def test_text_without_size_cap_gets_the_derived_cap():
@@ -110,6 +113,17 @@ def test_tool_descriptions_flatten_to_one_text_key_per_tool():
     space = Space({"tools": tool_descriptions(lookup)})
     info = space.param("tools.lookup")
     assert (info.kind, info.name, info.default, info.size_cap) == ("text", "tools", "Look up a record.", 800)
+
+
+def test_each_tool_description_key_explains_its_own_tool():
+    spec = {"name": "search", "description": "Search the index.", "inputSchema": {"json": {}}}
+    search = PythonAgentTool("search", spec, lambda tool_use, **kwargs: None)
+    space = Space({"tools": tool_descriptions(lookup, search)})
+    for name in ("lookup", "search"):
+        assert space.param(f"tools.{name}").edit_instructions == (
+            f"the description of the {name} tool: what the model reads to decide when to call it, how to fill its "
+            "inputs and how to read its result"
+        )
 
 
 def test_a_long_tool_description_gets_a_cap_above_its_baseline():

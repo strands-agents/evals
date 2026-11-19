@@ -10,6 +10,13 @@ from strands.types.tools import AgentTool
 
 from .markers import _check_positive_int, _check_str, _Marker
 
+# What a tool description is, shown to the proposer for each tool. It is part of the space recorded in `run.json`, so
+# rewording it stops runs that declare tool descriptions from resuming.
+_EXPLANATION = (
+    "the description of the {tool} tool: what the model reads to decide when to call it, how to fill its inputs and "
+    "how to read its result"
+)
+
 
 class ToolDescriptions(_Marker):
     """One text param per tool (key `name.<tool_name>`), returned by `tool_descriptions()`.
@@ -17,13 +24,19 @@ class ToolDescriptions(_Marker):
     Attributes:
         tools: Tool name -> the user's tool, in declaration order; never modified.
         size_cap: Max characters per description; None means `max(800, 3 * len(baseline))` per tool.
-        edit_instructions: Shown to the proposer next to every description.
+        edit_instructions: Shown to the proposer after each tool's explanation.
     """
 
     def __init__(self, tools: dict[str, AgentTool], size_cap: int | None, edit_instructions: str | None):
         self.tools = tools
         self.size_cap = size_cap
         self.edit_instructions = edit_instructions
+
+    def _edit_instructions_for(self, tool_name: str) -> str:
+        """What the proposer is shown next to `tool_name`'s description: its explanation, then `edit_instructions`."""
+        explanation = _EXPLANATION.format(tool=tool_name)
+        instructions = (self.edit_instructions or "").strip()
+        return f"{explanation}. {instructions}" if instructions else explanation
 
     def build(self, descriptions: dict[str, str]) -> list[AgentTool]:
         """Fresh copies of the tools with `descriptions` (tool name -> text) applied, in declaration order."""
@@ -52,7 +65,9 @@ def tool_descriptions(
     Args:
         *tools: The tools whose descriptions may change.
         size_cap: Max characters per description; None means `max(800, 3 * len(baseline))`.
-        edit_instructions: Shown to the proposer next to every description.
+        edit_instructions: Shown to the proposer after each tool's explanation ("the description of
+            the `<name>` tool: what the model reads to decide when to call it, how to fill its inputs
+            and how to read its result"), joined with ". ".
 
     Raises:
         TypeError: No tools, a tool has no `tool_spec` setter, no text description, or a spec its

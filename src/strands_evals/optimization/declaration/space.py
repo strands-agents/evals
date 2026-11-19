@@ -414,7 +414,8 @@ def _flatten(name: str, marker: Marker) -> list[ParamInfo]:
         for tool_name, tool in marker.tools.items():
             description = tool.tool_spec["description"]
             cap = max(800, 3 * len(description)) if marker.size_cap is None else marker.size_cap
-            infos.append(_text(f"{name}.{tool_name}", name, description, cap, marker.edit_instructions))
+            instructions = marker._edit_instructions_for(tool_name)
+            infos.append(_text(f"{name}.{tool_name}", name, description, cap, instructions))
         return infos
     if isinstance(marker, FileText):
         source = FileSource(marker.path, None, marker.as_path)

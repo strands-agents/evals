@@ -5,9 +5,18 @@ import os
 import tempfile
 
 import pytest
+from strands import tool
 from strands.types.exceptions import EventLoopException
 
-from strands_evals.optimization import Criteria, InfrastructureError, Maximize, Reflection, Space, TextValue
+from strands_evals.optimization import (
+    Criteria,
+    InfrastructureError,
+    Maximize,
+    Reflection,
+    Space,
+    TextValue,
+    tool_descriptions,
+)
 from strands_evals.optimization.candidate import Candidate
 from strands_evals.optimization.search.proposer import ProposalRequest
 from strands_evals.types.trace import TextContent, ToolResultContent, UserMessage
@@ -30,16 +39,16 @@ SPACE = Space(
 )
 
 
-def request(*, n=1, keys=("prompt", "tone"), trials=None, events=None):
+def request(*, n=1, keys=("prompt", "tone"), trials=None, events=None, space=SPACE):
     criteria = Criteria(Maximize("Score"), [], REGISTRY)
     trials = trials or [
         trial("order-123", score=0.2, output="I could not find the order you asked about, sorry."),
         trial("b", score=0.9),
     ]
-    parent = Candidate.baseline(SPACE)
+    parent = Candidate.baseline(space)
     log = events.append if events is not None else None
     return ProposalRequest(
-        space=SPACE,
+        space=space,
         keys=list(keys),
         parent=parent,
         trials=trials,
@@ -285,6 +294,36 @@ async def test_a_send_back_after_a_long_first_turn_still_has_the_task_message():
     task = model.first_messages[0]
     assert "Write a new version of the parameters" in task["content"][0]["text"]
     assert model.first_messages[-1] == task  # the send-back's call starts from the task message too
+
+
+async def test_a_tool_description_is_shown_as_that_tools_description():
+    @tool
+    def lookup(order_id: str) -> str:
+        """Look up an order."""
+        return order_id
+
+    class Recording(ScriptedModel):
+        def __init__(self, turns):
+            super().__init__(turns)
+            self.tasks = []
+
+        async def stream(self, messages, *args, **kwargs):
+            self.tasks.append(messages[0]["content"][0]["text"])
+            async for event in super().stream(messages, *args, **kwargs):
+                yield event
+
+    space = Space({"prompt": TextValue(default="Be helpful."), "tools": tool_descriptions(lookup)})
+    model = Recording(["Nothing to change."])
+    reflection = Reflection(model)
+    reflection._warned = True
+    assert await reflection.propose(request(space=space, keys=("prompt", "tools.lookup"))) == []
+    task = model.tasks[0]
+    tool_block = task[task.index('<parameter name="tools.lookup">') :]
+    assert (
+        "- **What it is**: the description of the lookup tool: what the model reads to decide when to call it, how "
+        "to fill its inputs and how to read its result\n"
+    ) in tool_block
+    assert "- **What it is**: text the agent reads\n" in task[: task.index('<parameter name="tools.lookup">')]
 
 
 async def test_the_three_folders_share_one_folder_of_the_call():

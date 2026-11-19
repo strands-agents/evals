@@ -43,6 +43,29 @@ def test_tools_are_keyed_by_name_with_their_description_as_baseline():
     assert (declared.size_cap, declared.edit_instructions) == (100, "short")
 
 
+# Written out, not imported, so that a change to the wording is deliberate.
+LOOKUP_EXPLANATION = (
+    "the description of the lookup tool: what the model reads to decide when to call it, how to fill its inputs and "
+    "how to read its result"
+)
+
+
+@pytest.mark.parametrize(
+    ("given", "shown"),
+    [
+        ("Keep it short.", f"{LOOKUP_EXPLANATION}. Keep it short."),
+        ('  Name the {"id"} field.\n', f'{LOOKUP_EXPLANATION}. Name the {{"id"}} field.'),
+        (None, LOOKUP_EXPLANATION),
+        ("", LOOKUP_EXPLANATION),
+        ("   ", LOOKUP_EXPLANATION),
+    ],
+)
+def test_edit_instructions_follow_each_tools_explanation(given, shown):
+    declared = tool_descriptions(lookup, edit_instructions=given)
+    assert declared._edit_instructions_for("lookup") == shown
+    assert declared.edit_instructions == given
+
+
 def test_build_returns_copies_and_never_modifies_the_users_tool():
     declared = tool_descriptions(lookup)
     first = declared.build({"lookup": "Find one record."})[0]
