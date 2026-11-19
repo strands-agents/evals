@@ -1,15 +1,11 @@
-/* Served mode against the real Python server: the page's requests go out over HTTP to
+/* One folder holding everything, against the real Python server: the page's requests go out over HTTP to
    `strands-evals ui`, so the contract is tested rather than a mock of it. */
-import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { page, runner, waitFor } from './harness.mjs';
+import { ask, page, realServer, runner, waitFor } from './harness.mjs';
 
-const PY = process.env.PYTHON || 'python3';
 const TOKEN = 'test-token-abc';
-const SERVE = new URL('./serve.py', import.meta.url).pathname;
 const { ok, done } = runner('server');
 
 // ── a tree with one paired run, one bare experiment, two unusable files and an optimizer run ──
@@ -47,24 +43,10 @@ fs.writeFileSync(path.join(root, 'half-written.json'), '{"cases": [');
 fs.cpSync(new URL('./fixtures/optimizer-run/', import.meta.url).pathname, path.join(root, 'tuning'),
   { recursive: true });
 
-// ── the real server, on a port the OS says is free ──
-const port = await new Promise(resolve => {
-  const probe = net.createServer();
-  probe.listen(0, '127.0.0.1', () => {
-    const { port } = probe.address();
-    probe.close(() => resolve(port));
-  });
-});
-const proc = spawn(PY, [SERVE, root, String(port), TOKEN], { stdio: ['ignore', 'pipe', 'inherit'] });
-await new Promise((resolve, reject) => {
-  proc.stdout.on('data', chunk => String(chunk).includes('ready') && resolve());
-  proc.on('exit', code => reject(new Error('server exited ' + code)));
-  setTimeout(() => reject(new Error('server did not start')), 10000);
-});
-const base = `http://127.0.0.1:${port}`;
+const { base } = await realServer(root, TOKEN);
 // jsdom has no fetch: forward the page's relative requests to the real server.
 const requested = [];
-const forward = async (url, opts = {}) => { requested.push(String(url)); return fetch(base + url, opts); };
+const forward = async (url, opts = {}) => { requested.push(String(url)); return ask(base, url, opts); };
 // Boot ends by rendering the list and choosing a tab, so a row captured before it finishes is stale.
 const served = async (route = '/') => {
   const p = await page({ fetchImpl: forward, url: `${base}${route}?t=${TOKEN}` });
@@ -74,22 +56,21 @@ const served = async (route = '/') => {
 
 try {
   const p = await served();
-  const { $, $$, text, click, type, window, errs } = p;
+  const { $, $$, text, click, type, window } = p;
 
-  // ── mode, and the discovery the server did ──
-  ok(/served · saves to disk/.test(text('#mode-tag')) && text('.tab.on') === 'Runs',
-    'boots on the run list, in a mode that saves to disk', text('#mode-tag'));
+  // ── the discovery the server did ──
+  ok($('#read-only').hidden && text('.tab.on') === 'Reports', 'boots on Reports, with nothing said of read-only', text('.tab.on'));
   ok(text('#root-path') === fs.realpathSync(root), 'shows the served directory', text('#root-path'));
-  ok(!$('[data-act="rescan"]').hidden && $('[data-act="pick"]').hidden, 'Rescan is offered in place of the folder picker');
+  ok(!$('[data-act="rescan"]').hidden, 'Rescan is offered');
 
-  const rows = $$('#runs-rows tr.run');
-  const paired = rows.find(r => /experiment.json/.test(r.textContent) && !/nested/.test(r.textContent));
-  ok(rows.length === 2 && /pairing verified/.test(text(paired)) && /1 failing/.test(text(paired)),
-    'two runs discovered, the pair verified by session_id and its failing row counted', text('#runs-rows'));
+  const found = $$('#reports-rows tr.row');
+  ok(found.length === 1 && $$('#experiments-rows tr.row').length === 2
+    && /experiment\.json pairing verified/.test(text(found[0])) && /1 failing/.test(text(found[0])),
+  'one report and two experiments discovered, the report paired by session_id and its failing row counted', text('#reports-rows'));
 
   const skipped = Object.fromEntries($$('#skips li').map(li => [li.querySelector('code').textContent, text(li)]));
   ok(Object.keys(skipped).sort().join() === 'half-written.json,notes.json'
-    && /invalid JSON/.test(skipped['half-written.json']) && /not an experiment or a report/.test(skipped['notes.json']),
+    && /invalid JSON/.test(skipped['half-written.json']) && /not an experiment, a report, a session or a diagnosis/.test(skipped['notes.json']),
     'only the two files it could not use are skipped, each with its reason, and none of the optimizer run’s own',
     text('#skips'));
 
@@ -106,8 +87,8 @@ try {
   // ── its log, fetched over the API ──
   await click(optRow);
   await waitFor(() => $$('#opt-series-chart circle').length > 0, 'the objective chart');
-  ok(/support-tuning-20261110-091500-7af3e1/.test(text('#opt-sub')) && text('#path') === 'tuning/events.jsonl',
-    'opening it names the run and the log it read', `${text('#opt-sub')} | ${text('#path')}`);
+  ok(/support-tuning-20261110-091500-7af3e1/.test(text('#crumbs')) && text('#path') === 'tuning/events.jsonl',
+    'opening it names the run and the log it read', `${text('#crumbs')} | ${text('#path')}`);
   const best = $$('#opt-stats .stat').find(el => /^Best on training/.test(text(el.querySelector('.k'))));
   ok(best && text(best.querySelector('.v')) === '0.67', 'the best feasible objective is derived from the fetched log',
     best && text(best));
@@ -146,14 +127,14 @@ try {
     && /fitted to 48 observations/.test(text('#opt-eff-cap')),
     'the effects drawer shows the estimates out of the fetched file, and what they were fitted to',
     `${estimates} | ${text('#opt-eff-cap')}`);
-  await click('.tab[data-view="runs"]');
+  await click('.tab[data-view="experiments"]');
 
-  // ── selecting a run fetches both documents ──
-  await click(paired);
+  // ── opening an experiment fetches its document ──
+  await click('#experiments-rows tr.row[data-experiment="experiment.json"]');
   await waitFor(() => $$('#case-list li[data-i]').length > 0, 'the loaded cases');
   ok($$('#case-list li[data-i]').length === 2 && /Edits save back to experiment.json/.test(text('#exp-sub')),
     'the cases load over HTTP, and the page says where a save goes', text('#exp-sub'));
-  ok(window.location.pathname === '/runs/experiment.json/experiment/cases/alpha', 'the address is a path naming the run, the view and the case',
+  ok(window.location.pathname === '/experiments/experiment.json/cases/alpha', 'the address is a path naming the experiment and the case',
     window.location.pathname);
 
   // ── the server checked each evaluator against the real registry and constructor ──
@@ -167,13 +148,16 @@ try {
     && !/RubricEvaluator/.test(notes), 'and only the error is listed below, with its evaluator and the fix', notes);
 
   // ── a Session-shaped actual_trajectory must not read as absent ──
-  await click('.tab[data-view="report"]');
+  await click('#facts a[data-report]');
+  await waitFor(() => $$('#rep-rows tr.case').length > 0, 'the loaded report');
+  ok(window.location.pathname === '/reports/report.json' && text('#crumbs') === 'Reports/report.json',
+    'its report, linked from the header, is fetched and has a path of its own', window.location.pathname);
   await click($$('#rep-rows tr.case').find(r => /beta/.test(r.textContent)));
   ok(/Actual trajectory ?1 span of a recorded session/.test(text('#rep-rows tr.detail')),
     'a Session trajectory in a report is drawn as a trace', text('#rep-rows tr.detail').slice(0, 300));
 
   // ── Save writes the real file ──
-  await click('.tab[data-view="experiment"]');
+  await click('#facts a[data-experiment]');
   await click($$('#case-list li[data-i]')[0]);
   await type('#form [data-k="expected_output"]', 'an edited expectation');
   await click('#save');
@@ -220,8 +204,17 @@ try {
     body: JSON.stringify({ document: { cases: [{ name: 'no-input' }], evaluators: [] } }),
   });
   ok(invalid.status === 422, 'the server rejects a case with no input', invalid.status);
-  const noToken = await fetch(`${base}/api/runs`);
+  const noToken = await fetch(`${base}/api/scan`);
   ok(noToken.status === 401, 'and a request without the token', noToken.status);
+
+  // ── a link naming a report, or a case of an experiment, opens it ──
+  const direct = await served('/reports/report.json');
+  ok(direct.$('#v-report').classList.contains('on') && direct.text('#crumbs') === 'Reports/report.json' && direct.text('#r-score') === '0.50',
+    'a path naming a report opens that report', direct.text('#crumbs'));
+  ok(!direct.$('#experiments-rows tr.row.on'), 'and reads no experiment with it');
+  const onCase = await served('/experiments/experiment.json/cases/beta');
+  ok(onCase.$('#v-experiment').classList.contains('on') && onCase.text('#case-list li.on .nm') === 'beta',
+    'a path naming a case of an experiment opens it on that case', onCase.text('#case-list li.on'));
 
   // ── the link names the open optimizer run, and a link naming one opens it ──
   const older = path.join(root, 'older-tuning');
@@ -232,29 +225,29 @@ try {
   for (const name of ['run.json', 'events.jsonl']) fs.utimesSync(path.join(older, name), anHourAgo, anHourAgo);
 
   const picking = await served('/optimization');
-  ok(/support-tuning/.test(picking.text('#opt-sub')), 'a link naming no optimizer run opens the newest',
-    picking.text('#opt-sub'));
+  ok(/support-tuning/.test(picking.text('#opt-runs-rows tr.on')), 'a link naming no optimizer run lists them, the newest marked',
+    picking.text('#opt-runs-rows tr.on'));
   await picking.click(picking.$$('#opt-runs-rows tr[data-opt-run]').find(r => /older-run/.test(r.textContent)));
   await waitFor(() => picking.$('#v-opt-overview').classList.contains('on'), 'the picked run to open');
-  ok(/older-run/.test(picking.text('#opt-sub')) && picking.window.location.pathname === '/optimization/older-tuning/overview',
+  ok(/older-run/.test(picking.text('#crumbs')) && picking.window.location.pathname === '/optimization/older-tuning/overview',
     'picking another opens it and names it in the address', picking.window.location.pathname);
-  picking.window.history.back();
+  await picking.travel(-1);
   await waitFor(() => picking.$('#v-opt-runs').classList.contains('on'), 'Back to return to the list');
   ok(picking.window.location.pathname === '/optimization', 'and Back returns to the list of runs', picking.window.location.pathname);
-  picking.window.history.forward();
+  await picking.travel(1);
   await waitFor(() => picking.$('#v-opt-overview').classList.contains('on'), 'Forward to reopen the run');
 
   const linked = await served('/optimization/older-tuning/overview');
-  ok(/older-run/.test(linked.text('#opt-sub')), 'and a link naming that run opens it, not the newest',
-    linked.text('#opt-sub'));
+  ok(/older-run/.test(linked.text('#crumbs')), 'and a link naming that run opens it, not the newest',
+    linked.text('#crumbs'));
   const effects = requested.filter(url => url.includes('effects.json')).map(url => decodeURIComponent(url.split('path=')[1]));
   ok(effects.includes('tuning/effects.json') && !effects.includes('older-tuning/effects.json'),
     'the effects model is read where the run has one, and not asked for where it has none', [...new Set(effects)].join());
   await linked.click('.tab[data-view="opt-runs"]');
   await linked.click(linked.$$('#opt-runs-rows tr[data-opt-run]').find(r => /support-tuning/.test(r.textContent)));
-  await waitFor(() => /support-tuning/.test(linked.text('#opt-sub')), 'the other run to open');
-  linked.window.history.go(-2);
-  await waitFor(() => /older-run/.test(linked.text('#opt-sub')), 'Back to reopen the run the address names');
+  await waitFor(() => /support-tuning/.test(linked.text('#crumbs')), 'the other run to open');
+  await linked.travel(-2);
+  await waitFor(() => /older-run/.test(linked.text('#crumbs')), 'Back to reopen the run the address names');
   ok(linked.window.location.pathname === '/optimization/older-tuning/overview', 'Back to a run\'s address reopens that run',
     linked.window.location.pathname);
 
@@ -268,10 +261,10 @@ try {
   await live.click(live.$$('#opt-cands tr.case').find(r => r.textContent.includes('c10')));
   await live.click(live.$$('#opt-cands tr.trial').find(r => r.children[0].textContent.includes('train_case_01')));
   await waitFor(() => !!live.$('#opt-cands tr.tdetail .msg'), 'the transcript');
-  const nested = () => live.text(live.$$('#runs-rows tr.run').find(r => /nested/.test(r.textContent)));
+  const nested = () => live.text('#experiments-rows tr.row[data-experiment="nested/experiment.json"]');
   const seen = () => [live.$$('#opt-cands tr.trial').length, !!live.$('#opt-cands tr.tdetail .msg'), /not run yet/.test(nested())];
   asked.length = 0;
-  await live.window.pollNow();
+  await live.poll();
   ok(asked.join() === '/api/changes' && String(seen()) === '15,true,true',
     'a poll over an unchanged folder asks the server one thing and changes nothing', `${asked.join()} | ${seen()}`);
 
@@ -280,13 +273,13 @@ try {
   late.record.case_name = 'late_case';
   fs.appendFileSync(path.join(root, 'tuning/events.jsonl'), JSON.stringify(late) + '\n');
   fs.writeFileSync(path.join(root, 'nested/report.json'), JSON.stringify(report));
-  await live.window.pollNow();
-  ok(String(seen()) === '16,true,false' && /2 rows/.test(nested()),
+  await live.poll();
+  const written = live.text('#reports-rows tr.row[data-report="nested/report.json"]') || '';
+  ok(String(seen()) === '16,true,false' && /report\.json 0\.50/.test(nested()) && /2 rows/.test(written) && /nested\/experiment\.json/.test(written),
     'a trial appended to the log and a report written beside an experiment both show on the next poll, '
-    + 'with the open transcript still open', `${seen()} | ${nested()}`);
+    + 'with the open transcript still open', `${seen()} | ${nested()} | ${written}`);
 
-  done(errs.concat(picking.errs, linked.errs, live.errs));
+  done();
 } finally {
-  proc.kill();
   fs.rmSync(root, { recursive: true, force: true });
 }

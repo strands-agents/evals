@@ -26,7 +26,7 @@ strands-evals run experiments/refund_desk.json --task your_module:your_task \
   -o experiments/refund_desk.report.json
 ```
 
-`ui` pairs it with the experiment by filename, so the Report panel picks it up on the next scan.
+`ui` pairs it with the experiment by filename, so the next scan lists it under Reports, linked to the experiment.
 
 ## Optimizer runs
 
@@ -42,10 +42,14 @@ Point `ui` at any directory holding runs the optimizer wrote and it finds them t
 
 ## A folder with something in every view
 
-`make_ui_demo.py` writes a synthetic folder that fills every view of the page: a run with a report and
-last week's report to compare it against, recorded sessions, cases still in draft, a report that no
-longer matches its experiment, a report with no experiment, these example experiments unrun, two files
-the scan sets aside, a finished optimizer run and one still in progress.
+`make_ui_demo.py` writes a synthetic folder that fills every view of the page:
+
+- an experiment with a report, last week's report to compare it against, and a task result store;
+- cases still in draft, a report that no longer matches its experiment, and a report with no experiment;
+- reports to group by what their cases carry: tagged cases with diagnoses, a chaos run and a red-team run;
+- recorded sessions, one of them diagnosed;
+- a finished optimizer run, one still in progress, one that has only just started, and the tuning cases run before and after tuning;
+- these example experiments unrun, and two files the scan sets aside.
 
 ```bash
 python examples/make_ui_demo.py /tmp/evals-demo

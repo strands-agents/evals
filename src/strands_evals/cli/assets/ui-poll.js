@@ -1,44 +1,57 @@
 'use strict';
 
 /* ── keeping up with the folder ──
-   Served mode only: when the server's fingerprint of the tree moves, re-read the run list and what is open. */
+   When the server's fingerprint of the tree moves, or Rescan is pressed, re-read the
+   lists and what is open. */
 
 const POLL_MS = 5000;
 let polling = false;
 
-/** Re-read the open experiment and report where their files changed. Unsaved edits are never replaced. */
-async function refreshOpenRun() {
-  const run = RUNS[selRun];
-  if (!run) return;
-  const stale = (listed, loaded) => listed && (!loaded || loaded.path !== listed.path || loaded.modified !== listed.modified);
-
-  /* While Optimization has the report panel, the run's own report is the one waiting to come back. */
-  const shown = repDisplaced ? repDisplaced.meta : repMeta;
-  if (stale(run.report, shown)) {
-    const doc = await document_for(run.report);
-    if (repDisplaced) Object.assign(repDisplaced, { meta: run.report, doc });
-    else loadReport(run.report, doc, shown && shown.path === run.report.path);
+/** Re-read the open report and the open experiment where their files changed. Unsaved edits are never replaced,
+    and neither is anything opened while the file was being read. */
+async function refreshOpen() {
+  await refreshSession();
+  const changed = (list, loaded) => {
+    const now = loaded && list.find(m => m.path === loaded.path);
+    return now && now.modified !== loaded.modified ? now : null;
+  };
+  const report = repCand ? null : changed(REPORTS, repMeta);
+  if (report) {
+    const was = repMeta, doc = await document_for(report);
+    if (repMeta === was) loadReport(report, doc, true);
   }
 
-  if (!stale(run.experiment, expMeta)) return;
-  if (countDirty() || review || $('v-experiment').inert) {
+  const experiment = changed(EXPERIMENTS, expMeta);
+  if (!experiment) return;
+  const was = expMeta, read = await readFile(experiment);
+  if (expMeta !== was) return;
+  /* Asked after the read: an edit made while it was on its way counts too. */
+  if (countDirty() || unapplied() || review || $('v-experiment').inert) {
     note('This file changed on disk while you were editing it.', 'stale');
     return;
   }
   const at = cases[sel] && cases[sel].name;
-  loadExperiment(run.experiment, await document_for(run.experiment));
+  loadExperimentFile(experiment, read);
   const again = cases.findIndex(c => c.name === at);
   if (again > 0) { sel = again; renderForm(); }
+  followCase();
+}
+
+/** Re-read the folder, then whatever is open from it. */
+async function rereadFolder() {
+  if (!await rescan(true)) return;
+  try { await refreshOpen(); await refreshCompare(); } catch (err) { scanError = `could not re-read: ${err.message}`; }
+  renderLists();
+  await retryMissing();
 }
 
 async function pollNow() {
-  if (MODE !== 'server' || document.hidden || polling) return;
+  if (document.hidden || polling) return;
   polling = true;
   try {
     let mark;
     try { mark = (await api('/api/changes')).fingerprint; } catch { return; }   // no answer: the next tick asks again
-    if (!mark || mark === treeMark || !await rescan(true)) return;
-    try { await refreshOpenRun(); } catch (err) { scanError = err.message; renderRuns(); }
+    if (mark && mark !== treeMark) await rereadFolder();
   } finally {
     polling = false;
   }
@@ -48,3 +61,5 @@ function startPolling() {
   setInterval(pollNow, POLL_MS);
   document.addEventListener('visibilitychange', pollNow);
 }
+
+app.querySelectorAll('[data-act="rescan"]').forEach(b => { b.onclick = rereadFolder; });

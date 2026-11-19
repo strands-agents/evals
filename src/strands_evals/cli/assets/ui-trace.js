@@ -34,22 +34,22 @@ const toolResult = (text, status) =>
     ? ` · <b class="warn">${esc(status)}</b>` : ''}</span><pre>${clip(text, 700)}</pre></div>`;
 
 /* Two block vocabularies: the Strands blocks a rollout records (`toolUse`, `toolResult`,
-   `reasoningContent`) and the `content_type` ones a recorded session's spans carry. */
+   `reasoningContent`) and the `content_type` ones a recorded session's spans carry.
+   A tool result in either is read as `[text, status]`, the status null when the call succeeded. */
+const strandsResult = r => [
+  (r.content || []).map(c => blockText(c && typeof c === 'object'
+    ? ('json' in c ? c.json : typeof c.text === 'string' ? c.text : c) : c)).join('\n'),
+  r.status && r.status !== 'success' ? r.status : null,
+];
+const recordedResult = r => [typeof r.error === 'string' ? r.error : blockText(r.content), r.error ? 'error' : null];
+
 function contentBlock(b) {
   if (b == null || typeof b !== 'object') return `<div class="say">${clip(b)}</div>`;
   if (typeof b.text === 'string') return `<div class="say">${clip(b.text)}</div>`;
   if (b.toolUse) return toolCall(b.toolUse.name, b.toolUse.input);
   if (b.content_type === 'tool_use') return toolCall(b.name, b.arguments);
-  if (b.toolResult) {
-    const parts = (b.toolResult.content || []).map(c => blockText(c && typeof c === 'object'
-      ? ('json' in c ? c.json : typeof c.text === 'string' ? c.text : c) : c));
-    const status = b.toolResult.status && b.toolResult.status !== 'success' ? b.toolResult.status : null;
-    return toolResult(parts.join('\n'), status);
-  }
-  if (b.content_type === 'tool_result') {
-    return toolResult(typeof b.error === 'string' ? b.error : blockText(b.content),
-      b.error ? 'error' : null);
-  }
+  if (b.toolResult) return toolResult(...strandsResult(b.toolResult));
+  if (b.content_type === 'tool_result') return toolResult(...recordedResult(b));
   if (b.reasoningContent) {
     return `<div class="say think">${clip(((b.reasoningContent.reasoningText || {}).text) || '')}</div>`;
   }
@@ -65,15 +65,17 @@ const usageLine = u => {
   return parts.length ? parts.join(' · ') + ' tokens' : '';
 };
 
+/* A message's content as blocks: a list as it is, anything else as one block of text. */
+const messageBlocks = m => (Array.isArray(m && m.content) ? m.content
+  : [{ text: !m || m.content == null ? '' : String(m.content) }]);
+
 function messageCard(m, nested) {
   const role = (m && m.role) || 'unknown';
   const known = ['user', 'assistant', 'tool', 'system'].includes(role) ? ` ${role}` : '';
-  const content = Array.isArray(m.content) ? m.content
-    : [{ text: m.content == null ? '' : String(m.content) }];
-  const u = usageLine((m.metadata || {}).usage);
+  const u = usageLine(((m && m.metadata) || {}).usage);
   return `<div class="msg${known}${nested ? ' nested' : ''}"><div class="who">`
     + `<b>${esc(role)}</b>${u ? `<span>${esc(u)}</span>` : ''}</div>`
-    + content.map(b => contentBlock(b)).join('') + '</div>';
+    + messageBlocks(m).map(contentBlock).join('') + '</div>';
 }
 
 function spanCard(s, i) {
@@ -85,10 +87,8 @@ function spanCard(s, i) {
   }
   if (kind === 'execute_tool') {
     const call = s.tool_call || {};
-    const res = s.tool_result || {};
     return `<div class="msg">${head('tool')}${toolCall(call.name, call.arguments)}`
-      + toolResult(typeof res.error === 'string' ? res.error : blockText(res.content),
-        res.error ? 'error' : null) + '</div>';
+      + toolResult(...recordedResult(s.tool_result || {})) + '</div>';
   }
   if (kind === 'invoke_agent') {
     const say = (label, text) => (text
@@ -99,22 +99,34 @@ function spanCard(s, i) {
   return `<div class="msg">${head(kind)}<pre>${clip(JSON.stringify(s), 700)}</pre></div>`;
 }
 
-/** The spans of a strands-evals `Session`, or null when `doc` is not one. */
-const sessionSpans = doc => doc && typeof doc === 'object' && !Array.isArray(doc) && Array.isArray(doc.traces)
-  ? doc.traces.flatMap(tr => (tr && Array.isArray(tr.spans) ? tr.spans : []))
+/** The traces of a strands-evals `Session` as `[{ id, spans }]`, or null when `doc` is not one. */
+const sessionTraces = doc => doc && typeof doc === 'object' && !Array.isArray(doc) && Array.isArray(doc.traces)
+  ? doc.traces.map(tr => ({ id: tr && tr.trace_id, spans: tr && Array.isArray(tr.spans) ? tr.spans : [] }))
   : null;
 
+/** The spans of a strands-evals `Session`, or null when `doc` is not one. */
+const sessionSpans = doc => {
+  const traces = sessionTraces(doc);
+  return traces && traces.flatMap(tr => tr.spans);
+};
+
+const spanStart = s => Date.parse(((s && s.span_info) || {}).start_time);
+const spanEnd = s => Date.parse(((s && s.span_info) || {}).end_time);
+
 /** What a trace says it cost: `{ seconds, tokens, modelCalls, toolCalls }`, each null where it is not
-    recorded, or null when `doc` is not a trace. A session times its spans; a message list counts tokens. */
+    recorded, or null when `doc` is not a trace. A session's seconds are what its traces took, added up:
+    the wait between two traces is nobody's cost. A message list has `replies`, its assistant messages,
+    in place of `modelCalls`, which it does not record. */
 function traceStats(doc) {
-  const spans = sessionSpans(doc);
-  if (spans) {
-    const times = spans.flatMap(s => {
-      const info = (s && s.span_info) || {};
-      return [Date.parse(info.start_time), Date.parse(info.end_time)];
-    }).filter(Number.isFinite);
+  const traces = sessionTraces(doc);
+  if (traces) {
+    const spans = traces.flatMap(tr => tr.spans);
+    const took = traces.map(tr => {
+      const times = tr.spans.flatMap(s => [spanStart(s), spanEnd(s)]).filter(Number.isFinite);
+      return times.length > 1 ? Math.max(...times) - Math.min(...times) : null;
+    }).filter(ms => ms != null);
     return {
-      seconds: times.length > 1 ? (Math.max(...times) - Math.min(...times)) / 1000 : null,
+      seconds: took.length ? took.reduce((sum, ms) => sum + ms, 0) / 1000 : null,
       tokens: null,
       modelCalls: spans.filter(s => s && s.span_type === 'inference').length,
       toolCalls: spans.filter(s => s && s.span_type === 'execute_tool').length,
@@ -125,37 +137,95 @@ function traceStats(doc) {
   return {
     seconds: null,
     tokens: used.length ? used.reduce((sum, u) => sum + (u.inputTokens || 0) + (u.outputTokens || 0), 0) : null,
-    modelCalls: doc.filter(m => m && m.role === 'assistant').length,
+    replies: doc.filter(m => m && m.role === 'assistant').length,
     toolCalls: doc.reduce((n, m) => n + (Array.isArray(m && m.content) ? m.content.filter(b => b && b.toolUse).length : 0), 0),
   };
 }
 
+const secondsText = seconds => `${nice(seconds)}s`;
 /** `2 model calls · 1 tool call · 4.2s · 3.1k tokens`, leaving out what was not recorded. */
 const costText = stats => !stats ? '' : [
   stats.modelCalls ? plural(stats.modelCalls, 'model call') : '',
+  stats.replies ? plural(stats.replies, 'assistant message') : '',
   stats.toolCalls ? plural(stats.toolCalls, 'tool call') : '',
-  stats.seconds != null ? `${nice(stats.seconds)}s` : '',
+  stats.seconds != null ? secondsText(stats.seconds) : '',
   stats.tokens != null ? `${compact(stats.tokens)} tokens` : '',
 ].filter(Boolean).join(' · ');
+/* Each of `groups` is timed on its own, as a trace is: the wait between two of them is not counted. */
+const spansCost = groups => costText(traceStats({ traces: groups.map(spans => ({ spans })) }));
+
+/** The turns of one trace: `{ turns: [{ agent, spans }], loose }`, or null when it holds fewer than two.
+    A turn is an agent invocation that is not inside another one. A span belongs to the turn its
+    `agent_span_id` or its parents lead to, and failing those to the one it started during. */
+function traceTurns(spans) {
+  const byId = new Map(spans.filter(s => s && s.span_info && s.span_info.span_id).map(s => [s.span_info.span_id, s]));
+  const turnOf = s => {
+    let turn = null, at = s;
+    for (let hops = 0; at && hops < spans.length; hops++) {
+      at = byId.get(at.agent_span_id) || byId.get((at.span_info || {}).parent_span_id);
+      if (at && at.span_type === 'invoke_agent') turn = at;
+    }
+    return turn;
+  };
+  const agents = spans.filter(s => s && s.span_type === 'invoke_agent' && !turnOf(s));
+  if (agents.length < 2) return null;
+  const turns = new Map(agents.map(agent => [agent, { agent, spans: [] }]));
+  const loose = [];
+  spans.forEach(s => {
+    if (turns.has(s)) return;
+    const turn = (s && turnOf(s)) || agents.find(a => spanStart(s) >= spanStart(a) && spanStart(s) <= spanEnd(a));
+    (turn ? turns.get(turn).spans : loose).push(s);
+  });
+  return { turns: [...turns.values()], loose };
+}
+
+/** One trace of a session. `first` is where its spans stand in the session's count, and `of` how many
+    traces the session holds. */
+function traceSection(trace, at, of, first) {
+  const number = new Map(trace.spans.map((s, i) => [s, first + i]));
+  const cards = spans => spans.map(s => spanCard(s, number.get(s))).join('');
+  const turn = (label, spans, timed = [spans]) => `<div class="tr-turn"><div class="tr-turnhead"><b>${label}</b>`
+    + `<span>${esc(spansCost(timed))}</span></div>${cards(spans)}</div>`;
+  const turns = traceTurns(trace.spans);
+  const cost = spansCost([trace.spans]);
+  return `<section class="tr-trace" data-trace="${esc(trace.id == null ? '' : trace.id)}">`
+    + (of > 1 ? `<h4 class="tr-head">Trace ${at + 1} of ${of}<span class="path">${esc(trace.id == null ? '' : trace.id)}</span></h4>`
+      + (cost ? `<div class="tr-sum">${esc(cost)}</div>` : '') : '')
+    + (!trace.spans.length ? '<div class="empty">This trace was recorded with no spans in it.</div>'
+      : !turns ? trace.spans.map((s, i) => spanCard(s, first + i)).join('')
+        : turns.turns.map((t, k) => turn(`Turn ${k + 1} of ${turns.turns.length}`, [t.agent, ...t.spans])).join('')
+          + (turns.loose.length ? turn('Outside any turn', turns.loose, turns.loose.map(s => [s])) : ''))
+    + '</section>';
+}
+
+/** A document as it was written, one disclosure away. */
+const rawView = (doc, label) => `<details class="raw"><summary>${esc(label)}</summary>`
+  + `<pre class="out">${esc(JSON.stringify(doc, null, 1).slice(0, 200000))}</pre></details>`;
 
 /* Two shapes: a strands-evals `Session` (traces of spans) or a list of Strands messages. Read
    off the document, not the pointer's `format`, because the two can disagree. */
 function traceView(doc, rawLabel = 'the file as written') {
-  const raw = `<details class="raw"><summary>${esc(rawLabel)}</summary>`
-    + `<pre class="out">${esc(JSON.stringify(doc, null, 1).slice(0, 200000))}</pre></details>`;
+  const raw = rawView(doc, rawLabel);
   const cost = costText(traceStats(doc));
   const sum = cost ? `<div class="tr-sum">${esc(cost)}</div>` : '';
-  const spans = sessionSpans(doc);
-  if (spans) {
-    if (!spans.length) {
+  const traces = sessionTraces(doc);
+  if (traces) {
+    const spans = sessionSpans(doc).length;
+    if (!spans) {
       return '<div class="empty">This session was recorded with no spans in it.</div>' + raw;
     }
-    return `<div class="tr-count">${plural(spans.length, 'span')} of a recorded session</div>${sum}`
-      + spans.map((s, i) => spanCard(s, i)).join('') + raw;
+    let first = 0;
+    return `<div class="tr-count">${traces.length > 1 ? plural(traces.length, 'trace') + ' · ' : ''}`
+      + `${plural(spans, 'span')} of a recorded session</div>${sum}${traceCopy(doc)}`
+      + traces.map((tr, at) => {
+        const section = traceSection(tr, at, traces.length, first);
+        first += tr.spans.length;
+        return section;
+      }).join('') + raw;
   }
   if (Array.isArray(doc)) {
     if (!doc.length) return '<div class="empty">This transcript is an empty list.</div>' + raw;
-    return `<div class="tr-count">${plural(doc.length, 'message')}</div>${sum}`
+    return `<div class="tr-count">${plural(doc.length, 'message')}</div>${sum}${traceCopy(doc)}`
       + doc.map(m => messageCard(m)).join('') + raw;
   }
   return '<div class="empty">This file is neither a recorded session nor a list of messages, '

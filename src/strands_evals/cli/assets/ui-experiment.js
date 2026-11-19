@@ -3,6 +3,7 @@
 let EXP = null, expMeta = null;              // the loaded experiment document + its file
 let cases = [], sel = 0;                     // working copy, selection
 let evals = [], origEvals = '[]', evOpen = -1;
+let review = false;                          // the pass over drafts is on
 
 /* `savedCases` is the file as last loaded or saved. `orig[i]` is the saved serialization of
    `cases[i]`, or NEW_CASE for a case that is not in the file yet. */
@@ -19,43 +20,35 @@ const dirtyCases = () => cases.map((c, i) => JSON.stringify(c) !== orig[i] ? i :
 const removedCases = () => savedCases.length - orig.filter(s => s !== NEW_CASE).length;
 const evalsDirty = () => JSON.stringify(evals) !== origEvals;
 const countDirty = () => dirtyCases().length + removedCases() + (evalsDirty() ? 1 : 0);
+/* Text in a field that is not applied as typed: JSON that does not parse yet, or a tool name not yet added. */
+const unapplied = () => !!($('form').querySelector('.invalid') || $('evform').querySelector('.invalid')
+  || [...$('form').querySelectorAll('.chipin')].some(box => box.value.trim()));
 
 function loadExperiment(meta, doc) {
   expMeta = meta; EXP = doc;
   cases = (doc.cases || []).map(c => JSON.parse(JSON.stringify(c)));
   evals = (doc.evaluators || []).map(e => JSON.parse(JSON.stringify(e)));
   markSaved();
-  sel = 0; evOpen = -1;
+  sel = 0; evOpen = -1; review = false;
   $('case-find').value = '';
-  $('exp-sub').textContent = READONLY && MODE === 'server'
-    ? 'Read-only: the server was started with --read-only.'
-    : (MODE === 'server'
-      ? `Edits save back to ${meta.path}.`
-      : 'No server, so Save downloads a copy for you to put back yourself.');
+  $('exp-sub').textContent = READONLY ? 'Read-only: the server was started with --read-only.'
+    : `Edits save back to ${meta.path}.`;
   renderEvaluators(); renderForm(); refreshDirty(); note('');
 }
 
 function clearExperiment() {
-  EXP = null; expMeta = null; cases = []; evals = []; sel = 0; evOpen = -1;
+  EXP = null; expMeta = null; cases = []; evals = []; sel = 0; evOpen = -1; review = false;
   markSaved();
-  $('evs').innerHTML = '<span class="empty">no experiment loaded</span>';
-  $('evnotes').innerHTML = '';
-  $('evform').hidden = true;
-  $('form-title').textContent = '—';
-  $('form-sid').textContent = '';
-  $('form').innerHTML = '<div class="nores"><b>No experiment in this run</b>'
-    + 'This folder had a report but no experiment file beside it.</div>';
-  $('case-list').innerHTML = '';
-  $('case-count').textContent = '';
   $('exp-sub').textContent = '';
-  refreshDirty(); note('');
+  renderEvaluators(); renderForm(); refreshDirty(); note('');
 }
 
-function note(msg, kind) {
+/* `offer` is `[label, action]` for a button beside the message; `stale` and `gone` bring their own. */
+function note(msg, kind, offer) {
   const el = $('saved');
-  el.innerHTML = msg ? esc(msg) : '';
+  el.textContent = msg;
   el.classList.toggle('err', kind === 'err');
-  const offer = { stale: ['Reload from disk', () => selectRun(selRun, { force: true })],
+  offer = offer || { stale: ['Reload from disk', () => openExperiment(expMeta.path, { force: true })],
     gone: ['Download a copy', downloadExperiment] }[kind];
   if (offer) {
     const btn = document.createElement('button');
@@ -65,6 +58,16 @@ function note(msg, kind) {
     el.appendChild(btn);
   }
 }
+
+/* A parser drops one line break right after `<textarea>`: this one is spent so the value's own survives. */
+const areaText = v => '\n' + esc(v == null ? '' : v);
+/** A box to edit a value of any shape as JSON. With no `rows` it is as tall as the value, up to ten lines. */
+const jsonArea = (key, v, rows) => {
+  const text = v == null ? '' : JSON.stringify(v, null, 2);
+  const tall = rows || (v == null ? 2 : Math.min(10, text.split('\n').length));
+  return `<textarea class="f mono" rows="${tall}" data-k="${key}" data-json="1"`
+    + ` spellcheck="false"${v == null ? ' placeholder="empty"' : ''}>${areaText(text)}</textarea>`;
+};
 
 /* ══════════ evaluators ══════════ */
 
@@ -105,7 +108,7 @@ function renderEvaluators() {
   $('evnotes').innerHTML = errs.length
     ? `<span class="tag warn">${plural(errs.length, 'evaluator problem')}</span> `
       + errs.map(n => `<code>${esc(n.evaluator_type)}</code> ${esc(n.message)}`).join(' · ')
-      + ' — <span class="path">the file saves, but <code>run</code> and <code>validate</code>'
+      + '. <span class="path">The file saves, but <code>run</code> and <code>validate</code>'
       + ' will fail to load it until this is fixed.</span>'
     : '';
   renderEvalForm();
@@ -141,14 +144,14 @@ function renderEvalForm() {
       return `<span class="evlab${prose ? ' top' : ''}"><label for="ev-${esc(k)}">${esc(k)}</label>`
         + `${helpFor('setting', `${e.evaluator_type}.${k}`) ? helpButton('setting', `${e.evaluator_type}.${k}`, k) : ''}</span>`
         + (prose
-          ? `<textarea class="f" id="ev-${esc(k)}" rows="${rows}" data-evk="${esc(k)}">${esc(v)}</textarea>`
+          ? `<textarea class="f" id="ev-${esc(k)}" rows="${rows}" data-evk="${esc(k)}">${areaText(v)}</textarea>`
           : `<input class="f" id="ev-${esc(k)}" type="${type}" data-evk="${esc(k)}" ${attrs}`
             + (k === 'name' ? ' placeholder="defaults to the class name"' : '') + '>');
     }).join('')
     + '</div>'
     + (frozen.length
       ? `<div class="hint">Not editable here: <code>${frozen.map(esc).join('</code>, <code>')}</code>`
-        + ' — structured values are left exactly as the file had them.</div>'
+        + '. Structured values are left exactly as the file had them.</div>'
       : '')
     + '<div class="hint">Only keys already in the file are shown; a key the '
     + 'constructor never accepted would make the experiment fail to load.</div>';
@@ -165,17 +168,14 @@ $('evform').addEventListener('click', e => {
   if (e.target.closest('[data-evclose]')) { evOpen = -1; renderEvaluators(); }
 });
 $('evform').addEventListener('input', e => {
-  const k = e.target.dataset.evk;
-  if (k == null || evOpen < 0) return;
-  const el = e.target;
-  let value;
-  if (el.type === 'checkbox') value = el.checked;
-  else if (el.type === 'number') {
-    if (el.value === '') value = null;
-    else if (!isFinite(Number(el.value))) { el.classList.add('invalid'); return; }
-    else value = Number(el.value);
-  } else value = el.value === '' ? null : el.value;
-  el.classList.remove('invalid');
+  const el = e.target, k = el.dataset.evk;
+  if (k == null) return;
+  /* A number box holding text that is no number reads as empty, which is not the same as cleared. */
+  const bad = el.type === 'number' && el.validity.badInput;
+  el.classList.toggle('invalid', bad);
+  if (bad) return note('That is not a number, so the change is not applied.', 'err');
+  const value = el.type === 'checkbox' ? el.checked
+    : el.value === '' ? null : el.type === 'number' ? Number(el.value) : el.value;
   if (value === null && k === 'name') delete evals[evOpen].name;
   else evals[evOpen][k] = value;
   refreshDirty(); note('');
@@ -210,7 +210,7 @@ const props = c => PROP_GLYPHS
 function renderList() {
   const q = $('case-find').value.trim().toLowerCase();
   const shown = cases.map((c, i) => ({ c, i })).filter(({ c }) =>
-    !q || ((c.name || '') + ' ' + (c.input || '')).toLowerCase().includes(q));
+    !q || ((c.name || '') + ' ' + valueText(c.input)).toLowerCase().includes(q));
   $('case-list').innerHTML = shown.map(({ c, i }) => {
     const edited = JSON.stringify(c) !== orig[i];
     return `<li data-i="${i}" tabindex="0" class="${i === sel ? 'on' : ''}" title="${edited ? 'unsaved changes' : esc(c.name || '(unnamed)')}">`
@@ -227,34 +227,36 @@ function renderList() {
 function renderForm() {
   renderList();
   const c = cases[sel];
+  $('case-acts').hidden = !c;
   if (!c) {
     $('form-title').textContent = '—';
     $('form-sid').textContent = '';
     $('form').innerHTML = EXP
-      ? '<div class="nores"><b>No cases</b>This experiment’s case list is empty. Use <b>+ Case</b> to add one.</div>'
-      : '<div class="nores"><b>No experiment loaded</b>Pick a run on the Runs tab.</div>';
+      ? emptyState('No cases on this lily pad yet', 'This experiment’s case list is empty. Use <b>+ Case</b> to add one.')
+      : '';
     return;
   }
   $('form-title').textContent = c.name || '(unnamed)';
   $('form-sid').textContent = String(c.session_id || '').slice(0, 8);
   $('form').innerHTML = FIELDS.map(f => {
     const v = c[f.k];
+    /* A text field holding a dict or a list is edited as JSON, so it is never rewritten as text. */
+    const structured = f.t === 'area' && v != null && typeof v !== 'string';
     let ctl;
     if (f.t === 'steps') {
       ctl = stepsControl(f.k, v);
     } else if (f.t === 'meta') {
       ctl = metaControl(f.k, v);
-    } else if (f.t === 'json') {
-      ctl = v == null
-        ? `<textarea class="f mono" rows="2" data-k="${f.k}" data-json="1" spellcheck="false" placeholder="empty"></textarea>`
-        : `<textarea class="f mono" rows="${Math.min(10, JSON.stringify(v, null, 2).split('\n').length)}" data-k="${f.k}" data-json="1" spellcheck="false">${esc(JSON.stringify(v, null, 2))}</textarea>`;
+    } else if (f.t === 'json' || structured) {
+      ctl = jsonArea(f.k, v);
     } else if (f.t === 'line') {
       ctl = `<input class="f" data-k="${f.k}" value="${esc(v == null ? '' : v)}" placeholder="unnamed">`;
     } else {
-      ctl = `<textarea class="f" rows="${f.rows}" data-k="${f.k}"${f.required ? ' data-required="1"' : ''} placeholder="empty">${esc(v == null ? '' : v)}</textarea>`;
+      ctl = `<textarea class="f" rows="${f.rows}" data-k="${f.k}"${f.required ? ' data-required="1"' : ''} placeholder="empty">${areaText(v)}</textarea>`;
     }
     return `<div class="field" role="group" aria-labelledby="label-${f.k}">`
       + `<div class="flabel"><label id="label-${f.k}">${f.l}</label>${helpButton('field', f.k, f.l)}</div>${ctl}`
+      + (structured ? '<div class="hint">This value is structured, so it is edited as JSON.</div>' : '')
       + (f.hint ? `<div class="hint">${f.hint}</div>` : '') + '</div>';
   }).join('');
 }
@@ -263,11 +265,11 @@ function renderForm() {
 function stepsControl(key, v) {
   if (v == null) {
     return `<div class="chips" data-chips="${key}">`
-      + '<span class="empty">none — a trajectory evaluator reports not_applicable</span>'
+      + '<span class="empty">none, so a trajectory evaluator reports not_applicable</span>'
       + `<button class="addchip" data-add="${key}">+ tool</button></div>`;
   }
   if (!Array.isArray(v)) {
-    return `<textarea class="f mono" rows="4" data-k="${key}" data-json="1" spellcheck="false">${esc(JSON.stringify(v, null, 2))}</textarea>`
+    return jsonArea(key, v, 4)
       + '<div class="hint">This trajectory is not a list, so it is shown as JSON rather than as steps.</div>';
   }
   const structured = v.some(t => typeof t !== 'string');
@@ -315,7 +317,7 @@ const blankMetaRow = () => metaRow('', '').replace(/ data-was="[^"]*"/, '');
 
 function metaControl(key, v) {
   if (v != null && (typeof v !== 'object' || Array.isArray(v))) {
-    return `<textarea class="f mono" rows="2" data-k="${key}" data-json="1" spellcheck="false">${esc(JSON.stringify(v, null, 2))}</textarea>`
+    return jsonArea(key, v, 2)
       + '<div class="hint">This metadata is not an object, so it is shown as JSON rather than as keys.</div>';
   }
   return `<div class="meta-rows" data-meta="${key}">`
@@ -323,21 +325,29 @@ function metaControl(key, v) {
     + `<button class="addchip" data-meta-add="${key}">+ key</button></div>`;
 }
 
+/* The address names the selected case, so it follows a new selection or a new name, in place. */
+const followCase = () => writeAddress(currentView(), true);
+/* A name being typed moves the address when the typing pauses or the field is left, not on each key:
+   a browser rations how often a page may write it. */
+let renaming = 0;
+function followName(now) {
+  clearTimeout(renaming);
+  if (now) followCase(); else renaming = setTimeout(followCase, 500);
+}
+
 /* ── review pass over drafts ── */
-let review = false;
 const draftIdx = () => cases.map((c, i) => (isDraft(c) ? i : -1)).filter(i => i >= 0);
 
 function renderReview() {
   const bar = $('review-bar');
-  if (!bar) return;
   const drafts = draftIdx();
   const btn = $('review-case');
   btn.textContent = drafts.length ? `Review drafts (${drafts.length})` : 'Review drafts';
-  btn.disabled = !drafts.length || (MODE === 'server' && READONLY);
+  btn.disabled = !drafts.length || READONLY;
   if (!review) { bar.hidden = true; return; }
   if (!drafts.length) {
     review = false; bar.hidden = true;
-    note('every draft is resolved — save to write it out');
+    note('every draft is resolved: save to write it out');
     return;
   }
   if (!drafts.includes(sel)) { sel = drafts[0]; renderForm(); return; }
@@ -352,23 +362,14 @@ function renderReview() {
 }
 
 function reviewAct(act) {
-  if (!review) return;
   if (act === 'exit') { review = false; renderReview(); return; }
+  const accept = i => { cases[i].metadata = { ...cases[i].metadata, status: 'accepted' }; };
+  if (act === 'acceptall') draftIdx().forEach(accept);
+  else if (act === 'accept') accept(sel);
+  else { cases.splice(sel, 1); orig.splice(sel, 1); }
+  sel = draftIdx()[0] ?? Math.max(0, Math.min(sel, cases.length - 1));
   /* `note('')` must precede the re-render: `renderReview` announces completion through `note`. */
-  if (act === 'acceptall') {
-    draftIdx().forEach(i => { cases[i].metadata = { ...cases[i].metadata, status: 'accepted' }; });
-    note(''); renderForm(); refreshDirty(); return;
-  }
-  const c = cases[sel];
-  if (!c) return;
-  if (act === 'accept') c.metadata = { ...c.metadata, status: 'accepted' };
-  if (act === 'drop') {
-    cases.splice(sel, 1); orig.splice(sel, 1);
-    sel = Math.max(0, Math.min(sel, cases.length - 1));
-  }
-  const drafts = draftIdx();
-  if (drafts.length) sel = drafts[0];
-  note(''); renderForm(); refreshDirty();
+  note(''); renderForm(); refreshDirty(); followCase();
 }
 
 $('review-case').onclick = () => { review = true; renderReview(); };
@@ -378,9 +379,9 @@ $('review-bar').onclick = e => {
 };
 
 document.addEventListener('keydown', e => {
-  if (!review || currentView() !== 'experiment') return;
-  const tag = (e.target.tagName || '').toLowerCase();
-  if (tag === 'input' || tag === 'textarea' || tag === 'select') {
+  /* Inert while a save is on its way: a case changed now would be marked saved without being sent. */
+  if (!review || currentView() !== 'experiment' || $('v-experiment').inert) return;
+  if (e.target.matches && e.target.matches('input, textarea')) {
     if (e.key === 'Escape') e.target.blur();
     return;
   }
@@ -395,37 +396,47 @@ $('case-list').onclick = e => {
   const li = e.target.closest('li[data-i]');
   if (!li) return;
   sel = +li.dataset.i;
-  renderForm(); writeAddress(currentView(), true);
+  renderForm(); followCase();
 };
 
+/* The dict is rebuilt from every row on each change; with no row left the key goes too. */
+function applyMetaRows(box) {
+  const next = readMetaRows(box);
+  if (Object.keys(next).length) cases[sel][box.dataset.meta] = next;
+  else delete cases[sel][box.dataset.meta];
+  note(''); refreshDirty();
+}
+
+/* An emptied field is `null` where the file has the key and absent where it never did, so that
+   typing and clearing again is no change. */
+function clearField(k) {
+  if (orig[sel] !== NEW_CASE && k in JSON.parse(orig[sel])) cases[sel][k] = null;
+  else delete cases[sel][k];
+}
+
 $('form').addEventListener('input', e => {
-  /* Metadata rows carry no `data-k`: the dict is rebuilt from every row on each keystroke. */
-  const box = e.target.closest('[data-meta]');
-  if (box && cases[sel] && e.target.dataset.k == null) {
-    const next = readMetaRows(box);
-    if (Object.keys(next).length) cases[sel][box.dataset.meta] = next;
-    else delete cases[sel][box.dataset.meta];
-    note(''); refreshDirty();
-    return;
-  }
-  const k = e.target.dataset.k;
-  if (k == null || !cases[sel]) return;
-  const el = e.target, raw = el.value;
-  if (el.dataset.json) {
-    if (raw.trim() === '') { cases[sel][k] = null; el.classList.remove('invalid'); }
-    else {
-      try { cases[sel][k] = JSON.parse(raw); el.classList.remove('invalid'); }
-      catch { el.classList.add('invalid'); return; }
-    }
-  } else if (el.dataset.required) {
-    // `Case.input` is required: keep the empty string, not null, and let preflight() report it.
+  const el = e.target, k = el.dataset.k, raw = el.value;
+  const box = el.closest('[data-meta]');
+  if (box) return applyMetaRows(box);
+  if (k == null) return;
+  el.classList.remove('invalid');
+  if (el.dataset.required) {
+    /* `Case.input` is required: the empty string is kept for `preflight` to report. */
     cases[sel][k] = raw;
+  } else if (raw.trim() === '') {
+    clearField(k);
+  } else if (el.dataset.json) {
+    try { cases[sel][k] = JSON.parse(raw); } catch {
+      el.classList.add('invalid');
+      return note('That is not valid JSON, so the change is not applied.', 'err');
+    }
   } else {
-    cases[sel][k] = raw.trim() === '' ? null : raw;
+    cases[sel][k] = raw;
   }
-  if (k === 'name') { $('form-title').textContent = cases[sel].name || '(unnamed)'; }
+  if (k === 'name') { $('form-title').textContent = cases[sel].name || '(unnamed)'; followName(); }
   note(''); refreshDirty();
 });
+$('form').addEventListener('change', e => { if (e.target.dataset.k === 'name') followName(true); });
 
 $('form').addEventListener('click', e => {
   if (!cases[sel]) return;
@@ -441,27 +452,42 @@ $('form').addEventListener('click', e => {
   if (metaRm) {
     const box = metaRm.closest('[data-meta]');
     metaRm.closest('.meta-row').remove();
-    const next = readMetaRows(box);
-    if (Object.keys(next).length) cases[sel][box.dataset.meta] = next;
-    else delete cases[sel][box.dataset.meta];
-    note(''); refreshDirty();
-    return;
+    return applyMetaRows(box);
   }
   const rm = e.target.closest('[data-rm]');
   const add = e.target.closest('[data-add]');
   if (rm) {
     const k = rm.closest('[data-chips]').dataset.chips;
     cases[sel][k].splice(+rm.dataset.rm, 1);
-    if (!cases[sel][k].length) cases[sel][k] = null;
+    if (!cases[sel][k].length) clearField(k);
     renderForm(); note(''); refreshDirty();
   } else if (add) {
-    const k = add.dataset.add;
-    const name = prompt('Tool name');
-    if (!name || !name.trim()) return;
-    (cases[sel][k] = cases[sel][k] || []).push(name.trim());
-    renderForm(); note(''); refreshDirty();
+    /* The button becomes the box to type the name in: Enter or leaving it adds, Escape gives up. */
+    const input = document.createElement('input');
+    input.className = 'f chipin';
+    input.placeholder = 'tool name';
+    input.setAttribute('aria-label', 'Tool name');
+    input.dataset.addTo = add.dataset.add;
+    add.replaceWith(input);
+    input.focus();
   }
 });
+function addTool(input, keep) {
+  if (input.dataset.done) return;
+  input.dataset.done = '1';
+  const k = input.dataset.addTo, name = input.value.trim();
+  if (keep && name) {
+    (cases[sel][k] = cases[sel][k] || []).push(name);
+    note(''); refreshDirty();
+  }
+  renderForm();
+}
+$('form').addEventListener('keydown', e => {
+  if (!e.target.dataset.addTo || (e.key !== 'Enter' && e.key !== 'Escape')) return;
+  e.preventDefault();
+  addTool(e.target, e.key === 'Enter');
+});
+$('form').addEventListener('focusout', e => { if (e.target.dataset.addTo) addTool(e.target, true); });
 
 const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
   : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, ch => {
@@ -470,36 +496,37 @@ const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
   }));
 
 $('add-case').onclick = () => {
-  if (!EXP) return;
   const names = new Set(cases.map(c => c.name));
   let n = cases.length + 1, name = `case_${n}`;
   while (names.has(name)) name = `case_${++n}`;
   cases.push({ name, session_id: uuid(), input: '' });
   orig.push(NEW_CASE);
   sel = cases.length - 1;
-  renderForm(); refreshDirty();
-  note(`added ${name} — fill in its input, then save`);
+  renderForm(); refreshDirty(); followCase();
+  note(`added ${name}: fill in its input, then save`);
 };
 
 $('del-case').onclick = () => {
-  const c = cases[sel];
-  if (!c) return;
-  if (!confirm(`Delete case ${c.name || '(unnamed)'}? It is removed from the file when you save.`)) return;
-  cases.splice(sel, 1); orig.splice(sel, 1);
+  const c = cases[sel], at = sel, was = orig[at];
+  cases.splice(at, 1); orig.splice(at, 1);
   sel = Math.max(0, Math.min(sel, cases.length - 1));
-  renderForm(); refreshDirty();
-  note(`removed ${c.name || '(unnamed)'} — save to write it out`);
+  renderForm(); refreshDirty(); followCase();
+  /* Nothing is written until Save, so a delete is undone rather than asked about first. */
+  note(`Removed ${c.name || '(unnamed)'}. It leaves the file when you save.`, null, ['Undo', () => {
+    cases.splice(at, 0, c); orig.splice(at, 0, was);
+    sel = at;
+    renderForm(); refreshDirty(); followCase(); note('');
+  }]);
 };
 
 function refreshDirty() {
   const d = countDirty();
   const el = $('dirty');
-  el.textContent = d ? `${plural(d, 'unsaved change')}` : 'No unsaved changes';
+  el.textContent = d ? plural(d, 'unsaved change') : 'No unsaved changes';
   el.classList.toggle('yes', !!d);
   $('save').textContent = d ? `Save (${d})` : 'Save';
-  const blocked = !d || !EXP || (MODE === 'server' && READONLY);
-  $('save').disabled = blocked;
-  $('save').title = (MODE === 'server' && READONLY) ? 'the server was started with --read-only' : '';
+  $('save').disabled = !d || !EXP || READONLY;
+  $('save').title = READONLY ? 'the server was started with --read-only' : '';
   $('revert').disabled = !d;
   $('add-case').disabled = !EXP;
   $('del-case').disabled = !cases.length;
@@ -521,10 +548,12 @@ function nonFinite(v, path) {
 }
 
 function preflight() {
+  if ($('form').querySelector('.invalid')) return 'a field holds JSON that does not parse; fix it or revert before saving';
+  if ($('evform').querySelector('.invalid')) return 'an evaluator setting is not a number; fix it or revert before saving';
   for (const [i, c] of cases.entries()) {
     const bad = nonFinite(c, `cases[${i}]`);
-    if (bad) return `${bad} is not finite — the library's writer rejects it`;
-    if (c.input == null || String(c.input).trim() === '') {
+    if (bad) return `${bad} is not finite, and the library's writer rejects it`;
+    if (c.input == null || valueText(c.input).trim() === '') {
       return `case ${c.name || i} has no input, which Case requires`;
     }
   }
@@ -537,51 +566,45 @@ function preflight() {
 $('save').onclick = async () => {
   const problem = preflight();
   if (problem) return note(problem, 'err');
-  const document_ = { cases, evaluators: evals };
+  const document_ = experimentDocument();
 
-  if (MODE === 'server') {
-    /* The editor is inert until the answer arrives, and the answer belongs to the run that asked. */
-    const meta = expMeta, editor = $('v-experiment');
-    $('save').disabled = true;
-    editor.inert = true;
-    try {
-      const res = await api('/api/experiment?path=' + encodeURIComponent(meta.path), {
-        method: 'PUT',
-        headers: { 'X-Evals-Token': TOKEN, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ document: document_, modified: meta.modified }),
-      });
-      meta.modified = res.modified;
-      if (res.evaluator_notes) meta.evaluator_notes = res.evaluator_notes;
-      if (expMeta === meta) {
-        markSaved();
-        renderEvaluators(); refreshDirty();
-        note(`saved ${res.path} · ${plural(res.cases, 'case')}`);
-      }
-      rescan(true);
-    } catch (err) {
-      if (expMeta === meta) {
-        refreshDirty();
-        note(err.message, { 409: 'stale', 404: 'gone' }[err.status] || 'err');
-      }
-    } finally {
-      editor.inert = false;
+  /* The editor is inert until the answer arrives, and the answer belongs to the experiment that asked. */
+  const meta = expMeta, editor = $('v-experiment');
+  $('save').disabled = true;
+  editor.inert = true;
+  try {
+    const res = await api('/api/experiment?path=' + encodeURIComponent(meta.path), {
+      method: 'PUT',
+      headers: { 'X-Evals-Token': TOKEN, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ document: document_, modified: meta.modified }),
+    });
+    meta.modified = res.modified;
+    if (res.evaluator_notes) meta.evaluator_notes = res.evaluator_notes;
+    if (expMeta === meta) {
+      markSaved();
+      renderEvaluators(); refreshDirty();
+      note(`saved ${res.path} · ${plural(res.cases, 'case')}`);
     }
-    return;
+    rescan(true);
+  } catch (err) {
+    if (expMeta === meta) {
+      refreshDirty();
+      note(err.message, { 409: 'stale', 404: 'gone' }[err.status] || 'err');
+    }
+  } finally {
+    editor.inert = false;
   }
-
-  downloadExperiment();
-  markSaved();
-  refreshDirty();
 };
 
+/* The file as it will be written: what the editor changed, and everything else exactly as it was read. */
+const experimentDocument = () => ({ ...EXP, cases, evaluators: evals });
+
 function downloadExperiment() {
-  const text = JSON.stringify({ cases, evaluators: evals }, null, 2) + '\n';
+  const text = JSON.stringify(experimentDocument(), null, 2) + '\n';
   const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
-  const a = Object.assign(document.createElement('a'), {
-    href: url, download: (expMeta && expMeta.name) || 'experiment.json',
-  });
+  const a = Object.assign(document.createElement('a'), { href: url, download: expMeta.name });
   a.click();
-  if (URL.revokeObjectURL) URL.revokeObjectURL(url);
+  URL.revokeObjectURL(url);
   note(`downloaded ${a.download} · ${plural(cases.length, 'case')} · ${KB(text.length)}`);
 }
 
@@ -591,7 +614,7 @@ $('revert').onclick = () => {
   orig = savedCases.slice();
   evals = JSON.parse(origEvals);
   sel = Math.min(sel, Math.max(0, cases.length - 1));
-  renderEvaluators(); renderForm(); refreshDirty();
+  renderEvaluators(); renderForm(); refreshDirty(); followCase();
   note(`reverted ${plural(d, 'change')}`);
 };
 

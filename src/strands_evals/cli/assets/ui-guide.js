@@ -4,7 +4,6 @@
    term is written here once, beside the documentation page that says more. */
 
 const DOCS = 'https://strandsagents.com/docs/user-guide/evals-sdk/';
-const REPO = 'https://github.com/strands-agents/evals';
 /* Campaign tags in the form the Strands site's analytics reads. `utm_content` names the placement. */
 const CAMPAIGN = 'utm_source=strands-evals-ui&utm_medium=product&utm_campaign=evals-ui';
 
@@ -27,9 +26,12 @@ const TERMS = {
   verdict: ['Verdict', 'Pass or fail as the evaluator itself decided. This page applies no threshold of its own.', 'evaluators/#choose-an-evaluator'],
   not_applicable: ['Not applicable', 'The evaluator had nothing to judge on this case, for example no expected output. These rows are left out of the overall score.', 'evaluators/#choose-an-evaluator'],
   trajectory: ['Trajectory', 'What the agent did along the way: a list such as the tools it called, or a Session holding the full trace.', 'how-evaluation-works/#what-an-evaluation-is-made-of'],
-  pairing: ['Pairing', 'A report is matched to the experiment beside it by file name. Verified means every case in the report is in that experiment.', 'how-to/serialization/'],
+  pairing: ['Pairing', 'A report is matched to an experiment beside it with the same name, or else to the nearest one holding all its cases. Verified means every case in the report is in that experiment.', 'how-to/serialization/'],
   overall: ['Overall score', 'The mean score over every row that applied. Rows an evaluator marked not applicable are left out.', 'how-evaluation-works/#the-levels-an-evaluator-scores-at'],
   draft: ['Draft', 'A case whose metadata says status: draft. Review drafts steps through them so each can be accepted or dropped.', 'how-to/experiment_management/#using-metadata-for-organization'],
+  session: ['Session', 'Everything recorded for one conversation with an agent: one or more traces, saved as a file.', 'how-evaluation-works/#what-an-evaluation-is-made-of'],
+  trace: ['Trace', 'One run of the agent inside a session, made of spans: each agent invocation, model call and tool call.', 'how-evaluation-works/#what-an-evaluation-is-made-of'],
+  diagnosis: ['Diagnosis', 'What the detectors found in a session: the spans where something failed, and the root cause behind each.', 'detectors/'],
   iteration: ['Iteration', 'One round of the search: candidates are proposed, run on the training cases, and ranked.', ''],
   constraint: ['Constraint', 'A limit a candidate has to stay within, such as a token budget. One that does not is infeasible.', ''],
   budget: ['Budget', 'The most rollouts or iterations the run was allowed to spend before it had to stop.', ''],
@@ -84,7 +86,7 @@ const EVALUATOR_PAGES = {
   StateEquals: 'deterministic_evaluators', ToolCalled: 'deterministic_evaluators', SkillInvoked: 'deterministic_evaluators',
   TypedRubricEvaluator: '', Evaluator: 'custom_evaluator',
 };
-/* Summary and settings of every built-in evaluator, as the server read them off the library. Empty with no server. */
+/* Summary and settings of every built-in evaluator, as the server read them off the library. */
 let EVALUATOR_INFO = {};
 
 /** The documentation page for an evaluator type; a type the library does not ship gets the custom-evaluator page. */
@@ -99,14 +101,31 @@ function evaluatorDoc(type) {
 /* ══════════ how to use each view ══════════ */
 
 const VIEW_GUIDE = {
-  runs: {
+  missing: {
     steps: [
-      'Each row is an <b>experiment</b> found in this folder and, when it has been run, the <b>report</b> beside it.',
-      'Select a row to open its cases. Select the Report cell to go straight to its results.',
-      'No report yet? Run the experiment, then Rescan: <code>strands-evals run FILE --agent module:attr -o NAME.report.json</code>',
+      'The address names something this folder does not hold, or that could not be read. The page says what it looked for.',
+      'Use a link on the page or the sidebar to go to a list of what is here.',
+      'The page reads the folder again every few seconds and opens what the address names once it is there.',
     ],
-    terms: ['experiment', 'report', 'pairing'],
-    links: [['quickstart/', 'Quickstart'], ['cli/run/#experiment-file-run', 'Running an experiment file'], ['cli/generate/', 'Generating a starter experiment']],
+    terms: ['report', 'experiment'],
+  },
+  reports: {
+    steps: [
+      'Each row is a <b>report</b>: the result of one run. It names the <b>experiment</b> file it was made from, or says it was run from code.',
+      'Select a row to open the report. Select the experiment beside it to open its cases.',
+      'No report yet? Run an experiment, then Rescan: <code>strands-evals run FILE --agent module:attr -o NAME.report.json</code>',
+    ],
+    terms: ['report', 'experiment', 'pairing'],
+    links: [['quickstart/', 'Quickstart'], ['cli/run/#experiment-file-run', 'Running an experiment file'], ['cli/report/', 'The report command']],
+  },
+  experiments: {
+    steps: [
+      'Each row is an <b>experiment</b> file: the cases and evaluators a run uses, and the reports made from it.',
+      'Select a row to open its cases. Select a report beside it to open that report.',
+      'An experiment built in code and never saved has no file here. Its reports are still under Reports.',
+    ],
+    terms: ['experiment', 'case', 'evaluator'],
+    links: [['how-to/serialization/', 'Experiment files'], ['cli/generate/', 'Generating a starter experiment'], ['quickstart/', 'Quickstart']],
   },
   experiment: {
     steps: [
@@ -114,6 +133,7 @@ const VIEW_GUIDE = {
       'Select a case to edit it. The ? beside each field says what it is for and what it accepts.',
       'Select an evaluator to see what it checks and change its settings.',
       'Save writes the file back. Cases marked draft can be accepted or dropped in one review pass.',
+      '<b>Copy as Markdown</b> at the top copies the experiment as text for a coding agent. The selected case has its own copy, and the command that runs it alone.',
     ],
     terms: ['case', 'evaluator', 'trajectory'],
     links: [['how-evaluation-works/#what-an-evaluation-is-made-of', 'What an evaluation is made of'], ['evaluators/#choose-an-evaluator', 'Choosing an evaluator'], ['how-to/serialization/', 'Experiment files']],
@@ -123,15 +143,48 @@ const VIEW_GUIDE = {
       'One row per case and evaluator. The score is the evaluator\'s number; the verdict is its own pass or fail.',
       'Open a row to see the input, the expected and actual output, and the reason the evaluator gave.',
       'Filter to Failing to see what to fix first. Rows marked not applicable are left out of the overall score.',
-      'The charts show where the failures sit, how scores are spread, and what changed since another report. Select a mark to open its row.',
+      'The charts show where the failures sit, how scores are spread, and what each case took. Select a mark to open its row.',
+      'Compare with, at the top, sets this report beside another one.',
+      'Group by lets you split the rows by anything the cases carry, such as a tag, a red-team category or a chaos condition. A row with a diagnosis says what failed, why, and what to change.',
+      'To hand it to a coding agent, <b>Copy as Markdown</b> at the top copies the whole report and <b>Copy failing rows as a prompt</b> only what fails. An open row has its own copy actions and a link.',
     ],
     terms: ['score', 'verdict', 'not_applicable'],
     links: [['how-evaluation-works/#the-levels-an-evaluator-scores-at', 'How evaluators score'], ['detectors/', 'Diagnosing failures'], ['cli/report/', 'The report command']],
   },
+  compare: {
+    steps: [
+      'The reports you picked, oldest first. Each is numbered; the numbers head the columns below.',
+      'The grid has one line per case and evaluator and one column per report. A line that changes colour is a row that flipped; a gap means that report does not hold the row.',
+      'The last chart sets the oldest against the newest: what now passes, what now fails, and how far each score moved.',
+      'Select a mark to open that row in its report. Add or remove reports at the top.',
+      '<b>Copy as Markdown</b> at the top copies the comparison as text: each report, the evaluator means, and the rows that changed.',
+    ],
+    terms: ['report', 'verdict', 'not_applicable'],
+    links: [['cli/run/#experiment-file-run', 'Running an experiment'], ['cli/report/', 'The report command']],
+  },
+  sessions: {
+    steps: [
+      'Each row is a <b>session</b>: the recorded traces of one conversation, saved with <code>strands-evals fetch ... -o FILE</code> or from code.',
+      'Select a row to read it, one trace after another.',
+      'A <b>diagnosis</b> shows on the page of the session it was made from. One whose session is not in this folder is listed here on its own.',
+    ],
+    terms: ['session', 'trace', 'diagnosis'],
+    links: [['cli/', 'CLI reference'], ['detectors/', 'Diagnosing failures']],
+  },
+  session: {
+    steps: [
+      'Read it top to bottom. Each <b>trace</b> has its own heading and what it cost; the time between traces is not counted.',
+      'A trace with several agent invocations is split into turns: the prompt and the reply first, then the model and tool calls behind them.',
+      'No diagnosis yet? Make one, then Rescan: <code>strands-evals diagnose FILE -o NAME.diagnosis.json</code>',
+      '<b>Copy as Markdown</b> at the top copies the session and its diagnoses as text for a coding agent.',
+    ],
+    terms: ['session', 'trace', 'diagnosis'],
+    links: [['detectors/', 'Diagnosing failures'], ['cli/', 'CLI reference']],
+  },
   'opt-runs': {
     steps: [
       'Each row is one optimizer run in this folder: what it achieved, the configuration it picked, and why it stopped.',
-      'Select a run to open its result. The other tabs all show the run marked here.',
+      'Select a run to open its result. Its other views are the tabs at the top of its page.',
     ],
     terms: ['champion', 'rollout'],
   },
@@ -148,6 +201,7 @@ const VIEW_GUIDE = {
       'Read the interval, not the gap. An interval that includes zero means the run has not shown a change.',
       'The second card is the configuration to take away. Copy it or download it.',
       'Case by case shows which cases the change came from, for each score and for tokens and time.',
+      '<b>Copy result as Markdown</b> at the top copies the result as text for a coding agent.',
     ],
     terms: ['champion', 'baseline', 'interval', 'split'],
   },
@@ -162,6 +216,7 @@ const VIEW_GUIDE = {
     steps: [
       'Every configuration the run tried. Open one to see what it changed from the baseline and how each case went.',
       'Open a case to read the answer the agent gave and the conversation behind it.',
+      'An open candidate has <b>Copy as Markdown</b> and a link of its own.',
     ],
     terms: ['candidate', 'feasible', 'infeasible', 'ineligible', 'invalid', 'unscored', 'duplicate'],
   },
@@ -183,33 +238,24 @@ const VIEW_GUIDE = {
 
 const GUIDE_KEY = 'strands-evals-guide';
 
-/* Open until turned off, except on a phone-sized window, where it would fill the first screen. */
-function guideWanted() {
-  const cookie = document.cookie.split('; ').find(pair => pair.startsWith(GUIDE_KEY + '='));
-  if (cookie) return cookie.slice(GUIDE_KEY.length + 1) !== 'off';
-  return !(window.matchMedia && matchMedia('(max-width: 700px)').matches);
+/* Closed until it is asked for, and after that as it was left. */
+const guideWanted = () => document.cookie.split('; ').includes(`${GUIDE_KEY}=on`);
+
+/** Fill the guide panel for a view: what to do there, the terms it uses, and where the docs say more. */
+function renderGuide(view) {
+  const guide = VIEW_GUIDE[view];
+  const terms = guide.terms.map(key => `<dt>${esc(TERMS[key][0])}</dt><dd>${esc(TERMS[key][1])}</dd>`).join('');
+  const links = (guide.links || [['', 'Evals documentation']]).map(([path, label]) =>
+    docLink(path, `guide-${view}`, label)).join('');
+  $('guide-body').innerHTML = `<h2>${esc(VIEW_NAME[view])}</h2>`
+    + `<ol>${guide.steps.map(step => `<li>${step}</li>`).join('')}</ol>`
+    + `<dl>${terms}</dl><p class="guide-links">${links}</p>`;
 }
 
-/** Put a collapsible guide at the top of every view. It is open until the user turns guidance off. */
-function renderGuides() {
-  const open = guideWanted();
-  app.dataset.guide = open ? 'on' : 'off';
-  for (const [view, guide] of Object.entries(VIEW_GUIDE)) {
-    const section = $(`v-${view}`);
-    const terms = (guide.terms || []).map(key =>
-      `<dt>${esc(TERMS[key][0])}</dt><dd>${esc(TERMS[key][1])}</dd>`).join('');
-    const links = (guide.links || [['', 'Evals documentation']]).map(([path, label]) =>
-      docLink(path, `guide-${view}`, label)).join('');
-    const panel = document.createElement('details');
-    panel.className = 'guide';
-    panel.open = open;
-    panel.innerHTML = '<summary>How to use this view</summary>'
-      + `<ol>${guide.steps.map(step => `<li>${step}</li>`).join('')}</ol>`
-      + (terms ? `<dl>${terms}</dl>` : '')
-      + `<p class="guide-links">${links}</p>`;
-    const anchor = section.querySelector(':scope > .sub') || section.querySelector(':scope > h2');
-    if (anchor) anchor.after(panel); else section.prepend(panel);
-  }
+function setGuide(on) {
+  app.dataset.guide = on ? 'on' : 'off';
+  $('guide').hidden = !on;
+  app.querySelector('[data-guide-toggle]').setAttribute('aria-expanded', String(on));
 }
 
 /* ══════════ help on demand ══════════ */
@@ -240,7 +286,7 @@ function helpFor(kind, key) {
     };
   }
   if (kind === 'setting') {
-    const [type, name] = key.split('.');
+    const [type, name] = key.split(/\.(.*)/s);
     const known = ((EVALUATOR_INFO[type] || {}).settings || []).find(s => s.name === name);
     const state = known ? (known.required ? 'Required.' : `Default: ${known.default}.`) : '';
     if (!SETTING_GUIDE[name] && !state) return null;
@@ -288,11 +334,13 @@ app.addEventListener('click', e => {
   } else if (!e.target.closest('.help-pop')) {
     closeHelp();
   }
-  if (e.target.closest('[data-guide-toggle]')) {
+  if (e.target.closest('[data-guide-toggle], [data-guide-close]')) {
     const on = app.dataset.guide !== 'on';
-    app.dataset.guide = on ? 'on' : 'off';
-    app.querySelectorAll('details.guide').forEach(panel => { panel.open = on; });
-    document.cookie = `${GUIDE_KEY}=${on ? 'on' : 'off'}; path=/; max-age=31536000; SameSite=Lax`;
+    setGuide(on);
+    remember(GUIDE_KEY, on ? 'on' : 'off');
+    /* The content column just changed width, and charts are drawn to the width they have. */
+    if (REP) renderReportCharts();
+    if (OPT) renderOptimization();
   }
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeHelp(); });
@@ -304,4 +352,4 @@ app.querySelectorAll('a[data-doc]').forEach(a => {
   a.target = '_blank';
   a.rel = 'noopener';
 });
-renderGuides();
+setGuide(guideWanted());
