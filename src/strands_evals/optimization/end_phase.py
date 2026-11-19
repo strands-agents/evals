@@ -108,7 +108,8 @@ def _holds_with_margin(
 
     Each constraint is judged as `assess` judges it under a fit (`ranking.py`): at the threshold's quantile
     against the bound, a value at the bound up to float noise met. The estimate judged has the ranking's
-    mean of the metric (the fit's mean, else the adjusted train mean, `Assessment.adjusted_means`, so a
+    mean of the metric (the fit's mean, else, for a flagged metric or without a fit, the adjusted train mean,
+    `Assessment.adjusted_means`, so a
     candidate N/A on some cases isn't judged on its other cases alone) and the sd of the difference between
     a mean over the train cases and one over the validation cases: the stdev of the candidate's per-case
     train means times `sqrt(1 / measured train cases + 1 / expected measured validation cases)`. Both counts
@@ -124,7 +125,9 @@ def _holds_with_margin(
         case_means = [case[metric] for case in scores.metrics_by_case.values() if metric in case]
         if len(case_means) < 2:
             return False
-        mean = assessment.estimates[metric].mean if assessment.is_from_fit else assessment.adjusted_means[metric]
+        mean = (
+            assessment.estimates[metric].mean if metric in assessment.estimates else assessment.adjusted_means[metric]
+        )
         # the validation mean also covers only measured cases: expect the train measurement rate there
         measured_validation = n_validation_cases * len(case_means) / len(scores.metrics_by_case)
         sd = statistics.stdev(case_means) * math.sqrt(1 / len(case_means) + 1 / measured_validation)
@@ -152,9 +155,9 @@ def pick(
     """The champion: the first feasible candidate on validation, baseline included; else the baseline.
 
     Feasible = eligible on validation, at least one completed validation trial, and P(met) >=
-    `criteria.feasibility_threshold` for every constraint (measured means without a fit); a constraint whose
-    metric has no value on any validation case is unmet (`assess`). Ranked by objective resolved to a tenth of
-    its sd; ties -> most trials, then earlier.
+    `criteria.feasibility_threshold` for every constraint (measured means without a fit, and for a flagged
+    metric); a constraint whose metric has no value on any validation case is unmet (`assess`). Ranked by
+    objective resolved to a tenth of its sd; ties -> most trials, then earlier.
     Under a `Pareto` objective the same champion (the validated front's highest-gain member) plus
     `ValidationReport.front`.
 
@@ -197,7 +200,7 @@ def pick(
         objectives=objectives,
         estimates={c: dict(assessments[c].estimates) for c in ids if c in assessments},
         adjusted_means={
-            c: dict(assessments[c].adjusted_means) for c in ids if c in assessments and not assessments[c].is_from_fit
+            c: dict(assessments[c].adjusted_means) for c in ids if c in assessments and assessments[c].adjusted_means
         },
         infeasible=infeasible,
         measured={c: measured_metrics(validation[c], criteria.registry) for c in ids if c in validation},

@@ -776,3 +776,69 @@ def test_pick_under_pareto_leaves_a_finalist_with_no_completed_validation_trial_
     assert pick(**kwargs, completed={c: 2 for c in validation}).champion_id == "a"  # what the check prevents
     report = pick(**kwargs, completed={"0": 2, "a": 0, "b": 2})
     assert report.champion_id == "b" and "a" not in report.front and "a" in report.infeasible
+
+
+class _TokensFlagged:
+    """A validation fit that predicts 500 tokens for everyone, flagged on tokens."""
+
+    flagged = [TOKENS]
+    diagnostics: dict = {}
+    metrics: dict = {}
+
+    def __init__(self, helpfulness):
+        self.helpfulness = helpfulness
+        self.candidates = frozenset(helpfulness)
+
+    def estimates(self, values, candidate=None):
+        return {HELP: Estimate(mean=self.helpfulness[candidate], sd=0.01), TOKENS: Estimate(mean=500.0, sd=1.0)}
+
+
+def test_pick_judges_a_flagged_metric_by_its_measured_mean_and_the_others_by_the_fit():
+    criteria = Criteria(Maximize(HELP), [AtMost(TOKENS, 1000)], REGISTRY)
+
+    def scores(candidate_id, help_value, tokens):
+        cases = ("v1", "v2")
+        return CandidateScores(
+            candidate_id=candidate_id,
+            objective_by_case={c: help_value for c in cases},
+            metrics_by_case={c: {HELP: help_value, TOKENS: tokens} for c in cases},
+            unavailable={},
+            objective_by_run={c: [help_value] for c in cases},
+            metrics_by_run={c: {HELP: [help_value], TOKENS: [tokens]} for c in cases},
+            objective=help_value,
+            is_eligible=True,
+            failures=0,
+        )
+
+    validation = {"0": scores("0", 0.9, 800.0), "a": scores("a", 0.5, 1200.0), "b": scores("b", 0.6, 900.0)}
+    report = pick(
+        baseline_id="0",
+        finalist_ids=["a", "b"],
+        validation=validation,
+        fit=_TokensFlagged({"0": 0.6, "a": 0.8, "b": 0.7}),
+        values={c: {} for c in validation},
+        trial_counts={c: 2 for c in validation},
+        completed={c: 2 for c in validation},
+        criteria=criteria,
+        rule=Mean(),
+    )
+    # Helpfulness from the fit ("b" beats the baseline); tokens measured, so "a" misses the limit the fit says it meets.
+    assert report.champion_id == "b" and report.objectives == {"0": 0.6, "a": 0.8, "b": 0.7}
+    assert report.infeasible == {"a": "tokens <= 1000: mean 1200 violates by 200"}
+    assert report.estimates["a"] == {HELP: Estimate(mean=0.8, sd=0.01)}
+    # Tokens, judged by its adjusted mean, is reported for every candidate, though each is assessed from the fit.
+    assert report.adjusted_means == {"0": {TOKENS: 800.0}, "a": {TOKENS: 1200.0}, "b": {TOKENS: 900.0}}
+
+
+def test_choose_finalists_judges_a_flagged_constraint_metric_by_its_adjusted_mean():
+    # The fit (flagged on tokens) ranks "a" first, but its tokens sit at the limit with a spread, so only "b"
+    # (always 600) holds with margin. Judging "a" by the fit's 500 tokens would have let it hold too.
+    criteria = Criteria(Maximize(HELP), [AtMost(TOKENS, 1000)], REGISTRY, feasibility_threshold=0.9)
+    tokens = {"0": [600.0] * 6, "a": [900.0, 1100.0, 900.0, 1100.0, 1000.0, 1000.0], "b": [600.0] * 6}
+    train = {
+        c: _train_scores(c, {f"t{i}": {HELP: 0.5, TOKENS: t} for i, t in enumerate(ts)}, criteria)
+        for c, ts in tokens.items()
+    }
+    fit = _TokensFlagged({"0": 0.5, "a": 0.8, "b": 0.7})
+    finalists, ranking, _ = _choose(train, criteria, 1, fit=fit)
+    assert ranking[:2] == ["a", "b"] and finalists == ["b"]

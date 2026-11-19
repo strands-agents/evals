@@ -132,17 +132,19 @@ class CandidateLabel(BaseModel):
         outcome: `feasible`, `infeasible`, or `ineligible`.
         reason: One sentence, e.g. "tokens <= 4000: P(met) 0.62 < 0.9".
         unmet_constraints: Each constraint not met, as the ranking assessed it, as a sentence (e.g. "tokens <= 4000:
-            P(met) 0.62 < 0.9"); unlike the per-constraint margins elsewhere named `violations`. On measured
-            means the sentence's mean is the adjusted one the ranking judged (`adjusted_means`), which can
-            differ from the mean in `measured` for a candidate with N/A cases that another assessed candidate
-            was judged on.
-        estimates: Per goal metric (`Assessment.estimates`); empty when `is_from_fit` is False.
-        p_met: Per constraint whose metric was measured (`Assessment.p_met`); empty when `is_from_fit` is False.
+            P(met) 0.62 < 0.9"); unlike the per-constraint margins elsewhere named `violations`. For a constraint
+            judged by its mean (a flagged metric, or on measured means) the sentence's mean is the adjusted one
+            the ranking judged (`adjusted_means`), which can differ from the mean in `measured` for a candidate
+            with N/A cases that another assessed candidate was judged on.
+        estimates: Per goal metric the fit judged (`Assessment.estimates`; a flagged metric is left out);
+            empty when `is_from_fit` is False.
+        p_met: Per constraint the fit judged (`Assessment.p_met`); empty when `is_from_fit` is False.
         adjusted_means: Per goal metric, the adjusted mean the ranking used (`Assessment.adjusted_means`): the
             plain mean in `measured`, or with the N/A cases another assessed candidate was judged on filled in;
-            empty when `is_from_fit` is True or the candidate is ineligible (and in a label saved before it
-            existed).
-        is_from_fit: False when assessed by measured means.
+            only the goal metrics the fit didn't judge (the flagged ones under a fit, every one on measured means),
+            so empty when the fit judged every one, when the candidate is ineligible, and in a label saved before
+            it existed.
+        is_from_fit: False when assessed by measured means alone.
         measured: Every metric measured on train, usage included; a metric with no value is left out.
     """
 
@@ -165,15 +167,16 @@ class ValidationReport(BaseModel):
         champion_id: What ships; the baseline's id when nothing feasible beats it.
         front: Under a `Pareto` objective, the validated front (the baseline included when on it), in ranking
             order, so the champion is first unless the front is empty; `[]` otherwise.
-        objectives: Candidate id -> its validation objective under the validation fit, or by measured
-            validation means (`Assessment.objective`) when `problem` is set; None when it isn't eligible on
-            validation or no validation trial of it completed.
-        estimates: Candidate id -> goal metric -> the validation fit's estimate; empty when assessed by
-            measured means.
-        adjusted_means: Candidate id -> goal metric -> the adjusted validation mean the pick used when
-            assessed by measured means (`Assessment.adjusted_means`): the plain mean in `measured`, or with
-            the N/A cases another assessed candidate was judged on filled in; only candidates assessed by
-            measured means (none in a report saved before it existed).
+        objectives: Candidate id -> its validation objective under the validation fit (a flagged metric's
+            measured mean instead), or by measured validation means (`Assessment.objective`) when `problem` is
+            set; None when it isn't eligible on validation or no validation trial of it completed.
+        estimates: Candidate id -> goal metric -> the validation fit's estimate (a flagged metric is left out);
+            empty when assessed by measured means.
+        adjusted_means: Candidate id -> goal metric -> the adjusted validation mean the pick used for a metric
+            the validation fit didn't judge (`Assessment.adjusted_means`): the plain mean in `measured`, or with
+            the N/A cases another assessed candidate was judged on filled in; only candidates with a metric the
+            validation fit didn't judge (a flagged one, or every one on measured means), and only those metrics
+            (none in a report saved before it existed).
         infeasible: Candidate id -> why it can't ship (a constraint not met on validation, not eligible
             there, or no validation trial of it completed).
         measured: Candidate id -> every metric measured on validation.

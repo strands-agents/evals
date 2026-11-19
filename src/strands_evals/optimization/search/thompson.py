@@ -38,7 +38,10 @@ class Thompson(Proposer):
     so a draw scores the candidate the patch would create. It proposes the best fresh combination (not measured with the
     parent's other values, nor proposed and not yet observed, so a step's proposals differ) that meets the
     drawn constraints, else the one that misses them least (each miss over its metric model's `unit`).
-    With no fit or any metric flagged, a fresh combination at random. With
+    A metric the fit flagged (`fit.flagged`) is left out of the draw: a flagged objective term doesn't move
+    the pick, and a flagged constraint isn't drawn against (the ranking still judges it on measured means).
+    With no fit, every objective term flagged, or a flagged name that isn't a goal metric, a fresh
+    combination at random. With
     none fresh, every combination is a choice: the draw's best measured one is a duplicate, which the
     optimizer redraws, and a `Nested` opener opens its round on, so Thompson keeps choosing which structure
     to refine. `[]` only when no block key is active under the parent's choices.
@@ -107,7 +110,19 @@ class Thompson(Proposer):
         measured = {_key(c.values, keys) for c in eligible if _agrees(c.values, held, partial=True)}
         held_key = _key(held, sorted(held))
         proposed = {p.combination for p in self._pending if p.held == held_key}
-        fit = request.fit if request.fit is not None and not request.fit.flagged else None
+        objective = request.criteria.objective
+        objectives = objective.objectives if isinstance(objective, (WeightedSum, Pareto)) else (objective,)
+        # The metric models a draw uses: every unflagged goal metric, as the ranking judges them; none when a flagged
+        # name isn't a goal metric, or when every objective term is flagged (nothing left to score a draw by).
+        fit = request.fit
+        flagged = set(fit.flagged) if fit is not None else set()
+        goal_metrics = request.criteria.goal_metrics
+        drawable: list[str] = []
+        if fit is not None and flagged <= set(goal_metrics):
+            drawable = [m for m in goal_metrics if m not in flagged]
+        terms = [o for o in objectives if o.metric in drawable]
+        if not terms:
+            fit = None
 
         def inherit(k: str) -> tuple[Value, str] | None:
             found = next((c for c in eligible if k in c.values), None)
@@ -126,8 +141,6 @@ class Thompson(Proposer):
                 )
                 templates.append(made.values if made else space.complete({**held, **combinations[i]}, fill=inherit))
 
-        objective = request.criteria.objective
-        objectives = objective.objectives if isinstance(objective, (WeightedSum, Pareto)) else (objective,)
         patches: list[Patch] = []
         for _ in range(request.n):
             fresh = [j for j, i in enumerate(ids) if i not in measured and i not in proposed]
@@ -136,16 +149,19 @@ class Thompson(Proposer):
                 j = choices[int(rng.integers(len(choices)))]
                 rationale = "Thompson: a combination at random (no usable fit)"
             else:
-                effects = {m: model.sample_effects(1, rng)[0] for m, model in fit.metrics.items()}
-                weights = (
-                    rng.dirichlet(np.ones(len(objectives))) if self.random_weights and len(objectives) > 1 else None
-                )
+                effects = {m: fit.metrics[m].sample_effects(1, rng)[0] for m in drawable}
+                weights = rng.dirichlet(np.ones(len(terms))) if self.random_weights and len(objectives) > 1 else None
+                # A flagged metric is held at one value for every template: the objective is linear in each metric,
+                # so it doesn't move the pick (and a missing usage term would leave the objective unmeasured).
+                held_flagged = dict.fromkeys(flagged, 0.0)
                 scores, misses = [], []
                 for template in templates:
                     drawn = {m: float(fit.metrics[m].value_under(e[None, :], template)[0]) for m, e in effects.items()}
-                    scores.append(_score(drawn, weights, objectives, fit.metrics, request.criteria))
+                    scores.append(_score({**held_flagged, **drawn}, weights, terms, fit.metrics, request.criteria))
                     miss = 0.0
                     for c in request.criteria.constraints:
+                        if c.metric in flagged:
+                            continue
                         over = drawn[c.metric] - c.bound if isinstance(c, AtMost) else c.bound - drawn[c.metric]
                         miss += max(over, 0.0) / fit.metrics[c.metric].unit
                     misses.append(miss)
@@ -189,7 +205,8 @@ def _score(
     metrics: Mapping[str, MetricModel],
     criteria: Criteria,
 ) -> float:
-    """One template's objective under a draw: Dirichlet-weighted terms, each over its unit, else the declared one."""
+    """One template's objective under a draw: Dirichlet-weighted `objectives` (the unflagged terms), each over its
+    unit, else the declared objective."""
     if weights is None:
         value = criteria.objective_value(drawn)
         return -math.inf if value is None else value
