@@ -1,0 +1,116 @@
+Write a new version of the parameters below, so that the agent does better on this study's goal. You have two kinds of evidence: the versions measured so far, and the current version's conversations.
+
+## The versions measured so far
+
+2 versions, best first for this study's goal. Each version's results are, for each metric, the study's estimate of its mean over all of its conversations, which also draws on the versions like it, then its measured mean (a version with no estimate shows its measured mean alone). The current version (marked ←) is the one whose conversations are in the trajectory folder. Each version's parameters, in full, are in `/reflection/versions`: one folder per version, named by its rank, with its results in `version.md` and each parameter alone in a file of its own (`<name>.txt`, listed in `version.md`).
+
+| Rank | Version | Built from | Changed | Correctness | Helpfulness | tokens | seconds | Conversations |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 1 ← | 0 | prompt | 0.8 (measured 0.83) | 0.74 (measured 0.7) | 2,410 (measured 2,380) | 8.2 (measured 8.4) | 9 |
+| 2 | 0 (baseline) | - | - | 0.66 (measured 0.67) | 0.7 (measured 0.72) | 2,950 (measured 3,010) | 9.6 (measured 9.1) | 9 |
+
+
+## The current version's conversations
+
+**Trajectory Folder**: /reflection/traces
+
+Each trace's `reward` labels that one conversation, from 0 (worst) to 1 (best): its Correctness and Helpfulness. A conversation's tokens and seconds are not in its label: compare the versions for those.
+
+## The parameters (1)
+
+<parameter name="prompt">
+Be brief.
+</parameter>
+
+- **What it is**: text the agent reads
+- **Its limit**: at most 1500 characters (it is 9 now)
+
+
+---
+
+## Analysis Steps
+
+**Step 1: Learn from the versions**
+
+Read the table above. Compare the texts of higher-ranked versions with lower-ranked ones, and a version with the one it was built from: what do the versions that did well say, or leave out?
+```bash
+ls /reflection/versions | head -40
+diff -r /reflection/versions/rank-001-version-* /reflection/versions/rank-002-version-*
+```
+
+**Step 2: Check the traces' sizes**
+```bash
+ls -lh /reflection/traces/*.json | head -20
+```
+
+**Step 3: Categorize the traces by their label**
+```bash
+for f in /reflection/traces/*.json; do
+    echo -n "$f: "
+    grep -oE '"reward":\s*[0-9.-]+' "$f" | head -1
+done 2>/dev/null | head -30
+```
+
+**Step 4: Examine sufficient traces**
+
+| Folder Size | Minimum Coverage |
+|-------------|------------------|
+| ≤ 10 traces | Examine ALL |
+| 11-30 traces | At least 70% |
+| > 30 traces | At least 50% |
+
+Balance coverage between the traces that went well and those that did not.
+
+**Step 5: Extract insights**
+
+Focus on:
+- What do the versions that did well have in common, and what did the versions that did badly try?
+- What do the current version's successful conversations do that the failed ones don't, and what mistakes do the failed ones make?
+- What patterns appear across MULTIPLE traces (not one-off issues)?
+
+Do not repeat a change the versions show did badly. Put each insight in the ONE parameter that reaches the agent when it matters: guidance about one item's selection, inputs or results belongs in that item's text; guidance about the whole task belongs in the text that governs the whole task.
+
+**Step 6: Write and submit the new version**
+
+Write each parameter you change in full: you may add, rewrite, reorder, shorten or remove anything. Change only what the evidence gives you a reason to change, and at least one parameter. Write each changed parameter's complete new value, and nothing else, to its own file in your working folder (to start from a version's text, copy its `<name>.txt`; a value that carries a version's header from `version.md` is refused):
+```bash
+cat > /reflection/work/optimized_<name>.txt << 'PARAM_EOF'
+[the complete new value]
+PARAM_EOF
+```
+
+Before submitting, check the length of every file whose parameter has a character limit, and shorten it until it fits:
+```bash
+wc -c < /reflection/work/optimized_<name>.txt
+```
+A value over its limit is discarded and the current value kept.
+
+Then submit them under their exact names:
+```
+submit_optimized_params(file_path_dict={"<name>": "/reflection/work/optimized_<name>.txt", ...})
+```
+
+A parameter you do not submit keeps its current value.
+
+---
+
+## Criteria for Good Insights
+
+### Actionability
+Each insight should have:
+- Clear **trigger condition** (WHEN...)
+- Specific **action** (DO...)
+
+Reject vague insights like "be careful" or "consider edge cases".
+
+### Coverage
+- Address different failure modes observed
+- Prioritize patterns that appear in multiple traces
+
+### Appropriate Generalization
+- Keep actions concrete and specific
+- Generalize conditions when pattern applies broadly
+- The agent will meet tasks you have not seen: no rule that holds only for one task's names, ids or values
+
+### A tool's description
+Preserve its correct facts and, where the traces support it, cover: **use when** (the trigger, prerequisites, how it differs from similar items), **inputs** (meanings, formats, constraints) and **returns** (important fields, empty or partial results, side effects, recoverable errors). Keep it local to the tool: no multi-step task workflow, no unsupported guarantees.

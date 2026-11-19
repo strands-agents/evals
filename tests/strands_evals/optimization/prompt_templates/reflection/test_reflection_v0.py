@@ -1,11 +1,18 @@
-"""Tests for Reflection's prompts: what varies in the task message, and the fixed texts' placeholders."""
+"""Tests for Reflection's prompts: what varies in the task message, the fixed texts' placeholders, and the whole
+texts against golden files."""
+
+from pathlib import Path
 
 import pytest
 
-from strands_evals.optimization.prompt_templates.reflection import get_template
+from strands_evals.optimization.prompt_templates.reflection import get_template, reflection_v0
 from strands_evals.optimization.prompt_templates.reflection.reflection_v0 import TextVariable, VersionRow
 
 T = get_template()
+
+# The texts `reflection_v0` renders, each followed by a newline. A fix to `reflection_v0` updates its file here in the
+# same change, so the review shows the new text; a new version gets its own folder.
+_GOLDEN = Path(__file__).parent / "golden" / "reflection_v0"
 
 
 def _row(**fields):
@@ -160,3 +167,128 @@ def test_over_limit_message():
     two = T.over_limit_message({"a": (12345, 2000), "b": (900, 800)})
     assert two.startswith("`a`, `b` are over their limit: `a` is 12,345 characters, its limit 2,000 (10,345 over); ")
     assert "Shorten them to fit" in two and "write them to their file" in two
+
+
+def _assert_matches_golden(name, text, tmp_path):
+    """`text` plus a newline is exactly `golden/reflection_v0/<name>`; on a mismatch, the rendered text is written to
+    `tmp_path` to compare with or copy over the golden file."""
+    rendered = text + "\n"
+    golden = (_GOLDEN / name).read_text(encoding="utf-8")
+    if rendered != golden:
+        (tmp_path / name).write_text(rendered, encoding="utf-8", newline="\n")
+    assert rendered == golden, f"the rendered text differs from {_GOLDEN / name}; it was written to {tmp_path / name}"
+
+
+def test_system_prompt_matches_golden(tmp_path):
+    """The default system prompt as Reflection sends it: the prompt, then the submit instructions."""
+    text = reflection_v0.system_prompt("/reflection/work") + reflection_v0.SUBMIT_INSTRUCTIONS
+    _assert_matches_golden("system_prompt.txt", text, tmp_path)
+
+
+def test_task_message_with_limits_matches_golden(tmp_path):
+    """The message Reflection would build for `Maximize("Correctness")` with `AtMost("tokens", 4000)`,
+    `AtLeast("Correctness", 0.4)` and `success_threshold=None`: two limits, labels ranked among the current version's
+    conversations, tokens judged by version, and the digest. The rows are the current version, the baseline, a
+    version over a limit, and an ineligible one (unranked, limits unknown, measured means alone)."""
+    message = reflection_v0.task_message(
+        versions=[
+            _row(
+                rank=1,
+                number=2,
+                built_from=0,
+                is_current=True,
+                changed=["prompt"],
+                cells=["0.84 (measured 0.9)", "3,120 (measured 3,050)"],
+                meets_limits=True,
+                conversations=12,
+            ),
+            _row(
+                rank=2,
+                number=0,
+                built_from=None,
+                is_baseline=True,
+                changed=[],
+                cells=["0.62 (measured 0.6)", "3,400 (measured 3,380)"],
+                meets_limits=True,
+                conversations=12,
+            ),
+            _row(
+                rank=3,
+                number=1,
+                built_from=0,
+                changed=["prompt", "tools.search", "other values"],
+                cells=["0.71 (measured 0.75)", "4,410 (measured 4,380)"],
+                meets_limits=False,
+                conversations=11,
+            ),
+            _row(
+                rank=None,
+                number=3,
+                built_from=2,
+                changed=["tools.search"],
+                cells=["1", "2,980"],
+                meets_limits=None,
+                conversations=1,
+            ),
+        ],
+        versions_folder="/reflection/versions",
+        goal_metrics=["Correctness", "tokens"],
+        limits=["tokens <= 4000", "Correctness >= 0.4"],
+        traces_folder="/reflection/traces",
+        digest_file="/reflection/traces/DIGEST.md",
+        label_metrics=["Correctness"],
+        label_ranked=True,
+        judged_by_version=["tokens"],
+        variables=[
+            TextVariable(
+                name="prompt",
+                value='You are a support agent.\nCite each article as "<title> (id {id})" & quote it exactly.',
+                edit_instructions="the agent's system prompt",
+                size_cap=2000,
+            ),
+            TextVariable(name="tools.search", value="Searches the help center.", edit_instructions=None, size_cap=None),
+        ],
+        work_folder="/reflection/work",
+    )
+    _assert_matches_golden("task_message_with_limits.txt", message, tmp_path)
+
+
+def test_task_message_without_limits_matches_golden(tmp_path):
+    """No limits, labels from two bounded metrics (not ranked), two metrics judged by version, and no digest, so the
+    labels come from the trace files: each the other way from the case with limits. Reflection always writes a
+    digest; this case pins the template's text without one."""
+    message = reflection_v0.task_message(
+        versions=[
+            _row(
+                rank=1,
+                number=1,
+                built_from=0,
+                is_current=True,
+                changed=["prompt"],
+                cells=["0.8 (measured 0.83)", "0.74 (measured 0.7)", "2,410 (measured 2,380)", "8.2 (measured 8.4)"],
+                meets_limits=None,
+                conversations=9,
+            ),
+            _row(
+                rank=2,
+                number=0,
+                built_from=None,
+                is_baseline=True,
+                changed=[],
+                cells=["0.66 (measured 0.67)", "0.7 (measured 0.72)", "2,950 (measured 3,010)", "9.6 (measured 9.1)"],
+                meets_limits=None,
+                conversations=9,
+            ),
+        ],
+        versions_folder="/reflection/versions",
+        goal_metrics=["Correctness", "Helpfulness", "tokens", "seconds"],
+        limits=[],
+        traces_folder="/reflection/traces",
+        digest_file=None,
+        label_metrics=["Correctness", "Helpfulness"],
+        label_ranked=False,
+        judged_by_version=["tokens", "seconds"],
+        variables=[TextVariable(name="prompt", value="Be brief.", edit_instructions=None, size_cap=1500)],
+        work_folder="/reflection/work",
+    )
+    _assert_matches_golden("task_message_without_limits.txt", message, tmp_path)
