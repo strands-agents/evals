@@ -20,8 +20,9 @@ const dirtyCases = () => cases.map((c, i) => JSON.stringify(c) !== orig[i] ? i :
 const removedCases = () => savedCases.length - orig.filter(s => s !== NEW_CASE).length;
 const evalsDirty = () => JSON.stringify(evals) !== origEvals;
 const countDirty = () => dirtyCases().length + removedCases() + (evalsDirty() ? 1 : 0);
-/* Text in a field that could not be applied as typed, such as JSON that does not parse yet. */
-const unapplied = () => !!($('form').querySelector('.invalid') || $('evform').querySelector('.invalid'));
+/* Text in a field that is not applied as typed: JSON that does not parse yet, or a tool name not yet added. */
+const unapplied = () => !!($('form').querySelector('.invalid') || $('evform').querySelector('.invalid')
+  || [...$('form').querySelectorAll('.chipin')].some(box => box.value.trim()));
 
 function loadExperiment(meta, doc) {
   expMeta = meta; EXP = doc;

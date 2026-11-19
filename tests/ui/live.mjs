@@ -143,6 +143,20 @@ ok(input() === 'rewritten again', 'the offer beside it reloads from disk', input
   await p.click(p.$$('#case-list li[data-i]')[1]);
 }
 
+// ── nor over the name of a tool that is being typed ──
+{
+  await p.click('#form [data-add]');
+  const box = () => p.$('#form .chipin');
+  box().value = 'sear';
+  box().dispatchEvent(new p.window.Event('input', { bubbles: true }));
+  write('e.json', experiment('rewritten under a tool name'));
+  await p.poll();
+  ok(box() && box().value === 'sear' && /changed on disk/.test(p.text('#saved')),
+    'a tool name not yet added is kept too', `${box() && box().value} | ${p.text('#saved')}`);
+  await p.click('#saved .reload');
+  await p.click(p.$$('#case-list li[data-i]')[1]);
+}
+
 // ── the case being read is renamed on disk ──
 {
   const renamed = experiment('renamed on disk');
