@@ -2,8 +2,11 @@ import asyncio
 import math
 import random
 import statistics
+import warnings
 
 import pytest
+from optuna.distributions import IntDistribution
+from optuna.trial import TrialState
 
 from strands_evals.optimization import (
     TPE,
@@ -170,6 +173,70 @@ def test_proposals_are_typed_values_inside_the_block():
         assert type(patch.updates["k"]) is int and 1 <= patch.updates["k"] <= 9
         assert patch.updates["mode"] in ("a", "b")
         space.validate(space.complete({**Candidate.baseline(space).values, **patch.updates}))
+
+
+def stepped_space():
+    return Space({"x": Float(0.0, 1.0, default=0.5, step=0.1), "k": Int(256, 4096, default=512, step=256)})
+
+
+def proposed_updates(tpe, space, keys, objective, iterations, *, n=1):
+    """Like `run`, but returns each patch's updates as proposed, before `complete`."""
+    proposed = []
+    parent = Candidate.baseline(space)
+    for i in range(iterations):
+        for patch in propose(tpe, request(space, keys, parent=parent, n=n, iteration=i)):
+            proposed.append(patch.updates)
+            values = space.complete({**parent.values, **patch.updates})
+            tpe.observe(told(patch, values, objective(values)))
+    return proposed
+
+
+def test_stepped_numbers_are_proposed_as_grid_points_before_and_after_startup():
+    proposed = proposed_updates(TPE(seed=1), stepped_space(), ["x", "k"], lambda v: v["x"] - v["k"] / 4096, 16)
+    grid = {i / 10 for i in range(11)}  # the decimals 0.0, 0.1, ..., 1.0, exactly
+    for updates in proposed:
+        assert updates["x"] in grid and type(updates["x"]) is float
+        assert updates["k"] % 256 == 0
+    assert len({u["x"] for u in proposed[4:]}) > 1  # after the 4 startup trials
+
+
+def test_a_stepped_float_is_told_by_its_grid_index_and_a_stepped_int_with_its_step():
+    tpe = TPE()
+    space = stepped_space()
+    patch = propose(tpe, request(space, ["x", "k"]))[0]
+    values = space.complete(patch.updates)
+    tpe.observe(told(patch, values, 0.5))
+    study = tpe._study_for(patch.state["context"], space, ["x", "k"], request(space, ["x", "k"]), 0)
+    trial = study.trials[0]
+    assert trial.state == TrialState.COMPLETE
+    assert trial.distributions == {"x": IntDistribution(0, 10), "k": IntDistribution(256, 4096, step=256)}
+    assert trial.params == {"x": round(values["x"] * 10), "k": values["k"]}
+
+
+@pytest.mark.parametrize(("bounds", "step"), [((1_000_000.0, 1_000_001.0), 0.0001), ((-1.0, 1.0), 0.25)])
+def test_a_stepped_float_far_from_zero_or_negative_runs_without_errors_or_warnings(bounds, step):
+    # Optuna's own float step check (|k - round(k)| < 1e-8, in floats) rejects points like 1000000.6247.
+    space = Space({"x": Float(*bounds, default=bounds[0], step=step)})
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        seen = run(TPE(seed=1), space, ["x"], lambda v: -abs(v["x"] - bounds[1]), 12)
+    for values in seen:
+        space.validate(values)
+
+
+def test_a_stepped_float_under_a_choice_is_proposed_on_its_grid_only_where_active():
+    space = Space(
+        {
+            "manager": choice(
+                window=component(Window, size=Int(2, 40)), summary=component(Summary, ratio=Float(0.0, 1.0, step=0.25))
+            )
+        }
+    )
+    keys = ["manager", "manager.window.size", "manager.summary.ratio"]
+    proposed = proposed_updates(TPE(seed=2), space, keys, lambda v: v.get("manager.summary.ratio", 0.0), 8, n=2)
+    ratios = [u["manager.summary.ratio"] for u in proposed if u["manager"] == "summary"]
+    assert ratios and set(ratios) <= {0.0, 0.25, 0.5, 0.75, 1.0}
+    assert all(("manager.summary.ratio" in u) == (u["manager"] == "summary") for u in proposed)
 
 
 def test_a_choice_is_drawn_before_its_sub_keys():
@@ -366,6 +433,14 @@ def test_a_told_value_outside_the_options_names_the_key():
         propose(tpe, request(space, ["mode"]))
 
 
+def test_a_told_value_off_a_stepped_floats_grid_names_the_key():
+    space = stepped_space()
+    tpe = TPE()
+    tpe.evidence(evidence({"x": 0.25, "k": 512}, 0.5))
+    with pytest.raises(ValueError, match="0.25 for 'x', which is off its grid"):
+        propose(tpe, request(space, ["x"]))
+
+
 def test_each_told_trials_context_is_computed_once(monkeypatch):
     from strands_evals.optimization.search import tpe as tpe_module
 
@@ -425,6 +500,21 @@ def test_replaying_the_same_history_proposes_the_same_patches():
     for candidates in ((), refitted):
         req = request(space, ["x", "k", "mode"], parent=parent, n=3, iteration=8, candidates=candidates)
         assert propose(resumed, req) == propose(first, req)
+
+
+def test_replaying_a_stepped_history_proposes_the_same_patches():
+    space = stepped_space()
+    first, history, parent = TPE(), [], Candidate.baseline(space)
+    for i in range(8):
+        for j, patch in enumerate(propose(first, request(space, ["x", "k"], parent=parent, n=2, iteration=i))):
+            event = told(patch, space.complete({**parent.values, **patch.updates}), (i + j) / 10, cid=f"c{i}-{j}")
+            first.observe(event)
+            history.append(event)
+    resumed = TPE()
+    for event in history:
+        resumed.observe(event)
+    req = request(space, ["x", "k"], parent=parent, n=3, iteration=8)
+    assert propose(resumed, req) == propose(first, req)
 
 
 def test_the_run_seed_is_used_unless_one_is_given():

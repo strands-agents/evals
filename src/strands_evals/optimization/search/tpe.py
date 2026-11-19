@@ -6,7 +6,7 @@ import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, cast
 
 import optuna
 from optuna.distributions import CategoricalDistribution, FloatDistribution, IntDistribution
@@ -14,6 +14,7 @@ from optuna.trial import TrialState, create_trial
 
 from ...types.optimization import Evidence, Observation, Patch, Value, Values
 from ..candidate import content_id
+from ..declaration.markers import _grid_index, _grid_value
 from ..declaration.space import ParamInfo, ParamKind, Space
 from ..scoring.objectives import Maximize
 from .proposer import ProposalRequest, Proposer
@@ -63,7 +64,9 @@ class TPE(Proposer):
     combination of the choices outside it, so numbers under a choice's alternative are learned per
     structure. Keys are suggested in declaration order, a choice before its sub-keys, and a key inactive
     under the choices so far is not suggested. Choices and `OneOf` options are categories, told by position,
-    so options Python compares equal (`1` and `True`) stay apart.
+    so options Python compares equal (`1` and `True`) stay apart. A stepped `Int` is Optuna's stepped
+    `IntDistribution`. A stepped `Float` is asked and told by its grid index (`IntDistribution(0, last index)`),
+    so Optuna sees only integers and a proposal is a grid point exactly.
     """
 
     kinds: ClassVar[frozenset[ParamKind]] = frozenset({"int", "float", "one_of", "choice"})
@@ -121,8 +124,17 @@ class TPE(Proposer):
                     continue
                 info = space.param(k)
                 if info.kind == "int":
-                    params[k] = trial.suggest_int(k, int(info.min_value), int(info.max_value), log=info.log)  # type: ignore[arg-type]
+                    params[k] = trial.suggest_int(
+                        k,
+                        int(info.min_value),  # type: ignore[arg-type]
+                        int(info.max_value),  # type: ignore[arg-type]
+                        step=1 if info.step is None else int(info.step),
+                        log=info.log,
+                    )
                     updates[k] = params[k]
+                elif info.kind == "float" and info.step is not None:
+                    params[k] = trial.suggest_int(k, 0, _last_index(info))
+                    updates[k] = _grid_value(params[k], info.min_value, info.step)  # type: ignore[arg-type]
                 elif info.kind == "float":
                     params[k] = trial.suggest_float(k, info.min_value, info.max_value, log=info.log)  # type: ignore[arg-type]
                     updates[k] = float(params[k])
@@ -256,19 +268,35 @@ def _context_of(space: Space, keys: Sequence[str], values: Values) -> str:
 def _distribution(info: ParamInfo) -> Any:
     """The Optuna distribution of one key; a choice or `OneOf` is a category per option position."""
     if info.kind == "int":
-        return IntDistribution(int(info.min_value), int(info.max_value), log=info.log)  # type: ignore[arg-type]
+        step = 1 if info.step is None else int(info.step)
+        return IntDistribution(int(info.min_value), int(info.max_value), log=info.log, step=step)  # type: ignore[arg-type]
+    if info.kind == "float" and info.step is not None:
+        return IntDistribution(0, _last_index(info))
     if info.kind == "float":
         return FloatDistribution(info.min_value, info.max_value, log=info.log)  # type: ignore[arg-type]
     assert info.options is not None
     return CategoricalDistribution(tuple(range(len(info.options))))
 
 
+def _last_index(info: ParamInfo) -> int:
+    """A stepped `Float`'s last grid index, that of its `max_value`."""
+    index = _grid_index(cast(float, info.max_value), cast(float, info.min_value), cast(float, info.step))
+    assert index is not None  # `Float` checks at declaration that `max_value` is a grid point
+    return index
+
+
 def _internal(info: ParamInfo, value: Value) -> Any:
-    """`value` as the trial holds it: a number as is, an option by its position (type and value must match).
+    """`value` as the trial holds it: a number as is (a stepped `Float` by its grid index), an option by its
+    position (type and value must match).
 
     Raises:
-        ValueError: `value` is none of the key's options.
+        ValueError: `value` is none of the key's options, or off a stepped `Float`'s grid.
     """
+    if info.kind == "float" and info.step is not None:
+        index = _grid_index(value, info.min_value, info.step)  # type: ignore[arg-type]
+        if index is None:
+            raise ValueError(f"TPE was told {value!r} for {info.key!r}, which is off its grid of step {info.step!r}")
+        return index
     if info.kind in ("int", "float"):
         return value
     assert info.options is not None

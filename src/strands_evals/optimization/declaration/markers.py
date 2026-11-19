@@ -7,6 +7,7 @@ import functools
 import inspect
 import math
 from collections.abc import Callable, Sequence
+from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 from typing import Any, TypeVar, cast
 
 from ...types.optimization import Value
@@ -54,7 +55,9 @@ class _ValueMarker(_Marker):
 class Int(_ValueMarker):
     """An integer argument with inclusive bounds; without `default=`, the parameter's (see `_ValueMarker`)."""
 
-    def __init__(self, min_value: int, max_value: int, *, default: int | None = None, log: bool = False):
+    def __init__(
+        self, min_value: int, max_value: int, *, default: int | None = None, log: bool = False, step: int | None = None
+    ):
         """Declare a tunable integer.
 
         Args:
@@ -62,25 +65,40 @@ class Int(_ValueMarker):
             max_value: Largest allowed value.
             default: The baseline value; omit to use the wrapped parameter's default.
             log: Search on a log scale.
+            step: Allow only `min_value + k * step`, e.g. `Int(256, 4096, step=256)`; can't be combined
+                with `log=True`. `step=1` is the same as no step.
 
         Raises:
-            TypeError: Bounds that aren't integers or are empty, `log=True` with `min_value <= 0`, or a
-                default that isn't an integer in `[min_value, max_value]`.
+            TypeError: Bounds that aren't integers or are empty, `log=True` with `min_value <= 0`, a
+                default that isn't an integer in `[min_value, max_value]`, a `step` that isn't a positive
+                integer or is above 1 with `log=True`, or a `max_value` or default off the step's grid.
         """
-        _check_number("Int", min_value, max_value, default, log, valid=_is_int, expected="integers")
+        if _is_int(step) and step == 1:
+            step = None  # step=1 allows every integer, which is no step, so `log=True` may take it
+        _check_number("Int", min_value, max_value, default, log, step, valid=_is_int, expected="integers")
+        _check_grid("Int", min_value, max_value, default, step)
         self.min_value = min_value
         self.max_value = max_value
         self.default = default
         self.log = log
+        self.step = step
 
     def _with_default(self, default: Any) -> Int:
-        return Int(self.min_value, self.max_value, default=default, log=self.log)
+        return Int(self.min_value, self.max_value, default=default, log=self.log, step=self.step)
 
 
 class Float(_ValueMarker):
     """A float argument with inclusive bounds; without `default=`, the parameter's (see `_ValueMarker`)."""
 
-    def __init__(self, min_value: float, max_value: float, *, default: float | None = None, log: bool = False):
+    def __init__(
+        self,
+        min_value: float,
+        max_value: float,
+        *,
+        default: float | None = None,
+        log: bool = False,
+        step: float | None = None,
+    ):
         """Declare a tunable float.
 
         Args:
@@ -88,21 +106,32 @@ class Float(_ValueMarker):
             max_value: Largest allowed value.
             default: The baseline value; omit to use the wrapped parameter's default.
             log: Search on a log scale.
+            step: Allow only `min_value + k * step`, e.g. `Float(0.0, 1.0, step=0.1)`; can't be combined
+                with `log=True`. The points are the decimals written (0.3, not `3 * 0.1`). A proposed
+                value within 1e-8 steps of a point, such as 0.30000000000000004, is on the grid:
+                `Space.complete` stores the point instead, and `Space.validate` accepts it if it lies
+                within the bounds.
 
         Raises:
-            TypeError: Bounds that aren't finite numbers or are empty, `log=True` with `min_value <= 0`, or a
-                default that isn't a finite number in `[min_value, max_value]`.
+            TypeError: Bounds that aren't finite numbers or are empty, `log=True` with `min_value <= 0`, a
+                default that isn't a finite number in `[min_value, max_value]`, a `step` that isn't a positive
+                finite number or is combined with `log=True`, or a `max_value` or default that isn't a grid
+                point itself (0.30000000000000004 isn't; the message names the nearest point).
         """
-        _check_number("Float", min_value, max_value, default, log, valid=_is_finite_number, expected="finite numbers")
+        _check_number(
+            "Float", min_value, max_value, default, log, step, valid=_is_finite_number, expected="finite numbers"
+        )
         # Stored as floats, so an integer default (`temperature=1`) hashes like the 1.0 a search proposes;
         # `+ 0.0` turns -0.0 into 0.0, so both get the same candidate id.
         self.min_value = float(min_value)
         self.max_value = float(max_value)
         self.default = None if default is None else float(default) + 0.0
         self.log = log
+        self.step = None if step is None else float(step)
+        _check_grid("Float", self.min_value, self.max_value, self.default, self.step)  # on the stored floats
 
     def _with_default(self, default: Any) -> Float:
-        return Float(self.min_value, self.max_value, default=default, log=self.log)
+        return Float(self.min_value, self.max_value, default=default, log=self.log, step=self.step)
 
 
 class OneOf(_ValueMarker):
@@ -380,7 +409,7 @@ def choice(*alternatives: Component, **labeled: Component | Any) -> Choice:
     )
 
 
-# ---- Private helpers (shared with files.py, space.py, tools.py, tunable.py) ------------
+# ---- Private helpers (shared with files.py, space.py, tools.py, tunable.py, search/tpe.py) ------------
 
 
 def _is_option(value: Any, options: Sequence[Any]) -> bool:
@@ -404,9 +433,21 @@ def _is_finite_number(value: Any) -> bool:
 
 
 def _check_number(
-    kind: str, min_value: Any, max_value: Any, default: Any, log: bool, *, valid: Callable[[Any], bool], expected: str
+    kind: str,
+    min_value: Any,
+    max_value: Any,
+    default: Any,
+    log: bool,
+    step: Any,
+    *,
+    valid: Callable[[Any], bool],
+    expected: str,
 ) -> None:
-    """The `Int` / `Float` declaration checks; `valid` says what a bound or default may be. Raises `TypeError`."""
+    """The `Int` / `Float` declaration checks before `_check_grid`; `valid` says what a bound, default, or step may be.
+
+    Raises:
+        TypeError: The first check that fails.
+    """
     if not (valid(min_value) and valid(max_value)):
         raise TypeError(f"{kind} bounds must be {expected}, got min_value={min_value!r}, max_value={max_value!r}")
     if min_value > max_value:
@@ -415,6 +456,64 @@ def _check_number(
         raise TypeError(f"{kind}(log=True) needs min_value > 0, got min_value={min_value!r}")
     if default is not None and not (valid(default) and min_value <= default <= max_value):
         raise TypeError(f"{kind} default must lie in [{min_value!r}, {max_value!r}] ({expected} only), got {default!r}")
+    if step is None:
+        return
+    if not (valid(step) and step > 0):
+        raise TypeError(f"{kind} step must be positive ({expected} only), got {step!r}")
+    if log:
+        raise TypeError(f"{kind} takes step= or log=True, not both")
+
+
+def _check_grid(kind: str, min_value: float, max_value: float, default: float | None, step: float | None) -> None:
+    """Raise `TypeError` unless `max_value` and the default are grid points themselves, not just near one."""
+    if step is None:
+        return
+    for name, value in (("max_value", max_value), ("default", default)):
+        if value is None:
+            continue
+        index = _grid_index(value, min_value, step)
+        point = None if index is None else _grid_value(index, min_value, step)
+        if point != value:
+            nearest = "" if point is None else f"; the nearest point is {point!r}"
+            raise TypeError(
+                f"{kind} {name} {value!r} is not min_value={min_value!r} plus a multiple of step={step!r}{nearest}"
+            )
+
+
+# Grid arithmetic in decimal, from each number's shortest repr: 50 digits, whatever the caller's context.
+_GRID_CONTEXT = Context(prec=50, rounding=ROUND_HALF_EVEN)
+_GRID_TOLERANCE = Decimal("1e-8")  # in steps, as Optuna's `FloatDistribution` checks a stepped value
+
+
+def _grid_index(value: float, min_value: float, step: float) -> int | None:
+    """The `k` of the point `min_value + k * step` that `value` lies on, or None when it lies on none.
+
+    Integers are compared exactly. A float is on a point within 1e-8 steps of it, so the
+    0.30000000000000004 that `3 * 0.1` gives is on `Float(0.0, 1.0, step=0.1)`'s point 0.3. NaN and
+    infinity lie on none.
+    """
+    if _is_int(value) and _is_int(min_value) and _is_int(step):
+        steps, rest = divmod(int(value) - int(min_value), int(step))
+        return steps if rest == 0 else None
+    if not math.isfinite(value):
+        return None
+    with localcontext(_GRID_CONTEXT):
+        k = (_decimal(value) - _decimal(min_value)) / _decimal(step)
+        nearest = k.to_integral_value()
+        return int(nearest) if abs(k - nearest) < _GRID_TOLERANCE else None
+
+
+def _grid_value(index: int, min_value: float, step: float) -> float:
+    """The point `min_value + index * step`: exact for integers, else the decimal written (0.3, not `3 * 0.1`)."""
+    if _is_int(min_value) and _is_int(step):
+        return min_value + index * step
+    with localcontext(_GRID_CONTEXT):
+        return float(_decimal(min_value) + index * _decimal(step)) + 0.0  # `+ 0.0`: the point -0.0 is 0.0
+
+
+def _decimal(number: float) -> Decimal:
+    """`number` as the decimal its shortest repr writes, e.g. 0.1 as `Decimal("0.1")`."""
+    return Decimal(repr(float(number)))
 
 
 def _check_positive_int(name: str, value: int | None) -> None:

@@ -316,6 +316,10 @@ def _validation(champion):
             lambda c: c["space"][1].update(max_value=50),
             r"^space\['cm\.window\.window_size'\]\.max_value changed: 40 -> 50; pass the run's space",
         ),
+        (
+            lambda c: c["space"][1].update(step=4),
+            r"^space\['cm\.window\.window_size'\]\.step changed: None -> 4; pass the run's space",
+        ),
         (lambda c: c["space"].pop(1), r"^space\['cm\.window\.window_size'\] changed: \{.* -> None"),
         (
             lambda c: c["space"][2]["default"].update(sha256="b" * 64),
@@ -339,6 +343,13 @@ def test_a_changed_field_fails_resume_naming_it(run, change, message):
 
 def test_budget_and_max_workers_may_change(run):
     config = {**CONFIG, "budget": {"max_rollouts": 900}, "max_workers": 16}
+
+    assert load_state(RunDirectory.open(run.root), config=config).iteration == 2
+
+
+def test_a_run_saved_without_a_step_resumes_with_no_step(run):
+    config = copy.deepcopy(CONFIG)  # CONFIG's space, as saved, has no "step"
+    config["space"][1]["step"] = None
 
     assert load_state(RunDirectory.open(run.root), config=config).iteration == 2
 
