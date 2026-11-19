@@ -5,10 +5,12 @@ import os
 import tempfile
 
 import pytest
-from strands.types.exceptions import EventLoopException
+from strands import Agent, ModelRetryStrategy
+from strands.types.exceptions import EventLoopException, ModelThrottledException
 
 from strands_evals.optimization import Criteria, InfrastructureError, Maximize, Reflection, Space, TextValue
 from strands_evals.optimization.candidate import Candidate
+from strands_evals.optimization.search import reflection as reflection_module
 from strands_evals.optimization.search.proposer import ProposalRequest
 from strands_evals.types.trace import TextContent, ToolResultContent, UserMessage
 from tests.strands_evals.optimization.scripted_model import ScriptedModel, ToolUse
@@ -172,6 +174,65 @@ async def test_any_failure_on_every_attempt_raises_after_three_retries():
     with pytest.raises(ValueError, match="model identifier"):
         await reflection.propose(request(events=events))
     assert [e for e, _ in events] == ["proposer_retry"] * 3 + ["proposer_usage"]
+
+
+@pytest.mark.parametrize(
+    ("max_attempts", "throttles", "restarts"),
+    [(1, 1, 1), (3, 2, 0), (3, 3, 1)],
+    ids=["one-attempt", "retried", "attempts-run-out"],
+)
+async def test_the_retry_strategy_retries_a_throttled_call_before_the_agent_is_restarted(
+    max_attempts, throttles, restarts
+):
+    """A throttle is retried in the same conversation up to the strategy's attempts; past them the agent fails and
+    a new one starts (Strands' default would have retried every one of these)."""
+    turns = [ModelThrottledException("slow down")] * throttles
+    turns += [write("p.txt", "Be brief."), submit(prompt="p.txt"), "Done."]
+    strategy = ModelRetryStrategy(max_attempts=max_attempts, initial_delay=0)
+    (patch,), events, _ = await propose(turns, retry_strategy=strategy)
+    assert patch.updates == {"prompt": "Be brief.\n"}
+    assert events == [("proposer_retry", {"error_type": "ModelThrottledException", "error": "slow down"})] * restarts
+
+
+class _Labeled(ModelRetryStrategy):
+    """A strategy subclass with state of its own."""
+
+    def __init__(self, label, **kwargs):
+        super().__init__(**kwargs)
+        self.label = label
+
+
+@pytest.fixture
+def retry_strategies(monkeypatch):
+    """The `retry_strategy` given to each `Agent` Reflection builds, "not passed" when none is."""
+    given = []
+
+    class Recording(Agent):
+        def __init__(self, *args, **kwargs):
+            given.append(kwargs.get("retry_strategy", "not passed"))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(reflection_module, "Agent", Recording)
+    return given
+
+
+async def test_each_agent_gets_its_own_copy_of_the_retry_strategy(retry_strategies):
+    """Concurrent calls must not share a strategy's attempt count."""
+    strategy = _Labeled("kept", max_attempts=3)
+    proposer = Reflection(ScriptedModel(["Nothing to change."]), retry_strategy=strategy)
+    proposer._warned = True
+    assert await proposer.propose(request(n=2)) == []
+    first, second = retry_strategies
+    assert type(first) is type(second) is _Labeled and first.label == second.label == "kept"
+    assert len({id(first), id(second), id(proposer.retry_strategy), id(strategy)}) == 4
+
+
+async def test_no_retry_strategy_leaves_strands_default(retry_strategies):
+    """`Agent` reads `retry_strategy=None` as no retries, so None is not passed on."""
+    proposer = Reflection(ScriptedModel(["Nothing to change."]))
+    proposer._warned = True
+    assert await proposer.propose(request()) == []
+    assert retry_strategies == ["not passed"]
 
 
 async def test_a_value_naming_a_shown_case_is_screened():

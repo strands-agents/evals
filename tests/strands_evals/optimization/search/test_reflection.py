@@ -7,6 +7,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from strands import ModelRetryStrategy
 
 from strands_evals.optimization.search import reflection
 from strands_evals.optimization.search.reflection import (
@@ -18,6 +19,7 @@ from strands_evals.optimization.search.reflection import (
     _submit_tool,
     _text_files,
 )
+from tests.strands_evals.optimization.scripted_model import ScriptedModel
 
 posix_only = pytest.mark.skipif(os.name == "nt", reason="Reflection needs Linux or macOS")
 
@@ -294,6 +296,58 @@ def test_over_limit_retries_must_be_an_integer(retries):
 def test_over_limit_retries_must_be_at_least_0():
     with pytest.raises(ValueError, match="over_limit_retries"):
         Reflection(over_limit_retries=-1)
+
+
+def test_the_built_model_sends_at_most_32000_tokens_by_default():
+    assert Reflection()._model().get_config()["max_tokens"] == 32_000
+    assert Reflection("global.anthropic.claude-sonnet-5-5")._model().get_config()["max_tokens"] == 32_000
+    assert Reflection("unknown.model-v1")._model().get_config()["max_tokens"] == 32_000
+
+
+def test_the_built_model_keeps_a_lower_output_limit_strands_knows():
+    """Strands' model data gives Claude 3.5 Haiku 8,192 output tokens, which `get_config()` reports when no limit is
+    set; 32,000 would be rejected."""
+    assert Reflection("us.anthropic.claude-3-5-haiku-20241022-v1:0")._model().get_config()["max_tokens"] == 8_192
+
+
+def test_max_tokens_sets_the_built_models_limit():
+    assert Reflection(max_tokens=8_000)._model().get_config()["max_tokens"] == 8_000
+    haiku = Reflection("us.anthropic.claude-3-5-haiku-20241022-v1:0", max_tokens=16_000)  # above its known limit
+    assert haiku._model().get_config()["max_tokens"] == 16_000
+
+
+def test_max_tokens_is_not_in_config():
+    """It changes only whether a long reply is cut, so a run may resume with another limit."""
+    assert "max_tokens" not in Reflection(max_tokens=8_000).config()
+
+
+def test_max_tokens_with_a_model_is_refused():
+    with pytest.raises(ValueError, match="set it on the Model"):
+        Reflection(ScriptedModel(["unused"]), max_tokens=8_000)
+
+
+@pytest.mark.parametrize("max_tokens", [1.5, True, "8000"])
+def test_max_tokens_must_be_an_integer(max_tokens):
+    with pytest.raises(TypeError, match="max_tokens.*must be an integer or None"):
+        Reflection(max_tokens=max_tokens)
+
+
+@pytest.mark.parametrize("max_tokens", [0, -1])
+def test_max_tokens_must_be_at_least_1(max_tokens):
+    with pytest.raises(ValueError, match="max_tokens"):
+        Reflection(max_tokens=max_tokens)
+
+
+@pytest.mark.parametrize("strategy", [3, {"max_attempts": 3}])
+def test_retry_strategy_must_be_a_model_retry_strategy(strategy):
+    with pytest.raises(TypeError, match="must be a ModelRetryStrategy or None"):
+        Reflection(retry_strategy=strategy)
+
+
+def test_retry_strategy_is_copied():
+    strategy = ModelRetryStrategy(max_attempts=3)
+    copied = Reflection(retry_strategy=strategy).retry_strategy
+    assert type(copied) is ModelRetryStrategy and copied is not strategy
 
 
 @pytest.mark.parametrize("threshold", [True, "0.5"])
