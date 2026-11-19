@@ -538,6 +538,8 @@ const fake = put => fakeServer({
     'the toggle flips the theme and keeps the choice in a cookie', `${root.dataset.theme} | ${p.d.cookie}`);
   ok(token('--card') !== lightCard && contrast() >= 4.5, 'and the muted ink clears 4.5:1 on the dark card too',
     `${token('--ink3')} on ${token('--card')}`);
+  const later = await served(SAMPLE, { cookie: 'strands-evals-theme=dark' });
+  ok(later.d.documentElement.dataset.theme === 'dark', 'a page opened after the choice was made starts in it', later.d.documentElement.dataset.theme);
 }
 
 // ── names that need encoding in an address ──
