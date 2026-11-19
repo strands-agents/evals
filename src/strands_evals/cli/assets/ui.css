@@ -391,9 +391,8 @@ tr.case:hover .caret, tr.trial:hover .caret { color: var(--ink1); }
 .ptabs .tab.on { background: none; color: var(--ink1); border-bottom-color: var(--brand); }
 .mode {
   font-size: 11.5px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--hair);
-  color: var(--ink2); background: var(--card); white-space: nowrap;
+  color: var(--ink3); background: var(--card); white-space: nowrap;
 }
-.mode.ro { color: var(--ink3); }
 .tag {
   font-size: 11.5px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--hair);
   color: var(--ink3); display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
