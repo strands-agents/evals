@@ -130,7 +130,9 @@ def test_a_long_value_is_cut_and_says_how_much_and_where_the_rest_is():
     cut = "The file has all of it, and so does the `.json` form of this address."
     assert f"Input:\n\n```text\n{'x' * 4000}\n```\n\nCut after 4000 of 5000 characters. {cut}\n\n" in text
     assert f"Expected output:\n\n```text\n{'y' * 4000}\n```\n\n### structured" in text
-    assert f'Input:\n\n```json\n{{\n  "text": "{"z" * 3987}\n```\n\nCut after 4000 of 5016 characters. {cut}\n\n' in text
+    assert (
+        f'Input:\n\n```json\n{{\n  "text": "{"z" * 3987}\n```\n\nCut after 4000 of 5016 characters. {cut}\n\n' in text
+    )
 
 
 def test_a_case_that_fails_under_several_evaluators_is_written_out_once():

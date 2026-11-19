@@ -597,11 +597,15 @@ def llms_text(
             "by its path under the served folder, which ends in `.json`; `/api/scan` lists them. A diagnosis file "
             "is read the same way, under `/sessions/`. A comparison is a page only: read each of its reports.",
             "\n".join(forms),
+            f"In Markdown a value longer than {VALUE_LIMIT} characters is cut, with a line saying how much was left "
+            "out: the JSON form has all of it. A report writes a case that fails under several evaluators once. "
+            "A session is written whole.",
             "## Routes",
             "\n".join(f"- `{route}`: {holds}" for route, holds in routes.items()),
             "## Page addresses",
             "These answer with the page itself, for a browser. Each one names one thing, so a link to it "
-            "can be pasted into a conversation.",
+            "can be pasted into a conversation. Asked for without `text/html` in `Accept`, one answers 406 with "
+            "a few lines that name the forms above.",
             "\n".join(pages),
         ]
     )
