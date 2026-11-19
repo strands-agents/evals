@@ -224,7 +224,8 @@ class OptimizationResult(BaseModel):
 
     def summary(self) -> str:
         """The run in a few lines: why the search stopped, what ships and why, every finalist on validation
-        (the validation fit's estimate next to the measured mean), under `Pareto` the validated front, the
+        (the validation fit's estimate next to the measured mean; without the fit, the adjusted mean the pick
+        used, marked `adjusted`, next to the measured mean when they differ), under `Pareto` the validated front, the
         test report, what changed, the costs, and why there are no effects or which metrics the held-out
         check flagged."""
         goals = list(dict.fromkeys(goal["metric"] for goal in self.effects.get("goals", [])))
@@ -334,7 +335,7 @@ class OptimizationResult(BaseModel):
             return "-"
         adjusted = self.validation.adjusted_means.get(candidate_id, {}).get(metric)
         if adjusted is not None and f"{adjusted:.3g}" != f"{measured.mean:.3g}":
-            return f"{adjusted:.3g} (measured {measured.mean:.3g})"
+            return f"{adjusted:.3g} adjusted (measured {measured.mean:.3g})"
         return f"{measured.mean:.3g} (measured)"
 
     def to_rows(self, grain: Grain = "proposal") -> list[dict[str, Any]]:

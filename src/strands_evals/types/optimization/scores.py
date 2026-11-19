@@ -174,9 +174,10 @@ class ValidationReport(BaseModel):
             empty when assessed by measured means.
         adjusted_means: Candidate id -> goal metric -> the adjusted validation mean the pick used for a metric
             the validation fit didn't judge (`Assessment.adjusted_means`): the plain mean in `measured`, or with
-            the N/A cases another assessed candidate was judged on filled in; only candidates with a metric the
-            validation fit didn't judge (a flagged one, or every one on measured means), and only those metrics
-            (none in a report saved before it existed).
+            the N/A cases another assessed candidate was judged on filled in; only the metrics the validation fit
+            didn't judge (a flagged one, or every one on measured means). Every assessed candidate, as in
+            `estimates`, so `{}` when the fit judged every metric (no candidate in a report saved before it
+            existed).
         infeasible: Candidate id -> why it can't ship (a constraint not met on validation, not eligible
             there, or no validation trial of it completed).
         measured: Candidate id -> every metric measured on validation.

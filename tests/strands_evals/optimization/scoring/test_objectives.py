@@ -303,8 +303,8 @@ def test_a_crash_score_outside_the_range_of_an_evaluator_no_goal_uses_leaves_it_
 
 def test_a_mean_equal_to_the_bound_up_to_float_noise_is_met():
     criteria = Criteria(None, [AtMost("tokens", 0.3)], REGISTRY)
-    assert criteria.unmet_constraints({"a": {"tokens": 0.1 + 0.2}}) == []
-    assert criteria.unmet_constraints({"a": {"tokens": 0.31}}) == ["tokens <= 0.3: mean 0.31 violates by 0.01"]
+    assert criteria.unmet_constraints({"tokens": 0.1 + 0.2}) == []
+    assert criteria.unmet_constraints({"tokens": 0.31}) == ["tokens <= 0.3: mean 0.31 violates by 0.01"]
 
 
 def test_a_lone_objective_is_the_metric_oriented_higher_is_better():
@@ -385,12 +385,11 @@ def test_terms_are_oriented_raw_values_in_objective_order():
     assert Criteria(Minimize("tokens"), [], REGISTRY).terms({"tokens": 5.0}) == (-5.0,)
 
 
-def test_unmet_names_each_constraint_not_met_on_measured_means():
+def test_unmet_names_each_constraint_not_met_by_the_means():
     criteria = Criteria(
         None, [AtMost("tokens", 4000), AtLeast("Stars", 3), AtLeast("HelpfulnessEvaluator", 0.5)], REGISTRY
     )
-    by_case = {"a": {"tokens": 4100.0, "Stars": 4.0}, "b": {"tokens": 4320.0, "Stars": 3.0}}
-    assert criteria.unmet_constraints(by_case) == [
+    assert criteria.unmet_constraints({"tokens": 4210.0, "Stars": 3.5}) == [
         "tokens <= 4000: mean 4210 violates by 210",
         "HelpfulnessEvaluator >= 0.5: never measured",
     ]

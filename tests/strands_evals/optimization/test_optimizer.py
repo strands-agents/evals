@@ -2776,7 +2776,7 @@ async def test_without_a_fit_the_label_rows_and_summary_report_the_adjusted_mean
     adjusted = v.adjusted_means[partial]["EvenOnly"]
     assert adjusted == pytest.approx(v.objectives[partial]) and adjusted < v.measured[partial]["EvenOnly"].mean
     assert v.adjusted_means[result.baseline_id] == {"EvenOnly": v.measured[result.baseline_id]["EvenOnly"].mean}
-    assert f"{adjusted:.3g} (measured 0.9)" in result.summary()
+    assert f"{adjusted:.3g} adjusted (measured 0.9)" in result.summary()
     assert f"{v.objectives[result.baseline_id]:.3g} (measured)" in result.summary()
 
 

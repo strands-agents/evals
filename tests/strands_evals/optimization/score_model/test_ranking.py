@@ -370,7 +370,7 @@ def test_a_measured_mean_at_its_bound_up_to_float_noise_is_met():
     measured = {"a": scores("a", {"x": {HELP: 0.1 + 0.2}}, 0.1 + 0.2)}
     a = assess(["a"], fit=None, criteria=criteria, values={"a": {}}, measured=measured, rule=Mean())["a"]
     assert a.violations == (0.0,) and a.is_feasible
-    assert criteria.unmet_constraints(measured["a"].metrics_by_case) == []
+    assert criteria.unmet_constraints(a.adjusted_means) == []
 
 
 def test_a_constraint_never_measured_is_unmet():
@@ -488,6 +488,99 @@ def test_with_no_case_in_common_the_others_values_fill_in_unshifted():
     assert out["x"].objective == pytest.approx(2 / 3) and out["y"].objective == pytest.approx(2 / 3)
 
 
+def test_a_candidate_sharing_a_gap_doesn_t_move_the_others_fill():
+    # "worse" is 0.05 below the baseline on the one case both were judged on, and "weak" shares its gap on "easy".
+    # Each fill is shifted against the candidates it comes from (only the baseline is judged on "easy"), so "weak"
+    # can't raise "worse"'s fill: easy is filled at 0.65 and "worse" ranks below the baseline.
+    criteria = Criteria(Maximize(HELP), [], REGISTRY)
+    measured = {
+        "base": scores("base", _help({"easy": 0.7, "hard": 0.5}), 0.6),
+        "worse": scores("worse", _help({"hard": 0.45}), 0.45),
+        "weak": scores("weak", _help({"hard": 0.1}), 0.1),
+    }
+    ids = list(measured)
+    out = assess(ids, fit=None, criteria=criteria, values={c: {} for c in ids}, measured=measured, rule=Mean())
+    assert out["worse"].objective == pytest.approx(0.55)
+    assert out["weak"].objective == pytest.approx(0.2)
+    assert out["worse"].adjusted_by_case == {"hard": {HELP: 0.45}, "easy": {HELP: pytest.approx(0.65)}}
+    assert out["base"].adjusted_by_case == {"easy": {HELP: 0.7}, "hard": {HELP: 0.5}}
+    assert rank(out, ids) == ["base", "worse", "weak"]
+
+
+def test_candidates_equal_where_both_were_judged_tie_whoever_shares_the_gap():
+    # "b" equals "a" on "easy" and is N/A on "hard"; "c" and "d" share that gap. Only "a" was judged on "hard", so
+    # "b"'s fill there is "a"'s value and the two tie.
+    criteria = Criteria(Maximize(HELP), [], REGISTRY)
+    measured = {
+        "a": scores("a", _help({"easy": 0.8, "hard": 0.4}), 0.6),
+        "b": scores("b", _help({"easy": 0.8}), 0.8),
+        "c": scores("c", _help({"easy": 0.5}), 0.5),
+        "d": scores("d", _help({"easy": 0.5}), 0.5),
+    }
+    ids = list(measured)
+    out = assess(ids, fit=None, criteria=criteria, values={c: {} for c in ids}, measured=measured, rule=Mean())
+    assert out["b"].objective == out["a"].objective == pytest.approx(0.6)
+
+
+def test_a_filled_value_at_a_range_end_up_to_float_noise_isn_t_clipped():
+    # The baseline's "hard" value is one float step below the range's low end, which scoring keeps; "f" equals it
+    # where judged, so its fill there is that value, and clipping it to 0 would rank "f" above the baseline.
+    criteria = Criteria(Maximize(HELP), [], REGISTRY)
+    measured = {
+        "base": scores("base", _help({"easy": 0.3, "hard": -(2**-52)}), 0.15),
+        "f": scores("f", _help({"easy": 0.3}), 0.3),
+    }
+    out = assess(
+        ["base", "f"], fit=None, criteria=criteria, values={"base": {}, "f": {}}, measured=measured, rule=Mean()
+    )
+    assert out["f"].objective == out["base"].objective
+    assert rank(out, ["base", "f"]) == ["base", "f"]
+
+
+def test_the_measured_label_is_criteria_unmet_constraints_on_the_adjusted_means():
+    criteria = Criteria(Maximize(HELP), [AtLeast(HELP, 0.9), AtMost(STARS, 3.0)], REGISTRY)
+    rng = random.Random(0)
+    for _ in range(300):
+        measured = {
+            c: scores(
+                c,
+                {
+                    f"k{j}": {HELP: round(rng.random(), 4), STARS: round(rng.uniform(1, 5), 4)}
+                    for j in range(4)
+                    if c == "a" or rng.random() < 0.7
+                },
+                0.0,
+            )
+            for c in ("a", "b")
+        }
+        ids = [c for c in measured if measured[c].metrics_by_case]
+        out = assess(ids, fit=None, criteria=criteria, values={c: {} for c in ids}, measured=measured, rule=Mean())
+        for c in ids:
+            label = label_candidate(measured[c], out[c], criteria=criteria)
+            assert label.unmet_constraints == criteria.unmet_constraints(out[c].adjusted_means)
+            assert (label.outcome == "feasible") == out[c].is_feasible
+
+
+def test_a_flagged_metric_is_filled_pairwise_and_its_label_states_the_judged_mean():
+    # HELP is flagged, so it is judged by its adjusted mean while STARS comes from the fit; "weak" shares "worse"'s
+    # gap on "easy" and must not raise its fill there.
+    criteria = Criteria(Maximize(STARS), [AtLeast(HELP, 0.7)], REGISTRY)
+    measured = {
+        "base": scores("base", {"easy": {HELP: 0.7, STARS: 3.0}, "hard": {HELP: 0.5, STARS: 3.0}}, 3.0),
+        "worse": scores("worse", {"easy": {STARS: 3.0}, "hard": {HELP: 0.45, STARS: 3.0}}, 3.0),
+        "weak": scores("weak", {"easy": {STARS: 3.0}, "hard": {HELP: 0.1, STARS: 3.0}}, 3.0),
+    }
+    ids = list(measured)
+    fit = FakeFit({c: {HELP: e(0.9), STARS: e(3.0)} for c in ids}, flagged=[HELP])
+    out = assess(ids, fit=fit, criteria=criteria, values={c: {} for c in ids}, measured=measured, rule=Mean())
+    worse = out["worse"]
+    assert worse.is_from_fit and set(worse.estimates) == {STARS}
+    assert worse.adjusted_means == {HELP: pytest.approx(0.55)}
+    assert worse.adjusted_by_case == {"hard": {HELP: 0.45}, "easy": {HELP: pytest.approx(0.65)}}
+    label = label_candidate(measured["worse"], worse, criteria=criteria)
+    assert label.unmet_constraints == criteria.unmet_constraints(worse.adjusted_means)
+
+
 def test_measured_constraints_and_the_label_judge_the_filled_means():
     criteria = Criteria(Maximize(STARS), [AtLeast(HELP, 0.7)], REGISTRY)
     measured = {
@@ -517,7 +610,7 @@ def test_the_measured_label_words_constraints_as_criteria_unmet_constraints():
     measured = {"a": scores("a", {"x": {HELP: 0.5, STARS: 3.5}, "y": {HELP: 0.4, STARS: 3.6}}, 0.45)}
     a = assess(["a"], fit=None, criteria=criteria, values={"a": {}}, measured=measured, rule=Mean())["a"]
     label = label_candidate(measured["a"], a, criteria=criteria)
-    assert label.unmet_constraints == criteria.unmet_constraints(measured["a"].metrics_by_case)
+    assert label.unmet_constraints == criteria.unmet_constraints({HELP: 0.45, STARS: 3.55})
     assert len(label.unmet_constraints) == 2
 
 
@@ -810,7 +903,9 @@ def test_label_candidate_by_measured_means_gives_the_criteria_sentences(cases):
     criteria = Criteria(Maximize(HELP), [AtMost(STARS, 3.0), AtLeast(HELP, 0.8)], REGISTRY)
     candidate = scores("a", cases, 0.5)
     a = assess(["a"], fit=None, criteria=criteria, values={"a": {}}, measured={"a": candidate}, rule=Mean())["a"]
-    assert label_candidate(candidate, a, criteria=criteria).unmet_constraints == criteria.unmet_constraints(cases)
+    assert label_candidate(candidate, a, criteria=criteria).unmet_constraints == criteria.unmet_constraints(
+        a.adjusted_means
+    )
 
 
 def test_label_candidate_ineligible_when_a_train_case_has_no_counted_run():
