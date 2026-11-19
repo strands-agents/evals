@@ -273,8 +273,8 @@ Limits of `ui`:
 - A comparison, an optimizer result and a candidate are written by the page and copied from it. They have no
   `.md` address. Neither do a candidate's report and the failing-rows prompt, which the server writes from
   what the page sends to `POST /api/markdown`.
-- A document nested hundreds of levels deep is listed, but is not written as Markdown (`.md` answers `422`),
-  and `--list --json` prints it on one line.
+- A document nested hundreds of levels deep is listed, but on most Python versions it is not written as
+  Markdown (`.md` answers `422`), and `--list --json` prints it on one line.
 - Save refuses a file whose modified time differs from the one it was loaded with, and two saves through one
   server are taken in turn. A write by another program between that check and the write is not detected.
 - An optimizer run that was resumed after a stop still reads as stopped.

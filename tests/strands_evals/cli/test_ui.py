@@ -2065,16 +2065,20 @@ def test_markdown_prints_a_score_too_large_for_two_decimals(client: Client):
     assert reply.body.endswith("| alpha | OutputEvaluator | 100000000000000000000000000.00 | passed |\n")
 
 
-def test_markdown_says_when_a_file_is_nested_too_deeply_to_write(client: Client):
-    """Depth the reader takes on a Python that reads past its own recursion limit; elsewhere it is not JSON."""
+def test_markdown_answers_for_a_file_nested_deeper_than_most_pythons_write(client: Client):
+    """Written where the interpreter can, refused with the reason where it cannot; never left unanswered."""
     nested = "[" * 5000 + "1" + "]" * 5000
     failing = _report("alpha", failing=("alpha",))
     (client.root / "deep.json").write_text(json.dumps(failing).replace('"ask about alpha"', nested))
 
     reply = client.send("GET", "/reports/deep.json.md")
 
-    assert reply.status == HTTPStatus.UNPROCESSABLE_ENTITY
-    assert reply.body["error"].startswith(("deep.json is nested too deeply", "deep.json could not be parsed: "))
+    # A Python that reads and writes this depth, as 3.14 does on Linux, writes the Markdown.
+    if reply.status == HTTPStatus.OK:
+        assert reply.body.startswith("# Report: deep.json\n")
+    else:
+        assert reply.status == HTTPStatus.UNPROCESSABLE_ENTITY
+        assert reply.body["error"].startswith(("deep.json is nested too deeply", "deep.json could not be parsed: "))
 
 
 # ── the server: Markdown of a document the page sends ──
@@ -2243,15 +2247,18 @@ def test_rendering_writes_a_number_that_is_not_json_as_a_file_of_it_is_written(c
     assert reply.body == client.send("GET", "/reports/odd.report.json.md").body
 
 
-def test_rendering_says_when_a_document_is_nested_too_deeply_to_write(client: Client):
-    """Depth the reader takes on a Python that reads past its own recursion limit; elsewhere it is not JSON."""
+def test_rendering_answers_for_a_document_nested_deeper_than_most_pythons_write(client: Client):
+    """Written where the interpreter can, refused with the reason where it cannot; never left unanswered."""
     failing = {"cases": [{"name": "a", "evaluator": "E", "input": "deep"}], "scores": [0], "test_passes": [False]}
     body = json.dumps({"kind": "report", "path": "r.json", "document": failing})
 
     reply = client.send("POST", RENDER, body=body.replace('"deep"', "[" * 5000 + "1" + "]" * 5000).encode())
 
-    assert reply.status in (HTTPStatus.UNPROCESSABLE_ENTITY, HTTPStatus.BAD_REQUEST)
-    assert reply.body["error"].startswith(("the document is nested too deeply", "body is not JSON: "))
+    if reply.status == HTTPStatus.OK:
+        assert reply.body.startswith("# Report: r.json\n")
+    else:
+        assert reply.status in (HTTPStatus.UNPROCESSABLE_ENTITY, HTTPStatus.BAD_REQUEST)
+        assert reply.body["error"].startswith(("the document is nested too deeply", "body is not JSON: "))
 
 
 def test_llms_txt_describes_every_address_the_server_answers(client: Client):

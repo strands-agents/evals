@@ -30,15 +30,35 @@ function track(work) {
 /* The next step through history, which jsdom takes a few timers later. */
 const arrival = window => new Promise(resolve => window.addEventListener('popstate', resolve, { once: true }));
 
-/* Turns of the event loop until nothing is pending. Work that is still pending after `STUCK_TURNS` turns and
-   `STUCK_MS` is being held by the test on purpose, and is not waited for again. */
+/* Requests to the real server. They always answer, so they are waited for however slow the machine is. */
+const REAL = new Set();
+/* `UI_TEST_DELAY=<ms>` holds each of them back, to run the suites as a slow machine would. */
+const DELAY = Number(process.env.UI_TEST_DELAY) || 0;
+
+/** Ask the real server at `base`. The answer is handed over with its body already read, so the page's
+    own read of it is not a second wait that nothing tracks. */
+export function ask(base, url, opts = {}) {
+  const work = (async () => {
+    if (DELAY) await new Promise(resolve => setTimeout(resolve, DELAY));
+    const got = await fetch(base + url, opts);
+    const body = [204, 304].includes(got.status) ? null : await got.arrayBuffer();
+    return new Response(body, { status: got.status, statusText: got.statusText, headers: got.headers });
+  })();
+  REAL.add(work);
+  const over = () => REAL.delete(work);
+  work.then(over, over);
+  return work;
+}
+
+/* Turns of the event loop until nothing is pending. Work on a fake server that is still pending after
+   `STUCK_TURNS` turns and `STUCK_MS` is being held by the test on purpose, and is not waited for again. */
 const STUCK_TURNS = 40, STUCK_MS = 300;
 async function settled() {
   const began = Date.now();
   for (let quiet = 0, turns = 0; quiet < 3; turns += 1) {
     await new Promise(resolve => setTimeout(resolve, 0));
-    if (!PENDING.size) quiet += 1;
-    else if (turns >= STUCK_TURNS && Date.now() - began >= STUCK_MS) PENDING.clear();
+    if (!PENDING.size && !REAL.size) quiet += 1;
+    else if (!REAL.size && turns >= STUCK_TURNS && Date.now() - began >= STUCK_MS) PENDING.clear();
     else quiet = 0;
   }
 }
@@ -253,7 +273,7 @@ export async function served(files, { route = '/', readOnly, ...options } = {}) 
   const { base } = await realServer(root, TOKEN, { readOnly });
   const sent = { puts: 0, saved: null };
   const fetchImpl = async (url, opts = {}) => {
-    const answer = await fetch(base + url, opts);
+    const answer = await ask(base, url, opts);
     if (opts.method === 'PUT') {
       sent.puts += 1;
       if (answer.ok) sent.saved = new URL(base + url).searchParams.get('path');

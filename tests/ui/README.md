@@ -23,7 +23,8 @@ Most pages are built with `served()`, which writes a folder of files, starts the
 and forwards the page's `fetch` there, so a suite exercises the real discovery and the HTTP contract rather
 than a mock of them. One Python process (`serve.py`) serves every folder a suite asks for. It needs a Python
 that can import `strands_evals`; override with `PYTHON=/path/to/venv/bin/python npm test`. Point the suites
-at a different build of the page with `UI_HTML=path/to/ui.html`.
+at a different build of the page with `UI_HTML=path/to/ui.html`. `UI_TEST_DELAY=350 npm test` holds each
+request to the real server back that many milliseconds, to run the suites as a slow CI machine would.
 
 `harness.mjs` holds what the suites share. `served(files)` returns a page over a real server, with `saved()`
 for the file its last Save wrote and `write()` to change the folder under it; `SAMPLE` is a folder of one

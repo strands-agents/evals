@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { page, realServer, runner, tick, waitFor } from './harness.mjs';
+import { ask, page, realServer, runner, tick, waitFor } from './harness.mjs';
 
 const { ok, done } = runner('markdown');
 const TOKEN = 'markdown-token';
@@ -129,7 +129,7 @@ async function open(options) {
   return p;
 }
 async function served(route = '/') {
-  const p = await open({ fetchImpl: (url, opts = {}) => fetch(base + url, opts), url: `${base}${route}?t=${TOKEN}` });
+  const p = await open({ fetchImpl: (url, opts = {}) => ask(base, url, opts), url: `${base}${route}?t=${TOKEN}` });
   await waitFor(() => p.$('.app').dataset.ready, 'boot to finish');
   return p;
 }

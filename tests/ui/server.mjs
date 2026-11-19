@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { page, realServer, runner, waitFor } from './harness.mjs';
+import { ask, page, realServer, runner, waitFor } from './harness.mjs';
 
 const TOKEN = 'test-token-abc';
 const { ok, done } = runner('server');
@@ -46,7 +46,7 @@ fs.cpSync(new URL('./fixtures/optimizer-run/', import.meta.url).pathname, path.j
 const { base } = await realServer(root, TOKEN);
 // jsdom has no fetch: forward the page's relative requests to the real server.
 const requested = [];
-const forward = async (url, opts = {}) => { requested.push(String(url)); return fetch(base + url, opts); };
+const forward = async (url, opts = {}) => { requested.push(String(url)); return ask(base, url, opts); };
 // Boot ends by rendering the list and choosing a tab, so a row captured before it finishes is stale.
 const served = async (route = '/') => {
   const p = await page({ fetchImpl: forward, url: `${base}${route}?t=${TOKEN}` });
