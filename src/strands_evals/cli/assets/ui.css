@@ -247,6 +247,8 @@ table.rep td.empty { padding: 18px 12px; }
   background: var(--card); color: var(--ink1); white-space: nowrap;
 }
 .btn:hover { border-color: var(--ink1); background: var(--hair2); }
+/* A copy that was refused says why, which can be a sentence. */
+.btn.refused { white-space: normal; border-radius: 14px; text-align: left; }
 .btn.pri { background: var(--brand); border-color: var(--brand); color: var(--on-brand); font-weight: 600; }
 .btn.pri:hover { background: var(--brand); filter: brightness(1.08); }
 .btn:disabled { opacity: .42; cursor: default; }

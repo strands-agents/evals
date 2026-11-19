@@ -128,11 +128,24 @@ async function open(options) {
   p.copy = async target => { p.copied = null; await p.click(target); return p.copied; };
   return p;
 }
+/* `sent` is each body the page sent to be written as Markdown. */
 async function served(route = '/') {
-  const p = await open({ fetchImpl: (url, opts = {}) => ask(base, url, opts), url: `${base}${route}?t=${TOKEN}` });
+  const sent = [];
+  const fetchImpl = (url, opts = {}) => {
+    if (url === '/api/markdown') sent.push(JSON.parse(opts.body));
+    return ask(base, url, opts);
+  };
+  const p = await open({ fetchImpl, url: `${base}${route}?t=${TOKEN}` });
   await waitFor(() => p.$('.app').dataset.ready, 'boot to finish');
-  return p;
+  return Object.assign(p, { sent });
 }
+/* What the server writes for the last body `p` sent, given the whole of the open report as its document. */
+async function writtenWhole(p) {
+  const body = JSON.stringify({ ...p.sent.at(-1), document: JSON.parse(p.window.eval('JSON.stringify(REP)')) });
+  return (await fetch(base + '/api/markdown', { method: 'POST', headers: { 'X-Evals-Token': TOKEN }, body })).text();
+}
+/* Which rows of a report sent to be written are there in full, and not as a name and an evaluator alone. */
+const inFull = body => body.document.cases.map(c => Object.keys(c).some(key => key !== 'name' && key !== 'evaluator'));
 const row = (p, i) => p.$(`#rep-rows tr.case[data-i="${i}"]`);
 const beside = (p, i) => `#rep-rows tr.case[data-i="${i}"] + tr.detail`;
 const labels = (p, within) => p.$$(`${within} [data-md]`).map(b => b.textContent).join(' | ');
@@ -538,6 +551,8 @@ Expected interactions:
   'the prompt says what failed and what it cannot know, gives the files by their full paths, and marks the agent in the command as a placeholder');
   is(prompt.split('\n').filter(line => line.startsWith('## ')).join(), '## refund|policy · Equals,## refund|policy · tone of voice,## unjudged · Equals',
     'and carries each failing row, and no other');
+  is(inFull(p.sent.at(-1)).join(), 'true,true,false,false,true', 'only the failing rows are sent to be written, so a large report does not go with them');
+  is(prompt, await writtenWhole(p), 'and the prompt is the one the whole report would have given');
   is(await p.copy('#actions [data-md="path"]'), REPORT_FILE, 'the path copied is the absolute one, which works from any directory');
 
   // ── one row: its Markdown, its command, and an address of its own ──
@@ -546,6 +561,7 @@ Expected interactions:
     'opening a row puts its case and evaluator in the address');
   is(labels(p, beside(p, 1)), 'Copy as Markdown | Copy link | Copy command', 'the open row offers its Markdown, a link and the command to run it again');
   is(await p.copy(`${beside(p, 1)} [data-md="row"]`), ROW_1, 'a row copies with where it is from, each output of its evaluator and what was diagnosed');
+  is(inFull(p.sent.at(-1)).join(), 'false,true,false,false,false', 'and only that row is sent to be written');
   is(await p.copy(`${beside(p, 1)} [data-md="row-link"]`), `${base}/reports/support/support.report.json/rows/refund%7Cpolicy/tone%0Aof%20voice`, 'its link is that address');
   is(await p.copy(`${beside(p, 1)} [data-md="row-command"]`), `strands-evals run ${EXPERIMENT_FILE} --case 'refund|policy' --agent MODULE:ATTR`,
     'its command runs that one case of the experiment, with the name quoted for a shell');
@@ -606,6 +622,10 @@ Expected interactions:
     'a case with no name is numbered by its place under each evaluator, so it reads as one case');
   ok(anon.includes('\n- Cases: 4\n'), 'and is counted once', anon.split('\n## ')[0]);
   is(anon, await fromServer('/reports/anon/unnamed.report.json.md'), 'as the server writes it');
+  await p.click(row(p, 5));
+  const nameless = await p.copy(`${beside(p, 5)} [data-md="row"]`);
+  ok(nameless.startsWith('# #1 · Len\n\n'), 'a row sent on its own keeps the number its case has in the whole report', nameless.slice(0, 40));
+  is(nameless, await writtenWhole(p), 'and reads as it would written from all of it');
 
   // ── a report left unpaired by a tie says so, the same on the page and from the server ──
   await p.click('.tab[data-view="reports"]');
@@ -871,8 +891,9 @@ ${JSON.stringify(LOST, null, 2)}
 
   // ── what only the page holds is sent to be written ──
   const candidates = await p.copy('#actions [data-md="report"]');
-  ok(candidates.startsWith(`# Report: ${p.text('#path')}\n\n- Overall score: `) && candidates.includes('\n- Experiment: none found in this folder'),
-    'a candidate’s cases are written as a report under the name the page gives them', candidates.slice(0, 200));
+  ok(candidates.startsWith(`# Report: ${p.text('#path')}\n\n- Overall score: `) && !candidates.includes('\n- Experiment: '),
+    'a candidate’s cases are written as a report under the name the page gives them, with nothing said of an experiment no scan looked for',
+    candidates.slice(0, 300));
 
   // ── a copy the server is slow to write, one it cannot write, and a clipboard that takes a promise ──
   {
@@ -893,8 +914,17 @@ ${JSON.stringify(LOST, null, 2)}
     fs.renameSync(REPORT_FILE, REPORT_FILE + '.gone');
     const refused = await q.copy('#actions [data-md="report"]');
     fs.renameSync(REPORT_FILE + '.gone', REPORT_FILE);
-    is(`${refused} | ${q.text('#actions [data-md="report"]')}`, 'null | Could not copy',
-      'Markdown the server will not write puts nothing on the clipboard, and the button says so');
+    is(`${refused} | ${q.text('#actions [data-md="report"]')}`, 'null | Could not copy: support/support.report.json is not a file',
+      'Markdown the server will not write puts nothing on the clipboard, and the button says why');
+    q.window.fetch = (url, opts) => (url === '/api/markdown'
+      ? Promise.resolve(new Response('{"error": "body over 33554432 bytes"}', { status: 413 })) : answer(url, opts));
+    await q.click(`${beside(q, 1)} [data-md="row"]`);
+    is(q.text(`${beside(q, 1)} [data-md="row"]`), 'Could not copy: body over 33554432 bytes', 'as does a row the server refuses');
+    q.window.fetch = () => Promise.reject(new TypeError('fetch failed'));
+    await q.click('#actions [data-md="failing"]');
+    is(q.text('#actions [data-md="failing"]'), 'Could not copy: fetch failed', 'and one the server never answered');
+    q.window.fetch = answer;
+    await waitFor(() => q.text(`${beside(q, 1)} [data-md="row"]`) === 'Copy as Markdown', 'the buttons to read as before', 8000);
 
     const handed = [];
     q.window.ClipboardItem = class { constructor(parts) { handed.push(parts['text/plain']); } };

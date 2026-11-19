@@ -24,8 +24,10 @@ const mdBlock = (label, v) => (mdPresent(v) ? [`${label}:`, mdFence(v)] : []);
 
 async function markdownFrom(path, opts) {
   const res = await fetch(path, opts);
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.text();
+  if (res.ok) return res.text();
+  /* The server says why in `error`. An answer that is not its own has only a status. */
+  const said = await res.json().catch(() => null);
+  throw new Error((said && said.error) || `${res.status} ${res.statusText}`.trim());
 }
 /** The Markdown of the file at a page address. */
 const fileMarkdown = route => markdownFrom(route + '.md', { headers: { 'X-Evals-Token': TOKEN } });
@@ -50,6 +52,17 @@ const reportNames = () => {
   const experiment = openExperimentOf();
   return { report: repCand ? repMeta.path : filePath(repMeta.path), experiment: experiment ? filePath(experiment) : null };
 };
+/* The open report with `rows` in full and every other row as its name and evaluator alone, marked passing.
+   The rows kept are then named, numbered and counted as in the whole report, and the rest of it is not sent. */
+function reportWith(rows) {
+  const kept = new Set(rows.map(r => r.i));
+  const of = (list, other = null) => REP.cases.map((_, i) => (kept.has(i) ? (list || [])[i] ?? null : other));
+  return {
+    cases: REP.cases.map((c, i) => (kept.has(i) ? c : { name: c.name, evaluator: c.evaluator })),
+    scores: of(REP.scores), test_passes: of(REP.test_passes, true), reasons: of(REP.reasons),
+    detailed_results: of(REP.detailed_results), diagnoses: of(REP.diagnoses), recommendations: of(REP.recommendations),
+  };
+}
 /* The command that runs a failing case again: the first that has a name to run it by. */
 function failingCommand() {
   const experiment = openExperimentOf();
@@ -213,9 +226,10 @@ const candidateOf = id => OPT && OPT.proposals.find(p => p.candidate_id === id);
 const MD_COPY = {
   report: () => REP && (repCand ? writtenMarkdown({ kind: 'report', path: repMeta.path, document: REP })
     : fileMarkdown(`/reports${idPath(repMeta.path)}`)),
-  failing: () => REP && writtenMarkdown({ kind: 'failing', document: REP, ...reportNames(), command: failingCommand() }),
+  failing: () => REP && writtenMarkdown({ kind: 'failing', document: reportWith(ROWS.filter(r => verdictOf(r) === 'fail')),
+    ...reportNames(), command: failingCommand() }),
   path: rel => filePath(rel),
-  row: i => ROWS[i] && writtenMarkdown({ kind: 'row', row: ROWS[i].i, document: REP, ...reportNames() }),
+  row: i => ROWS[i] && writtenMarkdown({ kind: 'row', row: ROWS[i].i, document: reportWith([ROWS[i]]), ...reportNames() }),
   'row-link': i => ROWS[i] && location.origin + `/reports${idPath(repMeta.path)}${rowPath(ROWS[i])}`,
   'row-command': i => ROWS[i] && runCommand(openExperimentOf(), ROWS[i].case.name),
   compare: () => CMP.length && compareMarkdown(),
@@ -234,17 +248,20 @@ const MD_COPY = {
 /* Counts the copies begun: text that arrives after a later copy was asked for is not the one wanted. */
 let copying = 0;
 
-/* The button says what happened, then goes back to what it does. */
+/* The button says what happened, and why when the text could not be written, then goes back to what it does. */
 app.addEventListener('click', async e => {
   const b = e.target.closest('[data-md]');
   if (!b) return;
   const text = MD_COPY[b.dataset.md](b.dataset.arg);
   if (!text) return;
   const mine = ++copying;
-  const wanted = Promise.resolve(text).then(now => (mine === copying ? now : Promise.reject(new Error('overtaken'))));
+  let why = '';
+  const wanted = Promise.resolve(text).then(now => (mine === copying ? now : Promise.reject(new Error('overtaken'))),
+    err => { why = err.message; throw err; });
   if (!b.dataset.label) b.dataset.label = b.textContent;
   const copied = await copyText(wanted);
   if (mine !== copying) return;
-  b.textContent = copied ? 'Copied' : 'Could not copy';
-  setTimeout(() => { b.textContent = b.dataset.label; }, 1600);
+  b.textContent = copied ? 'Copied' : why ? `Could not copy: ${why}` : 'Could not copy';
+  b.classList.toggle('refused', !!why);
+  setTimeout(() => { b.textContent = b.dataset.label; b.classList.remove('refused'); }, why ? 6000 : 1600);
 });
