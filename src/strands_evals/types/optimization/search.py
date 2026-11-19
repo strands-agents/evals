@@ -64,11 +64,17 @@ class CandidateSummary(BaseModel):
             `agent_failure_score=None`, which doesn't count them), so `trial_count - failures` completed: how a
             proposer tells a version that crashed from one that scored low.
         ranking_objective: What the ranking used when the request was built (`Assessment.objective`): the
-            fit's resolved estimate, or `measured_objective` without a usable fit.
+            fit's resolved estimate, or without a usable fit the objective over the measured means as the
+            ranking adjusts them (`measured_objective` unless the candidate has an N/A case that another assessed
+            candidate was judged on).
         term_values: Each objective term's raw value under that ranking, as `Observation.term_values`;
             None for an ineligible candidate.
         rank: Position in that ranking, 1 = best; None for an ineligible candidate.
         estimates: Per goal metric from the fit; empty when assessed by measured means.
+        adjusted_means: Per goal metric, the adjusted mean the ranking used when assessed by measured means
+            (`Assessment.adjusted_means`): the plain mean in `measured`, or, for a candidate with an N/A case
+            that another assessed candidate was judged on, that mean with such cases filled in; empty when
+            assessed from the fit or ineligible.
         violations: Per constraint, <= 0 when met, infinite when never measured (`Assessment.violations`;
             null in JSON); None for an ineligible candidate, which has no assessment.
         is_feasible: Meets every constraint as the ranking assessed it; None for an ineligible candidate.
@@ -91,6 +97,7 @@ class CandidateSummary(BaseModel):
     term_values: list[float] | None
     rank: int | None
     estimates: dict[str, Estimate]
+    adjusted_means: dict[str, float]
     violations: list[_Violation] | None
     is_feasible: bool | None
     is_eligible: bool
@@ -118,8 +125,8 @@ class Observation(BaseModel):
             candidate's from the step's start; for a same-step twin, told after the refit, that candidate's
             then. None if never measured.
         term_values: Each objective term's raw value (not oriented, unlike `Assessment.terms`: the resolved
-            estimate, else the measured mean), in objective order, taken with `objective`; what `TPE` is told
-            under `Pareto`. None when `objective` is None.
+            estimate, else the adjusted mean the ranking used, `Assessment.adjusted_means`), in objective order,
+            taken with `objective`; what `TPE` is told under `Pareto`. None when `objective` is None.
         reason: One sentence from train data, e.g. "tokens <= 4000: mean 4210 violates by 210".
         violations: Per constraint, <= 0 when met, infinite when never measured (null in the event log), taken
             with `objective`; None when `objective` is None.

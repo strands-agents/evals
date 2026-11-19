@@ -97,6 +97,7 @@ def summary(cid, values, *, is_eligible=True):
         term_values=None,
         rank=None,
         estimates={},
+        adjusted_means={},
         violations=None,
         is_feasible=None,
         is_eligible=is_eligible,

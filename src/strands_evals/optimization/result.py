@@ -317,13 +317,19 @@ class OptimizationResult(BaseModel):
         return f"candidate {self.candidates[candidate_id].number} ({candidate_id})"
 
     def _metric_cell(self, candidate_id: str, metric: str) -> str:
-        """A validation cell: the fit's estimate with its sd and the measured mean, or the measured mean alone."""
+        """A validation cell: the fit's estimate with its sd and the measured mean; without the fit, the adjusted mean
+        the pick used and the measured mean when they differ, else the measured mean alone."""
         estimate = self.validation.estimates.get(candidate_id, {}).get(metric)
         measured = self.validation.measured.get(candidate_id, {}).get(metric)
         if estimate is not None:
             text = f"{estimate.mean:.3g} ± {estimate.sd:.2g}"
             return text + (f" (measured {measured.mean:.3g})" if measured is not None else "")
-        return "-" if measured is None else f"{measured.mean:.3g} (measured)"
+        if measured is None:
+            return "-"
+        adjusted = self.validation.adjusted_means.get(candidate_id, {}).get(metric)
+        if adjusted is not None and f"{adjusted:.3g}" != f"{measured.mean:.3g}":
+            return f"{adjusted:.3g} (measured {measured.mean:.3g})"
+        return f"{measured.mean:.3g} (measured)"
 
     def to_rows(self, grain: Grain = "proposal") -> list[dict[str, Any]]:
         """The run as flat rows, built from the event log, so a resumed run's rows cover the whole run.
@@ -477,6 +483,7 @@ def _proposal_rows(
             estimate = label.estimates.get(m) if label is not None else None
             out[f"estimate.{m}"] = None if estimate is None else estimate.mean
             out[f"estimate_sd.{m}"] = None if estimate is None else estimate.sd
+            out[f"adjusted.{m}"] = label.adjusted_means.get(m) if label is not None else None
         for m in metrics:
             measured = label.measured.get(m) if label is not None else None
             out[f"train.{m}"] = None if measured is None else measured.mean
