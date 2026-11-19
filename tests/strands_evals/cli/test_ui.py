@@ -32,6 +32,7 @@ from strands_evals.cli._ui_discovery import (
     read_event_log,
 )
 from strands_evals.cli._ui_evaluators import check_evaluators, evaluator_catalog
+from strands_evals.cli._ui_markdown import DEPTH_LIMIT
 from strands_evals.cli._ui_server import (
     MAX_UPLOAD_BYTES,
     PAGE_ROOTS,
@@ -2065,20 +2066,32 @@ def test_markdown_prints_a_score_too_large_for_two_decimals(client: Client):
     assert reply.body.endswith("| alpha | OutputEvaluator | 100000000000000000000000000.00 | passed |\n")
 
 
-def test_markdown_answers_for_a_file_nested_deeper_than_most_pythons_write(client: Client):
-    """Written where the interpreter can, refused with the reason where it cannot; never left unanswered."""
-    nested = "[" * 5000 + "1" + "]" * 5000
+@pytest.mark.parametrize("levels", [DEPTH_LIMIT - 2, 5000], ids=["just past the depth written", "far past it"])
+def test_markdown_says_when_a_file_is_nested_too_deeply_to_write(client: Client, levels):
+    """The same on every Python, so that a small file cannot be laid out as hundreds of megabytes."""
+    nested = "[" * levels + "1" + "]" * levels
     failing = _report("alpha", failing=("alpha",))
     (client.root / "deep.json").write_text(json.dumps(failing).replace('"ask about alpha"', nested))
 
     reply = client.send("GET", "/reports/deep.json.md")
 
-    # A Python that reads and writes this depth, as 3.14 does on Linux, writes the Markdown.
-    if reply.status == HTTPStatus.OK:
-        assert reply.body.startswith("# Report: deep.json\n")
-    else:
-        assert reply.status == HTTPStatus.UNPROCESSABLE_ENTITY
-        assert reply.body["error"].startswith(("deep.json is nested too deeply", "deep.json could not be parsed: "))
+    assert reply.status == HTTPStatus.UNPROCESSABLE_ENTITY
+    # A Python that cannot read the file that deep says so first.
+    assert reply.body["error"].startswith(
+        ("deep.json is nested more than 200 levels", "deep.json could not be parsed: ")
+    )
+
+
+def test_markdown_writes_a_file_nested_as_deeply_as_is_written(client: Client):
+    # The value sits three levels down: in the report, in its cases, in one case.
+    nested = "[" * (DEPTH_LIMIT - 3) + "1" + "]" * (DEPTH_LIMIT - 3)
+    failing = _report("alpha", failing=("alpha",))
+    (client.root / "deep.json").write_text(json.dumps(failing).replace('"ask about alpha"', nested))
+
+    reply = client.send("GET", "/reports/deep.json.md")
+
+    assert reply.status == HTTPStatus.OK
+    assert reply.body.startswith("# Report: deep.json\n")
 
 
 # ── the server: Markdown of a document the page sends ──
@@ -2244,21 +2257,31 @@ def test_rendering_writes_a_number_that_is_not_json_as_a_file_of_it_is_written(c
 
     assert reply.status == HTTPStatus.OK
     assert "Input:\n\n```json\n[\n  null\n]\n```\n" in reply.body
-    assert reply.body == client.send("GET", "/reports/odd.report.json.md").body
+    # The file's own Markdown says what the scan found of an experiment, which a posted document was not scanned for.
+    unpaired = "\n- Experiment: none found in this folder; a report made in code has none"
+    assert reply.body == client.send("GET", "/reports/odd.report.json.md").body.replace(unpaired, "")
 
 
-def test_rendering_answers_for_a_document_nested_deeper_than_most_pythons_write(client: Client):
-    """Written where the interpreter can, refused with the reason where it cannot; never left unanswered."""
+@pytest.mark.parametrize("levels", [DEPTH_LIMIT, 5000], ids=["just past the depth written", "far past it"])
+def test_rendering_says_when_a_document_is_nested_too_deeply_to_write(client: Client, levels):
     failing = {"cases": [{"name": "a", "evaluator": "E", "input": "deep"}], "scores": [0], "test_passes": [False]}
     body = json.dumps({"kind": "report", "path": "r.json", "document": failing})
 
-    reply = client.send("POST", RENDER, body=body.replace('"deep"', "[" * 5000 + "1" + "]" * 5000).encode())
+    reply = client.send("POST", RENDER, body=body.replace('"deep"', "[" * levels + "1" + "]" * levels).encode())
 
-    if reply.status == HTTPStatus.OK:
-        assert reply.body.startswith("# Report: r.json\n")
-    else:
-        assert reply.status in (HTTPStatus.UNPROCESSABLE_ENTITY, HTTPStatus.BAD_REQUEST)
-        assert reply.body["error"].startswith(("the document is nested too deeply", "body is not JSON: "))
+    # A Python that cannot read the body that deep says so first.
+    assert reply.status in (HTTPStatus.UNPROCESSABLE_ENTITY, HTTPStatus.BAD_REQUEST)
+    assert reply.body["error"].startswith(("the document is nested more than 200 levels", "body is not JSON: "))
+
+
+def test_rendering_says_nothing_of_a_folder_it_did_not_read(client: Client):
+    """A candidate's report was paired with nothing, and a case being edited has no file that holds the rest."""
+    report = client.send("POST", RENDER, body={"kind": "report", "path": "tune · c3", "document": FAILING})
+    case = {"kind": "case", "index": 0, "document": {"name": "c", "input": "z" * 5000}, "experiment": "unsaved"}
+    cut = client.send("POST", RENDER, body=case)
+
+    assert "- Evaluators: OutputEvaluator\n\n## Failing rows" in report.body
+    assert cut.body.endswith(f"```text\n{'z' * 4000}\n```\n\nCut after 4000 of 5000 characters.\n")
 
 
 def test_llms_txt_describes_every_address_the_server_answers(client: Client):

@@ -51,12 +51,14 @@ from ._ui_discovery import (
 )
 from ._ui_evaluators import check_evaluators, evaluator_catalog
 from ._ui_markdown import (
+    DEPTH_LIMIT,
     case_markdown,
     diagnosis_markdown,
     experiment_markdown,
     failing_prompt,
     llms_text,
     report_markdown,
+    posted,
     row_markdown,
     session_markdown,
     trace_markdown,
@@ -149,22 +151,34 @@ def _is_timestamp(value: Any) -> TypeGuard[float]:
     return isinstance(value, float) and math.isfinite(value)
 
 
-def finite(value: Any) -> Any:
+class TooDeep(Exception):
+    """A document nests further than is written as Markdown."""
+
+
+TOO_DEEP_TO_WRITE = f"nested more than {DEPTH_LIMIT} levels, which is too deep to write as Markdown"
+
+
+def finite(value: Any, depth: int | None = None) -> Any:
     """`value` with NaN and Infinity replaced by None, which is how JSON can carry them.
 
     Walks with its own stack, so a document nested deeper than the recursion limit is copied too.
+
+    Raises:
+        TooDeep: If `depth` is given and the value holds more levels than that inside one another.
     """
     out: list[Any] = [None]
-    todo: list[tuple[Any, Any, Any]] = [(out, 0, value)]
+    todo: list[tuple[Any, Any, Any, int]] = [(out, 0, value, 1)]
     while todo:
-        into, key, item = todo.pop()
+        into, key, item, level = todo.pop()
+        if isinstance(item, dict | list) and depth is not None and level > depth:
+            raise TooDeep
         if isinstance(item, dict):
             copy: Any = dict.fromkeys(item)
             into[key] = copy
-            todo.extend((copy, name, held) for name, held in item.items())
+            todo.extend((copy, name, held, level + 1) for name, held in item.items())
         elif isinstance(item, list):
             into[key] = copy = [None] * len(item)
-            todo.extend((copy, index, held) for index, held in enumerate(item))
+            todo.extend((copy, index, held, level + 1) for index, held in enumerate(item))
         else:
             into[key] = None if isinstance(item, float) and not math.isfinite(item) else item
     return out[0]
@@ -586,7 +600,11 @@ class UIHandler(BaseHTTPRequestHandler):
         if form == ".json":
             self._json(HTTPStatus.OK, obj)
             return
-        obj = finite(obj)  # NaN and Infinity are not JSON: a score that is one reads as none
+        try:
+            obj = finite(obj, DEPTH_LIMIT)  # NaN and Infinity are not JSON: a score that is one reads as none
+        except TooDeep:
+            self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{rel} is {TOO_DEEP_TO_WRITE}")
+            return
         # The path as the scan writes it, so the file is found in the listing however it was asked for.
         root = self.config.root.resolve()
         path = target.relative_to(root).as_posix()
@@ -595,26 +613,26 @@ class UIHandler(BaseHTTPRequestHandler):
         def listed(entries: list[dict]) -> dict:
             return next((entry for entry in entries if entry["path"] == path), {})
 
-        try:
-            if kind == REPORT:
-                paired = listed(found.reports)
-                text = report_markdown(path, obj, paired.get("experiment"), paired.get("link"))
-            elif kind == EXPERIMENT:
-                text = experiment_markdown(path, obj, listed(found.experiments).get("reports") or [])
-            elif kind == DIAGNOSIS:
-                text = diagnosis_markdown(path, obj, listed(found.diagnoses).get("session"))
-            else:
-                diagnoses = []
-                for made in listed(found.sessions).get("diagnoses") or []:
-                    try:
-                        diagnoses.append((made, finite(json.loads((root / made).read_text(encoding="utf-8")))))
-                    except NOT_JSON as exc:
-                        self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{made} could not be parsed: {exc}")
-                        return
-                text = session_markdown(path, obj, session_seconds(obj), diagnoses)
-        except RecursionError:
-            self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{rel} is nested too deeply to write as Markdown")
-            return
+        if kind == REPORT:
+            paired = listed(found.reports)
+            text = report_markdown(path, obj, paired.get("experiment"), paired.get("link"))
+        elif kind == EXPERIMENT:
+            text = experiment_markdown(path, obj, listed(found.experiments).get("reports") or [])
+        elif kind == DIAGNOSIS:
+            text = diagnosis_markdown(path, obj, listed(found.diagnoses).get("session"))
+        else:
+            diagnoses = []
+            for made in listed(found.sessions).get("diagnoses") or []:
+                try:
+                    held = finite(json.loads((root / made).read_text(encoding="utf-8")), DEPTH_LIMIT)
+                except NOT_JSON as exc:
+                    self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{made} could not be parsed: {exc}")
+                    return
+                except TooDeep:
+                    self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{made} is {TOO_DEEP_TO_WRITE}")
+                    return
+                diagnoses.append((made, held))
+            text = session_markdown(path, obj, session_seconds(obj), diagnoses)
         self._send(HTTPStatus.OK, text.encode("utf-8", "replace"), "text/markdown; charset=utf-8")
 
     def _cannot_replace(self, rel: str, target: Path, expected: float) -> tuple[HTTPStatus, str] | None:
@@ -697,12 +715,13 @@ class UIHandler(BaseHTTPRequestHandler):
         A path in the body is a name to write: nothing is read from the folder. A body over 32 MB is refused.
         """
         try:
-            text = _rendered(finite(body))  # as a file is read for `.md`
+            with posted():
+                text = _rendered(finite(body, DEPTH_LIMIT))  # as a file is read for `.md`
         except ValueError as exc:
             self._error(HTTPStatus.BAD_REQUEST, str(exc))
             return
-        except RecursionError:
-            self._error(HTTPStatus.UNPROCESSABLE_ENTITY, "the document is nested too deeply to write as Markdown")
+        except TooDeep:
+            self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"the document is {TOO_DEEP_TO_WRITE}")
             return
         self._send(HTTPStatus.OK, text.encode("utf-8", "replace"), "text/markdown; charset=utf-8")
 

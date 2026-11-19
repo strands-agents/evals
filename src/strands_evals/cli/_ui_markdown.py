@@ -10,18 +10,38 @@ import json
 import math
 import re
 import sys
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from decimal import ROUND_HALF_UP, Decimal, localcontext
 from typing import Any
 
 _TICKS = re.compile("`+")
 _SPACE = re.compile(r"[ \t\r\n]+")
+_BREAKS = re.compile(r"[\r\n]+")
 
 # Each pair of fields a report row or a case can carry, in the order the page shows them.
 _ASPECTS = ("output", "trajectory", "interactions", "environment_state")
 
 # The longest value written out whole, in characters. A longer one is cut and says so: the file has the rest.
 VALUE_LIMIT = 4000
+
+# The deepest a document may nest and still be written. Each level indents the levels inside it, so a small
+# file nested thousands deep would be laid out as hundreds of megabytes before any value was cut.
+DEPTH_LIMIT = 200
+
+# Whether what is being written was sent by its holder and not read from the folder.
+_POSTED: ContextVar[bool] = ContextVar("posted", default=False)
+
+
+@contextmanager
+def posted() -> Iterator[None]:
+    """Write a document its sender holds: nothing is said of a file that has more of it, or of a scan."""
+    token = _POSTED.set(True)
+    try:
+        yield
+    finally:
+        _POSTED.reset(token)
 
 
 def value_text(value: Any) -> str:
@@ -33,6 +53,11 @@ def value_text(value: Any) -> str:
 
 def _one_line(value: Any) -> str:
     return _SPACE.sub(" ", value_text(value)).strip(" ")
+
+
+def _named(name: str) -> str:
+    """The name of a file as it is, on one line: after a line break it would read as a heading."""
+    return _BREAKS.sub(" ", name)
 
 
 def _present(value: Any) -> bool:
@@ -65,10 +90,8 @@ def _capped(text: str, lang: str) -> list[str]:
     """Text in a fence, cut at `VALUE_LIMIT` characters with a line saying how much was left out."""
     if len(text) <= VALUE_LIMIT:
         return [_fenced(text, lang)]
-    return [
-        _fenced(text[:VALUE_LIMIT], lang),
-        f"Cut after {VALUE_LIMIT} of {len(text)} characters: the file has the rest.",
-    ]
+    rest = "" if _POSTED.get() else ": the file has the rest"
+    return [_fenced(text[:VALUE_LIMIT], lang), f"Cut after {VALUE_LIMIT} of {len(text)} characters{rest}."]
 
 
 def _lang(value: Any) -> str:
@@ -220,8 +243,10 @@ def _document(parts: Iterable[str]) -> str:
 def _made_from(experiment: str | None, link: dict | None) -> str:
     """The experiment a report was paired with and how well it fits, or why it has none, as the scan found it."""
     if experiment:
-        return experiment + (f" ({link['status']}: {link['detail']})" if link else "")
-    return f"not paired: {link['detail']}" if link else "none found in this folder; a report made in code has none"
+        return _named(experiment) + (f" ({link['status']}: {_named(link['detail'])})" if link else "")
+    if link:
+        return f"not paired: {_named(link['detail'])}"
+    return "none found in this folder; a report made in code has none"
 
 
 def report_markdown(path: str, doc: dict, experiment: str | None, link: dict | None = None) -> str:
@@ -237,8 +262,10 @@ def report_markdown(path: str, doc: dict, experiment: str | None, link: dict | N
         f"{verdicts.count('not applicable')} not applicable)",
         f"- Cases: {len({row['name'] for row in rows})}",
         f"- Evaluators: {', '.join(dict.fromkeys(row['evaluator'] for row in rows)) or 'none'}",
-        f"- Experiment: {_made_from(experiment, link)}",
     ]
+    # A report that was sent with no pairing was not looked for in a scan, so nothing is said of one.
+    if experiment or link or not _POSTED.get():
+        facts.append(f"- Experiment: {_made_from(experiment, link)}")
     failing = _failing_parts(rows, "###")
     table = ["| Case | Evaluator | Score | Verdict |", "| --- | --- | --- | --- |"]
     table += [
@@ -246,7 +273,7 @@ def report_markdown(path: str, doc: dict, experiment: str | None, link: dict | N
         for row in rows
     ]
     return _document(
-        [f"# Report: {path}", "\n".join(facts), "## Failing rows", *(failing or ["None."])]
+        [f"# Report: {_named(path)}", "\n".join(facts), "## Failing rows", *(failing or ["None."])]
         + ["## All rows", "\n".join(table)]
     )
 
@@ -260,7 +287,7 @@ def row_markdown(doc: dict, index: int, report: str, experiment: str | None) -> 
     if not 0 <= index < len(rows):
         return None
     row = rows[index]
-    where = [f"- Report: `{report}`", *([f"- Experiment: `{experiment}`"] if experiment else [])]
+    where = [f"- Report: `{_named(report)}`", *([f"- Experiment: `{_named(experiment)}`"] if experiment else [])]
     judged, case = _row_parts(row, where)
     return _document([f"# {row['name']} · {row['evaluator']}", *judged, *case])
 
@@ -271,12 +298,12 @@ def failing_prompt(doc: dict, report: str, experiment: str | None, command: str 
     """
     rows = _rows(doc)
     failed = sum(row["verdict"] == "failed" for row in rows)
-    facts = [f"- Report: `{report}`"]
+    facts = [f"- Report: `{_named(report)}`"]
     if experiment:
-        facts.append(f"- Experiment, which holds the cases and the evaluators: `{experiment}`")
+        facts.append(f"- Experiment, which holds the cases and the evaluators: `{_named(experiment)}`")
     if command:
         facts.append(
-            f"- To run one case again: `{command}`. "
+            f"- To run one case again: `{_named(command)}`. "
             "`MODULE:ATTR` is a placeholder: put the import path of the agent under test there."
         )
     return _document(
@@ -315,9 +342,9 @@ def experiment_markdown(path: str, doc: dict, reports: Sequence[str]) -> str:
     facts = [
         f"- Cases: {len(cases)}",
         f"- Evaluators: {len(evaluators)}",
-        f"- Reports: {', '.join(sorted(reports)) or 'none found in this folder'}",
+        f"- Reports: {', '.join(_named(made) for made in sorted(reports)) or 'none found in this folder'}",
     ]
-    parts = [f"# Experiment: {path}", "\n".join(facts), "## Evaluators"]
+    parts = [f"# Experiment: {_named(path)}", "\n".join(facts), "## Evaluators"]
     parts += [part for i, e in enumerate(evaluators) for part in _evaluator_parts(e, i)] or ["None."]
     parts.append("## Cases")
     listed = [part for i, case in enumerate(cases) for part in _case_parts(case, i, "###")]
@@ -327,7 +354,7 @@ def experiment_markdown(path: str, doc: dict, reports: Sequence[str]) -> str:
 def case_markdown(case: Any, index: int, experiment: str) -> str:
     """One case of an experiment on its own. `index` names it when it has no name of its own."""
     heading, *blocks = _case_parts(_dict(case), index, "#")
-    return _document([heading, f"- Experiment: `{experiment}`", *blocks])
+    return _document([heading, f"- Experiment: `{_named(experiment)}`", *blocks])
 
 
 # ── a session, and a trace on its own ──
@@ -485,10 +512,10 @@ def session_markdown(path: str, doc: dict, seconds: float | None, diagnoses: Seq
     ]
     if seconds is not None:
         facts.append(f"- Time: {_nice(seconds)}s")
-    facts.append(f"- Diagnoses: {', '.join(made for made, _ in diagnoses) or 'none found'}")
-    parts = [f"# Session: {path}", "\n".join(facts)]
+    facts.append(f"- Diagnoses: {', '.join(_named(made) for made, _ in diagnoses) or 'none found'}")
+    parts = [f"# Session: {_named(path)}", "\n".join(facts)]
     for made, diagnosis in diagnoses:
-        parts += [f"## Diagnosis: {made}", _whole(diagnosis)]
+        parts += [f"## Diagnosis: {_named(made)}", _whole(diagnosis)]
     first = 0
     for at, spans in enumerate(traces):
         trace_id = _dict(doc["traces"][at]).get("trace_id")
@@ -504,7 +531,7 @@ def trace_markdown(doc: Any, cost: str | None = None) -> str:
 
     `cost` is what the page says it took, for the line under the heading.
     """
-    said = [cost] if cost else []
+    said = [_named(cost)] if cost else []
     spans = _spans(doc)
     if spans is not None:
         parts = [f"# Trace: {_count(len(spans), 'span')} of a recorded session", *said]
@@ -520,13 +547,13 @@ def trace_markdown(doc: Any, cost: str | None = None) -> str:
 def diagnosis_markdown(path: str, doc: dict, session: str | None) -> str:
     """A diagnosis as it was written. `session` is the file of the session it was made from, when that was found."""
     session_id = doc.get("session_id")
-    where = f", in {session}" if session else ", which is not in the folder"
+    where = f", in {_named(session)}" if session else ", which is not in the folder"
     facts = [
         f"- Session: {_one_line(session_id) + where if _present(session_id) else 'not named'}",
         f"- Failures: {len(_list(doc.get('failures')))}",
         f"- Root causes: {len(_list(doc.get('root_causes')))}",
     ]
-    return _document([f"# Diagnosis: {path}", "\n".join(facts), _whole(doc)])
+    return _document([f"# Diagnosis: {_named(path)}", "\n".join(facts), _whole(doc)])
 
 
 # What sits under each root of the page's addresses. `ui-route.js` is where they are parsed.
