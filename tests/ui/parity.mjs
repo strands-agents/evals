@@ -75,6 +75,8 @@ const TREE = {
   'recorded/untimed.json': session('s2', [{ span_type: 'inference', messages: [] }]),
   'recorded/elsewhere/s9.diagnosis.json': diagnosis('s9'),
   'recorded/causes.json': { root_causes: [{ failure_span_id: 'a', location: 'b' }] },
+  'recorded/clean.rca.json': { root_causes: [] },
+  'recorded/no-causes-and-more.json': { root_causes: [], notes: 'none yet' },
   'recorded/no-spans.session.json': { session_id: 's3', traces: [{ trace_id: 't' }] },
   'elsewhere/transcripts/s4.json': session('s4', [span('a', 0, 1)]),
   'twice/left/s.json': session('twin', [span('a', 0, 1)]),
@@ -183,8 +185,11 @@ try {
     && recorded['recorded/any-name.json'].diagnoses.join() === 'recorded/s1.diagnosis.json',
   'a session is timed trace by trace and holds the diagnosis made of it', JSON.stringify(recorded['recorded/any-name.json']));
   const lone = server.diagnoses.filter(d => d.session === null).map(d => d.path).join();
-  ok(lone === 'recorded/causes.json,recorded/elsewhere/s9.diagnosis.json,twice/twin.diagnosis.json',
-    'a diagnosis stands alone when no session has its id, when it names none, and when two equally near do', lone);
+  ok(lone === 'recorded/causes.json,recorded/clean.rca.json,recorded/elsewhere/s9.diagnosis.json,twice/twin.diagnosis.json',
+    'a diagnosis stands alone when no session has its id, when it names none or found no cause, and when two equally near do', lone);
+  const unknown = server.skipped.find(x => x.path === 'recorded/no-causes-and-more.json');
+  ok(unknown && unknown.why === 'not an experiment, a report, a session or a diagnosis',
+    'an empty list of root causes among other things is not a diagnosis, and the reason names every kind the page reads', JSON.stringify(unknown));
   ok(JSON.stringify(server.stores) === '[{"dir":"cached","files":3,"path":"cached"}]',
     'a store counts its results and what opens like one after them, and a look-alike elsewhere is not a store', JSON.stringify(server.stores));
   const key = entry => entry.id || entry.path;

@@ -15,8 +15,8 @@ function classify(o) {
   const on = (list, key) => Array.isArray(list) && list.every(x => x && typeof x === 'object' && typeof x[key] === 'string');
   const found = on(o.failures, 'span_id'), explained = on(o.root_causes, 'failure_span_id');
   if (found && typeof o.session_id === 'string' && (o.root_causes == null || explained)) return 'diagnosis';
-  /* `--rca-only` writes root causes alone, with no session named. */
-  if (o.failures == null && explained && o.root_causes.length) return 'diagnosis';
+  /* `--rca-only` writes root causes alone, with no session named. None found is that list empty and nothing else. */
+  if (o.failures == null && explained && (o.root_causes.length || Object.keys(o).length === 1)) return 'diagnosis';
   return null;
 }
 
@@ -232,7 +232,7 @@ function scanned(path, rootDepth) {
   return dirs.length <= SCAN_DEPTH && !dirs.some(d => d.startsWith('.') || SKIPPED_DIRS.includes(d));
 }
 
-const UNRECOGNISED = 'not an experiment or a report';
+const UNRECOGNISED = 'not an experiment, a report, a session or a diagnosis';
 
 async function ingest(all, rootDepth = 0) {
   /* In path order, so a directory's files are read in the order the server reads them. */

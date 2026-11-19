@@ -7,7 +7,9 @@ import os
 import re
 import runpy
 import socket
+import sys
 import threading
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.message import Message
@@ -51,7 +53,7 @@ from strands_evals.types.detector import DiagnosisResult, FailureItem, FailureOu
 from strands_evals.types.evaluation import EvaluationData
 from strands_evals.types.trace import InferenceSpan, Session, SpanInfo, Trace
 
-NOT_RECOGNISED = "not an experiment or a report"
+NOT_RECOGNISED = "not an experiment, a report, a session or a diagnosis"
 # More arrays inside one another than the JSON reader will follow.
 TOO_DEEP = "[" * 100_000
 # Fewer than that, and more than a copy made level by level will follow.
@@ -211,7 +213,8 @@ def _snapshot(root: Path) -> dict[str, bytes]:
             "rca-only": (RCAOutput(root_causes=[_CAUSE]).model_dump(mode="json"), "diagnosis"),
             "a diagnosis that found nothing": (DiagnosisResult(session_id="s").model_dump(mode="json"), "diagnosis"),
             "failures that name no span": ({"session_id": "s", "failures": ["it broke"]}, None),
-            "no root causes and no session": ({"root_causes": []}, None),
+            "rca-only that found nothing": (RCAOutput().model_dump(mode="json"), "diagnosis"),
+            "no root causes among other things": ({"root_causes": [], "notes": "none yet"}, None),
         }
     ),
 )
@@ -434,6 +437,70 @@ def test_scan_sets_aside_a_link_that_leads_back_to_itself(tmp_path: Path):
 
     assert [experiment["path"] for experiment in found.experiments] == ["experiment.json"]
     assert found.skipped == [{"path": "loop.json", "why": "could not read: OSError"}]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="creating a symlink needs a privilege on Windows")
+@pytest.mark.parametrize("linked", ["run.json", "events.jsonl"])
+def test_an_optimizer_run_is_not_read_through_a_link_that_leaves_the_folder(tmp_path: Path, linked):
+    outside = _optimizer_run(tmp_path / "outside", {"event": "propose"}, config={"run_id": "not-for-this-folder"})
+    run = _optimizer_run(tmp_path / "root" / "tuning", {"event": "config"})
+    (run / linked).unlink()
+    (run / linked).symlink_to(outside / linked)
+
+    found = discover(tmp_path / "root")
+
+    assert found.optimizer_runs == []
+    assert {"path": f"tuning/{linked}", "why": "a link to a file outside this folder"} in found.skipped
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs a named pipe")
+def test_scan_sets_aside_a_pipe_instead_of_waiting_on_it(tmp_path: Path):
+    """Nothing writes to these pipes, so reading one would never return."""
+    LocalFileTaskResultStore(tmp_path / "store").save("a", EvaluationData(input="q", actual_output="a"))
+    _optimizer_run(tmp_path / "tuning", {"event": "config"})
+    (tmp_path / "tuning" / "events.jsonl").unlink()
+    for pipe in ("pipe.json", "store/b.json", "tuning/events.jsonl"):
+        os.mkfifo(tmp_path / pipe)
+    scanned: list = []
+
+    worker = threading.Thread(target=lambda: scanned.append(discover(tmp_path)), daemon=True)
+    worker.start()
+    worker.join(timeout=10)
+
+    assert scanned, "the scan is still waiting on a pipe"
+    assert scanned[0].optimizer_runs == []
+    assert {skip["path"]: skip["why"] for skip in scanned[0].skipped if skip["path"] != "tuning/run.json"} == {
+        "pipe.json": "not a regular file",
+        "store/b.json": "not a regular file",
+        "tuning/events.jsonl": "not a regular file",
+    }
+
+
+@pytest.mark.skipif(not hasattr(sys, "get_int_max_str_digits"), reason="this Python reads a number of any length")
+def test_scan_sets_aside_a_file_holding_a_number_too_long_to_read(tmp_path: Path):
+    _write(tmp_path / "experiment.json", _experiment("a"))
+    (tmp_path / "huge.json").write_text('{"cases": [], "evaluators": [], "n": 1' + "0" * 5000 + "}")
+    _write(tmp_path / "tuning" / "run.json", {"run_id": "r"})
+    (tmp_path / "tuning" / "events.jsonl").write_text(
+        '{"event": "trial", "tokens": 1' + "0" * 5000 + '}\n{"event": "stop"}\n'
+    )
+
+    found = discover(tmp_path)
+
+    assert [experiment["path"] for experiment in found.experiments] == ["experiment.json"]
+    assert found.skipped == [{"path": "huge.json", "why": "holds a number too long to read"}]
+    assert [(run["events"], run["bad_lines"]) for run in found.optimizer_runs] == [
+        (1, [{"line": 1, "why": "holds a number too long to read"}])
+    ]
+
+
+def test_fingerprint_takes_a_file_name_that_is_not_utf8(tmp_path: Path):
+    try:
+        (tmp_path / os.fsdecode(b"caf\xe9.json")).write_text("{}")
+    except OSError:
+        pytest.skip("this filesystem refuses a name that is not UTF-8")
+
+    assert len(fingerprint(tmp_path)) == 64
 
 
 def test_a_task_result_store_is_reported_and_its_files_are_neither_skipped_nor_counted(tmp_path: Path, monkeypatch):
@@ -1797,6 +1864,21 @@ def test_markdown_says_why_a_report_was_left_unpaired(client: Client):
     ) in reply.body
 
 
+def test_a_file_whose_own_name_ends_in_a_form_has_a_page_and_its_data(client: Client):
+    """`copy.json.json` is a file, not the JSON form of `copy.json`, when only the longer name is there."""
+    _write(client.root / "copy.json.json", _report("gamma"))
+
+    page = client.send("GET", "/reports/copy.json.json", headers={**NO_TOKEN, "Cookie": client.cookie})
+    data = client.send("GET", "/reports/copy.json.json.json")
+    unopened = client.send("GET", "/reports/copy.json.json", headers=NO_TOKEN)
+    form = client.send("GET", "/reports/report.json.json", headers={**NO_TOKEN, "Cookie": client.cookie})
+
+    assert (page.status, page.body) == (HTTPStatus.OK, PAGE)
+    assert data == Reply(HTTPStatus.OK, _report("gamma"))
+    assert unopened == _refused(HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL)
+    assert form == _refused(HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL)
+
+
 def test_markdown_survives_a_report_holding_nan(client: Client):
     (client.root / "odd.report.json").write_text(
         '{"overall_score": NaN, "cases": [{"name": "a", "evaluator": "E", "input": Infinity}],'
@@ -1997,6 +2079,28 @@ def test_put_writes_the_file_it_loaded(client: Client, name):
         {"path": name, "modified": target.stat().st_mtime, "cases": 2, "evaluator_notes": [MISSING_RUBRIC]},
     )
     assert json.loads(target.read_text()) == document
+
+
+def test_two_saves_from_one_loaded_copy_do_not_both_land(client: Client, monkeypatch):
+    """The second would silently undo the first: it is told the file changed, as if it had arrived later."""
+    write = _ui_server.write_json_atomic
+
+    def slowly(target: Path, payload: dict) -> float:
+        time.sleep(0.2)  # long enough for the other save to have checked the stamp, were nothing holding it back
+        return write(target, payload)
+
+    monkeypatch.setattr(_ui_server, "write_json_atomic", slowly)
+    replies: list[Reply] = []
+    savers = [threading.Thread(target=lambda: replies.append(client.put("experiment.json", SAVE))) for _ in range(2)]
+    stamp = (client.root / "experiment.json").stat().st_mtime
+
+    for saver in savers:
+        saver.start()
+    for saver in savers:
+        saver.join(timeout=10)
+
+    assert sorted(reply.status for reply in replies) == [HTTPStatus.OK, HTTPStatus.CONFLICT]
+    assert (client.root / "experiment.json").stat().st_mtime != stamp
 
 
 @pytest.mark.parametrize(

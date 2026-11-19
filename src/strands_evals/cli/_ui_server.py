@@ -21,6 +21,7 @@ import secrets
 import socket
 import stat
 import tempfile
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from http import HTTPStatus
@@ -543,6 +544,23 @@ class UIHandler(BaseHTTPRequestHandler):
             return
         self._send(HTTPStatus.OK, text.encode("utf-8", "replace"), "text/markdown; charset=utf-8")
 
+    def _cannot_replace(self, rel: str, target: Path, expected: float) -> tuple[HTTPStatus, str] | None:
+        """Why the experiment at `target` may not be saved over, if it may not: `expected` is the stamp it had
+        when the client loaded it."""
+        # The page saves back to the experiment it loaded; it never creates a file or replaces another kind.
+        try:
+            current = json.loads(target.read_text(encoding="utf-8"))
+        except NOT_JSON:
+            current = None
+        if classify(current) != EXPERIMENT:
+            return HTTPStatus.CONFLICT, f"{rel} is not an experiment file"
+        # Lost-update guard: a file whose mtime differs from the one the client loaded was written by someone else.
+        if abs(target.stat().st_mtime - expected) > 1e-6:
+            return HTTPStatus.CONFLICT, f"{rel} changed on disk since it was loaded; reload before saving"
+        if not os.access(target, os.W_OK):
+            return HTTPStatus.FORBIDDEN, f"{rel} is read-only"
+        return None
+
     def _put_experiment(self, query: dict[str, list[str]], body: dict) -> None:
         """With `?path=<experiment file>` and a body of `{"document": ..., "modified": ...}`: saves the experiment
         over the file it was read from. `modified` is the time `/api/file` gave; a file changed since is refused,
@@ -569,33 +587,23 @@ class UIHandler(BaseHTTPRequestHandler):
         if not _is_timestamp(expected):
             self._error(HTTPStatus.BAD_REQUEST, "'modified' must be the number the file was loaded with")
             return
-        # The page saves back to the experiment it loaded; it never creates a file or replaces another kind.
-        try:
-            current = json.loads(target.read_text(encoding="utf-8"))
-        except NOT_JSON:
-            current = None
-        if classify(current) != EXPERIMENT:
-            self._error(HTTPStatus.CONFLICT, f"{rel} is not an experiment file")
-            return
-        # Lost-update guard: a file whose mtime differs from the one the client loaded was written by someone else.
-        if abs(target.stat().st_mtime - expected) > 1e-6:
-            self._error(HTTPStatus.CONFLICT, f"{rel} changed on disk since it was loaded; reload before saving")
-            return
-        if not os.access(target, os.W_OK):
-            self._error(HTTPStatus.FORBIDDEN, f"{rel} is read-only")
-            return
-
-        try:
-            modified = write_json_atomic(target, document)
-        except ValueError as exc:
-            self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{rel} is not valid JSON: {exc}")
-            return
-        except RecursionError:
-            self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{rel} is nested too deeply to write")
-            return
-        except OSError as exc:
-            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"could not write {rel}: {exc}")
-            return
+        # One save at a time: two that loaded the same copy would both pass the check below before either wrote.
+        with self.server.saving:  # type: ignore[attr-defined]
+            refusal = self._cannot_replace(rel, target, expected)
+            if refusal:
+                self._error(*refusal)
+                return
+            try:
+                modified = write_json_atomic(target, document)
+            except ValueError as exc:
+                self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{rel} is not valid JSON: {exc}")
+                return
+            except RecursionError:
+                self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{rel} is nested too deeply to write")
+                return
+            except OSError as exc:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"could not write {rel}: {exc}")
+                return
 
         logger.info("path=<%s>, cases=<%d> | wrote experiment", rel, len(document["cases"]))
         self._json(
@@ -661,10 +669,28 @@ class UIHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - name fixed by BaseHTTPRequestHandler
         self._answer(self._get)
 
+    def _is_a_files_own_name(self, form: tuple[str, str, str], query: dict[str, list[str]]) -> bool:
+        """Whether a path that reads as the JSON form of a file is the page address of one whose name ends so.
+
+        `copy.json.json` is that when `copy.json` is not there. Looked up only for a request that may be
+        shown the folder, so the answer tells one that may not nothing about it.
+        """
+        _, rel, suffix = form
+        admitted = self._host_is_admitted() and (self._authorized(query) or self._has_page_cookie())
+        if suffix != ".json" or not admitted:
+            return False
+        try:
+            shorter, whole = (resolve_within(self.config.root, name) for name in (rel, rel + suffix))
+        except PathOutsideRoot:
+            return False
+        return os.path.isfile(whole) and not os.path.isfile(shorter)
+
     def _get(self) -> None:
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         form = data_form(parsed.path)
+        if form and self._is_a_files_own_name(form, query):
+            form = None
         is_page = form is None and is_page_path(parsed.path)
 
         if is_page and self._host_is_admitted():
@@ -719,6 +745,7 @@ class _Server(ThreadingHTTPServer):
 
     def __init__(self, address: tuple[str, int], handler: type[BaseHTTPRequestHandler], config: UIConfig):
         self.config = config
+        self.saving = threading.Lock()
         if ":" in address[0]:
             self.address_family = socket.AF_INET6
         super().__init__(address, handler)

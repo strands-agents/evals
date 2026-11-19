@@ -59,7 +59,8 @@ const REPORT = {
   recommendations: [null, 'Add the refund policy to the prompt.'],
 };
 /* A session chosen the same way: a trace with no spans, one with no id, tool output in each shape the
-   page unwraps, token counts in each size it shortens, a span of no known kind and one that is not a span. */
+   page unwraps, token counts in each size it shortens, a span of no known kind whose name holds a line
+   break, and one that is not a span. */
 const stamp = seconds => ({ start_time: '2026-11-03T09:00:00.000000Z', end_time: `2026-11-03T09:00:0${seconds}0000Z` });
 const RECORDED = {
   session_id: 's-9',
@@ -78,7 +79,7 @@ const RECORDED = {
       { span_type: 'execute_tool', tool_call: {}, tool_result: { content: '{"a": NaN}', error: true } },
     ] },
     { trace_id: 't-2', spans: [] },
-    { spans: [{ span_type: 'custom', note: 'kept as written' }, null] },
+    { spans: [{ span_type: 'custom\n\n# not a heading', note: 'kept as written' }, null] },
   ],
 };
 const DIAGNOSIS = {
@@ -370,11 +371,11 @@ No spans.
 
 ## Trace 3 of 3
 
-### Span 4: custom
+### Span 4: custom # not a heading
 
 \`\`\`json
 {
-  "span_type": "custom",
+  "span_type": "custom\\n\\n# not a heading",
   "note": "kept as written"
 }
 \`\`\`
