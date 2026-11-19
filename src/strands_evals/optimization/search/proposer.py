@@ -30,8 +30,9 @@ class ProposalRequest:
         scores: The step's parent's train scores (`SplitScores.train`).
         inputs: Train case name -> `case.input`, for the cases in `trials`. Inputs only: no expected field
             (`expected_output`, `expected_trajectory`, ...) and no `metadata` is ever passed.
-        fit: Read-only; None before 2 candidates are eligible, after a refit that raised, or while any
-            metric is flagged.
+        fit: Read-only; None before 2 candidates are eligible, or after a refit that raised. It can have
+            flagged metrics (`fit.flagged`), whose models failed the held-out check: leave those out, as the
+            ranking does (`candidates` hold only the other metrics' estimates).
         candidates: Every scored candidate so far: eligible ones in ranking order, then the ineligible in
             scoring order. Invalid and duplicate proposals never appear.
         n: How many patches to return: the step's `Step.n_candidates` (at most `proposals_per_iteration`),
@@ -91,7 +92,8 @@ class Proposer(ABC):
     async def propose(self, request: ProposalRequest) -> list[Patch]:
         """Return up to `request.n` patches; `[]` means nothing useful this time (a redraw cause).
 
-        Raising means the proposer itself failed and ends the run with `stop_reason="proposer_error"`.
+        Raising means the proposer itself failed: the search stops before the end phase (`Optimizer.run` raises
+        `ProposerError`), and `Optimizer.resume` continues it. Retry a transient failure inside `propose`.
         """
 
     @abstractmethod
@@ -99,8 +101,9 @@ class Proposer(ABC):
         """Called exactly once per patch this proposer returned."""
 
     def evidence(self, evidence: Evidence) -> None:  # noqa: B027 (optional hook, empty on purpose)
-        """Called once per scored candidate another block proposed, except while this block waits for an open
-        `Nested` round's end (then it is told only the round's best); does nothing by default.
+        """Called once for the baseline at setup and once per scored candidate another block proposed, except
+        while this block waits for an open `Nested` round's end (then it is told only the round's best); does
+        nothing by default.
 
         Each call is an `evidence` event, replayed on resume like `observe`.
         """

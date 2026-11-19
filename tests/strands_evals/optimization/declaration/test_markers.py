@@ -1,4 +1,5 @@
 import functools
+import threading
 
 import pytest
 from strands import tool
@@ -173,6 +174,60 @@ def test_component_builds_fresh_instances():
     first, second = declared.build({"window_size": 5}), declared.build({"window_size": 5})
     assert first is not second
     assert first.window_size == 5
+
+
+class Keeper:
+    def __init__(self, size: int = 4, history=None, also=None):
+        self.size = size
+        self.history = history
+        self.also = also
+
+
+def test_component_gives_every_build_its_own_copy_of_the_fixed_kwargs():
+    history = [["declared"]]
+    declared = component(Keeper, size=Int(1, 10), history=history, also=history)
+    first, second = declared.build({"size": 2}), declared.build({"size": 3})
+    assert first.history == second.history == [["declared"]]
+    assert first.history is not history and first.history is not second.history
+    assert first.history[0] is not history[0]
+    assert first.also is first.history  # two kwargs naming one object still name one object in a build
+    first.history[0].append("first trial")
+    assert second.history == [["declared"]] and history == [["declared"]]
+
+
+def test_component_probe_build_leaves_the_declared_fixed_kwargs_unchanged():
+    class Appends:
+        def __init__(self, seen):
+            seen.append("built")
+
+    seen = []
+    declared = component(Appends, seen=seen)
+    declared.build({})
+    assert seen == []
+
+
+class Locked:
+    def __init__(self, lock=None):
+        self.lock = lock
+
+
+def test_component_with_a_fixed_kwarg_that_cant_be_copied_fails_at_declaration():
+    with pytest.raises(TypeError, match=r"component\(Locked\): lock= can't be deep-copied") as raised:
+        component(Locked, lock=threading.Lock())
+    assert "pass component() a function that builds the object and its lock on each call" in str(raised.value)
+    assert "rejects its own defaults" not in str(raised.value)
+    assert raised.value.__cause__ is not None
+
+
+class Recursive:
+    def __deepcopy__(self, memo):
+        raise RecursionError("maximum recursion depth exceeded")
+
+
+def test_component_reports_any_copy_error_as_a_type_error():
+    with pytest.raises(TypeError, match=r"lock= can't be deep-copied \(RecursionError: maximum") as raised:
+        component(Locked, lock=Recursive())
+    assert isinstance(raised.value.__cause__, RecursionError)
 
 
 def test_component_whose_constructor_rejects_its_defaults_fails_at_declaration():
@@ -364,6 +419,13 @@ def test_choice_takes_fixed_values_by_keyword_as_is():
     assert declared.alternatives["on"].label == "on"
     assert declared.alternatives["off"] is None
     assert declared.alternatives["preset"] is marker
+
+
+def test_choice_with_a_fixed_value_that_cant_be_copied_fails_at_declaration():
+    with pytest.raises(TypeError, match=r"choice\(held=...\) can't be deep-copied") as raised:
+        choice(on=component(Manager), held=Locked(threading.Lock()))
+    assert "declare it with component() so each build constructs one" in str(raised.value)
+    assert raised.value.__cause__ is not None
 
 
 def test_choice_rejects_a_positional_fixed_value():
