@@ -1603,6 +1603,21 @@ async def test_a_proposers_spend_on_no_patch_is_counted_and_survives_resume(tmp_
     assert state.search_cost == optimizer._search_cost
 
 
+async def test_a_proposers_own_fields_on_its_usage_event_are_written_as_given(tmp_path):
+    class Explaining(Scripted):
+        async def propose(self, request):
+            request.log("proposer_usage", usage=Usage.zero(), reason="unchanged", rationale=None, state={"trials": 2})
+            return []
+
+    optimizer = _searching(Block(Explaining(), "temperature"), schedule=Alternate(), base_dir=tmp_path)
+    await _search(optimizer)
+    logged = [e for e in _events(optimizer) if e["event"] == "proposer_usage"]  # the scripted patches carry no usage
+    assert logged
+    for event in logged:
+        assert set(event) == {"event", "iteration", "block", "redraw", "usage", "reason", "rationale", "state", "time"}
+        assert (event["reason"], event["rationale"], event["state"]) == ("unchanged", None, {"trials": 2})
+
+
 async def test_a_concurrent_proposer_that_raises_cancels_its_sibling_calls(tmp_path):
     started, finished = [], []
 

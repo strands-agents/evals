@@ -45,7 +45,10 @@ class ProposalRequest:
         log: `log(event, **fields)` writes an event; a proposer may write only `screened`, `proposer_retry`,
             and `proposer_usage` (any other name raises `ValueError`). `proposer_usage` (`usage=` a `Usage`) is
             a `propose` call's model spend that isn't on any patch it returns (in one event or several): each
-            token is reported once, on a returned patch's `usage` or in such an event, never both.
+            token is reported once, on a returned patch's `usage` or in such an event, never both. Other fields
+            are written into the event as given; they must be JSON-serializable and not named `event`,
+            `iteration`, `block`, `redraw`, or `time` (`Reflection` adds `reason`, `rationale`, and `state` for
+            a call that returned no patch after its agent ran).
     """
 
     space: Space
