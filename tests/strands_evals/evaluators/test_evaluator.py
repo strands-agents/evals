@@ -507,3 +507,21 @@ class TestFormatTools:
         result = self.evaluator._format_tools(tools)
         expected = "- tool_a: First tool\n- tool_b: Second tool\n  Parameters:\n    - x (number (required)): A number"
         assert result == expected
+
+
+def test_extract_user_prompt_after_json_round_trip():
+    """A TraceLevelInput reloaded from JSON must still yield the user's prompt, not the assistant's reply."""
+    evaluator = SimpleEvaluator()
+    now = datetime(2026, 1, 1)
+    trace_input = TraceLevelInput(
+        span_info=SpanInfo(session_id="s1", start_time=now, end_time=now),
+        agent_response=TextContent(text="Paris"),
+        session_history=[
+            UserMessage(content=[TextContent(text="What is the capital of France?")]),
+            AssistantMessage(content=[TextContent(text="Paris")]),
+        ],
+    )
+
+    restored = TraceLevelInput.model_validate_json(trace_input.model_dump_json())
+
+    assert evaluator._extract_user_prompt(restored) == "What is the capital of France?"
