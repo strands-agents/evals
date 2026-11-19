@@ -445,9 +445,19 @@ class Optimizer:
     def run(self) -> OptimizationResult:
         """Run the search and the end phase; the sync form of `run_async`.
 
+        A Ctrl-C cancels the run, waits for the cancellation to finish, then raises `KeyboardInterrupt`; a second
+        Ctrl-C stops the wait, and the cancellation finishes in the background. Trials and proposer calls in flight
+        are cancelled, and a cancelled trial isn't saved. Work in a thread can't be stopped. The wait covers such
+        work on asyncio's default executor (e.g. a model call that streams in a thread, as Bedrock's do) and a sync
+        `environment`'s exit, which may wait for a sync rollout to free a trial thread. A sync rollout itself keeps
+        running in the background until its call returns, and the process can't exit before then. The interrupt
+        writes no `stop` event, so the run directory is left as a killed run leaves it, and `Optimizer.resume`
+        continues it; a new run's directory is the most recently created folder under `base_dir`.
+
         Raises:
             RuntimeError: As `run_async`.
             ProposerError: As `run_async`.
+            KeyboardInterrupt: A Ctrl-C, once the run is cancelled.
         """
         return _run_in_thread(self.run_async)
 
