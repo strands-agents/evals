@@ -152,9 +152,9 @@ class OptimizationResult(BaseModel):
         iterations: Every search step, in order.
         rollouts_spent: Rollouts counted against the budget, the end phase's included.
         stop_reason: Why the search stopped: `budget` (what's left after the end-phase reserves can't score
-            one more candidate), `iterations` (the cap), `exhausted` (the schedule had nothing left), or
-            `proposer_error` (a proposer raised). The end phase runs after any of them. Never `setup`: a setup
-            stop raises instead of returning.
+            one more candidate), `iterations` (the cap), or `exhausted` (the schedule had nothing left). The end
+            phase runs after any of them. Never `setup`: a setup stop raises instead of returning, and so does a
+            proposer that raises (`ProposerError`, before the end phase).
         agent_cost: The agent's own usage per split (each trial's last attempt): train = the search,
             validation and test = the end phase.
         search_cost: Total proposer usage.

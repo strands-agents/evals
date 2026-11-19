@@ -456,6 +456,7 @@ class Optimizer:
 
         Raises:
             RuntimeError: As `run_async`.
+            ProposerError: As `run_async`.
             KeyboardInterrupt: A Ctrl-C, once the run is cancelled.
         """
         return _run_in_thread(self.run_async)
@@ -472,6 +473,9 @@ class Optimizer:
                 metric has no value on any train case. A `stop` event with
                 reason `"setup"` is written first, and the message names the unmeasured cases or the
                 metric, the trial status counts, and the first error.
+            ProposerError: A proposer raised. The search stops before the end phase, with the
+                `proposer_error` event and no `stop` event, so `Optimizer.resume` continues it as it would a
+                killed run.
         """
         await self._start()
         resumed = self._resumed
@@ -601,7 +605,11 @@ class Optimizer:
         self._iteration = state.iteration
 
     async def _run_search(self) -> StopReason:
-        """Run iterations until a stop: budget, iteration cap, the schedule's None, or a proposer raising."""
+        """Run iterations until a stop: budget, iteration cap, or the schedule's None.
+
+        Raises:
+            ProposerError: A proposer raised (from its error): the search stops where it is, with no `stop` event.
+        """
         assert self._run is not None
         per_candidate = len(self._case_split.train) * self._runs_per_candidate
         blocks = [block for block, _ in self._blocks]
@@ -642,8 +650,21 @@ class Optimizer:
             parent_id = self._select(list(step.parents) if step.parents is not None else ranking, assessments)
             try:
                 record = await self._step(step, n, self._candidates[parent_id], ranking, assessments)
-            except _ProposerFailed:
-                return "proposer_error"
+            except _ProposerFailed as failed:
+                block, error = failed.args[0], failed.__cause__
+                message = (
+                    f"the proposer of block {block!r} raised {type(error).__name__}: {error}. The search stopped in "
+                    f"iteration {self._iteration}, before the end phase, so no validation or test rollout was spent; "
+                    f"once the cause is fixed, continue it with Optimizer.resume({str(self._run.root)!r}, ...), "
+                    "passing a newly built search (resume tells its proposers the run's history)"
+                )
+                steps = _slots_used(self._iterations) // self._proposals_per_iteration
+                if steps:  # a cap the closed iterations have used: resume stops the search at once
+                    message += (
+                        f"; to end it with what it found instead, also pass budget=Budget(max_rollouts="
+                        f"{budget.max_rollouts}, max_iterations={steps})"
+                    )
+                raise ProposerError(message, block, self._run.root) from error
             self._iterations.append(record)
             if self._on_iteration is not None:
                 outcome = self._on_iteration(record)
@@ -660,7 +681,6 @@ class Optimizer:
             "budget": "the rollout budget left after the end phase's reserve can't score another candidate",
             "iterations": f"used Budget(max_iterations={cap})'s candidate slots ({cap} steps' worth)",
             "exhausted": "the schedule has nothing left to try",
-            "proposer_error": "a proposer raised; see the proposer_error event",
         }
         self._run.events.append("stop", iteration=self._iteration, reason=reason, message=messages.get(reason, ""))
 
@@ -1865,8 +1885,13 @@ class Optimizer:
         `proposals_per_iteration`, and `rerun_passes`. Only `budget`, `max_workers`, and `on_iteration` may differ
         (`None` keeps the saved value).
 
-        Resume continues a run that was killed; it never extends a finished one. Every stop runs the end
-        phase, so a finished run only finishes or returns its end phase. To search more, start a new run.
+        Resume continues a run that was killed, or whose search a proposer stopped by raising (it stops as a
+        killed run does, before the end phase); it never extends a finished one. Every `stop` event runs the
+        end phase, so a finished run only finishes or returns its end phase. To search more, start a new run.
+        Pass a newly built search, not the one the run used in this process: resume tells its proposers the
+        run's history, and the proposers that ran the search already hold it. A search a proposer stopped ends
+        with what it found when resumed with a `max_iterations` its closed iterations have already used (the
+        `ProposerError` message gives the `Budget`).
         A killed search may get a larger `Budget`, which only moves where it stops. The resumed run proposes what
         an uninterrupted one would, with two exceptions: near the rollout cap, what the killed iteration spent
         counts from the start, while its trials are reused at no cost, so a step can be cut narrower or the
@@ -1889,7 +1914,7 @@ class Optimizer:
             selection: As in `__init__`; must match the run.
             score_model: As in `__init__`; must match the run.
             environment: As in `__init__`.
-            budget: A new budget for a killed search; None keeps the saved one.
+            budget: A new budget for a killed or stopped search; None keeps the saved one.
             max_workers: None keeps the saved value.
             on_iteration: Called only for iterations run after the resume.
 
@@ -2002,8 +2027,27 @@ async def _gather_or_cancel(awaitables: Sequence[Any]) -> list[Any]:
         raise
 
 
+class ProposerError(RuntimeError):
+    """A proposer raised (the `__cause__`), so the search stopped before the end phase; `Optimizer.resume`
+    continues it.
+
+    Attributes:
+        block: The name of the block whose proposer raised.
+        run_dir: The run directory to resume.
+    """
+
+    def __init__(self, message: str, block: str, run_dir: Path) -> None:
+        super().__init__(message, block, run_dir)  # every argument in `args`, so the error pickles
+        self.block = block
+        self.run_dir = run_dir
+
+    def __str__(self) -> str:
+        return str(self.args[0])
+
+
 class _ProposerFailed(Exception):
-    """A proposer raised; its `proposer_error` event is written and the run stops with `proposer_error`."""
+    """A proposer raised (the `__cause__`; `args[0]` is the block's name); its `proposer_error` event is written,
+    then `_run_search` raises `ProposerError`."""
 
 
 @dataclass(frozen=True)
