@@ -76,8 +76,12 @@ $('opt-runs-rows').onclick = e => {
   if (!tr) return;
   const i = Number(tr.dataset.optRun);
   if (i === optSel) return show('opt-overview');
-  selectOptimizerRun(i).then(() => show('opt-overview'));
+  openOptimizerRun(i).then(arrived => arrived && show('opt-overview'));
 };
+
+/** Select a run that was asked for. Like the other opens, resolves false when the page moved on while its log was read. */
+const openOptimizerRun = async index =>
+  !!await readToOpen(OPT_RUNS[index].events_path, async () => { await selectOptimizerRun(index); return true; });
 
 /* `keep` re-reads the folder: when the open run is still there, what is open inside it stays open. */
 async function loadOptimizerRuns(runs, keep) {
