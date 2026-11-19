@@ -84,7 +84,8 @@ class Proposer(ABC):
     async def propose(self, request: ProposalRequest) -> list[Patch]:
         """Return up to `request.n` patches; `[]` means nothing useful this time (a redraw cause).
 
-        Raising means the proposer itself failed and ends the run with `stop_reason="proposer_error"`.
+        Raising means the proposer itself failed: the search stops before the end phase (`Optimizer.run` raises
+        `ProposerError`), and `Optimizer.resume` continues it. Retry a transient failure inside `propose`.
         """
 
     @abstractmethod

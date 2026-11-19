@@ -1,9 +1,10 @@
 import json
+import math
 
 import pytest
 from pydantic import ValidationError
 
-from strands_evals.types.optimization import Evidence, Observation, Patch
+from strands_evals.types.optimization import CandidateSummary, Evidence, Observation, Patch
 
 
 def _canonical(values):
@@ -101,6 +102,71 @@ def test_evidence_round_trips_through_json():
 
     assert restored == evidence
     assert type(restored.values["use_cache"]) is bool
+
+
+def _summary(violations):
+    return CandidateSummary(
+        candidate_id="abc123def456",
+        parent_id=None,
+        origin=["baseline"],
+        values={},
+        number=0,
+        measured_objective=0.5,
+        measured={},
+        trial_count=2,
+        failures=0,
+        ranking_objective=0.5,
+        term_values=[0.5],
+        rank=1,
+        estimates={},
+        violations=violations,
+        is_feasible=False,
+        is_eligible=True,
+        changed_keys=[],
+    )
+
+
+def _observation(violations):
+    return Observation(
+        patch=Patch(updates={"max_turns": 3}, rationale="fewer turns"),
+        candidate_id="abc123def456",
+        values={"max_turns": 3},
+        objective=0.75,
+        term_values=[0.75],
+        outcome="infeasible",
+        reason="Grounded >= 0.5: never measured",
+        violations=violations,
+    )
+
+
+def _evidence(violations):
+    return Evidence(
+        candidate_id="abc123def456",
+        values={"max_turns": 3},
+        origin=["numbers"],
+        objective=0.75,
+        term_values=[0.75],
+        violations=violations,
+        outcome="infeasible",
+    )
+
+
+@pytest.mark.parametrize("build", [_summary, _observation, _evidence], ids=["summary", "observation", "evidence"])
+def test_a_constraint_never_measured_is_written_as_null_and_read_back_as_infinite(build):
+    record = build([math.inf, -0.25])
+
+    line = json.dumps(record.model_dump(mode="json"), allow_nan=False)  # how the event log writes it
+
+    assert json.loads(line)["violations"] == [None, -0.25]
+    assert record.model_dump()["violations"] == [math.inf, -0.25]
+    assert type(record).model_validate(json.loads(line)) == record
+    assert type(record).model_validate_json(record.model_dump_json()) == record
+
+
+@pytest.mark.parametrize("bad", [math.nan, -math.inf])
+def test_any_other_non_finite_violation_is_still_not_json(bad):
+    with pytest.raises(ValueError, match="not JSON compliant"):
+        json.dumps(_observation([bad]).model_dump(mode="json"), allow_nan=False)
 
 
 def test_records_are_frozen():

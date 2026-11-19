@@ -136,7 +136,7 @@ class CandidateLabel(BaseModel):
             means the sentence's mean is the one the ranking judged, which can differ from the mean in
             `measured` for a candidate with N/A cases that another assessed candidate was judged on.
         estimates: Per goal metric (`Assessment.estimates`); empty when `is_from_fit` is False.
-        p_met: Per constraint (`Assessment.p_met`); empty when `is_from_fit` is False.
+        p_met: Per constraint whose metric was measured (`Assessment.p_met`); empty when `is_from_fit` is False.
         is_from_fit: False when assessed by measured means.
         measured: Every metric measured on train, usage included; a metric with no value is left out.
     """
@@ -161,11 +161,11 @@ class ValidationReport(BaseModel):
             order, so the champion is first unless the front is empty; `[]` otherwise.
         objectives: Candidate id -> its validation objective under the validation fit, or by measured
             validation means (`Assessment.objective`) when `problem` is set; None when it isn't eligible on
-            validation.
+            validation or no validation trial of it completed.
         estimates: Candidate id -> goal metric -> the validation fit's estimate; empty when assessed by
             measured means.
-        infeasible: Candidate id -> why it can't ship (a constraint not met on validation, or not
-            eligible there).
+        infeasible: Candidate id -> why it can't ship (a constraint not met on validation, not eligible
+            there, or no validation trial of it completed).
         measured: Candidate id -> every metric measured on validation.
         problem: Why the validation fit wasn't used, e.g. "fewer than 2 eligible candidates" or
             "the model raised: <Type>: <message>"; None when it was used.

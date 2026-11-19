@@ -50,13 +50,14 @@ class Assessment:
             objective's metric is unmeasured (`objective` can still be set then: `objective_value` drops a
             missing evaluator term).
         is_feasible: Every constraint has P(met) >= `criteria.feasibility_threshold` under the fit, or is
-            met on measured means.
+            met on measured means; a constraint whose metric the candidate has no value for on any case is
+            unmet either way.
         violations: Per constraint, <= 0 when met: the metric's quantile at
             `criteria.feasibility_threshold` (`AtMost`) or at 1 minus it (`AtLeast`) against the limit, or the
-            measured mean, as for `objective`, against the limit (0 when equal up to float noise, infinite when
-            the metric was never measured).
+            measured mean, as for `objective`, against the limit; 0 when equal up to float noise; infinite,
+            under the fit as well, when the candidate has no value of the metric on any case.
         total_violation: The sum of the positive violations (0 when feasible); what "least violation" ranks by.
-        p_met: Per constraint; empty when assessed by measured means.
+        p_met: Per constraint whose metric was measured; empty when assessed by measured means.
         estimates: Per goal metric, `fit.estimates(values, candidate)`; empty when assessed by measured means.
         is_from_fit: False when assessed by measured means (no fit, the last refit raised, any metric flagged, or
             the candidate not in the fit).
@@ -120,21 +121,25 @@ def assess(
     and measured means ignore it. Required: the search passes `Mean()`, the final pick `FinalPick.rule`.
 
     The fit is used for a candidate it was fitted on, unless any metric is flagged; every other candidate is
-    assessed by its measured means (`is_from_fit` False). A case where an evaluator found nothing to judge
-    doesn't make a candidate ineligible, so plain means would compare candidates on different cases: one
-    that leaves the evaluator nothing to judge on the hard cases could rank above one that was judged there.
-    So each goal metric's measured mean is taken over the cases any candidate in `ids` has a value for
-    (those assessed from the fit included); a case the candidate has no value on is filled with the other
-    candidates' mean there, shifted by the candidate's mean difference from them on the cases they share,
-    and clipped to the metric's range. A candidate with a value on every such case keeps its plain mean; one
-    with gaps depends on who else is in `ids`. Constraints are judged on the same means.
+    assessed by its measured means (`is_from_fit` False). Either way, a constraint whose metric the candidate
+    has no value for on any case of `measured` (an evaluator N/A on every case) is unmet: violation infinite,
+    no `p_met`, whatever the fit predicts for it.
+
+    A case where an evaluator found nothing to judge doesn't make a candidate ineligible, so plain means would
+    compare candidates on different cases: one that leaves the evaluator nothing to judge on the hard cases
+    could rank above one that was judged there. So each goal metric's measured mean is taken over the cases
+    any candidate in `ids` has a value for (those assessed from the fit included); a case the candidate has no
+    value on is filled with the other candidates' mean there, shifted by the candidate's mean difference from
+    them on the cases they share, and clipped to the metric's range. A candidate with a value on every such
+    case keeps its plain mean; one with gaps depends on who else is in `ids`. Constraints are judged on the
+    same means.
 
     Args:
         ids: The candidates to assess.
         fit: The fit, or None.
         criteria: The objective, constraints, and feasibility threshold.
         values: Candidate id -> values.
-        measured: Candidate id -> its scores on the fitted split.
+        measured: Candidate id -> its scores on the fitted split, for every id in `ids`.
         rule: How an objective term's estimate becomes a number.
     """
     objective = criteria.objective
@@ -153,12 +158,17 @@ def assess(
                 value = estimate.mean if isinstance(rule, Mean) else estimate.quantile(rule.q if is_max else 1 - rule.q)
                 point[metric] = round_to_sd(value, estimate.sd)
             # Each constraint judged at the required probability: the value its metric stays below (AtMost) or
-            # above (AtLeast) with probability `threshold`.
+            # above (AtLeast) with probability `threshold`. A metric the candidate has no value for on any case
+            # is never measured, as on measured means: the fit's estimate of it is a prediction from the
+            # candidate's values alone.
+            observed = {metric for case in measured[candidate_id].metrics_by_case.values() for metric in case}
             judged: list[float | None] = [
                 estimates[c.metric].quantile(threshold if isinstance(c, AtMost) else 1 - threshold)
+                if c.metric in observed
+                else None
                 for c in criteria.constraints
             ]
-            p = {str(c): p_met(c, estimates[c.metric]) for c in criteria.constraints}
+            p = {str(c): p_met(c, estimates[c.metric]) for c in criteria.constraints if c.metric in observed}
             objective_value = criteria.objective_value(point)
             terms = criteria.terms(point)
             from_fit = True
@@ -347,9 +357,10 @@ def label_candidate(
 
     Feasibility is the ranking's own: P(met) >= `criteria.feasibility_threshold` under the fit,
     measured means without a fit or while any metric is flagged, so the label always matches how the loop
-    treated the candidate. A snapshot: later refits can change how the ranking sees it. An infeasible
-    candidate stays a possible parent, ranked after the feasible ones; an ineligible one is out of the fit
-    and the parents until it is scored again and its unmeasured trials succeed.
+    treated the candidate; a constraint whose metric was never measured reads "never measured" either way. A
+    snapshot: later refits can change how the ranking sees it. An infeasible candidate stays a possible parent,
+    ranked after the feasible ones; an ineligible one is out of the fit and the parents until it is scored again
+    and its unmeasured trials succeed.
 
     Args:
         candidate: Its train scores (`SplitScores.train`).
@@ -374,7 +385,10 @@ def label_candidate(
     if assessment.is_from_fit:
         threshold = criteria.feasibility_threshold
         unmet = [
-            f"{c}: P(met) {assessment.p_met[str(c)]:.2g} < {threshold:g}"
+            # A constraint without P(met) is one whose metric the candidate has no value for.
+            f"{c}: never measured"
+            if str(c) not in assessment.p_met
+            else f"{c}: P(met) {assessment.p_met[str(c)]:.2g} < {threshold:g}"
             for c, v in zip(criteria.constraints, assessment.violations, strict=True)
             if v > 0
         ]
