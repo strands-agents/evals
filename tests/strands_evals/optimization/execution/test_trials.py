@@ -740,7 +740,7 @@ async def test_a_call_never_spends_more_than_the_budget_allows(traces, waits):
     assert waits == []  # and no wait for a pass that never runs
 
 
-async def test_a_re_run_after_resume_keeps_the_earlier_attempt(traces):
+async def test_a_re_run_after_resume_keeps_the_earlier_attempt(traces, waits):
     cache = MemoryCache()
 
     async def down(case):
@@ -755,19 +755,26 @@ async def test_a_re_run_after_resume_keeps_the_earlier_attempt(traces):
     assert spent == 1
     assert records[0].status is TrialStatus.COMPLETED
     assert [a.status for a in records[0].previous_attempts] == [TrialStatus.INFRASTRUCTURE_INVALID]
+    assert waits == []  # the first pass of a call never waits
 
 
 # the wait before a re-run pass
 
 
-async def test_a_short_outage_is_waited_out_before_the_re_run(traces, monkeypatch):
-    clock = [0.0]
+@pytest.fixture
+def clock(monkeypatch):
+    """A fake clock that only the waits move; returns [now]."""
+    now = [0.0]
 
     async def sleep(delay):
-        clock[0] += delay
+        now[0] += delay
 
     monkeypatch.setattr("strands_evals.optimization.execution.trials._sleep", sleep)
+    monkeypatch.setattr("strands_evals.optimization.execution.trials._clock", lambda: now[0])
+    return now
 
+
+async def test_a_short_outage_is_waited_out_before_the_re_run(traces, clock):
     async def task(case):  # the endpoint is unreachable for the first second
         if clock[0] < 1.0:
             raise EndpointConnectionError(endpoint_url="https://bedrock-runtime.us-east-1.amazonaws.com")
@@ -890,6 +897,52 @@ async def test_no_wait_when_the_allowance_leaves_only_bad_verdicts_to_re_judge(t
     assert records[1].evaluator_errors == {}
     assert records[1].rollouts == 0  # "b" was re-judged
     assert waits == []
+
+
+async def test_the_wait_counts_from_when_the_trial_failed(traces, clock):
+    started = []
+
+    async def task(case):
+        started.append((case.name, clock[0]))
+        if case.name == "a" and len(started) == 1:
+            raise InfrastructureError("sandbox down")
+        clock[0] += 10.0  # "b" takes longer than any first wait
+        return "ok"
+
+    records, _ = await _runner(traces, MemoryCache(), _cases("a", "b"), [Fixed()], max_workers=1).run(
+        "cand", task, ["a", "b"], runs=1, allowance=4
+    )
+
+    assert [r.status for r in records] == [TrialStatus.COMPLETED] * 2
+    assert started == [("a", 0.0), ("b", 0.0), ("a", 10.0)]  # "a" had already waited 10 s: no more wait
+
+
+async def test_a_wait_holds_no_slot_and_delays_no_other_trial(traces, monkeypatch):
+    rejudged = asyncio.Event()
+
+    async def sleep(delay):  # ends only once "b" has been re-judged
+        await asyncio.wait_for(rejudged.wait(), timeout=5)
+
+    monkeypatch.setattr("strands_evals.optimization.execution.trials._sleep", sleep)
+
+    class Flaky(Fixed):
+        async def evaluate_async(self, evaluation_case):
+            if self.calls >= 1:  # the first call, "b"'s in the first pass, fails
+                rejudged.set()
+            return await super().evaluate_async(evaluation_case)
+
+    async def task(case):
+        if case.name == "a" and not rejudged.is_set():
+            raise InfrastructureError("sandbox down")
+        return "ok"
+
+    records, spent = await _runner(traces, MemoryCache(), _cases("a", "b"), [Flaky(failures=1)], max_workers=1).run(
+        "cand", task, ["a", "b"], runs=1, allowance=4
+    )
+
+    assert [r.status for r in records] == [TrialStatus.COMPLETED] * 2
+    assert [r.evaluator_errors for r in records] == [{}, {}]
+    assert spent == 3  # "a" twice, "b" once and re-judged for no rollout
 
 
 async def test_a_failed_judge_is_re_judged_for_no_rollout(traces):

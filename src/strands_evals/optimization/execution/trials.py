@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import random
+import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -31,12 +32,13 @@ logger = logging.getLogger(__name__)
 
 _Key = tuple[str, int]  # (case name, run index)
 
-# The wait before a re-run pass, in seconds: the first is drawn from [2.5, 5], and each later pass's range doubles,
-# up to [30, 60].
+# The wait before re-running a trial that failed on infrastructure, in seconds, counted from when it failed: drawn
+# from [2.5, 5] for the first re-run pass, and each later pass's range doubles, up to [30, 60].
 _RERUN_WAIT = 5.0
 _MAX_RERUN_WAIT = 60.0
-_JITTER = random.Random()  # its own unseeded instance: a `random.seed()` elsewhere can't put separate runs in step
-_sleep = asyncio.sleep  # tests replace it to record the waits
+_JITTER = random.SystemRandom()  # OS entropy: neither `random.seed()` nor a fork puts separate runs in step
+_sleep = asyncio.sleep  # tests replace it and `_clock` to record the waits
+_clock = time.monotonic
 
 
 def _rerun_wait(pass_index: int) -> float:
@@ -188,8 +190,8 @@ class TrialRunner:
 
     A transient model error is best retried inside the call by the model client, which the agent factory
     configures (`Optimizer`'s `rerun_passes` says how for Bedrock). The re-run passes are for what still
-    fails, and each pass that re-runs an agent or an evaluator after an infrastructure failure waits first
-    (`run`).
+    fails, and a trial whose agent or evaluator failed on infrastructure is re-run only after a wait from
+    when it failed (`run`).
     """
 
     def __init__(
@@ -313,9 +315,10 @@ class TrialRunner:
         `task` is not yet instrumented (`make_task(...)` or the `build_task` path's task); each trial (one
         case, one run) wraps it with `instrument(task, TrialLog(), traces)`. After every run's first pass, up
         to `rerun_passes` re-run passes each retry the trials still `infrastructure_invalid` or with a failed evaluator.
-        A re-run pass that runs an agent again, or re-judges an evaluator whose error `classify` classifies as
-        `infrastructure_invalid`, first waits a jittered 2.5-5 s; each later pass's range doubles, up to 30-60 s.
-        A pass that only re-judges evaluators that failed on their own (a bad verdict, say) starts immediately.
+        A trial whose agent failed on infrastructure, or whose evaluator failed with an error `classify` classifies
+        as `infrastructure_invalid`, is re-run only once a jittered 2.5-5 s has passed since it failed; each later
+        pass's range doubles, up to 30-60 s. The wait holds no slot of the cap, and the pass's other trials (a
+        re-judge of a bad verdict, say) start at once.
         `allowance` caps the rollouts of the whole call, first pass included: the caller checks
         `can_afford(pending(...))` first, so the first pass always fits, and the re-runs get what is left of
         it (`BudgetTracker.allowance(phase=...)` read before the call, so `max_rollouts` and the later
@@ -400,25 +403,19 @@ class TrialRunner:
                         jobs.append((key, True))
                 if not jobs:
                     break
-                # error type per trial that failed on infrastructure: the agent's, else a judge's
-                failed = {
-                    key: call.records[key].error_type if not judge_only else call.judge_infrastructure[key]
-                    for key, judge_only in jobs
-                    if not judge_only or key in call.judge_infrastructure
-                }
+                failed = [call.infrastructure[key] for key, _ in jobs if key in call.infrastructure]
+                wait = _rerun_wait(pass_index) if failed else 0.0
                 if failed:
-                    wait = _rerun_wait(pass_index)
                     logger.warning(
                         "candidate_id=<%s>, pass=<%d>, trials=<%d>, error_type=<%s>, wait_seconds=<%.1f> | "
                         "waiting before re-running trials that failed on infrastructure",
                         candidate_id,
                         pass_index,
                         len(failed),
-                        next(iter(failed.values())),
+                        failed[0][0],
                         wait,
                     )
-                    await _sleep(wait)
-                spent += await self._pass(call, jobs, pass_index=pass_index)
+                spent += await self._pass(call, jobs, pass_index=pass_index, wait=wait)
         except Exception:
             pool.shutdown(wait=False)  # `_pass` raises only after every trial it started has returned
             raise
@@ -429,8 +426,11 @@ class TrialRunner:
             _THREAD_POOL.reset(token)
         return [call.records[key] for key in keys], spent
 
-    async def _pass(self, call: _Call, jobs: list[tuple[_Key, bool]], *, pass_index: int) -> int:
+    async def _pass(self, call: _Call, jobs: list[tuple[_Key, bool]], *, pass_index: int, wait: float = 0.0) -> int:
         """Run one pass's trials at once under the call's cap; returns the rollouts it spent.
+
+        A trial that last failed on infrastructure (`call.infrastructure`) starts only once `wait` seconds
+        have passed since it failed, waiting outside the cap.
 
         On a setup error or a failed save, trials not yet started are skipped, the running ones finish
         and are saved, then the first error is raised.
@@ -440,6 +440,10 @@ class TrialRunner:
 
         async def one(key: _Key, judge_only: bool) -> None:
             nonlocal ran
+            if key in call.infrastructure:
+                remaining = wait - (_clock() - call.infrastructure[key][1])
+                if remaining > 0:
+                    await _sleep(remaining)
             async with call.semaphore:
                 if failures:
                     return
@@ -507,10 +511,12 @@ class TrialRunner:
         if store.data is not None and record.status is not TrialStatus.INFRASTRUCTURE_INVALID:
             call.live[key] = store.data
         judges = [name for name in record.evaluator_errors if name in state.infrastructure]
-        if judges:
-            call.judge_infrastructure[key] = record.evaluator_errors[judges[0]]
+        if record.status is TrialStatus.INFRASTRUCTURE_INVALID:
+            call.infrastructure[key] = (record.error_type or "", _clock())
+        elif judges:
+            call.infrastructure[key] = (record.evaluator_errors[judges[0]], _clock())
         else:
-            call.judge_infrastructure.pop(key, None)
+            call.infrastructure.pop(key, None)
         return record
 
     def _ran(
@@ -676,8 +682,8 @@ class _Call:
     records: dict[_Key, TrialRecord] = field(default_factory=dict)
     live: dict[_Key, EvaluationData] = field(default_factory=dict)  # each trial's output as the task returned it
     passes: dict[_Key, int] = field(default_factory=dict)  # the pass each record of this call ran in
-    # trials whose last attempt had an evaluator fail on infrastructure -> that evaluator's error type
-    judge_infrastructure: dict[_Key, str] = field(default_factory=dict)
+    # trials whose last attempt failed on infrastructure (the agent, else an evaluator) -> (error type, when)
+    infrastructure: dict[_Key, tuple[str, float]] = field(default_factory=dict)
     warned: set[str] = field(default_factory=set)  # the fields `_storable` has warned about
 
 

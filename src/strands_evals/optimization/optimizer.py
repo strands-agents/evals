@@ -168,9 +168,9 @@ class Optimizer:
                 patch of each of its blocks). The schedule may give a step fewer (`Step.n_candidates`).
             max_workers: Parallel trials, shared by the candidates scored at once.
             rerun_passes: Max re-run passes per scoring call: trials still `infrastructure_invalid` are re-run, and
-                evaluators that failed are re-judged on the saved output (0 rollouts). A pass that re-runs an agent
-                or an evaluator after an infrastructure failure first waits a jittered 2.5-5 s, doubling each pass
-                up to 30-60 s.
+                evaluators that failed are re-judged on the saved output (0 rollouts). A trial whose agent or
+                evaluator failed on infrastructure is re-run once a jittered 2.5-5 s has passed since it failed,
+                doubling each pass up to 30-60 s; the pass's other trials start at once.
                 Retries inside a model call belong to the model client, which the factory configures. For Bedrock,
                 botocore's `standard` mode retries connection errors, timeouts, 500/502/503/504 responses, and
                 throttling with jittered backoff, but not an error inside a streamed response.
