@@ -242,7 +242,7 @@ ok(p.$('#cmp-with').hidden, 'and with every report compared there is nothing lef
     'a folder with one report offers no comparison, in the list or on the report');
 }
 
-// ── served: the address is a path with the reports in its query ──
+// ── the address is a path with the reports in its query, and a comparison follows its folder ──
 {
   const listed = (path, modified, overall) =>
     ({ path, name: path, dir: '.', size: 1, modified, rows: 2, failing: 0, overall_score: overall, experiment: null, link: null });
@@ -267,7 +267,7 @@ ok(p.$('#cmp-with').hidden, 'and with every report compared there is nothing lef
   same(compared(q), ['#1 early.json', '#2 late.json'], 'reports that do not record their run are ordered by their files\' times');
   ok(q.$$('#cmp-summary tr').every(tr => / · by file time$/.test(q.text(tr.children[1]))), 'and the summary says that is what dates them',
     q.text('#cmp-summary tr'));
-  ok(here(q) === address('early.json', 'late.json') + '&t=tok', 'served, the comparison is a path naming its reports, beside whatever else the address held',
+  ok(here(q) === address('early.json', 'late.json') + '&t=tok', 'the comparison is a path naming its reports, beside whatever else the address held',
     here(q));
 
   // A re-run of a compared report, and one that disappears.

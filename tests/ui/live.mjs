@@ -1,4 +1,4 @@
-/* Keeping up with the folder: a served page asks whether the tree changed and re-reads what is open,
+/* Keeping up with the folder: the page asks whether the tree changed and re-reads what is open,
    without replacing work in progress. Against a fake server whose tree the test changes. */
 import { fakeServer, page, runner, tick } from './harness.mjs';
 

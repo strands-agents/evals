@@ -65,7 +65,7 @@ export async function waitFor(cond, what = 'condition', ms = 5000) {
     document one that is being looked at; without it a served page's polling timer does nothing. */
 export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok', token, cookie, visible } = {}) {
   const errs = [];
-  /* `token` stands in for the server writing it into the document, as it does for a served page. */
+  /* `token` stands in for the server writing it into the document. */
   const html = token ? HTML.replace('name="strands-evals-token" content=""', `name="strands-evals-token" content="${token}"`) : HTML;
   const dom = new JSDOM(html, {
     runScripts: 'dangerously',

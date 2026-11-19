@@ -1,4 +1,4 @@
-/* Served mode against the real Python server: the page's requests go out over HTTP to
+/* One folder holding everything, against the real Python server: the page's requests go out over HTTP to
    `strands-evals ui`, so the contract is tested rather than a mock of it. */
 import fs from 'node:fs';
 import os from 'node:os';

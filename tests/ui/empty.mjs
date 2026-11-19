@@ -143,7 +143,7 @@ const RUN = {
     'a run whose run.json is empty says there is no setup to show');
 }
 
-// ── a run whose log cannot be read, served ──
+// ── a run whose log cannot be read ──
 {
   const run = { id: 'tuning', dir: 'tuning', run_id: 'tune-2', name: 'tune-2', events_path: 'tuning/events.jsonl', config: {},
     candidates: 0, iterations: 0, modified: 1, has_effects: false };

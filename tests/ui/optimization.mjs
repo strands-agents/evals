@@ -1234,7 +1234,7 @@ const TWO_GOALS = 'Pareto(Maximize(Quality), Minimize(tokens))';
     'one goal still gets the plot, with no goal picker', texts(oneGoal, '#opt-eff-chart .eff-row text.tick').join());
 }
 
-// ── served: the run's files are read on request ──
+// ── the run's files are read on request ──
 {
   const trial = EVENTS.find(e => e.event === 'trial' && e.record.candidate_id === 'c10' && e.record.case_name === 'train_case_01');
   const transcript = `demo/transcripts/${trial.record.transcript.hash}.json`;

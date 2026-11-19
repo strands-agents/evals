@@ -105,7 +105,7 @@ const VIEW_GUIDE = {
     steps: [
       'The address names something this folder does not hold, or that could not be read. The page says what it looked for.',
       'Use a link on the page or the sidebar to go to a list of what is here.',
-      'Served, the page reads the folder again every few seconds and opens what the address names once it is there.',
+      'The page reads the folder again every few seconds and opens what the address names once it is there.',
     ],
     terms: ['report', 'experiment'],
   },

@@ -123,7 +123,7 @@ const pairs = el => [...el.querySelectorAll('dt')].map(dt => [dt.textContent, dt
     'once it parses again, Save writes it');
 }
 
-// ── served: what goes to the server is the whole document ──
+// ── what goes to the server is the whole document ──
 {
   let sent = null;
   const p = await page({ fetchImpl: fakeServer({
@@ -137,7 +137,7 @@ const pairs = el => [...el.querySelectorAll('dt')].map(dt => [dt.textContent, dt
   await p.type('#form [data-k="input"]', 'changed');
   await p.click('#save');
   await tick(4);
-  same(sent && sent.document, edited('changed'), 'a served save sends the same whole document, unknown keys and structured values included');
+  same(sent && sent.document, edited('changed'), 'a save sends the same whole document, unknown keys and structured values included');
 }
 
 // ── an optimizer trial that returned a dict ──

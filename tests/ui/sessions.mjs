@@ -185,7 +185,7 @@ const found = p => {
     'a message that is not one is shown as unknown, and the rest of its span with it');
 }
 
-/* ── served: addresses, and keeping up with the folder ── */
+/* ── addresses, and keeping up with the folder ── */
 const entry = (path, modified, more) => ({ path, name: path.split('/').pop(), dir: path.split('/').slice(0, -1).join('/') || '.', size: 1, modified, ...more });
 const sessionEntry = (path, modified, doc, diagnoses = []) => entry(path, modified, {
   session_id: doc.session_id, traces: doc.traces.length, spans: doc.traces.reduce((n, t) => n + t.spans.length, 0), seconds: 12, diagnoses,

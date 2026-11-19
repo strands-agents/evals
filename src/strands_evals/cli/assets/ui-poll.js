@@ -1,7 +1,7 @@
 'use strict';
 
 /* ── keeping up with the folder ──
-   Served mode only: when the server's fingerprint of the tree moves, or Rescan is pressed, re-read the
+   When the server's fingerprint of the tree moves, or Rescan is pressed, re-read the
    lists and what is open. */
 
 const POLL_MS = 5000;
