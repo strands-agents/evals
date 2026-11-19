@@ -100,10 +100,18 @@ def _present(value: Any) -> bool:
 
 
 def _score(value: Any) -> str:
-    """Two decimals, rounded as JavaScript's `toFixed(2)` rounds."""
-    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+    """Two decimals, rounded as JavaScript's `toFixed(2)` rounds. From 1e21 up it prints the number whole."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
         return "none"
-    return ("-" if value < 0 else "") + str(Decimal(abs(value)).quantize(Decimal("0.01"), ROUND_HALF_UP))
+    try:
+        number = float(value)
+    except OverflowError:  # an integer past what JavaScript reads as a number
+        return "none"
+    if not math.isfinite(number):
+        return "none"
+    if abs(number) >= 1e21:
+        return _number(number)
+    return ("-" if number < 0 else "") + str(Decimal(abs(number)).quantize(Decimal("0.01"), ROUND_HALF_UP))
 
 
 def _fenced(text: str, lang: str) -> str:

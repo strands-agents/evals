@@ -54,6 +54,8 @@ from strands_evals.types.trace import InferenceSpan, Session, SpanInfo, Trace
 NOT_RECOGNISED = "not an experiment or a report"
 # More arrays inside one another than the JSON reader will follow.
 TOO_DEEP = "[" * 100_000
+# Fewer than that, and more than a copy made level by level will follow.
+DEEP = "[" * 700 + "1" + "]" * 700
 MISSING_RUBRIC = {
     "index": 0,
     "evaluator_type": "OutputEvaluator",
@@ -95,6 +97,11 @@ def _report(*names: str, failing: tuple[str, ...] = (), declined: tuple[str, ...
         "test_passes": passes,
         "detailed_results": detailed,
     }
+
+
+def _deep_experiment() -> str:
+    """An experiment file whose evaluator has a setting nested `DEEP`."""
+    return json.dumps(_experiment("a")).replace('"OutputEvaluator"', f'"OutputEvaluator", "extra": {DEEP}')
 
 
 def _session(session_id: str, *traces: list[tuple[float, float]]) -> dict:
@@ -1567,6 +1574,34 @@ def test_scan_endpoint_survives_a_report_holding_nan(client: Client):
     }
 
 
+def test_scan_endpoint_lists_a_file_nested_deeper_than_a_copy_follows(client: Client):
+    (client.root / "deep.json").write_text(_deep_experiment())
+    (client.root / "odd.json").write_text(json.dumps({**_report("alpha"), "overall_score": float("nan")}))
+
+    reply = client.send("GET", "/api/scan")
+
+    assert reply.status == HTTPStatus.OK
+    assert [experiment["path"] for experiment in reply.body["experiments"]] == ["deep.json", "experiment.json"]
+
+
+@pytest.mark.parametrize(
+    "method,path,broken",
+    [("GET", "/api/scan", "discover"), ("PUT", "/api/experiment?path=experiment.json", "validate_experiment_payload")],
+)
+def test_a_route_that_raises_answers_with_an_error_and_the_server_carries_on(
+    client: Client, monkeypatch, method, path, broken
+):
+    def fail(*args: Any) -> None:
+        raise RuntimeError(f"could not read {client.root.parent}/elsewhere")
+
+    monkeypatch.setattr(_ui_server, broken, fail)
+
+    reply = client.send(method, path, body=SAVE if method == "PUT" else None)
+
+    assert reply == _refused(HTTPStatus.INTERNAL_SERVER_ERROR, "the server could not answer this request: RuntimeError")
+    assert client.send("GET", "/api/config") == Reply(HTTPStatus.OK, client.config)
+
+
 @pytest.mark.parametrize("name,notes", [("experiment.json", [MISSING_RUBRIC]), ("report.json", [])])
 def test_file_endpoint_returns_the_document_and_its_stamp(client: Client, name, notes):
     target = client.root / name
@@ -1848,6 +1883,28 @@ def test_reading_says_when_the_file_is_not_json(client: Client, address, text):
 
     assert reply.status == HTTPStatus.UNPROCESSABLE_ENTITY
     assert reply.body["error"].startswith("odd.json could not be parsed: ")
+
+
+def test_markdown_prints_a_score_too_large_for_two_decimals(client: Client):
+    (client.root / "big.json").write_text(json.dumps({**_report("alpha"), "overall_score": 1e26, "scores": [1e26]}))
+
+    reply = client.send("GET", "/reports/big.json.md")
+
+    assert reply.status == HTTPStatus.OK
+    assert "- Overall score: 1e+26\n" in reply.body
+    assert reply.body.endswith("| alpha | OutputEvaluator | 1e+26 | passed |\n")
+
+
+def test_markdown_says_when_a_file_is_nested_too_deeply_to_write(client: Client):
+    """Depth the reader takes on a Python that reads past its own recursion limit; elsewhere it is not JSON."""
+    nested = "[" * 5000 + "1" + "]" * 5000
+    failing = _report("alpha", failing=("alpha",))
+    (client.root / "deep.json").write_text(json.dumps(failing).replace('"ask about alpha"', nested))
+
+    reply = client.send("GET", "/reports/deep.json.md")
+
+    assert reply.status == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert reply.body["error"].startswith(("deep.json is nested too deeply", "deep.json could not be parsed: "))
 
 
 def test_llms_txt_describes_every_address_the_server_answers(client: Client):
@@ -2202,6 +2259,18 @@ def test_ui_list_says_when_the_scan_stopped_at_the_file_cap(tmp_path: Path, caps
     assert (listed["truncated"], [experiment["path"] for experiment in listed["experiments"]]) == (True, ["a.json"])
     assert printed.out == "a.json (1 cases)  ->  (not run)\n"
     assert printed.err == "scan hit the file cap: the rest of DIRECTORY was not read\n"
+
+
+@pytest.mark.parametrize("nested", [DEEP, "[" * 3000 + "1" + "]" * 3000], ids=["laid out", "on one line"])
+def test_ui_list_prints_json_for_a_file_nested_deeper_than_a_copy_follows(tmp_path: Path, capsys, nested):
+    (tmp_path / "deep.json").write_text(_deep_experiment().replace(DEEP, nested))
+    _write(tmp_path / "plain.json", _experiment("a"))
+
+    assert main(["--json", "ui", str(tmp_path), "--list"]) == 0
+
+    listed = json.loads(capsys.readouterr().out)
+    # A reader that stops at its recursion limit sets the deeper file aside, which is a listing too.
+    assert {entry["path"] for entry in listed["experiments"] + listed["skipped"]} == {"deep.json", "plain.json"}
 
 
 def test_ui_list_prints_json_for_a_report_holding_nan(tmp_path: Path, capsys):

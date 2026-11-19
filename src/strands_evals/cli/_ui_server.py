@@ -22,7 +22,7 @@ import socket
 import stat
 import tempfile
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -138,14 +138,23 @@ def _is_timestamp(value: Any) -> TypeGuard[float]:
 
 
 def finite(value: Any) -> Any:
-    """`value` with NaN and Infinity replaced by None, which is how JSON can carry them."""
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, dict):
-        return {key: finite(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [finite(item) for item in value]
-    return value
+    """`value` with NaN and Infinity replaced by None, which is how JSON can carry them.
+
+    Walks with its own stack, so a document nested deeper than the recursion limit is copied too.
+    """
+    out: list[Any] = [None]
+    todo: list[tuple[Any, Any, Any]] = [(out, 0, value)]
+    while todo:
+        into, key, item = todo.pop()
+        if isinstance(item, dict):
+            into[key] = copy = dict.fromkeys(item)
+            todo.extend((copy, name, held) for name, held in item.items())
+        elif isinstance(item, list):
+            into[key] = copy = [None] * len(item)
+            todo.extend((copy, index, held) for index, held in enumerate(item))
+        else:
+            into[key] = None if isinstance(item, float) and not math.isfinite(item) else item
+    return out[0]
 
 
 def validate_experiment_payload(payload: Any) -> dict:
@@ -267,6 +276,7 @@ class UIHandler(BaseHTTPRequestHandler):
     def _send(
         self, status: HTTPStatus, body: bytes, content_type: str, *, headers: dict[str, str] | None = None
     ) -> None:
+        self._answered = True
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -429,7 +439,8 @@ class UIHandler(BaseHTTPRequestHandler):
         # Taken before the scan, so a file written during it reads as a change afterwards.
         mark = fingerprint(self.config.root, self.config.depth)
         result = discover(self.config.root, self.config.depth)
-        self._json(HTTPStatus.OK, {**self._settings(), "fingerprint": mark, **asdict(result)})
+        # `vars`, not `asdict`: that copies every listed document level by level, and one nested deeply stops it.
+        self._json(HTTPStatus.OK, {**self._settings(), "fingerprint": mark, **vars(result)})
 
     def _get_changes(self, query: dict[str, list[str]]) -> None:
         """The fingerprint now. It differs from a scan's once something the scan listed has changed."""
@@ -509,22 +520,26 @@ class UIHandler(BaseHTTPRequestHandler):
         def listed(entries: list[dict]) -> dict:
             return next((entry for entry in entries if entry["path"] == path), {})
 
-        if kind == REPORT:
-            paired = listed(found.reports)
-            text = report_markdown(path, obj, paired.get("experiment"), paired.get("link"))
-        elif kind == EXPERIMENT:
-            text = experiment_markdown(path, obj, listed(found.experiments).get("reports") or [])
-        elif kind == DIAGNOSIS:
-            text = diagnosis_markdown(path, obj, listed(found.diagnoses).get("session"))
-        else:
-            diagnoses = []
-            for made in listed(found.sessions).get("diagnoses") or []:
-                try:
-                    diagnoses.append((made, finite(json.loads((root / made).read_text(encoding="utf-8")))))
-                except NOT_JSON as exc:
-                    self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{made} could not be parsed: {exc}")
-                    return
-            text = session_markdown(path, obj, session_seconds(obj), diagnoses)
+        try:
+            if kind == REPORT:
+                paired = listed(found.reports)
+                text = report_markdown(path, obj, paired.get("experiment"), paired.get("link"))
+            elif kind == EXPERIMENT:
+                text = experiment_markdown(path, obj, listed(found.experiments).get("reports") or [])
+            elif kind == DIAGNOSIS:
+                text = diagnosis_markdown(path, obj, listed(found.diagnoses).get("session"))
+            else:
+                diagnoses = []
+                for made in listed(found.sessions).get("diagnoses") or []:
+                    try:
+                        diagnoses.append((made, finite(json.loads((root / made).read_text(encoding="utf-8")))))
+                    except NOT_JSON as exc:
+                        self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{made} could not be parsed: {exc}")
+                        return
+                text = session_markdown(path, obj, session_seconds(obj), diagnoses)
+        except RecursionError:
+            self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{rel} is nested too deeply to write as Markdown")
+            return
         self._send(HTTPStatus.OK, text.encode("utf-8", "replace"), "text/markdown; charset=utf-8")
 
     def _put_experiment(self, query: dict[str, list[str]], body: dict) -> None:
@@ -574,6 +589,9 @@ class UIHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{rel} is not valid JSON: {exc}")
             return
+        except RecursionError:
+            self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{rel} is nested too deeply to write")
+            return
         except OSError as exc:
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"could not write {rel}: {exc}")
             return
@@ -622,7 +640,27 @@ class UIHandler(BaseHTTPRequestHandler):
         "/llms.txt": _get_llms,
     }
 
+    def _answer(self, route: Callable[[], None]) -> None:
+        """Run a request. One that raises is answered with an error, not dropped with nothing sent.
+
+        The body names the kind of failure only: what was raised may quote a path, and the log has it.
+        """
+        self._answered = False
+        try:
+            route()
+        except Exception as exc:
+            if self._answered:  # part of an answer has gone out, so a second one cannot follow it
+                raise
+            logger.exception("path=<%s> | request failed", urlparse(self.path).path)
+            self.close_connection = True
+            self._error(
+                HTTPStatus.INTERNAL_SERVER_ERROR, f"the server could not answer this request: {type(exc).__name__}"
+            )
+
     def do_GET(self) -> None:  # noqa: N802 - name fixed by BaseHTTPRequestHandler
+        self._answer(self._get)
+
+    def _get(self) -> None:
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         form = data_form(parsed.path)
@@ -654,6 +692,9 @@ class UIHandler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_PUT(self) -> None:  # noqa: N802
+        self._answer(self._put)
+
+    def _put(self) -> None:
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
 
