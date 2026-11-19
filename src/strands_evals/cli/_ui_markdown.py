@@ -103,7 +103,7 @@ def _value(value: Any) -> list[str]:
 
 
 def _whole(value: Any) -> str:
-    """A document written out in full, however long: a diagnosis is read whole or not at all."""
+    """A document written out in full, however long: a diagnosis file is read whole or not at all."""
     return _fenced(value_text(value), _lang(value))
 
 
@@ -614,6 +614,8 @@ def llms_text(
             "# strands-evals ui",
             "> A local page over a folder of strands-evals experiments, reports, recorded sessions and optimizer runs. "
             "What it shows can be read without a browser, as Markdown or as JSON.",
+            "This description, the Markdown and JSON forms, `POST /api/markdown`, the shape of `/api/scan` and the "
+            "prompt the page copies are experimental: they may change before a release.",
             "## Token",
             "Every address here needs this server's token, sent as the `X-Evals-Token` header or as `?t=<token>`. "
             "The token is in the link the server printed when it started. The cookie a browser holds opens "
@@ -625,7 +627,9 @@ def llms_text(
             "\n".join(forms),
             f"In Markdown a value longer than {VALUE_LIMIT} characters is cut, with a line saying how much was left "
             "out: the JSON form has all of it. A report writes a case that fails under several evaluators once. "
-            "Every row and every span is written, however many there are, and a diagnosis is written whole.",
+            "Every row and every span is written, however many there are. A diagnosis file is written whole; "
+            "one held in a report row is cut like any other value. "
+            f"A document nested more than {DEPTH_LIMIT} levels deep is not written: its Markdown answers 422.",
             "`POST /api/markdown` writes the same Markdown for a document sent to it. The page uses it for what "
             "has no file of its own: one row, one case, the failing rows as a prompt, a trace inside a report, a "
             "candidate's report, and an experiment with edits that are not saved.",

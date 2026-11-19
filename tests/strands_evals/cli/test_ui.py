@@ -2382,6 +2382,14 @@ def test_llms_txt_describes_every_address_the_server_answers(client: Client):
     assert "sent as the `X-Evals-Token` header or as `?t=<token>`" in reply.body
     assert "The cookie a browser holds opens the page only" in reply.body
     assert "In Markdown a value longer than 4000 characters is cut" in reply.body
+    assert (
+        "A diagnosis file is written whole; one held in a report row is cut like any other value. "
+        "A document nested more than 200 levels deep is not written: its Markdown answers 422."
+    ) in reply.body
+    assert (
+        "This description, the Markdown and JSON forms, `POST /api/markdown`, the shape of `/api/scan` and the "
+        "prompt the page copies are experimental: they may change before a release."
+    ) in lines
     assert "Asked for without `text/html` in `Accept`, one answers 406" in reply.body
     # Every route the handler has is listed with what it returns, so a route added later cannot go undescribed.
     for route, handler in UIHandler._GET_ROUTES.items():

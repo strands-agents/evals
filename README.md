@@ -192,7 +192,8 @@ action, beside a **Copy path** for the file and a **Copy command** that runs one
 failing rows has **Copy failing rows as a prompt**, which bundles them with the paths of the report and its
 experiment and the command to run one case again, with `MODULE:ATTR` standing for the agent under test: no
 file records which agent was evaluated. The same Markdown is served for a file, so an agent can read what
-the page shows without a browser:
+the page shows without a browser. `/llms.txt`, the `.md` and `.json` forms, `POST /api/markdown`, the shape
+of the listing below and the wording of the copied prompt are experimental: they may change before a release.
 
 | Address | Returns |
 | --- | --- |
@@ -210,8 +211,8 @@ A page address asked for by something that is not a browser (no `text/html` in i
 
 In the Markdown, a value longer than 4,000 characters is cut, with a line saying how much was left out; the
 `.json` form has all of it. A report writes each failing row in full, a case that fails under several
-evaluators once, and one table line per row. Every row and every span is written, however many there are, and
-a diagnosis is written whole.
+evaluators once, and one table line per row. Every row and every span is written, however many there are. A
+diagnosis file is written whole; a diagnosis held in a report row is cut like any other value.
 
 `/api/scan` and `ui --list --json` give the same listing. Its `schema_version` is `1`, and moves when a field
 is renamed, removed or changes meaning:
@@ -222,7 +223,7 @@ is renamed, removed or changes meaning:
 | `reports[]` | `path`, `name`, `dir`, `size`, `modified`, `overall_score`, `rows`, `failing` and `not_applicable` (counts), `evaluators` (names), `experiment` (a path, or null), `link` (`status` and `detail`, or null). |
 | `sessions[]` | `path`, `name`, `dir`, `size`, `modified`, `session_id`, `traces` and `spans` (counts), `seconds`, `diagnoses` (paths). |
 | `diagnoses[]` | `path`, `name`, `dir`, `size`, `modified`, `session_id`, `failures` and `root_causes` (counts), `session` (a path, or null). |
-| `optimizer_runs[]` | One per run directory: its `run.json` as `config`, counts read off its log, `champion_id`, `result`, `stop_reason`, and `tuned_against`, the experiment its split names. |
+| `optimizer_runs[]` | One per run directory: its `run.json` as `config`, counts read off its log, `champion_id`, `result`, `stop_reason`, and `tuned_against`, the experiment its split names (`path` is null and `status` is `tie` when several fit equally). |
 | `stores[]` | `dir` and `files` (a count) for each `LocalFileTaskResultStore` directory. |
 | `skipped[]` | `path` and `why`, for each JSON file that is none of the above. |
 | `truncated` | Whether the scan stopped at its cap of 2,000 files. |
@@ -243,7 +244,8 @@ many reports. A report is matched to an experiment in this order:
 3. Failing that, the only experiment in its directory, when it is the only report there.
 
 Each match carries a status. It compares case identities and nothing else: a report row is identified by its
-`session_id` when it has one and by its `name` otherwise, and an experiment's case by either.
+`session_id` when it has one and by its `name` otherwise, and an experiment's case by either. Against an
+experiment none of whose cases has a `session_id`, as one written by hand, a row is identified by its `name`.
 
 | Status | Means |
 | --- | --- |
@@ -273,8 +275,12 @@ Limits of `ui`:
 - A comparison, an optimizer result and a candidate are written by the page and copied from it. They have no
   `.md` address. Neither do a candidate's report and the failing-rows prompt, which the server writes from
   what the page sends to `POST /api/markdown`.
-- A document nested hundreds of levels deep is listed, but on most Python versions it is not written as
-  Markdown (`.md` answers `422`), and `--list --json` prints it on one line.
+- A document nested more than 200 levels deep is listed, but is not written as Markdown: `.md` and
+  `POST /api/markdown` answer `422`. `--list --json` prints a listing that holds one nested deeper than
+  Python lays out on one line.
+- `POST /api/markdown` takes a body of at most 32 MB. To copy one row, or the failing rows as a prompt, the
+  page sends those rows and leaves the rest of the report out, so a copy is refused only when those rows alone
+  are larger than that, as is a candidate's report or an unsaved experiment of that size. The button says why.
 - Save refuses a file whose modified time differs from the one it was loaded with, and two saves through one
   server are taken in turn. A write by another program between that check and the write is not detected.
 - An optimizer run that was resumed after a stop still reads as stopped.
