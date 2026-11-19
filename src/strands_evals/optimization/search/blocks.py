@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -150,9 +151,12 @@ class Schedule(ABC):
         """The next step; None means nothing is left to try (`stop_reason="exhausted"`), or, inside a
         `Nested` round, that the round is over.
 
-        Must return None once its steps stop saving candidates (e.g. after a step, or a full cycle of steps,
-        that saved none): a step that saves nothing spends no rollouts and uses no `max_iterations` slot, so
-        nothing else ends the run.
+        Should return None once its steps stop saving candidates (e.g. after a step, or a full cycle of steps,
+        that saved none): a step that saves nothing spends no rollouts and, apart from a round's opener whose
+        draws were all invalid, uses no `max_iterations` slot. A schedule of your own that keeps planning steps is
+        treated as returning None (with a `UserWarning`) once the last `(ctx.redraws + 2) * len(ctx.blocks)` steps
+        of `ctx.past` saved no candidate: at the top level the search stops with `exhausted`, inside a `Nested`
+        round the round ends. `Joint`, `Alternate`, and `Nested` stop by their own rules and are never cut short.
         """
 
     def config(self) -> dict[str, Any]:
@@ -195,14 +199,7 @@ class Alternate(Schedule):
         None when there are no blocks, or when the last `len(ctx.blocks)` steps (a full cycle, every block
         asked once) saved no candidate.
         """
-        if not ctx.blocks:
-            return None
-        misses = 0
-        for record in reversed(ctx.past):
-            if _saved(record):
-                break
-            misses += 1
-        if misses >= len(ctx.blocks):
+        if not ctx.blocks or _misses(ctx.past) >= len(ctx.blocks):
             return None
         block = ctx.blocks[len(ctx.past) % len(ctx.blocks)]
         return Step((block,), ctx.proposals_per_iteration, None, None, "inner", ())
@@ -300,7 +297,7 @@ class Nested(Schedule):
         """
         blocks = {block.name: block for block in ctx.blocks}
         if self.outer not in blocks:
-            return self.inner.next(ctx)
+            return _plan(self.inner, ctx)
         rounds: dict[int, list[IterationRecord]] = {}
         for record in ctx.past:
             if record.round:
@@ -317,7 +314,7 @@ class Nested(Schedule):
             room = self._room_left(ctx, records)
             if room > 0:
                 sub = self._round_context(ctx, records, opener_id)
-                step = self.inner.next(sub)
+                step = _plan(self.inner, sub)
                 if step is not None:
                     return dataclasses.replace(
                         step,
@@ -647,6 +644,39 @@ def _saved(record: IterationRecord) -> bool:
     an outage that makes every candidate ineligible doesn't end the search as "exhausted".
     """
     return any(p.outcome not in ("invalid", "duplicate") for p in record.proposals)
+
+
+def _misses(past: Sequence[IterationRecord]) -> int:
+    """How many of the latest records, in a row, saved no candidate."""
+    misses = 0
+    for record in reversed(past):
+        if _saved(record):
+            break
+        misses += 1
+    return misses
+
+
+def _plan(schedule: Schedule, ctx: ScheduleContext) -> Step | None:
+    """`schedule.next(ctx)`, or None for a schedule of your own once the last
+    `(ctx.redraws + 2) * len(ctx.blocks)` steps of `ctx.past` saved no candidate (`Schedule.next`).
+
+    `Joint`, `Alternate`, and `Nested` are planned as they are: their own rules end every run of steps that save
+    nothing. The allowance exceeds the longest such run of a `Nested` over `Alternate()` on as many blocks,
+    `(redraws + 2) * blocks - 1`, so a schedule that hands its context to one is not cut short.
+    """
+    step = schedule.next(ctx)
+    if step is None or type(schedule) in (Joint, Alternate, Nested):
+        return step
+    limit = (ctx.redraws + 2) * max(1, len(ctx.blocks))
+    if _misses(ctx.past) < limit:
+        return step
+    warnings.warn(
+        f"{type(schedule).__name__}.next planned another step after {limit} steps in a row saved no candidate; "
+        f"it is treated as None, which ends the search or the Nested round it runs in (see Schedule.next)",
+        UserWarning,
+        stacklevel=2,
+    )
+    return None
 
 
 def _is_structural(info: ParamInfo) -> bool:

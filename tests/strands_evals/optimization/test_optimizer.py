@@ -1726,6 +1726,59 @@ async def test_max_iterations_counts_candidate_slots_not_steps(tmp_path):
     assert reason == "exhausted"
 
 
+class _NeverNone(Schedule):
+    """A custom schedule that never returns None: every block, every step."""
+
+    name = "never_none"
+
+    def next(self, ctx):
+        return Step(tuple(ctx.blocks), ctx.proposals_per_iteration, None, None, "inner", ())
+
+
+def _stop_runaway(record):
+    if record.iteration > 50:
+        raise RuntimeError("the search kept running")
+
+
+def _never_none(base_dir, budget):
+    return _searching(
+        Block(Scripted({"temperature": 0.5}), "temperature"),
+        schedule=_NeverNone(),
+        base_dir=base_dir,
+        budget=budget,
+        on_iteration=_stop_runaway,
+    )
+
+
+@pytest.mark.parametrize("max_iterations", [2, None])
+async def test_a_schedule_that_never_returns_none_stops_once_its_steps_save_nothing(tmp_path, max_iterations):
+    optimizer = _never_none(tmp_path, Budget(max_iterations=max_iterations))
+    with pytest.warns(UserWarning, match="_NeverNone.next planned another step after 10 steps"):
+        reason, events = await _search(optimizer)
+    # Step 1 saves 0.5 (4 of the cap's 8 slots); then neither proposer has anything left, and the steps that save
+    # nothing use no slot and no rollout, so (redraws + 2) x 2 blocks = 10 of them in a row end the search.
+    assert reason == "exhausted"
+    assert len(optimizer._iterations) == 11 and _slots_used(optimizer._iterations) == 4
+    assert [e["iteration"] for e in events if e["event"] == "stop"] == [12]
+
+
+async def test_a_resumed_run_counts_the_steps_that_saved_nothing_before_the_kill(tmp_path):
+    original_optimizer = _never_none(tmp_path / "runs", Budget(max_iterations=2))
+    with pytest.warns(UserWarning, match="saved no candidate"):
+        original = await original_optimizer.run_async()
+    # Killed after step 4: step 1 saved 0.5, steps 2-4 saved nothing.
+    copy = _killed(original_optimizer._run.root, tmp_path, lambda events: _index(events, "iteration_end", nth=4))
+    resumed_optimizer = _resume(
+        copy,
+        search=Search([Block(Scripted(), "temperature"), Block(Scripted(), "manager")], schedule=_NeverNone()),
+        on_iteration=_stop_runaway,
+    )
+    with pytest.warns(UserWarning, match="saved no candidate"):
+        resumed = await resumed_optimizer.run_async()
+    assert len(resumed.iterations) == 11
+    _assert_same(resumed, original)
+
+
 # the results
 
 

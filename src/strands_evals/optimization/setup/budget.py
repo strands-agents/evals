@@ -14,7 +14,8 @@ class Budget:
     `max_iterations=n` is n steps' worth of candidates: `n x proposals_per_iteration` candidate slots, charged as
     a `Nested` round charges its own. A step that saved a candidate uses the `n_candidates` it was given, a round's
     opener 1 (none when it repeats a measured candidate), and a step that saved nothing (every proposal a
-    duplicate or invalid) none, so a run can have more than n steps. The last step is cut to the slots left.
+    duplicate or invalid) none, so a run can have more than n steps; the schedule bounds how many in a row save
+    nothing (`Schedule.next`). The last step is cut to the slots left.
     """
 
     max_rollouts: int = 500
