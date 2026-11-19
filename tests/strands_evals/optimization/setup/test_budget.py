@@ -92,3 +92,30 @@ def test_the_default_budget_is_500_rollouts_and_no_iteration_cap():
 def test_bad_budgets_raise(kwargs):
     with pytest.raises(ValueError):
         Budget(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("max_rollouts", 300.5),
+        ("max_rollouts", 300.0),
+        ("max_rollouts", 0.5),
+        ("max_rollouts", True),
+        ("max_rollouts", False),
+        ("max_rollouts", "500"),
+        ("max_rollouts", None),
+        ("max_iterations", 1.5),
+        ("max_iterations", 1.0),
+        ("max_iterations", True),
+        ("max_iterations", False),
+        ("max_iterations", "2"),
+    ],
+)
+def test_non_int_budgets_raise_type_error(field, value):
+    with pytest.raises(TypeError, match=rf"Budget: {field} must be (None or )?an int"):
+        Budget(**{field: value})
+
+
+def test_int_budgets_construct():
+    budget = Budget(max_rollouts=300, max_iterations=2)
+    assert (budget.max_rollouts, budget.max_iterations) == (300, 2)
