@@ -183,7 +183,7 @@ def test_submit_reads_files_in_the_work_folder(folders):
     with open(os.path.join(folders.work, "prompt.txt"), "w") as f:
         f.write("  New prompt.\n")
     submitted = {}
-    submit = _submit_tool(folders.work, submitted, {}, [])
+    submit = _submit_tool(folders.work, submitted, ["system_prompt"], {}, [])
     out = submit(file_path_dict={"system_prompt": "prompt.txt"})
     assert out == "Parameters submitted successfully: system_prompt (11 chars)"
     assert submitted == {"system_prompt": "New prompt."}
@@ -199,15 +199,15 @@ def test_submit_reads_files_in_the_work_folder(folders):
         ("\n  Indented.\n", "Indented, again.", "\n  Indented, again.\n"),  # leading whitespace too
         ("\n  Indented.\n", "\n  Indented.\n", "\n  Indented.\n"),  # unchanged, whatever its edges
         ("\n", "", "\n"),  # a parent of whitespace alone: an empty rewrite is unchanged
+        ("", "", ""),  # an empty parent too
         ("\n", "Text.", "Text.\n"),
-        ("Old.\n", "", "\n"),  # an empty value is kept (validation decides)
     ],
 )
 def test_submit_takes_the_parents_trailing_whitespace(folders, parent, written, expected):
     with open(os.path.join(folders.work, "value.txt"), "w") as f:
         f.write(written)
     submitted = {}
-    _submit_tool(folders.work, submitted, {"prompt": parent}, [])(file_path_dict={"prompt": "value.txt"})
+    _submit_tool(folders.work, submitted, ["prompt"], {"prompt": parent}, [])(file_path_dict={"prompt": "value.txt"})
     assert submitted == {"prompt": expected}
 
 
@@ -220,7 +220,7 @@ def test_submit_rejects_a_file_outside_the_work_folder(folders, where):
     if where == "symlink":
         os.symlink(outside_file, os.path.join(folders.work, "link.txt"))
     submitted = {}
-    out = _submit_tool(folders.work, submitted, {}, [])(file_path_dict={"system_prompt": path})
+    out = _submit_tool(folders.work, submitted, ["system_prompt"], {}, [])(file_path_dict={"system_prompt": path})
     assert out.startswith(f"Errors:\nsystem_prompt: {path} is not in your working folder")
     assert submitted == {}
 
@@ -229,7 +229,7 @@ def test_submit_is_all_or_nothing(folders):
     with open(os.path.join(folders.work, "a.txt"), "w") as f:
         f.write("a")
     submitted = {"earlier": "kept"}
-    out = _submit_tool(folders.work, submitted, {}, [])(file_path_dict={"a": "a.txt", "b": "missing.txt"})
+    out = _submit_tool(folders.work, submitted, ["a", "b"], {}, [])(file_path_dict={"a": "a.txt", "b": "missing.txt"})
     assert out.startswith("Errors:\nb: file not found:")
     assert submitted == {"earlier": "kept"}
 
@@ -244,7 +244,7 @@ def test_submit_refuses_a_value_with_a_versions_header(folders, header):
     with open(os.path.join(folders.work, "b.txt"), "w") as f:
         f.write("Searches.")
     submitted, rejected = {"earlier": "kept"}, []
-    out = _submit_tool(folders.work, submitted, {}, rejected)(file_path_dict={"a": "a.txt", "b": "b.txt"})
+    out = _submit_tool(folders.work, submitted, ["a", "b"], {}, rejected)(file_path_dict={"a": "a.txt", "b": "b.txt"})
     first = header.splitlines()[0]
     reason = (
         f"it holds a version's header from the versions folder (`{first}` and the results below it), which is not "
@@ -261,9 +261,43 @@ def test_submit_takes_a_value_that_only_looks_like_a_header(folders, text):
     with open(os.path.join(folders.work, "a.txt"), "w") as f:
         f.write(text)
     submitted, rejected = {}, []
-    _submit_tool(folders.work, submitted, {}, rejected)(file_path_dict={"a": "a.txt"})
+    _submit_tool(folders.work, submitted, ["a"], {}, rejected)(file_path_dict={"a": "a.txt"})
     assert submitted == {"a": text}
     assert rejected == []
+
+
+@pytest.mark.parametrize("name", ["system_prompt", "skills_triage_SKILL.md"])
+def test_submit_refuses_a_name_that_is_not_a_parameter(folders, name):
+    """Names are checked before files: the wrong name's missing file isn't reported, and the good value isn't taken."""
+    with open(os.path.join(folders.work, "p.txt"), "w") as f:
+        f.write("New prompt.")
+    submitted, rejected = {"earlier": "kept"}, []
+    submit = _submit_tool(folders.work, submitted, ["prompt", "skills/triage/SKILL.md"], {}, rejected)
+    out = submit(file_path_dict={"prompt": "p.txt", name: "missing.txt"})
+    reason = (
+        "not one of the parameters to rewrite. Submit each value under its exact name and leave any other name out; "
+        "the parameters are `prompt`, `skills/triage/SKILL.md`"
+    )
+    assert out == f"Refused, nothing was submitted:\n{name}: {reason}"
+    assert submitted == {"earlier": "kept"}
+    assert rejected == [{name: reason}]
+
+
+@pytest.mark.parametrize(("parent", "written"), [({"prompt": "Old.\n"}, ""), ({"prompt": "Old."}, "  \n\n"), ({}, "")])
+def test_submit_refuses_an_empty_file(folders, parent, written):
+    for name, text in {"p.txt": written, "t.txt": "warm"}.items():
+        with open(os.path.join(folders.work, name), "w") as f:
+            f.write(text)
+    submitted, rejected = {}, []
+    submit = _submit_tool(folders.work, submitted, ["prompt", "tone"], parent, rejected)
+    out = submit(file_path_dict={"prompt": "p.txt", "tone": "t.txt"})
+    reason = (
+        "the file is empty or holds only whitespace. Write the complete new value to it and submit again, or leave "
+        "this name out to keep the current value"
+    )
+    assert out == f"Refused, nothing was submitted:\nprompt: {reason}"
+    assert submitted == {}
+    assert rejected == [{"prompt": reason}]
 
 
 def test_cap_tool_output_cuts_long_text(monkeypatch):
@@ -455,7 +489,7 @@ def test_submit_merges_a_second_submission_in_the_same_turn(folders):
         with open(os.path.join(folders.work, name), "w") as f:
             f.write(text)
     submitted = {}
-    submit = _submit_tool(folders.work, submitted, {}, [])
+    submit = _submit_tool(folders.work, submitted, ["prompt", "tone"], {}, [])
     submit(file_path_dict={"prompt": "p.txt", "tone": "t1.txt"})
     submit(file_path_dict={"tone": "t2.txt"})
     assert submitted == {"prompt": "New prompt.", "tone": "warmer"}
@@ -465,9 +499,9 @@ def test_submit_restores_the_parents_whitespace_only_when_it_fits(folders):
     with open(os.path.join(folders.work, "p.txt"), "w") as f:
         f.write("x" * 10)
     submitted = {}
-    _submit_tool(folders.work, submitted, {"p": "old\n"}, [], {"p": 10})(file_path_dict={"p": "p.txt"})
+    _submit_tool(folders.work, submitted, ["p"], {"p": "old\n"}, [], {"p": 10})(file_path_dict={"p": "p.txt"})
     assert submitted == {"p": "x" * 10}  # "x" * 10 + "\n" would be 11, over the cap of 10
-    _submit_tool(folders.work, submitted, {"p": "old\n"}, [], {"p": 11})(file_path_dict={"p": "p.txt"})
+    _submit_tool(folders.work, submitted, ["p"], {"p": "old\n"}, [], {"p": 11})(file_path_dict={"p": "p.txt"})
     assert submitted == {"p": "x" * 10 + "\n"}
 
 

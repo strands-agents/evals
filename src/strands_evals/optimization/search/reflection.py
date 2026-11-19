@@ -118,14 +118,14 @@ class Reflection(Proposer):
     Each `propose` call (n=1) runs one agent (`concurrent = True`). The agent is retried 3 times, each
     failure logged as `proposer_retry`, then the last error is raised; nothing submitted, or every value
     dropped, returns `[]`. A returned patch's `usage` holds its call's model spend, every attempt and send-back
-    included; a call that returns nothing after its agent ran, or whose agent fails on every attempt, logs that
-    spend as `proposer_usage`
-    instead (nothing when cancelled). Guardrails run in code after the agent returns,
-    including the leakage screen (drop a value that adds a shown case's identifier-like name, or a
+    included; a call that returns nothing after its agent ran, whose agent fails on every attempt, or whose
+    guardrails raise, logs that spend as `proposer_usage` instead (nothing when cancelled). The submit tool refuses
+    a name outside the block and an empty file, and tells the agent why. Guardrails run in code after the agent
+    returns, including the leakage screen (drop a value that adds a shown case's identifier-like name, or a
     verbatim run of >= 40 characters from a shown trial's input, output, or conversation, that the
-    parent's value didn't contain), logged as `screened`. A submitted value over its `size_cap` is sent back, in the
-    same conversation, to be shortened, up to `over_limit_retries` times; one still over is dropped and the
-    parent's value kept.
+    parent's value didn't contain), logged as `screened`; a value they fail to check is dropped. A submitted value
+    over its `size_cap` is sent back, in the same conversation, to be shortened, up to `over_limit_retries` times;
+    one still over is dropped and the parent's value kept.
 
     Runs on Linux and macOS only (`propose` raises `RuntimeError` on Windows; use WSL or a Linux container there).
 
@@ -154,7 +154,8 @@ class Reflection(Proposer):
                 working folder (the only folder it may write in). The submit instructions are appended either way.
             success_threshold: Reward a trial needs to count as a success; None splits by rank.
             over_limit_retries: How many times a submission with a value over its `size_cap` is sent back to be
-                shortened; 0 drops it at once.
+                shortened, or a turn that ended with its submission refused is sent back to be fixed; 0 sends
+                nothing back and drops a value over its cap at once.
 
         Raises:
             TypeError: `model` is not a `Model`, a model id, or None, `system_prompt` is not a string,
@@ -280,7 +281,7 @@ class Reflection(Proposer):
                     system_prompt=prompt + SUBMIT_INSTRUCTIONS,
                     tools=[
                         _confined_shell(work, [traces, versions, work], refused, root, running),
-                        _submit_tool(work, submitted, parent, rejected, caps),
+                        _submit_tool(work, submitted, keys, parent, rejected, caps),
                     ],
                     # Strands' 40-message window, trimmed at the end of each call and on overflow, with the task
                     # message pinned: a send-back after a long first turn would otherwise go without it.
@@ -305,7 +306,11 @@ class Reflection(Proposer):
                     raise failure
                 request.log("proposer_retry", error_type=type(failure).__name__, error=str(failure)[:2000])
             self.refused.extend(refused)
-            updates, dropped, screened = await asyncio.to_thread(_guard, request, params or {}, keys, parent)
+            try:
+                updates, dropped, screened = await asyncio.to_thread(_guard, request, params or {}, keys, parent)
+            except Exception:
+                request.log("proposer_usage", usage=usage)  # as below: the agent ran, and no patch carries its spend
+                raise
             for key in screened:
                 request.log("screened", key=key, reason=dropped[key])
         if not updates:
@@ -564,21 +569,29 @@ def _kill_group(process: subprocess.Popen[bytes]) -> None:
 def _submit_tool(
     work: str,
     submitted: dict[str, str],
+    keys: Sequence[str],
     parent: Mapping[str, Any],
     rejected: list[dict[str, str]],
     caps: Mapping[str, int | None] | None = None,
 ) -> AgentTool:
     """A tool that reads each submitted value from a file in `work` (real path checked) into `submitted`, replacing
-    only the values it names (an earlier submission's others are kept); all or nothing: one bad file, or one value
-    carrying a version's header (`_VERSION_HEADER`), and nothing from this submission is taken.
-    Each submission refused for a version's header is appended to `rejected` (value name -> why); a bad file is
-    only reported to the agent, which is told why either way.
+    only the values it names (an earlier submission's others are kept); all or nothing: one name outside `keys`, one
+    bad file, one empty value, or one value carrying a version's header (`_VERSION_HEADER`), and nothing from this
+    submission is taken. Names are checked first, so a wrong name is refused even when its file can't be read. A
+    value is empty when nothing is left after stripping, unless that leaves the parent's value as it was (a blank
+    parent). Each submission refused for a name, an empty value, or a version's header is appended to
+    `rejected` (value name -> why); a bad file is only reported to the agent, which is told why either way.
 
     Each value is stripped (a shell's `echo` and heredocs add a newline the agent didn't mean), then given the leading
     and trailing whitespace of the parent's value under that key, so a file's final newline survives: an unchanged
     rewrite equals the parent's value, and the diff doesn't show a changed first or last line. The whitespace is
     restored only when the value still fits its `size_cap` (`caps`), so it never pushes a value over.
     """
+    names = ", ".join(f"`{key}`" for key in keys)
+
+    def refuse(reasons: dict[str, str]) -> str:
+        rejected.append(reasons)
+        return "Refused, nothing was submitted:\n" + "\n".join(f"{k}: {r}" for k, r in reasons.items())
 
     @tool
     def submit_optimized_params(file_path_dict: dict[str, str]) -> str:
@@ -590,6 +603,15 @@ def _submit_tool(
             file_path_dict: Dict mapping parameter names to file paths.
                 e.g., {"system_prompt": "<working folder>/system_prompt.txt"}
         """
+        unknown = [key for key in file_path_dict if key not in keys]
+        if unknown:
+            return refuse(
+                {
+                    key: "not one of the parameters to rewrite. Submit each value under its exact name and leave any "
+                    f"other name out; the parameters are {names}"
+                    for key in unknown
+                }
+            )
         values = {}
         errors = []
         for key, path in file_path_dict.items():
@@ -617,7 +639,12 @@ def _submit_tool(
         reasons = {}
         for key, value in values.items():
             found = _VERSION_HEADER.search(value)
-            if found is not None:
+            if not value.strip() and value != parent.get(key):
+                reasons[key] = (
+                    "the file is empty or holds only whitespace. Write the complete new value to it and submit again, "
+                    "or leave this name out to keep the current value"
+                )
+            elif found is not None:
                 first = found.group(0).splitlines()[0].strip()
                 reasons[key] = (
                     f"it holds a version's header from the versions folder (`{first}` and the results below it), "
@@ -625,8 +652,7 @@ def _submit_tool(
                     f"its `.txt` file, never in {_VERSION_FILE}) and submit it again"
                 )
         if reasons:
-            rejected.append(reasons)
-            return "Refused, nothing was submitted:\n" + "\n".join(f"{k}: {r}" for k, r in reasons.items())
+            return refuse(reasons)
         submitted.update(values)
         summary = ", ".join(f"{k} ({len(v)} chars)" for k, v in values.items())
         return f"Parameters submitted successfully: {summary}"
@@ -1146,7 +1172,9 @@ def _guard(
 
     In order: a key outside the block is dropped; a value equal to the parent's is left out (nothing to change); a
     value `space.validate` refuses (over its `size_cap`, a `SKILL.md` that changes its `name`, invalid JSON) is
-    dropped; a value that leaks a shown train trial (`_leak`) is dropped.
+    dropped; a value that leaks a shown train trial (`_leak`) is dropped. A value whose check raises anything else
+    (`RecursionError` on deeply nested JSON or YAML, say) is dropped too, with the error as its reason and a warning
+    logged.
     """
     shown = [
         t
@@ -1168,11 +1196,21 @@ def _guard(
         if value == parent.get(key):
             continue
         try:
-            request.space.validate({**parent, key: value})
-        except ValueError as error:
-            dropped[key] = str(error)
+            try:
+                request.space.validate({**parent, key: value})
+            except ValueError as error:
+                dropped[key] = str(error)
+                continue
+            leak = _leak(value, parent.get(key), names, sources)
+        except Exception as error:  # noqa: BLE001 - a value that can't be checked is dropped, never proposed
+            dropped[key] = f"could not be checked: {type(error).__name__}: {error}"[:300]
+            logger.warning(
+                "key=<%s>, error_type=<%s> | dropped a submitted value that could not be checked",
+                key,
+                type(error).__name__,
+                exc_info=True,
+            )
             continue
-        leak = _leak(value, parent.get(key), names, sources)
         if leak is not None:
             dropped[key] = leak
             screened.append(key)

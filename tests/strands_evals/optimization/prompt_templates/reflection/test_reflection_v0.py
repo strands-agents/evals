@@ -146,8 +146,8 @@ def test_versions_folder_layout_and_copying_a_text():
 
 def test_refused_message():
     assert T.REFUSED.format(refusal="Refused, nothing was submitted:\na: why") == (
-        "Refused, nothing was submitted:\na: why\n\nYour turn ended with nothing submitted. Fix the file(s) in your "
-        "working folder and submit again with submit_optimized_params."
+        "Refused, nothing was submitted:\na: why\n\nYour turn ended with nothing submitted. Fix what is described "
+        "above and submit again with submit_optimized_params."
     )
 
 
