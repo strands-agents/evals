@@ -240,9 +240,11 @@ function resultMarkdown(d, run) {
 
 /* ── a trace ── */
 
+/* What a session names is written outside a fence, where a line break could start a heading. */
+const mdFlat = v => String(v).replace(/[ \t\r\n]+/g, ' ').replace(/^ | $/g, '');
 const mdCall = (name, input) =>
-  [`Tool call \`${name || '?'}\`:`, mdFenced(JSON.stringify(input === undefined ? null : input, null, 2), 'json')];
-const mdResult = (text, status) => [`Tool result${status ? ` (${status})` : ''}:`, mdFenced(text, 'text')];
+  [`Tool call \`${name ? mdFlat(name) : '?'}\`:`, mdFenced(JSON.stringify(input === undefined ? null : input, null, 2), 'json')];
+const mdResult = (text, status) => [`Tool result${status ? ` (${mdFlat(status)})` : ''}:`, mdFenced(text, 'text')];
 
 /* The same two block vocabularies `contentBlock` reads, in full rather than clipped. */
 function mdContent(b) {
@@ -258,12 +260,14 @@ function mdContent(b) {
 
 function mdMessage(m, heading) {
   const usage = usageLine(((m && m.metadata) || {}).usage);
-  return [`${heading} ${(m && m.role) || 'unknown'}`, ...(usage ? [usage] : []), ...messageBlocks(m).flatMap(mdContent)];
+  return [`${heading} ${m && m.role ? mdFlat(m.role) : 'unknown'}`, ...(usage ? [usage] : []), ...messageBlocks(m).flatMap(mdContent)];
 }
 
+/* The heading carries the span's `span_id`, which is what a diagnosis names it by. */
 function mdSpan(s, i, h = '##') {
   const kind = (s && s.span_type) || 'span';
-  const head = name => `${h} Span ${i}: ${name}`;
+  const id = isObject(s) && isObject(s.span_info) ? s.span_info.span_id : null;
+  const head = name => `${h} Span ${i}: ${name}${mdPresent(id) ? ` (span_id: ${mdLine(id)})` : ''}`;
   if (kind === 'inference' && Array.isArray(s.messages)) return [head('inference'), ...s.messages.flatMap(m => mdMessage(m, `${h}#`))];
   if (kind === 'execute_tool') {
     const call = s.tool_call || {};
@@ -273,7 +277,7 @@ function mdSpan(s, i, h = '##') {
     return [head('invoke agent'), ...mdBlock('System prompt', s.system_prompt), ...mdBlock('Prompt', s.user_prompt),
       ...mdBlock('Response', s.agent_response)];
   }
-  return [head(kind), mdFence(s)];
+  return [head(mdFlat(kind)), mdFence(s)];
 }
 
 /** A recorded session or a list of messages as a conversation, tool calls and results included. */

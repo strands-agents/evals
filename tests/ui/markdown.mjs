@@ -275,7 +275,7 @@ ${JSON.stringify(DIAGNOSIS, null, 2)}
 
 ## Trace 1 of 3: t-1
 
-### Span 0: invoke agent
+### Span 0: invoke agent (span_id: agent)
 
 Prompt:
 
@@ -289,7 +289,7 @@ Response:
 Done.
 \`\`\`
 
-### Span 1: inference
+### Span 1: inference (span_id: model)
 
 #### assistant
 
@@ -329,7 +329,7 @@ All done.
 
 \`\`\`
 
-### Span 2: tool
+### Span 2: tool (span_id: tool)
 
 Tool call \`refund\`:
 

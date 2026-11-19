@@ -358,12 +358,18 @@ def _block_text(value: Any) -> str:
     return stringify(parsed, step=" ")
 
 
+def _flat(value: Any) -> str:
+    """`String(value)` on one line: what a session names is written outside a fence, where a line break could
+    start a heading."""
+    return _SPACE.sub(" ", _as_text(value)).strip(" ")
+
+
 def _call(name: Any, arguments: Any) -> list[str]:
-    return [f"Tool call `{_as_text(name) if _truthy(name) else '?'}`:", _fenced(stringify(arguments), "json")]
+    return [f"Tool call `{_flat(name) if _truthy(name) else '?'}`:", _fenced(stringify(arguments), "json")]
 
 
 def _result(text: str, status: Any) -> list[str]:
-    return [f"Tool result{f' ({_as_text(status)})' if _truthy(status) else ''}:", _fenced(text, "text")]
+    return [f"Tool result{f' ({_flat(status)})' if _truthy(status) else ''}:", _fenced(text, "text")]
 
 
 def _span_result(result: dict) -> list[str]:
@@ -422,34 +428,39 @@ def _message(message: Any, heading: str) -> list[str]:
         content = [{"text": "" if content is None else _as_text(content)}]
     role = message.get("role")
     parts = [
-        f"{heading} {_as_text(role) if _truthy(role) else 'unknown'}",
+        f"{heading} {_flat(role) if _truthy(role) else 'unknown'}",
         *_usage(_dict(message.get("metadata")).get("usage")),
     ]
     return parts + [part for block in content for part in _content(block)]
 
 
 def _span(span: Any, index: int, heading: str) -> list[str]:
+    """One span under a heading that carries its `span_id`, which is what a diagnosis names it by."""
     held = _dict(span)
     kind = held.get("span_type") if _truthy(held.get("span_type")) else "span"
+    span_id = _dict(held.get("span_info")).get("span_id")
+    named = f" (span_id: {_one_line(span_id)})" if _present(span_id) else ""
+
+    def head(name: str) -> str:
+        return f"{heading} Span {index}: {name}{named}"
+
     if kind == "inference" and isinstance(held.get("messages"), list):
-        return [f"{heading} Span {index}: inference"] + [
-            part for message in held["messages"] for part in _message(message, f"{heading}#")
-        ]
+        return [head("inference")] + [part for message in held["messages"] for part in _message(message, f"{heading}#")]
     if kind == "execute_tool":
         call = _dict(held.get("tool_call"))
         return [
-            f"{heading} Span {index}: tool",
+            head("tool"),
             *_call(call.get("name"), call.get("arguments")),
             *_span_result(_dict(held.get("tool_result"))),
         ]
     if kind == "invoke_agent":
         return [
-            f"{heading} Span {index}: invoke agent",
+            head("invoke agent"),
             *_block("System prompt", held.get("system_prompt")),
             *_block("Prompt", held.get("user_prompt")),
             *_block("Response", held.get("agent_response")),
         ]
-    return [f"{heading} Span {index}: {_as_text(kind)}", _fence(span)]
+    return [head(_flat(kind)), _fence(span)]
 
 
 def session_markdown(path: str, doc: dict, seconds: float | None, diagnoses: Sequence[tuple[str, Any]]) -> str:
