@@ -95,5 +95,6 @@ def test_a_second_interrupt_cancels_again_and_stops_waiting(sigint):
     elapsed = time.monotonic() - start
     release.set()
     for thread in set(threading.enumerate()) - threads:
-        thread.join(5)
+        if thread.is_alive():  # 3.14 on Windows can enumerate an executor thread `join` rejects as never started
+            thread.join(5)
     assert elapsed < 5 and cancelled == ["first", "second"]
