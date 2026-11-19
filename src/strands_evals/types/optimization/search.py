@@ -53,12 +53,13 @@ class Patch(BaseModel):
 
 
 class CandidateSummary(BaseModel):
-    """One scored candidate as a proposer may see it; train data only.
+    """One scored candidate as a proposer may see it; train data only, under the request's criteria.
 
     Attributes:
         number: Display number, so a prompt can say "version 3".
         measured_objective: The objective from the raw train scores (`CandidateScores.objective`), no model.
-        measured: Every metric measured on train, usage included, next to the fit's estimates.
+        measured: Every metric measured on train, usage included, next to the fit's estimates; always as the
+            run's criteria score them (a crashed run's evaluator values as the labels count them).
         trial_count: Train trials that count (completed, or `agent_failure` scored by `agent_failure_score`).
         failures: Of `trial_count`, the `agent_failure` trials (those `agent_failure_score` scores; 0 under
             `agent_failure_score=None`, which doesn't count them), so `trial_count - failures` completed: how a
@@ -72,7 +73,8 @@ class CandidateSummary(BaseModel):
         violations: Per constraint, <= 0 when met, infinite when never measured (`Assessment.violations`;
             null in JSON); None for an ineligible candidate, which has no assessment.
         is_feasible: Meets every constraint as the ranking assessed it; None for an ineligible candidate.
-        is_eligible: Every train case measured for every goal metric (`CandidateScores.is_eligible`).
+        is_eligible: Every train case measured for every goal metric (`CandidateScores.is_eligible`), under
+            the request's criteria and the run's.
         changed_keys: Keys changed from its parent.
     """
 

@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import hashlib
 import json
 import math
@@ -19,6 +20,7 @@ from strands_evals.optimization import (
     AtLeast,
     Block,
     Budget,
+    Criteria,
     FileText,
     FinalPick,
     Float,
@@ -51,6 +53,7 @@ from strands_evals.optimization.declaration.space import Space
 from strands_evals.optimization.optimizer import _slots_used
 from strands_evals.optimization.record.resume import load_state
 from strands_evals.optimization.record.run_directory import RunDirectory
+from strands_evals.optimization.scoring.metrics import MetricRegistry
 from strands_evals.optimization.search.blocks import _saved
 from strands_evals.optimization.selection.top_ranked import TopRanked
 from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
@@ -2070,3 +2073,365 @@ async def test_resume_inside_a_two_level_nested_matches_the_uninterrupted_run(tm
         search=_two_structural_search(),
     ).run_async()
     _assert_same(resumed, original, rerun=killed)
+
+
+# ---- a step's own criteria ------------------------------------------------------------------------------
+
+
+@tunable(temperature=Float(0.0, 1.0, default=0.1))
+def _heated(temperature):
+    return (None, temperature)
+
+
+def _aim(ctx, objective, constraints=None):
+    """A step's criteria for `objective` and `constraints` (None: the run's), on the run's registry and settings."""
+    run = ctx.criteria
+    return Criteria(
+        objective,
+        run.constraints if constraints is None else constraints,
+        run.registry,
+        agent_failure_score=run.agent_failure_score,
+        feasibility_threshold=run.feasibility_threshold,
+    )
+
+
+class TemperatureFirst(Schedule):
+    """Aims each step at Temperature alone until some candidate measures `level` or more on every train case
+    (read from `ctx.scores`), then at the run's own criteria; ends after a step that saved nothing."""
+
+    name = "temperature_first"
+
+    def __init__(self, level=0.9, *, parents=False):
+        self.level, self.parents = level, parents
+
+    def next(self, ctx):
+        if ctx.past and not _saved(ctx.past[-1]):
+            return None
+        reached = any(
+            all(case["Temperature"] >= self.level for case in ctx.scores[c].metrics_by_case.values())
+            for c in ctx.eligible
+        )
+        criteria = None if reached else _aim(ctx, Maximize("Temperature"))
+        parents = tuple(ctx.ranking) if self.parents else None  # the run's order
+        return Step(tuple(ctx.blocks), ctx.proposals_per_iteration, parents, None, "inner", (), criteria)
+
+    def config(self):
+        return {"level": self.level, "parents": self.parents}
+
+
+class ByIteration(Scripted):
+    """Proposes `updates[iteration - 1]`, then each later one on a redraw: the same on resume."""
+
+    async def propose(self, request):
+        self.requests.append(request)
+        index = request.iteration - 1 + request.redraw
+        return [Patch(updates=self.updates[index], rationale="scripted")] if index < len(self.updates) else []
+
+
+def _run_value(t):
+    """The run's objective at temperature t: WeightedSum(Maximize(Temperature), Maximize(Cool, weight=2))."""
+    return (t + 2 * (1 - t)) / 3
+
+
+def _heating(proposer, schedule=None, *, factory=_heated, variables=("temperature",), evaluators=None, **kwargs):
+    kwargs.setdefault("budget", Budget(max_iterations=3))
+    kwargs.setdefault("rollout_fn", _temperature_rollout)
+    kwargs.setdefault("objective", WeightedSum(Maximize("Temperature"), Maximize("Cool", weight=2)))
+    return Optimizer(
+        _experiment(evaluators=evaluators or [Temperature(), Cool()]),
+        factory,
+        search=Search([Block(proposer, *variables)], schedule=schedule or TemperatureFirst()),
+        proposals_per_iteration=1,
+        max_workers=64,
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize("fitted", [True, False])
+async def test_a_steps_own_criteria_ranks_selects_and_asks_under_it(tmp_path, fitted):
+    seen = []
+
+    class Watching(TopRanked):
+        name = "watching"
+
+        def choose(self, ctx):
+            seen.append(ctx)
+            return super().choose(ctx)
+
+    # Iteration 2 first repeats the baseline (0.1), then is redrawn to 0.95.
+    proposer = Scripted({"temperature": 0.6}, {"temperature": 0.1}, {"temperature": 0.95}, {"temperature": 0.2})
+    optimizer = _heating(
+        proposer, base_dir=tmp_path, selection=Watching(), **({} if fitted else {"score_model": _Sequence()})
+    )
+    _, events = await _search(optimizer)
+    t = {c: candidate.values["temperature"] for c, candidate in optimizer._candidates.items()}
+    first, second, redrawn, third = proposer.requests
+
+    # Iterations 1 and 2 aim at Temperature: nothing has measured 0.9 yet. The run ranks the baseline (0.1)
+    # first, but the step's ranking puts 0.6 first, so it is iteration 2's parent and leads its request.
+    assert str(first.criteria.objective) == str(second.criteria.objective) == "Maximize(Temperature)"
+    assert second.parent.values["temperature"] == 0.6 and redrawn.parent.values["temperature"] == 0.6
+    assert [t[c.candidate_id] for c in second.candidates] == [0.6, 0.1]
+    assert [c.rank for c in second.candidates] == [1, 2] and all(c.is_eligible for c in second.candidates)
+    assert [len(c.term_values) for c in second.candidates] == [1, 1]  # the step's one objective term
+    assert all(bool(c.estimates) is fitted for c in second.candidates)  # ranked from the fit, else measured means
+    assert second.scores.objective == pytest.approx(0.6)  # the parent's Temperature mean
+    hot = next(c for c in t if t[c] == 0.6)
+    assert seen[1].ranking[0] == hot and list(seen[1].scores[hot].values()) == pytest.approx([0.6] * 8)
+    if not fitted:
+        assert [c.ranking_objective for c in second.candidates] == pytest.approx([0.6, 0.1])
+        assert [c.term_values for c in second.candidates] == [pytest.approx([0.6]), pytest.approx([0.1])]
+
+    # Iteration 3: 0.95 reached the level, so the step has no criteria of its own and the run's baseline leads.
+    assert third.criteria is optimizer._criteria
+    assert third.parent.values["temperature"] == 0.1
+    assert [t[c.candidate_id] for c in third.candidates] == [0.1, 0.6, 0.95]
+
+    # The select events name the step's own criteria.
+    selects = [e for e in events if e["event"] == "select"]
+    assert [(s.get("objective"), s.get("constraints")) for s in selects] == [
+        ("Maximize(Temperature)", []),
+        ("Maximize(Temperature)", []),
+        (None, None),
+    ]
+    # What proposers are told and what is recorded stay on the run's criteria, the duplicate's included.
+    duplicate = next(o for o in proposer.observed if o.outcome == "duplicate")
+    assert duplicate.values["temperature"] == 0.1
+    if not fitted:
+        assert duplicate.objective == pytest.approx(_run_value(0.1))
+        assert [o.objective for o in proposer.observed if o.outcome == "feasible"] == pytest.approx(
+            [_run_value(0.6), _run_value(0.95), _run_value(0.2)]
+        )
+        assert [p.objective for p in optimizer._iterations[1].proposals] == pytest.approx(
+            [_run_value(0.1), _run_value(0.95)]
+        )
+    best = [e["best_after"][0] for e in events if e["event"] == "iteration_end"]
+    assert [t[c] for c in best] == [0.1, 0.1, 0.1]
+
+
+async def test_a_steps_own_criteria_orders_the_parents_it_names(tmp_path):
+    proposer = Scripted({"temperature": 0.6}, {"temperature": 0.7})
+    optimizer = _heating(proposer, TemperatureFirst(parents=True), base_dir=tmp_path, budget=Budget(max_iterations=2))
+    await _search(optimizer)
+    # The schedule names its parents in the run's order (the baseline first); the step's ranking reorders them.
+    assert proposer.requests[1].parent.values["temperature"] == 0.6
+
+
+async def test_a_steps_own_constraints_rank_its_candidates_and_are_recorded(tmp_path):
+    class CoolEnough(Schedule):
+        """`Joint`, each step aiming at Temperature while keeping Cool at 0.5 or more."""
+
+        name = "cool_enough"
+
+        def next(self, ctx):
+            step = Joint().next(ctx)
+            criteria = _aim(ctx, Maximize("Temperature"), [AtLeast("Cool", 0.5)])
+            return None if step is None else dataclasses.replace(step, criteria=criteria)
+
+    proposer = Scripted({"temperature": 0.6}, {"temperature": 0.3})
+    optimizer = _heating(
+        proposer, CoolEnough(), base_dir=tmp_path, budget=Budget(max_iterations=2), score_model=_Sequence()
+    )
+    _, events = await _search(optimizer)
+    second = proposer.requests[1]
+    # 0.6 is hotter, but its Cool (0.4) breaks the step's constraint, so the baseline ranks first and is the parent.
+    assert second.parent.values["temperature"] == 0.1
+    assert [(c.values["temperature"], c.is_feasible) for c in second.candidates] == [(0.1, True), (0.6, False)]
+    assert [c.violations for c in second.candidates] == [pytest.approx([-0.4]), pytest.approx([0.1])]
+    assert [e["constraints"] for e in events if e["event"] == "select"] == [["Cool >= 0.5"], ["Cool >= 0.5"]]
+    # The run has no constraint: every label is feasible.
+    assert {e["label"]["outcome"] for e in events if e["event"] == "label"} == {"feasible"}
+
+
+async def test_a_steps_own_criteria_reports_metrics_as_the_run_scores_them(tmp_path):
+    async def crashing_at(agent_factory, case):
+        _, temperature = agent_factory()
+        if temperature == 0.6:
+            raise ValueError("boom")
+        return str(temperature)
+
+    proposer = Scripted({"temperature": 0.6}, {"temperature": 0.7})
+    optimizer = _heating(
+        proposer, base_dir=tmp_path, budget=Budget(max_iterations=2), score_model=_Sequence(), rollout_fn=crashing_at
+    )
+    await _search(optimizer)
+    crashed = next(c for c in proposer.requests[1].candidates if c.values["temperature"] == 0.6)
+    # The step's criteria has no goal on Cool, so it would leave a crashed run's Cool out; the summary reports Cool as
+    # the run's criteria (and the labels) count it: the worst end, 0.
+    assert crashed.failures == 8 and crashed.ranking_objective == 0.0
+    assert crashed.measured["Cool"].mean == 0.0 and crashed.measured["Temperature"].mean == 0.0
+
+
+async def test_a_step_whose_criteria_measures_none_of_its_parents_raises(tmp_path):
+    class Picky(Evaluator):
+        """Finds nothing to judge at temperature 0.6; scores 1 otherwise."""
+
+        async def evaluate_async(self, evaluation_case):
+            if evaluation_case.actual_output == "0.6":
+                return [EvaluationOutput(score=0.0, test_pass=True, reason="n/a", label=NOT_APPLICABLE)]
+            return [EvaluationOutput(score=1.0, test_pass=True, reason="ok")]
+
+    class PickyFirst(Schedule):
+        """Each step aims at Picky; the second is asked from the 0.6 candidate alone."""
+
+        name = "picky_first"
+
+        def next(self, ctx):
+            hot = tuple(c for c, values in ctx.values.items() if values["temperature"] == 0.6)
+            return Step(tuple(ctx.blocks), 1, hot or None, None, "inner", (), _aim(ctx, Maximize("Picky")))
+
+    optimizer = _heating(
+        Scripted({"temperature": 0.6}, {"temperature": 0.7}),
+        PickyFirst(),
+        base_dir=tmp_path,
+        evaluators=[Temperature(), Picky()],
+        objective=WeightedSum(Maximize("Temperature"), Maximize("Picky")),
+    )
+    await optimizer._start()
+    # The run measures 0.6 by Temperature alone (Picky is N/A on every case), so it is eligible; the step's objective,
+    # Picky alone, is unmeasured for it.
+    with pytest.raises(ValueError, match="none of whose possible parents is eligible under both its criteria"):
+        await optimizer._run_search()
+    assert optimizer._train[next(c for c in optimizer._candidates if c != optimizer._baseline.id)].is_eligible
+
+
+async def test_a_proposal_inherits_keys_in_the_steps_ranking_order(tmp_path):
+    class SummaryParent(Schedule):
+        """Each step aims at Temperature; the third is asked from the Summary candidate."""
+
+        name = "summary_parent"
+
+        def next(self, ctx):
+            if len(ctx.past) == 3:
+                return None
+            summary = tuple(c for c, values in ctx.values.items() if values["manager"] == "Summary")
+            parents = summary if len(ctx.past) == 2 else None
+            return Step(tuple(ctx.blocks), 1, parents, None, "inner", (), _aim(ctx, Maximize("Temperature")))
+
+    proposer = Scripted(
+        {"manager.Window.size": 70, "temperature": 1.0},
+        {"manager": "Summary", "temperature": 0.5},
+        {"manager": "Window", "temperature": 0.0},
+    )
+    optimizer = _heating(
+        proposer,
+        SummaryParent(),
+        factory=create_agent,
+        variables=("manager", "temperature"),
+        base_dir=tmp_path,
+        score_model=_Sequence(),
+    )
+    await _search(optimizer)
+    (proposal,) = optimizer._iterations[2].proposals
+    # The Summary parent has no window size. It comes from the step's best candidate that has one (70, the hottest),
+    # not the run's (the baseline's 10, which would repeat the baseline).
+    assert proposal.outcome == "feasible"
+    assert optimizer._candidates[proposal.candidate_id].values["manager.Window.size"] == 70
+
+
+async def test_a_copy_of_the_runs_criteria_runs_as_no_criteria_does(tmp_path):
+    class Copying(Schedule):
+        """`Joint`, each step given a new `Criteria` equal to the run's when `copy`."""
+
+        name = "copying"
+
+        def __init__(self, copy):
+            self.copy = copy
+
+        def next(self, ctx):
+            step = Joint().next(ctx)
+            if step is None or not self.copy:
+                return step
+            return dataclasses.replace(step, criteria=_aim(ctx, ctx.criteria.objective))
+
+    def run(copy):
+        proposer = Scripted({"temperature": 0.6}, {"temperature": 0.3}, {"temperature": 0.9})
+        return proposer, _heating(proposer, Copying(copy), base_dir=tmp_path / str(copy))
+
+    (plain, without), (copied, with_copy) = run(False), run(True)
+    _, plain_events = await _search(without)
+    _, copied_events = await _search(with_copy)
+    assert without._iterations == with_copy._iterations
+
+    def told(proposer):
+        asked = [
+            (
+                r.parent.id,
+                r.scores.objective_by_case,
+                [(c.candidate_id, c.ranking_objective, c.term_values, c.rank, c.is_eligible) for c in r.candidates],
+            )
+            for r in proposer.requests
+        ]
+        return asked, [(o.candidate_id, o.objective, o.term_values, o.outcome) for o in proposer.observed]
+
+    assert told(plain) == told(copied)
+
+    def decisions(events):
+        return [
+            (e["event"], e.get("candidate_id") or e.get("parent_id"), e.get("best_after"))
+            for e in events
+            if e["event"] != "trial"
+        ]
+
+    assert decisions(plain_events) == decisions(copied_events)
+    assert all("objective" in e for e in copied_events if e["event"] == "select")
+
+
+@pytest.mark.parametrize(
+    ("criteria", "error", "match"),
+    [
+        (lambda ctx: "Temperature", TypeError, "is not a Criteria"),
+        (
+            lambda ctx: Criteria(Maximize("Temperature"), (), MetricRegistry({"Temperature": (0.0, 1.0)})),
+            ValueError,
+            "is built on another registry",
+        ),
+        (
+            lambda ctx: Criteria(Maximize("Temperature"), (), ctx.criteria.registry, agent_failure_score=None),
+            ValueError,
+            "has agent_failure_score=None",
+        ),
+        (
+            lambda ctx: Criteria(Maximize("Temperature"), (), ctx.criteria.registry, feasibility_threshold=0.8),
+            ValueError,
+            "has agent_failure_score='worst' and feasibility_threshold=0.8",
+        ),
+        (lambda ctx: _aim(ctx, Minimize("tokens")), ValueError, r"uses \['tokens'\]"),
+        (lambda ctx: _aim(ctx, Minimize("Temperature")), ValueError, r"scores a crashed run's \['Temperature'\]"),
+    ],
+)
+async def test_a_steps_own_criteria_must_fit_the_runs(tmp_path, criteria, error, match):
+    class Aiming(TemperatureFirst):
+        def next(self, ctx):
+            return dataclasses.replace(Joint().next(ctx), criteria=criteria(ctx))
+
+    optimizer = _heating(Scripted({"temperature": 0.6}), Aiming(), base_dir=tmp_path)
+    await optimizer._start()
+    written = len(_events(optimizer))
+    with pytest.raises(error, match=f"Aiming.next returned a step whose criteria {match}"):
+        await optimizer._run_search()
+    assert len(_events(optimizer)) == written  # raised before the step wrote anything
+
+
+async def test_a_run_whose_steps_aim_resumes_to_the_same_result(tmp_path):
+    updates = [{"temperature": 0.6}, {"temperature": 0.95}, {"temperature": 0.2}, {"temperature": 0.4}]
+    original_optimizer = _heating(ByIteration(*updates), base_dir=tmp_path / "runs", budget=Budget(max_iterations=4))
+    original = await original_optimizer.run_async()
+    parents = [r.parent_id for r in original.iterations]
+    assert [original.candidates[p].values["temperature"] for p in parents] == [0.1, 0.6, 0.1, 0.1]
+
+    # Killed in iteration 2, the last step aiming at Temperature: resume plans the switch as the run did.
+    copy = _killed(
+        original_optimizer._run.root,
+        tmp_path,
+        lambda events: _index(events, "score", after=_index(events, "select", nth=2)),
+    )
+    resumed = await Optimizer.resume(
+        copy,
+        experiment=_experiment(evaluators=[Temperature(), Cool()]),
+        factory=_heated,
+        rollout_fn=_temperature_rollout,
+        objective=WeightedSum(Maximize("Temperature"), Maximize("Cool", weight=2)),
+        search=Search([Block(ByIteration(*updates), "temperature")], schedule=TemperatureFirst()),
+    ).run_async()
+    _assert_same(resumed, original, rerun=2)

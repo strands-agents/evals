@@ -1,4 +1,5 @@
 import copy
+import dataclasses
 import os
 import random
 import warnings
@@ -11,6 +12,7 @@ from strands_evals.optimization import (
     TPE,
     Alternate,
     Block,
+    Criteria,
     Float,
     Int,
     Joint,
@@ -26,6 +28,7 @@ from strands_evals.optimization import (
     component,
     tool_descriptions,
 )
+from strands_evals.optimization.scoring.metrics import MetricRegistry
 from strands_evals.optimization.search.blocks import ScheduleContext, Step
 from strands_evals.types.optimization import IterationRecord, ProposalOutcome
 
@@ -403,6 +406,7 @@ def test_nested_config():
 # ---- schedules over a scripted history ---------------------------------------------------------------------------
 
 BASE = {"manager": "Window", "manager.Window.size": 40, "temperature": 0.7}
+CRITERIA = Criteria(None, (), MetricRegistry({"Score": (0.0, 1.0)}))
 SUMMARY = {"manager": "Summary", "manager.Summary.ratio": 0.3, "temperature": 0.7}
 
 
@@ -421,6 +425,7 @@ class History:
         self.ranking = ["base"]
         self.contexts: list[ScheduleContext] = []
         self.steps: list[Step | None] = []
+        self.scores = {}
 
     def plan(self):
         ctx = ScheduleContext(
@@ -434,6 +439,8 @@ class History:
             run_ranking=list(self.ranking),
             proposals_per_iteration=self.n,
             redraws=self.redraws,
+            scores=self.scores,
+            criteria=CRITERIA,
         )
         step = self.schedule.next(ctx)
         self.contexts.append(ctx)
@@ -781,6 +788,28 @@ def test_a_joint_step_that_saved_nothing_ends_its_round_early():
     history.save(history.plan(), ("duplicate", "base"))  # Joint's first step saves nothing
 
     assert view(history.plan())[3:5] == ((1,), "opener")
+
+
+def test_nested_passes_the_context_and_an_inner_steps_criteria_through():
+    aim = Criteria(None, (), CRITERIA.registry)
+    seen = []
+
+    class Aiming(Alternate):
+        def next(self, ctx):
+            seen.append(ctx)
+            step = super().next(ctx)
+            return None if step is None else dataclasses.replace(step, criteria=aim)
+
+    history = History(Nested("structure", Aiming(), inner_iterations=2), blocks4())
+    history.scores = {"base": SimpleNamespace(objective=0.5)}  # stands in for its CandidateScores
+    opener = history.plan()
+    history.save(opener, ("feasible", SUMMARY))
+    inner = history.plan()
+
+    assert opener.criteria is None  # the round's opener aims at the run's criteria
+    assert inner.criteria is aim and view(inner) == (["summary"], 4, ("c1",), (0,), "inner", ())
+    (ctx,) = seen
+    assert ctx.scores is history.contexts[-1].scores and ctx.criteria is CRITERIA
 
 
 TWO_BASE = {
