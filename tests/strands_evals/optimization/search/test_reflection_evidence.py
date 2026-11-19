@@ -1,7 +1,9 @@
 """Tests for Reflection's evidence: the trace files, the digest, the rewards, and the versions folder."""
 
+import dataclasses
 import json
 import os
+import random
 from datetime import datetime, timedelta, timezone
 
 import opentelemetry.trace as trace_api
@@ -29,6 +31,7 @@ from strands_evals.optimization.search.reflection import (
     _digest_text,
     _messages,
     _rewards,
+    _sample_cases,
     _text_files,
 )
 from strands_evals.types import EvaluationOutput
@@ -89,7 +92,7 @@ def trial(case, run=0, *, status="completed", score=None, tokens=100, reason="ok
 
 
 def scores_of(trials, criteria, extra=None):
-    """The parent's train scores, as scoring gives them for these trials (one run per case)."""
+    """The parent's train scores, as scoring gives them for these trials (each case's runs numbered from 0)."""
     runs = {}
     for t in trials:
         counted = t.status in (TrialStatus.COMPLETED, TrialStatus.AGENT_FAILURE)
@@ -99,13 +102,18 @@ def scores_of(trials, criteria, extra=None):
             if failed
             else (t.evaluations["Score"].score if t.evaluations else None)
         )
-        metrics = runs.setdefault(t.case_name, {"Score": [None], "tokens": [None]})
+        metrics = runs.setdefault(t.case_name, {"Score": [], "tokens": []})
+        for values in (metrics["Score"], metrics["tokens"]):
+            values.extend([None] * (t.run_index + 1 - len(values)))
         metrics["Score"][t.run_index] = score if counted else None
         metrics["tokens"][t.run_index] = float(t.usage.tokens) if counted else None
         for metric, values in (extra or {}).get(t.case_name, {}).items():
             metrics[metric] = values
     objective_by_run = {
-        case: [criteria.objective_value({m: v[0] for m, v in ms.items() if v[0] is not None})]
+        case: [
+            criteria.objective_value({m: v[i] for m, v in ms.items() if v[i] is not None})
+            for i in range(len(ms["Score"]))
+        ]
         for case, ms in runs.items()
     }
     return CandidateScores(
@@ -627,6 +635,116 @@ def test_digest_that_fits_at_the_shortest_fields_keeps_every_line():
     assert text.endswith("## Cases where every conversation succeeded (0)\n(none)\n")
     for i in range(6):
         assert f"case-{i}" in text
+
+
+# ---- sampling ------------------------------------------------------------------------------------------------------
+
+
+def runs_of(cases):
+    """Each case's runs: `cases` maps a case name to its runs' scores."""
+    return [trial(case, run, score=s) for case, scores in cases.items() for run, s in enumerate(scores)]
+
+
+def written(traces):
+    """Each trace file's case -> [(repetition, reward)], from the files in `traces`."""
+    out = {}
+    for name in sorted(os.listdir(traces)):
+        if name.endswith(".json"):
+            with open(os.path.join(traces, name)) as f:
+                data = json.load(f)
+            out.setdefault(data["task"]["name"], []).append((data["task"]["repetition"], data["reward"]))
+    return out
+
+
+def build(tmp_path, req, success_threshold=0.5, **kwargs):
+    """`_build_evidence` into fresh folders under `tmp_path`: the evidence and the traces folder."""
+    folder = tmp_path / f"call-{len(os.listdir(tmp_path))}"
+    (folder / "traces").mkdir(parents=True)
+    (folder / "versions").mkdir()
+    evidence = _build_evidence(req, success_threshold, str(folder / "traces"), str(folder / "versions"), **kwargs)
+    return evidence, str(folder / "traces")
+
+
+def test_max_cases_writes_whole_cases_half_passing_and_half_failing(tmp_path):
+    cases = {f"fail-{i}": (0.2, 0.9) for i in range(4)} | {f"pass-{i}": (0.9, 0.8) for i in range(6)}
+    evidence, traces = build(tmp_path, request(runs_of(cases)), max_cases=4)
+    shown = written(traces)
+    assert sorted(c.split("-")[0] for c in shown) == ["fail", "fail", "pass", "pass"]
+    assert all(runs == list(enumerate(cases[c])) for c, runs in shown.items())  # every run, its reward as scored
+    assert evidence.trials == 8 and {t.case_name for t in evidence.shown} == set(shown)
+    assert evidence.sampled_from == 10 and evidence.failing_cases == 2
+    assert evidence.digest_text.startswith(
+        "# Digest: 8 of the current version's conversations, 4 of its 10 cases\n\n"
+        "This folder holds a random sample of the cases, each with all of its conversations: 2 of the 4 cases with a "
+        "conversation that did not succeed, and 2 of the 6 where every conversation succeeded. The counts and lists "
+        "below cover the sampled cases only. 2 conversations did not succeed (reward below 0.5), in 2 cases;"
+    )
+
+
+@pytest.mark.parametrize(
+    ("failing", "passing", "limit", "kept"),
+    [(5, 5, 5, (3, 2)), (9, 1, 5, (4, 1)), (1, 9, 5, (1, 4)), (0, 10, 5, (0, 5)), (3, 3, 1, (1, 0))],
+)
+def test_a_side_with_too_few_cases_gives_its_places_to_the_other(failing, passing, limit, kept):
+    trials = [trial(f"f{i}", score=0.1) for i in range(failing)] + [trial(f"p{i}", score=0.9) for i in range(passing)]
+    rewards, _, _ = _rewards(request(trials), 0.5)
+    sample, of_cases = _sample_cases(rewards, 0.5, limit, random.Random(0))
+    names = [t.case_name for t, _, _ in sample]
+    assert (sum(n.startswith("f") for n in names), sum(n.startswith("p") for n in names)) == kept
+    assert names == [t.case_name for t, _, _ in rewards if t.case_name in names]  # in the trials' order
+    assert of_cases == (failing, passing)
+
+
+def test_a_reward_at_the_threshold_succeeds_and_a_sampled_case_keeps_all_of_its_runs():
+    runs = {"even": (0.5, 0.5, 0.5), "one-run": (0.1,), "split": (0.9, 0.2, 0.9), "single": (0.4,)}
+    rewards, _, _ = _rewards(request(runs_of(runs)), 0.5)
+    for seed in range(5):
+        sample, of_cases = _sample_cases(rewards, 0.5, 2, random.Random(seed))
+        assert of_cases == (3, 1)  # "even" is the one passing case
+        by_case = {}
+        for t, _, _ in sample:
+            by_case.setdefault(t.case_name, []).append(t.run_index)
+        assert len(by_case) == 2 and "even" in by_case
+        assert all(indices == list(range(len(runs[c]))) for c, indices in by_case.items())
+
+
+@pytest.mark.parametrize("max_cases", [3, 4])
+def test_max_cases_at_or_above_the_number_of_cases_changes_nothing(tmp_path, max_cases):
+    req = request(runs_of({"a": (0.2, 0.9), "b": (0.9, 0.9), "c": (0.1, 0.1)}))
+    every, every_traces = build(tmp_path, req)
+    capped, capped_traces = build(tmp_path, req, max_cases=max_cases)
+
+    def files(traces):
+        out = {}
+        for name in os.listdir(traces):
+            with open(os.path.join(traces, name)) as f:
+                out[name] = f.read()
+        return out
+
+    assert files(capped_traces) == files(every_traces)
+    assert capped.digest_text == every.digest_text and capped.sampled_from is every.sampled_from is None
+    assert capped.shown == every.shown
+
+
+def test_the_sample_follows_the_run_seed_and_the_call_not_the_order_of_the_trials(tmp_path):
+    trials = runs_of({f"case-{i:02d}": (0.2 if i % 2 else 0.9, 0.9) for i in range(20)})
+
+    def shown(req, call=0):
+        return sorted({t.case_name for t in build(tmp_path, req, max_cases=6, call=call)[0].shown})
+
+    first = shown(request(trials))
+    assert shown(request(trials[::-1])) == first
+    assert shown(request(trials), call=1) != first
+    for change in ({"seed": 1}, {"iteration": 2}, {"redraw": 1}):
+        assert shown(dataclasses.replace(request(trials), **change)) != first
+
+
+def test_a_sampled_trial_keeps_its_rank_among_every_trial(tmp_path):
+    """With `success_threshold=None` a reward is a rank among the parent's trials: all of them, sampled or not."""
+    req = request([trial(f"case-{i}", score=i / 10) for i in range(11)])  # ranks 0, 0.1, ..., 1
+    every = written(build(tmp_path, req, None)[1])
+    sampled = written(build(tmp_path, req, None, max_cases=4)[1])
+    assert len(sampled) == 4 and all(runs == every[c] for c, runs in sampled.items())
 
 
 # ---- versions ------------------------------------------------------------------------------------------------------
