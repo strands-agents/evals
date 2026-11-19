@@ -23,10 +23,12 @@ const linkTag = link => (link && LINK_TAG[link.status]
 /** A link that opens a report or an experiment: `kind` is `report` or `experiment`. */
 const openLink = (kind, path, label) =>
   `<a data-${kind}="${esc(path)}" tabindex="0" role="link">${esc(label || path)}</a>`;
-const FROM_CODE = '<span class="empty" data-tip="No experiment file holds these cases, as when the report was '
-  + 'made with run_evaluations() in code and saved with to_file().">run from code</span>';
-/* The experiment a report was made from, as its list row and its page header both say it. */
-const madeFrom = r => (r.experiment ? `${openLink('experiment', r.experiment)} ${linkTag(r.link)}` : FROM_CODE);
+const FROM_CODE = '<span class="empty" data-tip="No experiment file in this folder holds these cases, as when the '
+  + 'report was made with run_evaluations() in code and saved with to_file().">run from code</span>';
+/* The experiment a report was made from, as its list row and its page header both say it. With none,
+   a link says why the scan could not decide; no link is none found. */
+const madeFrom = r => (r.experiment ? `${openLink('experiment', r.experiment)} ${linkTag(r.link)}`
+  : r.link ? `<span class="empty" data-tip="${esc(r.link.detail)}. A tie is not guessed.">not paired</span>` : FROM_CODE);
 
 /* The reports made from an experiment that the folder still holds. */
 const reportsOf = e => e.reports.map(path => REPORTS.find(r => r.path === path)).filter(Boolean);

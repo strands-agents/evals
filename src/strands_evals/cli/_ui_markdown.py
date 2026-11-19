@@ -21,6 +21,9 @@ _SPACE = re.compile(r"[ \t\r\n]+")
 # Each pair of fields a report row or a case can carry, in the order the page shows them.
 _ASPECTS = ("output", "trajectory", "interactions", "environment_state")
 
+# The longest value written out whole, in characters. A longer one is cut and says so: the file has the rest.
+VALUE_LIMIT = 4000
+
 
 def _truthy(value: Any) -> bool:
     """Whether JavaScript takes a parsed JSON value as true."""
@@ -100,10 +103,18 @@ def _present(value: Any) -> bool:
 
 
 def _score(value: Any) -> str:
-    """Two decimals, rounded as JavaScript's `toFixed(2)` rounds."""
-    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+    """Two decimals, rounded as JavaScript's `toFixed(2)` rounds. From 1e21 up it prints the number whole."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
         return "none"
-    return ("-" if value < 0 else "") + str(Decimal(abs(value)).quantize(Decimal("0.01"), ROUND_HALF_UP))
+    try:
+        number = float(value)
+    except OverflowError:  # an integer past what JavaScript reads as a number
+        return "none"
+    if not math.isfinite(number):
+        return "none"
+    if abs(number) >= 1e21:
+        return _number(number)
+    return ("-" if number < 0 else "") + str(Decimal(abs(number)).quantize(Decimal("0.01"), ROUND_HALF_UP))
 
 
 def _fenced(text: str, lang: str) -> str:
@@ -117,7 +128,18 @@ def _fence(value: Any) -> str:
 
 
 def _block(label: str, value: Any) -> list[str]:
-    return [f"{label}:", _fence(value)] if _present(value) else []
+    """A labelled value in a fence, cut at `VALUE_LIMIT` characters with a line saying how much was left out."""
+    if not _present(value):
+        return []
+    text = value_text(value)
+    if len(text) <= VALUE_LIMIT:
+        return [f"{label}:", _fence(value)]
+    return [
+        f"{label}:",
+        _fenced(text[:VALUE_LIMIT], "text" if isinstance(value, str) else "json"),
+        f"Cut after {VALUE_LIMIT} of {len(text)} characters. "
+        "The file has all of it, and so does the `.json` form of this address.",
+    ]
 
 
 def _cell(text: str) -> str:
@@ -171,10 +193,16 @@ def _case_blocks(case: dict, sides: Sequence[str]) -> list[str]:
 
 
 def _rows(doc: dict) -> list[dict]:
-    """One row per case and evaluator, read as the page reads them."""
+    """One row per case and evaluator, read as the page reads them.
+
+    A case with no name is numbered by its place among the rows of its evaluator, so it has one name under each.
+    """
     rows = []
+    place: dict[str, int] = {}
     for index, case in enumerate(_list(doc.get("cases"))):
         case = _dict(case)
+        evaluator = _one_line(case["evaluator"]) if _present(case.get("evaluator")) else "(unnamed)"
+        place[evaluator] = place.get(evaluator, -1) + 1
         outputs = [_dict(output) for output in _list(_at(doc.get("detailed_results"), index))]
         declined = bool(outputs) and all(
             o.get("label") == "not_applicable" and _truthy(o.get("test_pass")) for o in outputs
@@ -184,8 +212,8 @@ def _rows(doc: dict) -> list[dict]:
         rows.append(
             {
                 "case": case,
-                "name": _name(case.get("name"), index),
-                "evaluator": _one_line(case["evaluator"]) if _present(case.get("evaluator")) else "(unnamed)",
+                "name": _name(case.get("name"), place[evaluator]),
+                "evaluator": evaluator,
                 "score": _at(doc.get("scores"), index),
                 "reason": reason if _truthy(reason) else "",
                 "outputs": outputs,
@@ -197,7 +225,8 @@ def _rows(doc: dict) -> list[dict]:
     return rows
 
 
-def _row_parts(row: dict, heading: str) -> list[str]:
+def _row_parts(row: dict) -> tuple[list[str], list[str]]:
+    """A row under its heading: what the evaluator made of it, then the case it judged."""
     outputs = row["outputs"]
     facts = [f"- Score: {_score(row['score'])}", f"- Verdict: {row['verdict']}"]
     only = outputs[0] if len(outputs) == 1 else {}
@@ -211,20 +240,46 @@ def _row_parts(row: dict, heading: str) -> list[str]:
             + ("passed" if _truthy(output.get("test_pass")) else "failed")
             + (f", {_one_line(label)}" if isinstance(label, str) and label else "")
         )
-    parts = [f"{heading} {row['name']} · {row['evaluator']}", "\n".join(facts)]
-    parts += _block("Reason", row["reason"] if _present(row["reason"]) else only.get("reason"))
+    judged = ["\n".join(facts)]
+    judged += _block("Reason", row["reason"] if _present(row["reason"]) else only.get("reason"))
     for n, output in enumerate(several):
-        parts += _block(f"Reason, output {n + 1} of {len(outputs)}", output.get("reason"))
-    parts += _block("Diagnosis", row["diagnosis"]) + _block("Recommendation", row["recommendation"])
-    return parts + _case_blocks(row["case"], ("expected", "actual"))
+        judged += _block(f"Reason, output {n + 1} of {len(outputs)}", output.get("reason"))
+    judged += _block("Diagnosis", row["diagnosis"]) + _block("Recommendation", row["recommendation"])
+    return judged, _case_blocks(row["case"], ("expected", "actual"))
+
+
+def _failing_parts(rows: Sequence[dict], heading: str) -> list[str]:
+    """Each failing row in full. A case that fails under several evaluators is written out under the first only."""
+    parts: list[str] = []
+    written: dict[tuple[str, ...], str] = {}
+    for row in rows:
+        if row["verdict"] != "failed":
+            continue
+        title = f"{row['name']} · {row['evaluator']}"
+        judged, case = _row_parts(row)
+        first = written.setdefault((row["name"], *case), title)
+        if case and first != title:
+            case = [f'The case is the same as under "{first}" above.']
+        parts += [f"{heading} {title}", *judged, *case]
+    return parts
 
 
 def _document(parts: Iterable[str]) -> str:
     return "\n\n".join(parts) + "\n"
 
 
-def report_markdown(path: str, doc: dict, experiment: str | None) -> str:
-    """A report: its figures, each failing row in full, then every row in one table."""
+def _made_from(experiment: str | None, link: dict | None) -> str:
+    """The experiment a report was paired with and how well it fits, or why it has none, as the scan found it."""
+    if experiment:
+        return experiment + (f" ({link['status']}: {link['detail']})" if link else "")
+    return f"not paired: {link['detail']}" if link else "none found in this folder; a report made in code has none"
+
+
+def report_markdown(path: str, doc: dict, experiment: str | None, link: dict | None = None) -> str:
+    """A report: its figures, each failing row in full, then every row in one table.
+
+    `experiment` and `link` are the scan's pairing of it: the experiment's path, and the status of the fit.
+    """
     rows = _rows(doc)
     verdicts = [row["verdict"] for row in rows]
     facts = [
@@ -233,9 +288,9 @@ def report_markdown(path: str, doc: dict, experiment: str | None) -> str:
         f"{verdicts.count('not applicable')} not applicable)",
         f"- Cases: {len({row['name'] for row in rows})}",
         f"- Evaluators: {', '.join(dict.fromkeys(row['evaluator'] for row in rows)) or 'none'}",
-        f"- Experiment: {experiment or 'none found, so this report was run from code'}",
+        f"- Experiment: {_made_from(experiment, link)}",
     ]
-    failing = [part for row in rows if row["verdict"] == "failed" for part in _row_parts(row, "###")]
+    failing = _failing_parts(rows, "###")
     table = ["| Case | Evaluator | Score | Verdict |", "| --- | --- | --- | --- |"]
     table += [
         f"| {_cell(row['name'])} | {_cell(row['evaluator'])} | {_score(row['score'])} | {row['verdict']} |"
@@ -263,7 +318,7 @@ def experiment_markdown(path: str, doc: dict, reports: Sequence[str]) -> str:
     facts = [
         f"- Cases: {len(cases)}",
         f"- Evaluators: {len(evaluators)}",
-        f"- Reports: {', '.join(sorted(reports)) or 'none, so it has not been run'}",
+        f"- Reports: {', '.join(sorted(reports)) or 'none found in this folder'}",
     ]
     parts = [f"# Experiment: {path}", "\n".join(facts), "## Evaluators"]
     parts += [part for i, e in enumerate(evaluators) for part in _evaluator_parts(e, i)] or ["None."]
@@ -334,12 +389,18 @@ def _block_text(value: Any) -> str:
     return stringify(parsed, step=" ")
 
 
+def _flat(value: Any) -> str:
+    """`String(value)` on one line: what a session names is written outside a fence, where a line break could
+    start a heading."""
+    return _SPACE.sub(" ", _as_text(value)).strip(" ")
+
+
 def _call(name: Any, arguments: Any) -> list[str]:
-    return [f"Tool call `{_as_text(name) if _truthy(name) else '?'}`:", _fenced(stringify(arguments), "json")]
+    return [f"Tool call `{_flat(name) if _truthy(name) else '?'}`:", _fenced(stringify(arguments), "json")]
 
 
 def _result(text: str, status: Any) -> list[str]:
-    return [f"Tool result{f' ({_as_text(status)})' if _truthy(status) else ''}:", _fenced(text, "text")]
+    return [f"Tool result{f' ({_flat(status)})' if _truthy(status) else ''}:", _fenced(text, "text")]
 
 
 def _span_result(result: dict) -> list[str]:
@@ -398,34 +459,39 @@ def _message(message: Any, heading: str) -> list[str]:
         content = [{"text": "" if content is None else _as_text(content)}]
     role = message.get("role")
     parts = [
-        f"{heading} {_as_text(role) if _truthy(role) else 'unknown'}",
+        f"{heading} {_flat(role) if _truthy(role) else 'unknown'}",
         *_usage(_dict(message.get("metadata")).get("usage")),
     ]
     return parts + [part for block in content for part in _content(block)]
 
 
 def _span(span: Any, index: int, heading: str) -> list[str]:
+    """One span under a heading that carries its `span_id`, which is what a diagnosis names it by."""
     held = _dict(span)
     kind = held.get("span_type") if _truthy(held.get("span_type")) else "span"
+    span_id = _dict(held.get("span_info")).get("span_id")
+    named = f" (span_id: {_one_line(span_id)})" if _present(span_id) else ""
+
+    def head(name: str) -> str:
+        return f"{heading} Span {index}: {name}{named}"
+
     if kind == "inference" and isinstance(held.get("messages"), list):
-        return [f"{heading} Span {index}: inference"] + [
-            part for message in held["messages"] for part in _message(message, f"{heading}#")
-        ]
+        return [head("inference")] + [part for message in held["messages"] for part in _message(message, f"{heading}#")]
     if kind == "execute_tool":
         call = _dict(held.get("tool_call"))
         return [
-            f"{heading} Span {index}: tool",
+            head("tool"),
             *_call(call.get("name"), call.get("arguments")),
             *_span_result(_dict(held.get("tool_result"))),
         ]
     if kind == "invoke_agent":
         return [
-            f"{heading} Span {index}: invoke agent",
+            head("invoke agent"),
             *_block("System prompt", held.get("system_prompt")),
             *_block("Prompt", held.get("user_prompt")),
             *_block("Response", held.get("agent_response")),
         ]
-    return [f"{heading} Span {index}: {_as_text(kind)}", _fence(span)]
+    return [head(_flat(kind)), _fence(span)]
 
 
 def session_markdown(path: str, doc: dict, seconds: float | None, diagnoses: Sequence[tuple[str, Any]]) -> str:
@@ -531,11 +597,15 @@ def llms_text(
             "by its path under the served folder, which ends in `.json`; `/api/scan` lists them. A diagnosis file "
             "is read the same way, under `/sessions/`. A comparison is a page only: read each of its reports.",
             "\n".join(forms),
+            f"In Markdown a value longer than {VALUE_LIMIT} characters is cut, with a line saying how much was left "
+            "out: the JSON form has all of it. A report writes a case that fails under several evaluators once. "
+            "A session is written whole.",
             "## Routes",
             "\n".join(f"- `{route}`: {holds}" for route, holds in routes.items()),
             "## Page addresses",
             "These answer with the page itself, for a browser. Each one names one thing, so a link to it "
-            "can be pasted into a conversation.",
+            "can be pasted into a conversation. Asked for without `text/html` in `Accept`, one answers 406 with "
+            "a few lines that name the forms above.",
             "\n".join(pages),
         ]
     )

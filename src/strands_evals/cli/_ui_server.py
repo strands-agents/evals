@@ -21,8 +21,9 @@ import secrets
 import socket
 import stat
 import tempfile
+import threading
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -38,6 +39,7 @@ from ._ui_discovery import (
     EXPERIMENT,
     NOT_JSON,
     REPORT,
+    SCAN_SCHEMA_VERSION,
     SESSION,
     classify,
     discover,
@@ -138,14 +140,24 @@ def _is_timestamp(value: Any) -> TypeGuard[float]:
 
 
 def finite(value: Any) -> Any:
-    """`value` with NaN and Infinity replaced by None, which is how JSON can carry them."""
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, dict):
-        return {key: finite(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [finite(item) for item in value]
-    return value
+    """`value` with NaN and Infinity replaced by None, which is how JSON can carry them.
+
+    Walks with its own stack, so a document nested deeper than the recursion limit is copied too.
+    """
+    out: list[Any] = [None]
+    todo: list[tuple[Any, Any, Any]] = [(out, 0, value)]
+    while todo:
+        into, key, item = todo.pop()
+        if isinstance(item, dict):
+            copy: Any = dict.fromkeys(item)
+            into[key] = copy
+            todo.extend((copy, name, held) for name, held in item.items())
+        elif isinstance(item, list):
+            into[key] = copy = [None] * len(item)
+            todo.extend((copy, index, held) for index, held in enumerate(item))
+        else:
+            into[key] = None if isinstance(item, float) and not math.isfinite(item) else item
+    return out[0]
 
 
 def validate_experiment_payload(payload: Any) -> dict:
@@ -206,11 +218,24 @@ def write_json_atomic(target: Path, payload: dict) -> float:
     return target.stat().st_mtime
 
 
+# Neither refusal says anything of the folder or the token: only how one is sent.
+TOKEN_REFUSAL = (
+    "missing or wrong token: send it as the X-Evals-Token header or as ?t=<token>; /llms.txt says what is answered"
+)
 UNAUTHORIZED_PAGE = (
     b"<!doctype html><meta charset=utf-8><title>strands-evals</title>"
     b"<body style='font:14px \"Space Grotesk\",system-ui,sans-serif;padding:40px'>"
     b"<h3 style='font:600 18px \"JetBrains Mono\",ui-monospace,monospace'>Open the link the CLI printed</h3>"
     b"<p>This page needs the token in the URL that <code>strands-evals ui</code> printed.</p>"
+    b"<p>Without a browser, send that token as the <code>X-Evals-Token</code> header. "
+    b"<code>/llms.txt</code> says what is answered.</p>"
+)
+PAGE_ONLY = (
+    "{path} is a page of strands-evals ui, made for a browser.\n\n"
+    "Without one, a report, an experiment or a session is read as Markdown or as JSON at the address of its file\n"
+    "with .md or .json added. A file's address ends in .json, so the two forms end in .json.md and .json.json.\n"
+    "{meant}"
+    "/llms.txt lists every address, and /api/scan lists the files. Each needs the token, as this did.\n"
 )
 
 
@@ -267,6 +292,7 @@ class UIHandler(BaseHTTPRequestHandler):
     def _send(
         self, status: HTTPStatus, body: bytes, content_type: str, *, headers: dict[str, str] | None = None
     ) -> None:
+        self._answered = True
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -334,7 +360,7 @@ class UIHandler(BaseHTTPRequestHandler):
         if not self._host_is_admitted():
             return HTTPStatus.FORBIDDEN, "this server only answers requests addressed to the host it is serving on"
         if not self._authorized(query):
-            return HTTPStatus.UNAUTHORIZED, "missing or wrong token"
+            return HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL
         return None
 
     def _settings(self) -> dict:
@@ -425,11 +451,14 @@ class UIHandler(BaseHTTPRequestHandler):
         self._json(HTTPStatus.OK, {**self._settings(), "evaluators": evaluator_catalog()})
 
     def _get_scan(self, query: dict[str, list[str]]) -> None:
-        """What a scan of the served folder finds, to its depth and its file cap, and a fingerprint of the folder."""
+        """What a scan of the served folder finds, to its depth and its file cap, and a fingerprint of the folder.
+        `schema_version` moves when a field of it is renamed, removed or changes meaning."""
         # Taken before the scan, so a file written during it reads as a change afterwards.
         mark = fingerprint(self.config.root, self.config.depth)
         result = discover(self.config.root, self.config.depth)
-        self._json(HTTPStatus.OK, {**self._settings(), "fingerprint": mark, **asdict(result)})
+        # `vars`, not `asdict`: that copies every listed document level by level, and one nested deeply stops it.
+        listing = {"schema_version": SCAN_SCHEMA_VERSION, **self._settings(), "fingerprint": mark, **vars(result)}
+        self._json(HTTPStatus.OK, listing)
 
     def _get_changes(self, query: dict[str, list[str]]) -> None:
         """The fingerprint now. It differs from a scan's once something the scan listed has changed."""
@@ -509,22 +538,44 @@ class UIHandler(BaseHTTPRequestHandler):
         def listed(entries: list[dict]) -> dict:
             return next((entry for entry in entries if entry["path"] == path), {})
 
-        if kind == REPORT:
-            text = report_markdown(path, obj, listed(found.reports).get("experiment"))
-        elif kind == EXPERIMENT:
-            text = experiment_markdown(path, obj, listed(found.experiments).get("reports") or [])
-        elif kind == DIAGNOSIS:
-            text = diagnosis_markdown(path, obj, listed(found.diagnoses).get("session"))
-        else:
-            diagnoses = []
-            for made in listed(found.sessions).get("diagnoses") or []:
-                try:
-                    diagnoses.append((made, finite(json.loads((root / made).read_text(encoding="utf-8")))))
-                except NOT_JSON as exc:
-                    self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{made} could not be parsed: {exc}")
-                    return
-            text = session_markdown(path, obj, session_seconds(obj), diagnoses)
+        try:
+            if kind == REPORT:
+                paired = listed(found.reports)
+                text = report_markdown(path, obj, paired.get("experiment"), paired.get("link"))
+            elif kind == EXPERIMENT:
+                text = experiment_markdown(path, obj, listed(found.experiments).get("reports") or [])
+            elif kind == DIAGNOSIS:
+                text = diagnosis_markdown(path, obj, listed(found.diagnoses).get("session"))
+            else:
+                diagnoses = []
+                for made in listed(found.sessions).get("diagnoses") or []:
+                    try:
+                        diagnoses.append((made, finite(json.loads((root / made).read_text(encoding="utf-8")))))
+                    except NOT_JSON as exc:
+                        self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{made} could not be parsed: {exc}")
+                        return
+                text = session_markdown(path, obj, session_seconds(obj), diagnoses)
+        except RecursionError:
+            self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{rel} is nested too deeply to write as Markdown")
+            return
         self._send(HTTPStatus.OK, text.encode("utf-8", "replace"), "text/markdown; charset=utf-8")
+
+    def _cannot_replace(self, rel: str, target: Path, expected: float) -> tuple[HTTPStatus, str] | None:
+        """Why the experiment at `target` may not be saved over, if it may not: `expected` is the stamp it had
+        when the client loaded it."""
+        # The page saves back to the experiment it loaded; it never creates a file or replaces another kind.
+        try:
+            current = json.loads(target.read_text(encoding="utf-8"))
+        except NOT_JSON:
+            current = None
+        if classify(current) != EXPERIMENT:
+            return HTTPStatus.CONFLICT, f"{rel} is not an experiment file"
+        # Lost-update guard: a file whose mtime differs from the one the client loaded was written by someone else.
+        if abs(target.stat().st_mtime - expected) > 1e-6:
+            return HTTPStatus.CONFLICT, f"{rel} changed on disk since it was loaded; reload before saving"
+        if not os.access(target, os.W_OK):
+            return HTTPStatus.FORBIDDEN, f"{rel} is read-only"
+        return None
 
     def _put_experiment(self, query: dict[str, list[str]], body: dict) -> None:
         """With `?path=<experiment file>` and a body of `{"document": ..., "modified": ...}`: saves the experiment
@@ -552,30 +603,23 @@ class UIHandler(BaseHTTPRequestHandler):
         if not _is_timestamp(expected):
             self._error(HTTPStatus.BAD_REQUEST, "'modified' must be the number the file was loaded with")
             return
-        # The page saves back to the experiment it loaded; it never creates a file or replaces another kind.
-        try:
-            current = json.loads(target.read_text(encoding="utf-8"))
-        except NOT_JSON:
-            current = None
-        if classify(current) != EXPERIMENT:
-            self._error(HTTPStatus.CONFLICT, f"{rel} is not an experiment file")
-            return
-        # Lost-update guard: a file whose mtime differs from the one the client loaded was written by someone else.
-        if abs(target.stat().st_mtime - expected) > 1e-6:
-            self._error(HTTPStatus.CONFLICT, f"{rel} changed on disk since it was loaded; reload before saving")
-            return
-        if not os.access(target, os.W_OK):
-            self._error(HTTPStatus.FORBIDDEN, f"{rel} is read-only")
-            return
-
-        try:
-            modified = write_json_atomic(target, document)
-        except ValueError as exc:
-            self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{rel} is not valid JSON: {exc}")
-            return
-        except OSError as exc:
-            self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"could not write {rel}: {exc}")
-            return
+        # One save at a time: two that loaded the same copy would both pass the check below before either wrote.
+        with self.server.saving:  # type: ignore[attr-defined]
+            refusal = self._cannot_replace(rel, target, expected)
+            if refusal:
+                self._error(*refusal)
+                return
+            try:
+                modified = write_json_atomic(target, document)
+            except ValueError as exc:
+                self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{rel} is not valid JSON: {exc}")
+                return
+            except RecursionError:
+                self._error(HTTPStatus.UNPROCESSABLE_ENTITY, f"{rel} is nested too deeply to write")
+                return
+            except OSError as exc:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"could not write {rel}: {exc}")
+                return
 
         logger.info("path=<%s>, cases=<%d> | wrote experiment", rel, len(document["cases"]))
         self._json(
@@ -588,13 +632,48 @@ class UIHandler(BaseHTTPRequestHandler):
             },
         )
 
+    def _wants_html(self) -> bool:
+        """Whether a browser is opening a page: one asks for `text/html`, and a program fetching data does not."""
+        return "text/html" in (self.headers.get("Accept") or "").lower()
+
+    def _meant(self, path: str) -> list[str]:
+        """The data addresses a page address most likely stood for: a file's forms, or one with its `.json` put back."""
+        root = next((root for root in DATA_ROOTS if path.startswith(root)), None)
+        if root is None:
+            return []
+
+        def is_file(address: str) -> bool:
+            try:
+                return os.path.isfile(resolve_within(self.config.root, unquote(address[len(root) :])))
+            except PathOutsideRoot:
+                return False
+
+        if is_file(path):
+            return [path + form for form in DATA_FORMS]
+        if path.lower().endswith(".md") and is_file(path[:-3] + ".json"):
+            return [path[:-3] + ".json.md"]
+        return [f"{path}.json{form}" for form in DATA_FORMS] if is_file(path + ".json") else []
+
+    def _page_only(self, query: dict[str, list[str]]) -> None:
+        """Tell a reader with no browser that this address is a page, and where the data is, in a few lines."""
+        path = urlparse(self.path).path
+        # Which files exist is told to a request with the token itself, as on the data routes.
+        meant = self._meant(path) if self._authorized(query) else []
+        hint = f"Did you mean {' or '.join(meant)}?\n" if meant else ""
+        text = PAGE_ONLY.format(path=path, meant=hint)
+        self._send(HTTPStatus.NOT_ACCEPTABLE, text.encode("utf-8", "replace"), "text/plain; charset=utf-8")
+
     def _get_page(self, query: dict[str, list[str]], status: HTTPStatus = HTTPStatus.OK) -> None:
         """Serve the page to a request that has the token or the cookie.
 
         The printed link is answered with the cookie and a redirect to the same address without the token,
-        so the token is not left in the address bar, the history or a shared link.
+        so the token is not left in the address bar, the history or a shared link. A request that has either
+        and is not a browser's gets a few lines of text in place of the page.
         """
         html_type = "text/html; charset=utf-8"
+        if (self._authorized(query) or self._has_page_cookie()) and not self._wants_html():
+            self._page_only(query)
+            return
         if "t" in query and self._authorized(query):
             cookie = f"{self._cookie_name()}={quote(self.config.token, safe='')}; Path=/; HttpOnly; SameSite=Lax"
             # The same address without the token, so a link into the page lands where it pointed.
@@ -621,10 +700,48 @@ class UIHandler(BaseHTTPRequestHandler):
         "/llms.txt": _get_llms,
     }
 
+    def _answer(self, route: Callable[[], None]) -> None:
+        """Run a request. One that raises is answered with an error, not dropped with nothing sent.
+
+        The body names the kind of failure only: what was raised may quote a path, and the log has it.
+        """
+        self._answered = False
+        try:
+            route()
+        except Exception as exc:
+            if self._answered:  # part of an answer has gone out, so a second one cannot follow it
+                raise
+            logger.exception("path=<%s> | request failed", urlparse(self.path).path)
+            self.close_connection = True
+            self._error(
+                HTTPStatus.INTERNAL_SERVER_ERROR, f"the server could not answer this request: {type(exc).__name__}"
+            )
+
     def do_GET(self) -> None:  # noqa: N802 - name fixed by BaseHTTPRequestHandler
+        self._answer(self._get)
+
+    def _is_a_files_own_name(self, form: tuple[str, str, str], query: dict[str, list[str]]) -> bool:
+        """Whether a path that reads as the JSON form of a file is the page address of one whose name ends so.
+
+        `copy.json.json` is that when `copy.json` is not there. Looked up only for a request that may be
+        shown the folder, so the answer tells one that may not nothing about it.
+        """
+        _, rel, suffix = form
+        admitted = self._host_is_admitted() and (self._authorized(query) or self._has_page_cookie())
+        if suffix != ".json" or not admitted:
+            return False
+        try:
+            shorter, whole = (resolve_within(self.config.root, name) for name in (rel, rel + suffix))
+        except PathOutsideRoot:
+            return False
+        return os.path.isfile(whole) and not os.path.isfile(shorter)
+
+    def _get(self) -> None:
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         form = data_form(parsed.path)
+        if form and self._is_a_files_own_name(form, query):
+            form = None
         is_page = form is None and is_page_path(parsed.path)
 
         if is_page and self._host_is_admitted():
@@ -632,7 +749,7 @@ class UIHandler(BaseHTTPRequestHandler):
             return
         # A browser holding the cookie, at an address the page does not have, gets the page, which says so.
         stray = form is None and parsed.path not in self._GET_ROUTES and not f"{parsed.path}/".startswith("/api/")
-        if stray and self._has_page_cookie() and self._host_is_admitted():
+        if stray and self._wants_html() and self._has_page_cookie() and self._host_is_admitted():
             self._get_page({}, HTTPStatus.NOT_FOUND)
             return
         refusal = self._refusal(query)
@@ -653,6 +770,9 @@ class UIHandler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_PUT(self) -> None:  # noqa: N802
+        self._answer(self._put)
+
+    def _put(self) -> None:
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
 
@@ -676,6 +796,7 @@ class _Server(ThreadingHTTPServer):
 
     def __init__(self, address: tuple[str, int], handler: type[BaseHTTPRequestHandler], config: UIConfig):
         self.config = config
+        self.saving = threading.Lock()
         if ":" in address[0]:
             self.address_family = socket.AF_INET6
         super().__init__(address, handler)

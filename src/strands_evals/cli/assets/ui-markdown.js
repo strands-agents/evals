@@ -46,10 +46,20 @@ function mdCaseBlocks(c, sides) {
 
 const mdVerdict = r => ({ pass: 'passed', fail: 'failed', na: 'not applicable' }[verdictOf(r)]);
 const mdEvaluator = r => (mdPresent(r.evaluator) ? mdLine(r.evaluator) : '(unnamed)');
-const mdRowName = r => mdName(r.case.name, r.i);
+/* Each row's case name. A case with no name is numbered by its place among the rows of its evaluator,
+   so it has one name under each. */
+function mdCaseNames(rows) {
+  const place = new Map();
+  return new Map(rows.map(r => {
+    const at = place.get(mdEvaluator(r)) || 0;
+    place.set(mdEvaluator(r), at + 1);
+    return [r, mdName(r.case.name, at)];
+  }));
+}
 
-/* `more` is facts about where the row is from, for a row copied on its own. */
-function mdRowParts(r, heading, more = []) {
+/* `names` is `mdCaseNames` of the rows `r` is one of. `more` is facts about where the row is from,
+   for a row copied on its own. `same` is the row its case was written out under, when it already was. */
+function mdRowParts(r, names, heading, more = [], same = null) {
   const outputs = r.outputs.map(o => (o && typeof o === 'object' && !Array.isArray(o) ? o : {}));
   const only = outputs.length === 1 ? outputs[0] : {};
   const several = outputs.length > 1 ? outputs : [];
@@ -57,26 +67,42 @@ function mdRowParts(r, heading, more = []) {
   if (typeof only.label === 'string' && only.label) facts.push(`- Label: ${mdLine(only.label)}`);
   several.forEach((o, n) => facts.push(`- Output ${n + 1} of ${outputs.length}: score ${mdScore(o.score)}, `
     + (o.test_pass ? 'passed' : 'failed') + (typeof o.label === 'string' && o.label ? `, ${mdLine(o.label)}` : '')));
-  return [`${heading} ${mdRowName(r)} · ${mdEvaluator(r)}`, facts.concat(more).join('\n'),
+  return [`${heading} ${names.get(r)} · ${mdEvaluator(r)}`, facts.concat(more).join('\n'),
     ...mdBlock('Reason', mdPresent(r.reason) ? r.reason : only.reason),
     ...several.flatMap((o, n) => mdBlock(`Reason, output ${n + 1} of ${outputs.length}`, o.reason)),
     ...mdBlock('Diagnosis', r.diagnosis), ...mdBlock('Recommendation', r.recommendation),
-    ...mdCaseBlocks(r.case, ['expected', 'actual'])];
+    ...(same ? [`The case is the same as under "${same}" above.`] : mdCaseBlocks(r.case, ['expected', 'actual']))];
 }
 
-/** A report: its figures, each failing row in full, then every row in one table. */
-function reportMarkdown(path, doc, experiment) {
-  const rows = reportRows(doc), n = verdictCounts(rows);
+/* Each failing row in full. A case that fails under several evaluators is written out under the first only. */
+function mdFailingParts(rows, names, heading) {
+  const written = new Map();
+  return rows.filter(r => verdictOf(r) === 'fail').flatMap(r => {
+    const title = `${names.get(r)} · ${mdEvaluator(r)}`, blocks = mdCaseBlocks(r.case, ['expected', 'actual']);
+    const key = [names.get(r), ...blocks].join('\u0000');
+    if (!written.has(key)) written.set(key, title);
+    return mdRowParts(r, names, heading, [], blocks.length && written.get(key) !== title ? written.get(key) : null);
+  });
+}
+
+/* The experiment a report was paired with and how well it fits, or why it has none, as the scan found it. */
+const mdMadeFrom = (experiment, link) => (experiment ? experiment + (link ? ` (${link.status}: ${link.detail})` : '')
+  : link ? `not paired: ${link.detail}` : 'none found in this folder; a report made in code has none');
+
+/** A report: its figures, each failing row in full, then every row in one table. `experiment` and
+    `link` are the scan's pairing of it. */
+function reportMarkdown(path, doc, experiment, link) {
+  const rows = reportRows(doc), n = verdictCounts(rows), names = mdCaseNames(rows);
   const facts = [
     `- Overall score: ${mdScore(doc.overall_score)}`,
     `- Rows: ${rows.length} (${n.pass} passed, ${n.fail} failed, ${n.na} not applicable)`,
-    `- Cases: ${new Set(rows.map(mdRowName)).size}`,
+    `- Cases: ${new Set(names.values()).size}`,
     `- Evaluators: ${[...new Set(rows.map(mdEvaluator))].join(', ') || 'none'}`,
-    `- Experiment: ${experiment || 'none found, so this report was run from code'}`,
+    `- Experiment: ${mdMadeFrom(experiment, link)}`,
   ];
-  const failing = rows.filter(r => verdictOf(r) === 'fail').flatMap(r => mdRowParts(r, '###'));
+  const failing = mdFailingParts(rows, names, '###');
   const table = ['| Case | Evaluator | Score | Verdict |', '| --- | --- | --- | --- |',
-    ...rows.map(r => `| ${mdCell(mdRowName(r))} | ${mdCell(mdEvaluator(r))} | ${mdScore(r.score)} | ${mdVerdict(r)} |`)];
+    ...rows.map(r => `| ${mdCell(names.get(r))} | ${mdCell(mdEvaluator(r))} | ${mdScore(r.score)} | ${mdVerdict(r)} |`)];
   return mdDocument([`# Report: ${path}`, facts.join('\n'), '## Failing rows',
     ...(failing.length ? failing : ['None.']), '## All rows', table.join('\n')]);
 }
@@ -100,7 +126,7 @@ function experimentMarkdown(path, doc, reports) {
   const facts = [
     `- Cases: ${given.length}`,
     `- Evaluators: ${evaluators.length}`,
-    `- Reports: ${[...reports].sort().join(', ') || 'none, so it has not been run'}`,
+    `- Reports: ${[...reports].sort().join(', ') || 'none found in this folder'}`,
   ];
   const judged = evaluators.flatMap(mdEvaluatorParts);
   const entries = given.flatMap((c, i) => mdCaseParts(c, i, '###'));
@@ -113,9 +139,10 @@ function experimentMarkdown(path, doc, reports) {
 /* Absolute where the page knows the folder it is served from, so the path works from anywhere. */
 const filePath = rel => (MODE !== 'server' || !ROOT ? rel : rel === '.' ? ROOT : `${ROOT.replace(/\/$/, '')}/${rel}`);
 const shellQuote = s => (/^[\w./:=@%+-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`);
-/* `--case` takes a name, or a 0-based index where no case has that name. */
+/* `--case` takes a name, or a 0-based index where no case has that name. `MODULE:ATTR` stands for the
+   agent under test, which no file here records. */
 const runCommand = (experiment, which) =>
-  `strands-evals run ${shellQuote(filePath(experiment))} --case ${shellQuote(String(which))} --agent module:attr`;
+  `strands-evals run ${shellQuote(filePath(experiment))} --case ${shellQuote(String(which))} --agent MODULE:ATTR`;
 
 const addressOf = route => (MODE === 'server' ? location.origin + route : `${location.href.split('#')[0]}#${route}`);
 
@@ -124,24 +151,31 @@ const reportPath = () => (repCand ? repMeta.path : filePath(repMeta.path));
 
 function rowMarkdown(r) {
   const experiment = openExperimentOf();
-  return mdDocument(mdRowParts(r, '#', [
+  return mdDocument(mdRowParts(r, mdCaseNames(ROWS), '#', [
     `- Report: \`${reportPath()}\``,
     ...(experiment ? [`- Experiment: \`${filePath(experiment)}\``] : []),
   ]));
 }
 
-/** Every failing row of the open report, under one line saying what to do with them. */
+/** Every failing row of the open report, under what can be said of them: what failed, where the files
+    are, and how to run a case again. Which agent was evaluated is in neither file, so it is not named. */
 function failingPrompt() {
   const rows = ROWS.filter(r => verdictOf(r) === 'fail');
   const experiment = openExperimentOf();
   const named = rows.find(r => mdPresent(r.case.name));
-  const facts = experiment ? [`- Experiment: \`${filePath(experiment)}\``] : [];
-  if (experiment && named) facts.push(`- To run one case again: \`${runCommand(experiment, named.case.name)}\``);
+  const facts = [`- Report: \`${reportPath()}\``];
+  if (experiment) facts.push(`- Experiment, which holds the cases and the evaluators: \`${filePath(experiment)}\``);
+  if (experiment && named) {
+    facts.push(`- To run one case again: \`${runCommand(experiment, named.case.name)}\`. `
+      + '`MODULE:ATTR` is a placeholder: put the import path of the agent under test there.');
+  }
   return mdDocument([
-    `${rows.length === 1 ? 'This row fails' : `These ${rows.length} rows fail`} in the evaluation report `
-      + `\`${reportPath()}\`. Find the cause of each failure and fix it.`,
-    ...(facts.length ? [facts.join('\n')] : []),
-    ...rows.flatMap(r => mdRowParts(r, '##')),
+    `${rows.length === 1 ? 'This row fails' : `These ${rows.length} rows fail`} in an evaluation report. `
+      + 'Each is below with what was asked, what was expected, what came back and the evaluator\'s reason. '
+      + 'Find why each fails. Neither file names the agent that was evaluated: the cause is in that agent, '
+      + 'or in the case or the evaluator where the expectation itself is wrong.',
+    facts.join('\n'),
+    ...mdFailingParts(ROWS, mdCaseNames(ROWS), '##'),
   ]);
 }
 
@@ -225,9 +259,11 @@ function resultMarkdown(d, run) {
 
 /* ── a trace ── */
 
+/* What a session names is written outside a fence, where a line break could start a heading. */
+const mdFlat = v => String(v).replace(/[ \t\r\n]+/g, ' ').replace(/^ | $/g, '');
 const mdCall = (name, input) =>
-  [`Tool call \`${name || '?'}\`:`, mdFenced(JSON.stringify(input === undefined ? null : input, null, 2), 'json')];
-const mdResult = (text, status) => [`Tool result${status ? ` (${status})` : ''}:`, mdFenced(text, 'text')];
+  [`Tool call \`${name ? mdFlat(name) : '?'}\`:`, mdFenced(JSON.stringify(input === undefined ? null : input, null, 2), 'json')];
+const mdResult = (text, status) => [`Tool result${status ? ` (${mdFlat(status)})` : ''}:`, mdFenced(text, 'text')];
 
 /* The same two block vocabularies `contentBlock` reads, in full rather than clipped. */
 function mdContent(b) {
@@ -243,12 +279,14 @@ function mdContent(b) {
 
 function mdMessage(m, heading) {
   const usage = usageLine(((m && m.metadata) || {}).usage);
-  return [`${heading} ${(m && m.role) || 'unknown'}`, ...(usage ? [usage] : []), ...messageBlocks(m).flatMap(mdContent)];
+  return [`${heading} ${m && m.role ? mdFlat(m.role) : 'unknown'}`, ...(usage ? [usage] : []), ...messageBlocks(m).flatMap(mdContent)];
 }
 
+/* The heading carries the span's `span_id`, which is what a diagnosis names it by. */
 function mdSpan(s, i, h = '##') {
   const kind = (s && s.span_type) || 'span';
-  const head = name => `${h} Span ${i}: ${name}`;
+  const id = isObject(s) && isObject(s.span_info) ? s.span_info.span_id : null;
+  const head = name => `${h} Span ${i}: ${name}${mdPresent(id) ? ` (span_id: ${mdLine(id)})` : ''}`;
   if (kind === 'inference' && Array.isArray(s.messages)) return [head('inference'), ...s.messages.flatMap(m => mdMessage(m, `${h}#`))];
   if (kind === 'execute_tool') {
     const call = s.tool_call || {};
@@ -258,7 +296,7 @@ function mdSpan(s, i, h = '##') {
     return [head('invoke agent'), ...mdBlock('System prompt', s.system_prompt), ...mdBlock('Prompt', s.user_prompt),
       ...mdBlock('Response', s.agent_response)];
   }
-  return [head(kind), mdFence(s)];
+  return [head(mdFlat(kind)), mdFence(s)];
 }
 
 /** A recorded session or a list of messages as a conversation, tool calls and results included. */
@@ -381,7 +419,7 @@ const candidateOf = id => OPT && OPT.proposals.find(p => p.candidate_id === id);
 
 /* What each button copies, or nothing when what it names is no longer open. */
 const MD_COPY = {
-  report: () => REP && reportMarkdown(repMeta.path, REP, openExperimentOf()),
+  report: () => REP && reportMarkdown(repMeta.path, REP, openExperimentOf(), repCand ? null : listed(REPORTS, repMeta).link),
   failing: () => REP && failingPrompt(),
   path: rel => filePath(rel),
   row: i => ROWS[i] && rowMarkdown(ROWS[i]),

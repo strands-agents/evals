@@ -71,7 +71,7 @@ try {
 
   const skipped = Object.fromEntries($$('#skips li').map(li => [li.querySelector('code').textContent, text(li)]));
   ok(Object.keys(skipped).sort().join() === 'half-written.json,notes.json'
-    && /invalid JSON/.test(skipped['half-written.json']) && /not an experiment or a report/.test(skipped['notes.json']),
+    && /invalid JSON/.test(skipped['half-written.json']) && /not an experiment, a report, a session or a diagnosis/.test(skipped['notes.json']),
     'only the two files it could not use are skipped, each with its reason, and none of the optimizer run’s own',
     text('#skips'));
 

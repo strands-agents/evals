@@ -7,7 +7,9 @@ import os
 import re
 import runpy
 import socket
+import sys
 import threading
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.message import Message
@@ -51,9 +53,11 @@ from strands_evals.types.detector import DiagnosisResult, FailureItem, FailureOu
 from strands_evals.types.evaluation import EvaluationData
 from strands_evals.types.trace import InferenceSpan, Session, SpanInfo, Trace
 
-NOT_RECOGNISED = "not an experiment or a report"
+NOT_RECOGNISED = "not an experiment, a report, a session or a diagnosis"
 # More arrays inside one another than the JSON reader will follow.
 TOO_DEEP = "[" * 100_000
+# Fewer than that, and more than a copy made level by level will follow.
+DEEP = "[" * 700 + "1" + "]" * 700
 MISSING_RUBRIC = {
     "index": 0,
     "evaluator_type": "OutputEvaluator",
@@ -74,7 +78,7 @@ def _experiment(*names: str) -> dict:
 def _report(*names: str, failing: tuple[str, ...] = (), declined: tuple[str, ...] = ()) -> dict:
     cases, scores, passes, detailed = [], [], [], []
     for name in names:
-        cases.append({"name": name, "session_id": f"sid-{name}", "evaluator": "OutputEvaluator"})
+        cases.append({"name": name, "input": f"ask about {name}", "evaluator": "OutputEvaluator"})
         if name in declined:
             scores.append(0.0)
             passes.append(True)
@@ -95,6 +99,11 @@ def _report(*names: str, failing: tuple[str, ...] = (), declined: tuple[str, ...
         "test_passes": passes,
         "detailed_results": detailed,
     }
+
+
+def _deep_experiment() -> str:
+    """An experiment file whose evaluator has a setting nested `DEEP`."""
+    return json.dumps(_experiment("a")).replace('"OutputEvaluator"', f'"OutputEvaluator", "extra": {DEEP}')
 
 
 def _session(session_id: str, *traces: list[tuple[float, float]]) -> dict:
@@ -204,7 +213,8 @@ def _snapshot(root: Path) -> dict[str, bytes]:
             "rca-only": (RCAOutput(root_causes=[_CAUSE]).model_dump(mode="json"), "diagnosis"),
             "a diagnosis that found nothing": (DiagnosisResult(session_id="s").model_dump(mode="json"), "diagnosis"),
             "failures that name no span": ({"session_id": "s", "failures": ["it broke"]}, None),
-            "no root causes and no session": ({"root_causes": []}, None),
+            "rca-only that found nothing": (RCAOutput().model_dump(mode="json"), "diagnosis"),
+            "no root causes among other things": ({"root_causes": [], "notes": "none yet"}, None),
         }
     ),
 )
@@ -429,6 +439,70 @@ def test_scan_sets_aside_a_link_that_leads_back_to_itself(tmp_path: Path):
     assert found.skipped == [{"path": "loop.json", "why": "could not read: OSError"}]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="creating a symlink needs a privilege on Windows")
+@pytest.mark.parametrize("linked", ["run.json", "events.jsonl"])
+def test_an_optimizer_run_is_not_read_through_a_link_that_leaves_the_folder(tmp_path: Path, linked):
+    outside = _optimizer_run(tmp_path / "outside", {"event": "propose"}, config={"run_id": "not-for-this-folder"})
+    run = _optimizer_run(tmp_path / "root" / "tuning", {"event": "config"})
+    (run / linked).unlink()
+    (run / linked).symlink_to(outside / linked)
+
+    found = discover(tmp_path / "root")
+
+    assert found.optimizer_runs == []
+    assert {"path": f"tuning/{linked}", "why": "a link to a file outside this folder"} in found.skipped
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs a named pipe")
+def test_scan_sets_aside_a_pipe_instead_of_waiting_on_it(tmp_path: Path):
+    """Nothing writes to these pipes, so reading one would never return."""
+    LocalFileTaskResultStore(tmp_path / "store").save("a", EvaluationData(input="q", actual_output="a"))
+    _optimizer_run(tmp_path / "tuning", {"event": "config"})
+    (tmp_path / "tuning" / "events.jsonl").unlink()
+    for pipe in ("pipe.json", "store/b.json", "tuning/events.jsonl"):
+        os.mkfifo(tmp_path / pipe)
+    scanned: list = []
+
+    worker = threading.Thread(target=lambda: scanned.append(discover(tmp_path)), daemon=True)
+    worker.start()
+    worker.join(timeout=10)
+
+    assert scanned, "the scan is still waiting on a pipe"
+    assert scanned[0].optimizer_runs == []
+    assert {skip["path"]: skip["why"] for skip in scanned[0].skipped if skip["path"] != "tuning/run.json"} == {
+        "pipe.json": "not a regular file",
+        "store/b.json": "not a regular file",
+        "tuning/events.jsonl": "not a regular file",
+    }
+
+
+@pytest.mark.skipif(not hasattr(sys, "get_int_max_str_digits"), reason="this Python reads a number of any length")
+def test_scan_sets_aside_a_file_holding_a_number_too_long_to_read(tmp_path: Path):
+    _write(tmp_path / "experiment.json", _experiment("a"))
+    (tmp_path / "huge.json").write_text('{"cases": [], "evaluators": [], "n": 1' + "0" * 5000 + "}")
+    _write(tmp_path / "tuning" / "run.json", {"run_id": "r"})
+    (tmp_path / "tuning" / "events.jsonl").write_text(
+        '{"event": "trial", "tokens": 1' + "0" * 5000 + '}\n{"event": "stop"}\n'
+    )
+
+    found = discover(tmp_path)
+
+    assert [experiment["path"] for experiment in found.experiments] == ["experiment.json"]
+    assert found.skipped == [{"path": "huge.json", "why": "holds a number too long to read"}]
+    assert [(run["events"], run["bad_lines"]) for run in found.optimizer_runs] == [
+        (1, [{"line": 1, "why": "holds a number too long to read"}])
+    ]
+
+
+def test_fingerprint_takes_a_file_name_that_is_not_utf8(tmp_path: Path):
+    try:
+        (tmp_path / os.fsdecode(b"caf\xe9.json")).write_text("{}")
+    except OSError:
+        pytest.skip("this filesystem refuses a name that is not UTF-8")
+
+    assert len(fingerprint(tmp_path)) == 64
+
+
 def test_a_task_result_store_is_reported_and_its_files_are_neither_skipped_nor_counted(tmp_path: Path, monkeypatch):
     store = LocalFileTaskResultStore(tmp_path / "store")
     for name in ("a", "b", "c", "d", "e"):
@@ -525,6 +599,11 @@ def test_a_link_out_of_the_folder_is_not_counted_as_a_task_result(tmp_path: Path
                 ["latest.json"],
                 {("left/experiment.json", None), ("right/experiment.json", None), (None, "latest.json")},
             ),
+            "the one holding its cases, over the only one beside it": (
+                ["unrelated.json", "other/checkout.experiment.json"],
+                ["nightly.json"],
+                {("other/checkout.experiment.json", "nightly.json"), ("unrelated.json", None)},
+            ),
         }
     ),
 )
@@ -547,6 +626,39 @@ def test_discover_does_not_guess_between_two_experiments_of_a_reports_name(tmp_p
     _write(tmp_path / "nightly.exp.json", _experiment("a"))
 
     assert discover(tmp_path).reports[0]["experiment"] is None
+
+
+def test_discover_says_which_experiments_tie_for_a_report(tmp_path: Path):
+    _write(tmp_path / "left" / "experiment.json", _experiment("a"))
+    _write(tmp_path / "right" / "experiment.json", _experiment("a"))
+    _write(tmp_path / "latest.json", _report("a"))
+
+    report = discover(tmp_path).reports[0]
+
+    assert (report["experiment"], report["link"]) == (
+        None,
+        {
+            "status": "tie",
+            "detail": "2 experiments hold every case of this report and are equally near: "
+            "left/experiment.json, right/experiment.json",
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "cases,rows,status",
+    [(["a"], ["a", "b"], "partial"), ([None], [None], "unverified"), (["a"], ["z"], "mismatch")],
+    ids=["some of its cases", "cases with no names", "none of its cases"],
+)
+def test_discover_pairs_the_only_report_with_the_only_experiment_beside_it_and_says_how_they_fit(
+    tmp_path: Path, cases, rows, status
+):
+    _write(tmp_path / "cases.json", _experiment(*cases))
+    _write(tmp_path / "results.json", _report(*rows))
+
+    report = discover(tmp_path).reports[0]
+
+    assert (report["experiment"], report["link"]["status"]) == ("cases.json", status)
 
 
 def test_discover_leaves_a_report_unpaired_when_no_experiment_holds_all_of_its_cases(tmp_path: Path):
@@ -1054,7 +1166,9 @@ def test_write_json_atomic_creates_a_file_that_is_not_there(tmp_path: Path):
 
 PAGE = "<html>page</html>"
 HOST_REFUSAL = "this server only answers requests addressed to the host it is serving on"
-TOKEN_REFUSAL = "missing or wrong token"
+TOKEN_REFUSAL = (
+    "missing or wrong token: send it as the X-Evals-Token header or as ?t=<token>; /llms.txt says what is answered"
+)
 LENGTH_REFUSAL = "send the body with a Content-Length"
 WRONG_TOKEN = {"X-Evals-Token": "wrong"}
 NO_TOKEN = {"X-Evals-Token": None}
@@ -1099,7 +1213,11 @@ class Client:
         the computed `Content-Length`, so a test can omit the token or lie about the body.
         """
         payload = body if isinstance(body, bytes | None) else json.dumps(body).encode()
-        sent: dict[str, str | None] = {"Host": f"127.0.0.1:{self.port}", "X-Evals-Token": self.token}
+        sent: dict[str, str | None] = {
+            "Host": f"127.0.0.1:{self.port}",
+            "X-Evals-Token": self.token,
+            "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",  # what a browser asks a page for
+        }
         if payload is not None:
             sent["Content-Length"] = str(len(payload))
         sent.update(headers or {})
@@ -1242,6 +1360,47 @@ def test_page_needs_the_token(client: Client):
     assert client.send("GET", "/") == Reply(HTTPStatus.OK, PAGE)
 
 
+def test_a_refusal_says_how_the_token_is_sent_and_nothing_of_the_folder(client: Client):
+    page = client.send("GET", "/reports/report.json", headers=NO_TOKEN)
+    data = client.send("GET", "/reports/report.json.md", headers=WRONG_TOKEN)
+
+    assert data == _refused(HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL)
+    for body in (page.body, data.body["error"]):
+        assert "X-Evals-Token" in body and "/llms.txt" in body
+        assert client.token not in body and str(client.root) not in body and "report.json" not in body
+
+
+@pytest.mark.parametrize(
+    "path,told",
+    [
+        ("/reports", "/reports is a page"),
+        ("/reports/report.md", "Did you mean /reports/report.json.md?"),
+        (
+            "/experiments/experiment",
+            "Did you mean /experiments/experiment.json.md or /experiments/experiment.json.json?",
+        ),
+        ("/reports/compare.md?r=report.json&r=report.json", "/reports/compare.md is a page"),
+    ],
+    ids=["a list", "a form with the file's .json left out", "a file with its .json left out", "a comparison"],
+)
+@pytest.mark.parametrize("accept", ["*/*", "application/json", None], ids=["anything", "json", "no header"])
+def test_a_page_address_tells_a_reader_with_no_browser_where_the_data_is(client: Client, path, told, accept):
+    reply = client.send("GET", path, headers={"Accept": accept})
+
+    assert (reply.status, reply.headers.get_content_type()) == (HTTPStatus.NOT_ACCEPTABLE, "text/plain")
+    assert told in reply.body and "/llms.txt" in reply.body and ".json.md" in reply.body
+    assert len(reply.body) < 1000
+
+
+def test_a_reader_with_no_browser_is_refused_like_any_other_without_the_token(client: Client):
+    plain = {"Accept": "*/*"}
+
+    assert client.send("GET", "/reports", headers={**NO_TOKEN, **plain}).status == HTTPStatus.UNAUTHORIZED
+    assert client.send("GET", "/reports/report.md", headers={**WRONG_TOKEN, **plain}).status == HTTPStatus.UNAUTHORIZED
+    with_link = client.send("GET", f"/reports?t={client.token}", headers={**NO_TOKEN, **plain})
+    assert (with_link.status, with_link.headers["Set-Cookie"]) == (HTTPStatus.NOT_ACCEPTABLE, None)
+
+
 def test_a_link_with_the_wrong_token_gets_no_cookie(client: Client):
     reply = client.send("GET", "/reports?t=guessed", headers=NO_TOKEN)
 
@@ -1357,7 +1516,8 @@ def test_the_token_redirect_never_points_off_the_server(client: Client):
 
 
 def test_the_token_redirect_does_not_echo_a_path_that_is_not_printable(client: Client):
-    request = f"GET /reports/\u00e9?t={client.token} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+    asked = f"GET /reports/\u00e9?t={client.token} HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/html\r\n"
+    request = f"{asked}Connection: close\r\n\r\n"
 
     with socket.create_connection((client.host, client.port), timeout=5) as raw:
         raw.sendall(request.encode("latin-1"))
@@ -1513,7 +1673,9 @@ def test_scan_endpoint_serves_the_discovery_with_the_settings(client: Client):
     assert {name: len(listed) for name, listed in found.items() if name != "truncated"} == dict.fromkeys(
         ("experiments", "reports", "skipped", "optimizer_runs", "sessions", "diagnoses", "stores"), 1
     )
-    assert reply == Reply(HTTPStatus.OK, {**client.settings, "fingerprint": fingerprint(client.root), **found})
+    assert reply == Reply(
+        HTTPStatus.OK, {"schema_version": 1, **client.settings, "fingerprint": fingerprint(client.root), **found}
+    )
 
 
 def test_scan_endpoint_survives_a_report_holding_nan(client: Client):
@@ -1527,6 +1689,34 @@ def test_scan_endpoint_survives_a_report_holding_nan(client: Client):
         "report.json": 0.5,
         "odd/report.json": None,
     }
+
+
+def test_scan_endpoint_lists_a_file_nested_deeper_than_a_copy_follows(client: Client):
+    (client.root / "deep.json").write_text(_deep_experiment())
+    (client.root / "odd.json").write_text(json.dumps({**_report("alpha"), "overall_score": float("nan")}))
+
+    reply = client.send("GET", "/api/scan")
+
+    assert reply.status == HTTPStatus.OK
+    assert [experiment["path"] for experiment in reply.body["experiments"]] == ["deep.json", "experiment.json"]
+
+
+@pytest.mark.parametrize(
+    "method,path,broken",
+    [("GET", "/api/scan", "discover"), ("PUT", "/api/experiment?path=experiment.json", "validate_experiment_payload")],
+)
+def test_a_route_that_raises_answers_with_an_error_and_the_server_carries_on(
+    client: Client, monkeypatch, method, path, broken
+):
+    def fail(*args: Any) -> None:
+        raise RuntimeError(f"could not read {client.root.parent}/elsewhere")
+
+    monkeypatch.setattr(_ui_server, broken, fail)
+
+    reply = client.send(method, path, body=SAVE if method == "PUT" else None)
+
+    assert reply == _refused(HTTPStatus.INTERNAL_SERVER_ERROR, "the server could not answer this request: RuntimeError")
+    assert client.send("GET", "/api/config") == Reply(HTTPStatus.OK, client.config)
 
 
 @pytest.mark.parametrize("name,notes", [("experiment.json", [MISSING_RUBRIC]), ("report.json", [])])
@@ -1595,7 +1785,7 @@ REPORT_MARKDOWN = """# Report: report.json
 - Rows: 2 (1 passed, 1 failed, 0 not applicable)
 - Cases: 2
 - Evaluators: OutputEvaluator
-- Experiment: experiment.json
+- Experiment: experiment.json (verified: all 2 report case(s) exist in this experiment)
 
 ## Failing rows
 
@@ -1604,6 +1794,12 @@ REPORT_MARKDOWN = """# Report: report.json
 - Score: 0.00
 - Verdict: failed
 - Label: no_match
+
+Input:
+
+```text
+ask about beta
+```
 
 ## All rows
 
@@ -1700,7 +1896,37 @@ def test_markdown_names_a_file_as_the_scan_does_however_it_was_asked_for(client:
 
     assert roundabout == Reply(HTTPStatus.OK, REPORT_MARKDOWN)
     assert unpaired.body.startswith("# Report: code/nightly.report.json\n")
-    assert "\n- Experiment: none found, so this report was run from code\n\n## Failing rows\n\nNone.\n" in unpaired.body
+    assert (
+        "\n- Experiment: none found in this folder; a report made in code has none\n\n## Failing rows" in unpaired.body
+    )
+
+
+def test_markdown_says_why_a_report_was_left_unpaired(client: Client):
+    for side in ("left", "right"):
+        _write(client.root / "tie" / side / "e.json", _experiment("t"))
+    _write(client.root / "tie" / "shared.report.json", _report("t"))
+
+    reply = client.send("GET", "/reports/tie/shared.report.json.md")
+
+    assert (
+        "\n- Experiment: not paired: 2 experiments hold every case of this report and are equally near: "
+        "tie/left/e.json, tie/right/e.json\n"
+    ) in reply.body
+
+
+def test_a_file_whose_own_name_ends_in_a_form_has_a_page_and_its_data(client: Client):
+    """`copy.json.json` is a file, not the JSON form of `copy.json`, when only the longer name is there."""
+    _write(client.root / "copy.json.json", _report("gamma"))
+
+    page = client.send("GET", "/reports/copy.json.json", headers={**NO_TOKEN, "Cookie": client.cookie})
+    data = client.send("GET", "/reports/copy.json.json.json")
+    unopened = client.send("GET", "/reports/copy.json.json", headers=NO_TOKEN)
+    form = client.send("GET", "/reports/report.json.json", headers={**NO_TOKEN, "Cookie": client.cookie})
+
+    assert (page.status, page.body) == (HTTPStatus.OK, PAGE)
+    assert data == Reply(HTTPStatus.OK, _report("gamma"))
+    assert unopened == _refused(HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL)
+    assert form == _refused(HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL)
 
 
 def test_markdown_survives_a_report_holding_nan(client: Client):
@@ -1791,6 +2017,28 @@ def test_reading_says_when_the_file_is_not_json(client: Client, address, text):
     assert reply.body["error"].startswith("odd.json could not be parsed: ")
 
 
+def test_markdown_prints_a_score_too_large_for_two_decimals(client: Client):
+    (client.root / "big.json").write_text(json.dumps({**_report("alpha"), "overall_score": 1e26, "scores": [1e26]}))
+
+    reply = client.send("GET", "/reports/big.json.md")
+
+    assert reply.status == HTTPStatus.OK
+    assert "- Overall score: 1e+26\n" in reply.body
+    assert reply.body.endswith("| alpha | OutputEvaluator | 1e+26 | passed |\n")
+
+
+def test_markdown_says_when_a_file_is_nested_too_deeply_to_write(client: Client):
+    """Depth the reader takes on a Python that reads past its own recursion limit; elsewhere it is not JSON."""
+    nested = "[" * 5000 + "1" + "]" * 5000
+    failing = _report("alpha", failing=("alpha",))
+    (client.root / "deep.json").write_text(json.dumps(failing).replace('"ask about alpha"', nested))
+
+    reply = client.send("GET", "/reports/deep.json.md")
+
+    assert reply.status == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert reply.body["error"].startswith(("deep.json is nested too deeply", "deep.json could not be parsed: "))
+
+
 def test_llms_txt_describes_every_address_the_server_answers(client: Client):
     reply = client.send("GET", "/llms.txt")
     lines = reply.body.splitlines()
@@ -1802,10 +2050,12 @@ def test_llms_txt_describes_every_address_the_server_answers(client: Client):
     assert lines[0] == "# strands-evals ui"
     assert "sent as the `X-Evals-Token` header or as `?t=<token>`" in reply.body
     assert "The cookie a browser holds opens the page only" in reply.body
+    assert "In Markdown a value longer than 4000 characters is cut" in reply.body
+    assert "Asked for without `text/html` in `Accept`, one answers 406" in reply.body
     # Every route the handler has is listed with what it returns, so a route added later cannot go undescribed.
     for route, handler in UIHandler._GET_ROUTES.items():
-        assert f"- `{route}`: {handler.__doc__}" in lines
         assert handler.__doc__
+        assert f"- `{route}`: {' '.join(handler.__doc__.split())}" in lines
     assert (
         '- `PUT /api/experiment`: With `?path=<experiment file>` and a body of `{"document": ..., "modified": ...}`: '
         "saves the experiment over the file it was read from. `modified` is the time `/api/file` gave; a file changed "
@@ -1881,6 +2131,28 @@ def test_put_writes_the_file_it_loaded(client: Client, name):
         {"path": name, "modified": target.stat().st_mtime, "cases": 2, "evaluator_notes": [MISSING_RUBRIC]},
     )
     assert json.loads(target.read_text()) == document
+
+
+def test_two_saves_from_one_loaded_copy_do_not_both_land(client: Client, monkeypatch):
+    """The second would silently undo the first: it is told the file changed, as if it had arrived later."""
+    write = _ui_server.write_json_atomic
+
+    def slowly(target: Path, payload: dict) -> float:
+        time.sleep(0.2)  # long enough for the other save to have checked the stamp, were nothing holding it back
+        return write(target, payload)
+
+    monkeypatch.setattr(_ui_server, "write_json_atomic", slowly)
+    replies: list[Reply] = []
+    savers = [threading.Thread(target=lambda: replies.append(client.put("experiment.json", SAVE))) for _ in range(2)]
+    stamp = (client.root / "experiment.json").stat().st_mtime
+
+    for saver in savers:
+        saver.start()
+    for saver in savers:
+        saver.join(timeout=10)
+
+    assert sorted(reply.status for reply in replies) == [HTTPStatus.OK, HTTPStatus.CONFLICT]
+    assert (client.root / "experiment.json").stat().st_mtime != stamp
 
 
 @pytest.mark.parametrize(
@@ -2106,7 +2378,7 @@ def test_ui_list_prints_what_it_found_as_json(tmp_path: Path, capsys):
         "diagnoses": 2,
         "stores": 1,
     }
-    assert json.loads(capsys.readouterr().out) == {"root": str(tmp_path.resolve()), **found}
+    assert json.loads(capsys.readouterr().out) == {"schema_version": 1, "root": str(tmp_path.resolve()), **found}
 
 
 def test_ui_list_prints_what_it_found_as_text(tmp_path: Path, capsys):
@@ -2143,6 +2415,18 @@ def test_ui_list_says_when_the_scan_stopped_at_the_file_cap(tmp_path: Path, caps
     assert (listed["truncated"], [experiment["path"] for experiment in listed["experiments"]]) == (True, ["a.json"])
     assert printed.out == "a.json (1 cases)  ->  (not run)\n"
     assert printed.err == "scan hit the file cap: the rest of DIRECTORY was not read\n"
+
+
+@pytest.mark.parametrize("nested", [DEEP, "[" * 3000 + "1" + "]" * 3000], ids=["laid out", "on one line"])
+def test_ui_list_prints_json_for_a_file_nested_deeper_than_a_copy_follows(tmp_path: Path, capsys, nested):
+    (tmp_path / "deep.json").write_text(_deep_experiment().replace(DEEP, nested))
+    _write(tmp_path / "plain.json", _experiment("a"))
+
+    assert main(["--json", "ui", str(tmp_path), "--list"]) == 0
+
+    listed = json.loads(capsys.readouterr().out)
+    # A reader that stops at its recursion limit sets the deeper file aside, which is a listing too.
+    assert {entry["path"] for entry in listed["experiments"] + listed["skipped"]} == {"deep.json", "plain.json"}
 
 
 def test_ui_list_prints_json_for_a_report_holding_nan(tmp_path: Path, capsys):
@@ -2255,6 +2539,7 @@ def test_ui_says_what_the_link_exposes(tmp_path: Path, launched, capsys, flags, 
     assert capsys.readouterr().err.splitlines() == [
         f"strands-evals ui{mode}: serving {tmp_path.resolve()}",
         f"  {FAKE_URL}",
+        "  without a browser: send that token as the X-Evals-Token header; /llms.txt says what is answered",
         *notes,
     ]
 

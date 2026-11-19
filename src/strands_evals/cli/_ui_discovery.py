@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
@@ -22,6 +23,8 @@ from ._ui_evaluators import check_evaluators
 
 DEFAULT_DEPTH = 3
 MAX_SCAN_FILES = 2000
+# Of what `/api/scan` and `ui --list --json` print. It moves when a field is renamed, removed or changes meaning.
+SCAN_SCHEMA_VERSION = 1
 
 # Capped on lines, not bytes: a cut log is reported as partial, and lines are what the page counts.
 MAX_EVENT_LINES = 50_000
@@ -45,8 +48,13 @@ RUN_OWN_FILES = frozenset({"effects.json", "best.values.json", "result.json"})
 TASK_RESULT_HEAD = re.compile(rb'\s*\{\s*"input"\s*:')
 TASK_RESULT_KEYS = frozenset({"input", "actual_output", "expected_output", "actual_trajectory"})
 
-# What reading a file as JSON can raise. `RecursionError` is a document nested too deeply for the reader.
-NOT_JSON = (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError)
+# What reading a file as JSON can raise. `RecursionError` is a document nested too deeply for the reader, and
+# a `ValueError` that is neither a decoding nor a syntax error is a number with more digits than Python converts.
+NOT_JSON = (OSError, ValueError, RecursionError)
+NOT_RECOGNISED = "not an experiment, a report, a session or a diagnosis"
+OUTSIDE_LINK = "a link to a file outside this folder"
+TOO_LONG_A_NUMBER = "holds a number too long to read"
+NOT_A_FILE = "not a regular file"
 
 
 def _prune_run_storage(filenames: list[str], dirnames: list[str]) -> None:
@@ -92,7 +100,10 @@ def fingerprint(root: Path, depth: int = DEFAULT_DEPTH) -> str:
                 info = (here / name).stat()
             except OSError:
                 continue
-            digest.update(f"{_under(where, name)}\0{info.st_size}\0{info.st_mtime_ns}\n".encode())
+            # A name that is not UTF-8 reaches here with its bytes escaped, which only this encoding writes back.
+            digest.update(
+                f"{_under(where, name)}\0{info.st_size}\0{info.st_mtime_ns}\n".encode(errors="surrogateescape")
+            )
     return digest.hexdigest()
 
 
@@ -174,8 +185,8 @@ def classify(obj: Any) -> str | None:
     )
     if found and isinstance(obj.get("session_id"), str) and (causes is None or explained):
         return DIAGNOSIS
-    # `--rca-only` writes root causes alone, with no session named.
-    if failures is None and explained and causes:
+    # `--rca-only` writes root causes alone, with no session named. None found is that list empty and nothing else.
+    if failures is None and explained and (causes or obj.keys() == {"root_causes"}):
         return DIAGNOSIS
     return None
 
@@ -424,17 +435,21 @@ def scan(root: Path, depth: int = DEFAULT_DEPTH) -> tuple[list[ScannedFile], lis
 
     for full, where, rel in _json_files(root, depth):
         # One result read in full shows the directory is a store; the rest are told by how they open.
-        if where in stores and not full.is_symlink() and _opens_as_task_result(full):
+        if where in stores and not full.is_symlink() and full.is_file() and _opens_as_task_result(full):
             stores[where] += 1
             continue
         if len(found) + len(skipped) >= MAX_SCAN_FILES:
             truncated = True
             break
-        if full.is_symlink() and not is_inside(root, real_path(full)):
-            skipped.append({"path": rel, "why": "a link to a file outside this folder"})
+        if _leaves(root, full):
+            skipped.append({"path": rel, "why": OUTSIDE_LINK})
             continue
         try:
             info = full.stat()
+            # A pipe or a device under a `.json` name: reading one can wait for ever.
+            if not stat.S_ISREG(info.st_mode):
+                skipped.append({"path": rel, "why": NOT_A_FILE})
+                continue
             obj = json.loads(full.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError) as exc:
             skipped.append({"path": rel, "why": f"could not read: {exc.__class__.__name__}"})
@@ -445,6 +460,9 @@ def scan(root: Path, depth: int = DEFAULT_DEPTH) -> tuple[list[ScannedFile], lis
         except RecursionError:
             skipped.append({"path": rel, "why": "nested too deeply to read"})
             continue
+        except ValueError:
+            skipped.append({"path": rel, "why": TOO_LONG_A_NUMBER})
+            continue
 
         kind = classify(obj)
         if kind is not None:
@@ -452,7 +470,7 @@ def scan(root: Path, depth: int = DEFAULT_DEPTH) -> tuple[list[ScannedFile], lis
         elif is_task_result(obj):
             stores[where] = stores.get(where, 0) + 1
         else:
-            skipped.append({"path": rel, "why": "not an experiment or a report"})
+            skipped.append({"path": rel, "why": NOT_RECOGNISED})
 
     return found, skipped, truncated, stores
 
@@ -467,37 +485,49 @@ def _steps_apart(left: str, right: str) -> int:
     return len(a) + len(b) - 2 * shared
 
 
-def _nearest(candidates: Sequence[ScannedFile], directory: str) -> ScannedFile | None:
-    """The one of `candidates` fewest steps from `directory`. Two equally near are a tie, and a tie is not guessed."""
-    if not candidates:
-        return None
+def _nearest(candidates: Sequence[ScannedFile], directory: str) -> list[ScannedFile]:
+    """Those of `candidates` fewest steps from `directory`, by path. More than one is a tie, which is not guessed."""
     steps = [_steps_apart(candidate.directory, directory) for candidate in candidates]
     closest = [candidate for candidate, apart in zip(candidates, steps, strict=True) if apart == min(steps)]
-    return closest[0] if len(closest) == 1 else None
+    return sorted(closest, key=lambda candidate: candidate.path)
 
 
-def experiment_of(report: ScannedFile, experiments: Sequence[ScannedFile], alone: bool) -> ScannedFile | None:
-    """The experiment a report was made from, or `None` when that cannot be told.
+def experiment_of(
+    report: ScannedFile, experiments: Sequence[ScannedFile], alone: bool
+) -> tuple[ScannedFile | None, dict | None]:
+    """The experiment a report was made from, with how well the two fit, as `link_status` puts it.
 
-    The one beside it under the same name first, or the only pair in the directory when `alone`. Failing that,
-    the nearest experiment holding every case the report has.
+    The one beside it under the same name first. Failing that, the nearest experiment holding every case the
+    report has. Failing that, the only pair in the directory when `alone`, however well they fit.
+    With no experiment, the second value says why when the reason is a tie, and is `None` when none was found.
     """
-    beside = sorted((e for e in experiments if e.directory == report.directory), key=lambda e: e.path)
+    beside = [e for e in experiments if e.directory == report.directory]
     named = [e for e in beside if _stem(e.name) == _stem(report.name)]
     if len(named) == 1:
-        return named[0]
-    if alone and len(beside) == 1:
-        return beside[0]
+        return named[0], link_status(named[0].obj, report.obj)
 
     # The experiments `link_status` would call verified.
     wanted = _case_keys(report.obj)
-    return _nearest([e for e in experiments if wanted and wanted <= e.case_ids], report.directory)
+    holding = _nearest([e for e in experiments if wanted and wanted <= e.case_ids], report.directory)
+    if len(holding) == 1:
+        return holding[0], link_status(holding[0].obj, report.obj)
+    if holding:
+        paths = ", ".join(e.path for e in holding)
+        return None, {
+            "status": "tie",
+            "detail": f"{len(holding)} experiments hold every case of this report and are equally near: {paths}",
+        }
+
+    if alone and len(beside) == 1:
+        return beside[0], link_status(beside[0].obj, report.obj)
+    return None, None
 
 
 def session_of(diagnosis: ScannedFile, sessions: Sequence[ScannedFile]) -> ScannedFile | None:
     """The session a diagnosis is of: the nearest one with its `session_id`."""
     named = [s for s in sessions if s.obj["session_id"] == diagnosis.obj.get("session_id")]
-    return _nearest(named, diagnosis.directory)
+    nearest = _nearest(named, diagnosis.directory)
+    return nearest[0] if len(nearest) == 1 else None
 
 
 def _newest_first(scanned: ScannedFile) -> tuple[float, str]:
@@ -520,16 +550,10 @@ def discover(root: Path, depth: int = DEFAULT_DEPTH) -> Discovery:
     made_from: dict[str, list[str]] = {}
     reports_in = Counter(report.directory for report in of_kind[REPORT])
     for report in of_kind[REPORT]:
-        experiment = experiment_of(report, of_kind[EXPERIMENT], alone=reports_in[report.directory] == 1)
+        experiment, link = experiment_of(report, of_kind[EXPERIMENT], alone=reports_in[report.directory] == 1)
         if experiment is not None:
             made_from.setdefault(experiment.path, []).append(report.path)
-        reports.append(
-            _file_entry(
-                report,
-                experiment=experiment.path if experiment else None,
-                link=link_status(experiment.obj, report.obj) if experiment else None,
-            )
-        )
+        reports.append(_file_entry(report, experiment=experiment.path if experiment else None, link=link))
 
     diagnoses: list[dict] = []
     diagnosed: dict[str, list[str]] = {}
@@ -546,7 +570,7 @@ def discover(root: Path, depth: int = DEFAULT_DEPTH) -> Discovery:
 
     # A `run.json` recognised as an optimizer run config is not a scan failure.
     run_configs = {_under(run["dir"], RUN_CONFIG_NAME) for run in optimizer_runs}
-    skipped = [skip for skip in skipped if skip["path"] not in run_configs] + _lone_event_logs(root, depth)
+    skipped = [skip for skip in skipped if skip["path"] not in run_configs] + _unread_event_logs(root, depth)
 
     return Discovery(
         experiments=[_file_entry(e, reports=made_from.get(e.path, [])) for e in of_kind[EXPERIMENT]],
@@ -591,6 +615,9 @@ def read_event_log(path: Path, max_lines: int = MAX_EVENT_LINES) -> EventLog:
             continue
         except RecursionError:
             log.bad_lines.append({"line": number, "why": "nested too deeply to read"})
+            continue
+        except ValueError:
+            log.bad_lines.append({"line": number, "why": TOO_LONG_A_NUMBER})
             continue
         if isinstance(event, dict):
             log.events.append(event)
@@ -660,13 +687,25 @@ def _optimizer_run_summary(
     }
 
 
-def _lone_event_logs(root: Path, depth: int) -> list[dict]:
-    """An `events.jsonl` with no `run.json` beside it is not a run: each is skipped, saying what it lacks."""
-    return [
-        {"path": _under(where, EVENT_LOG_NAME), "why": "no run.json beside it"}
-        for _, where, filenames in _walk(root, depth)
-        if EVENT_LOG_NAME in filenames and RUN_CONFIG_NAME not in filenames
-    ]
+def _unread_event_logs(root: Path, depth: int) -> list[dict]:
+    """Each `events.jsonl` that is not read as a run's log, with why: a link out of the folder, something that
+    is not a file, or one with no `run.json` beside it."""
+    root = root.resolve()
+    unread = []
+    for here, where, filenames in _walk(root, depth):
+        if EVENT_LOG_NAME not in filenames:
+            continue
+        log = here / EVENT_LOG_NAME
+        if _leaves(root, log):
+            why = OUTSIDE_LINK
+        elif not log.is_file():
+            why = NOT_A_FILE
+        elif RUN_CONFIG_NAME not in filenames:
+            why = "no run.json beside it"
+        else:
+            continue
+        unread.append({"path": _under(where, EVENT_LOG_NAME), "why": why})
+    return unread
 
 
 def discover_optimizer_runs(root: Path, depth: int = DEFAULT_DEPTH) -> list[dict]:
@@ -682,6 +721,9 @@ def discover_optimizer_runs(root: Path, depth: int = DEFAULT_DEPTH) -> list[dict
             continue
 
         config_path, events_path = here / RUN_CONFIG_NAME, here / EVENT_LOG_NAME
+        # Neither is read through a link out of the folder, and a pipe under either name would never answer.
+        if any(_leaves(root, path) or not path.is_file() for path in (config_path, events_path)):
+            continue
         try:
             config = json.loads(config_path.read_text(encoding="utf-8"))
             config_stat, events_stat = config_path.stat(), events_path.stat()
@@ -693,7 +735,7 @@ def discover_optimizer_runs(root: Path, depth: int = DEFAULT_DEPTH) -> list[dict
         log = read_event_log(events_path)
         summary = _optimizer_run_summary(where, config, events_stat, config_stat, log)
         # Most runs have no effects model, so the page is told rather than left to ask for a file that is not there.
-        summary["has_effects"] = (here / "effects.json").is_file()
+        summary["has_effects"] = (here / "effects.json").is_file() and not _leaves(root, here / "effects.json")
         found.append(summary)
 
     found.sort(key=lambda r: -r["modified"])
@@ -707,3 +749,8 @@ def real_path(path: Path) -> Path:
 
 def is_inside(root: Path, candidate: Path) -> bool:
     return candidate == root or root in candidate.parents
+
+
+def _leaves(root: Path, path: Path) -> bool:
+    """Whether `path` is a link to somewhere outside `root`, resolved. Such a file is never read."""
+    return path.is_symlink() and not is_inside(root, real_path(path))

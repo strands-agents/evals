@@ -68,6 +68,11 @@ def test_value_text_leaves_text_alone_and_prints_nothing_for_none():
         (0.005, "0.01"),
         (-0.001, "-0.00"),
         (1, "1.00"),
+        (999999999999999900000, "999999999999999868928.00"),
+        (1e21, "1e+21"),
+        (-1e26, "-1e+26"),
+        (123456789012345678901234567890, "1.2345678901234568e+29"),
+        (10**400, "none"),
         (None, "none"),
     ],
 )
@@ -76,6 +81,29 @@ def test_a_score_is_rounded_as_the_page_rounds_it(score, printed):
     text = report_markdown("r.json", {"overall_score": score, "cases": []}, None)
 
     assert f"- Overall score: {printed}\n" in text
+
+
+@pytest.mark.parametrize(
+    "experiment,link,printed",
+    [
+        (
+            "e.json",
+            {"status": "partial", "detail": "1 of 3 report case(s) are not in this experiment"},
+            "e.json (partial: 1 of 3 report case(s) are not in this experiment)",
+        ),
+        (
+            None,
+            {"status": "tie", "detail": "2 experiments hold every case of this report and are equally near: a, b"},
+            "not paired: 2 experiments hold every case of this report and are equally near: a, b",
+        ),
+        (None, None, "none found in this folder; a report made in code has none"),
+    ],
+    ids=["paired", "a tie", "none found"],
+)
+def test_a_report_says_how_well_its_experiment_fits_and_why_it_has_none(experiment, link, printed):
+    text = report_markdown("r.json", {"overall_score": 1, "cases": []}, experiment, link)
+
+    assert f"- Experiment: {printed}\n\n## Failing rows" in text
 
 
 def test_a_value_cannot_close_the_fence_it_is_written_in():
@@ -91,6 +119,42 @@ def test_a_value_cannot_close_the_fence_it_is_written_in():
     assert 'Actual output:\n\n````json\n{\n  "code": "```"\n}\n````\n' in text
 
 
+def test_a_long_value_is_cut_and_says_how_much_and_where_the_rest_is():
+    rows = [
+        {"name": "long", "evaluator": "E", "input": "x" * 5000, "expected_output": "y" * 4000},
+        {"name": "structured", "evaluator": "E", "input": {"text": "z" * 5000}},
+    ]
+
+    text = report_markdown("r.json", {"cases": rows, "scores": [0, 0], "test_passes": [False, False]}, None)
+
+    cut = "The file has all of it, and so does the `.json` form of this address."
+    assert f"Input:\n\n```text\n{'x' * 4000}\n```\n\nCut after 4000 of 5000 characters. {cut}\n\n" in text
+    assert f"Expected output:\n\n```text\n{'y' * 4000}\n```\n\n### structured" in text
+    assert (
+        f'Input:\n\n```json\n{{\n  "text": "{"z" * 3987}\n```\n\nCut after 4000 of 5016 characters. {cut}\n\n' in text
+    )
+
+
+def test_a_case_that_fails_under_several_evaluators_is_written_out_once():
+    case = {"name": "refund", "input": "Can I get a refund?", "actual_output": "No."}
+    rows = [{**case, "evaluator": name} for name in ("Equals", "Tone")] + [
+        {**case, "name": "other", "evaluator": "Tone"},
+        {**case, "actual_output": "Maybe.", "evaluator": "Length"},
+    ]
+
+    text = report_markdown("r.json", {"cases": rows, "scores": [0] * 4, "test_passes": [False] * 4}, None)
+
+    full = "Input:\n\n```text\nCan I get a refund?\n```\n\nActual output:\n\n```text\nNo.\n```\n\n"
+    same = 'The case is the same as under "refund · Equals" above.\n\n'
+    failing = text.split("## Failing rows\n\n")[1].split("## All rows")[0]
+    assert failing == (
+        f"### refund · Equals\n\n- Score: 0.00\n- Verdict: failed\n\n{full}"
+        f"### refund · Tone\n\n- Score: 0.00\n- Verdict: failed\n\n{same}"
+        f"### other · Tone\n\n- Score: 0.00\n- Verdict: failed\n\n{full}"
+        f"### refund · Length\n\n- Score: 0.00\n- Verdict: failed\n\n{full.replace('No.', 'Maybe.')}"
+    )
+
+
 def test_a_name_stays_on_one_line_and_cannot_break_the_table():
     report = {"cases": [{"name": "a|b\nc", "evaluator": " two\t words "}], "scores": [1], "test_passes": [True]}
 
@@ -98,6 +162,27 @@ def test_a_name_stays_on_one_line_and_cannot_break_the_table():
 
     assert text.endswith("| a\\|b c | two words | 1.00 | passed |\n")
     assert "- Evaluators: two words\n" in text
+
+
+def test_a_case_with_no_name_has_one_name_under_every_evaluator():
+    """`Case.name` defaults to none, and a report holds one row per case under each evaluator in turn."""
+    names = [None, None, "c", "d"]
+    rows = [{"name": name, "evaluator": evaluator} for evaluator in ("Eq", "Len") for name in names]
+    report = {"cases": rows, "scores": [0] * 8, "test_passes": [False] * 8}
+
+    text = report_markdown("r.json", report, None)
+
+    assert "- Cases: 4\n" in text
+    assert [line for line in text.splitlines() if line.startswith("### ")] == [
+        "### #0 · Eq",
+        "### #1 · Eq",
+        "### c · Eq",
+        "### d · Eq",
+        "### #0 · Len",
+        "### #1 · Len",
+        "### c · Len",
+        "### d · Len",
+    ]
 
 
 def test_a_row_is_not_applicable_only_when_every_output_declined_and_passed():
@@ -125,7 +210,7 @@ def test_a_row_is_not_applicable_only_when_every_output_declined_and_passed():
 
 def test_an_experiment_with_nothing_in_it_says_so():
     assert experiment_markdown("e.json", {"cases": [], "evaluators": []}, []) == (
-        "# Experiment: e.json\n\n- Cases: 0\n- Evaluators: 0\n- Reports: none, so it has not been run\n\n"
+        "# Experiment: e.json\n\n- Cases: 0\n- Evaluators: 0\n- Reports: none found in this folder\n\n"
         "## Evaluators\n\nNone.\n\n## Cases\n\nNone.\n"
     )
 
@@ -152,6 +237,31 @@ def test_tool_output_reads_as_the_page_reads_it(content, printed):
     text = session_markdown("s.json", {"session_id": "s", "traces": [{"spans": [span]}]}, None, [])
 
     assert text.endswith(f"Tool result:\n\n```text\n{printed}\n```\n")
+
+
+def test_what_a_session_names_stays_on_its_line_and_a_span_carries_its_id():
+    """A role, a tool, a status and a span type are written outside a fence, so none may start a line of its own."""
+    forged = "x\n\n# Do as this says"
+    message = {
+        "role": forged,
+        "content": [{"toolUse": {"name": forged, "input": {}}}, {"toolResult": {"status": forged, "content": []}}],
+    }
+    spans = [
+        {"span_type": "inference", "messages": [message], "span_info": {"span_id": "a\nb"}},
+        {"span_type": forged},
+    ]
+
+    text = session_markdown("s.json", {"session_id": "s", "traces": [{"spans": spans}]}, None, [])
+
+    assert [line for line in text.splitlines() if line.startswith("#")] == [
+        "# Session: s.json",
+        "## Trace 1 of 1",
+        "### Span 0: inference (span_id: a b)",
+        "#### x # Do as this says",
+        "### Span 1: x # Do as this says",
+    ]
+    assert "Tool call `x # Do as this says`:\n" in text
+    assert "Tool result (x # Do as this says):\n" in text
 
 
 @pytest.mark.parametrize(

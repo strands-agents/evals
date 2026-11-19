@@ -59,7 +59,8 @@ const REPORT = {
   recommendations: [null, 'Add the refund policy to the prompt.'],
 };
 /* A session chosen the same way: a trace with no spans, one with no id, tool output in each shape the
-   page unwraps, token counts in each size it shortens, a span of no known kind and one that is not a span. */
+   page unwraps, token counts in each size it shortens, a span of no known kind whose name holds a line
+   break, and one that is not a span. */
 const stamp = seconds => ({ start_time: '2026-11-03T09:00:00.000000Z', end_time: `2026-11-03T09:00:0${seconds}0000Z` });
 const RECORDED = {
   session_id: 's-9',
@@ -78,7 +79,7 @@ const RECORDED = {
       { span_type: 'execute_tool', tool_call: {}, tool_result: { content: '{"a": NaN}', error: true } },
     ] },
     { trace_id: 't-2', spans: [] },
-    { spans: [{ span_type: 'custom', note: 'kept as written' }, null] },
+    { spans: [{ span_type: 'custom\n\n# not a heading', note: 'kept as written' }, null] },
   ],
 };
 const DIAGNOSIS = {
@@ -104,6 +105,13 @@ write('code/weekly.report.json', JSON.stringify({ overall_score: 0.25, run_info:
 /* The older report says nothing of when it ran, so it is placed by its file's time. */
 fs.utimesSync(path.join(root, 'code/nightly.report.json'), Date.UTC(2026, 10, 1) / 1000, Date.UTC(2026, 10, 1) / 1000);
 write('empty/experiment.json', JSON.stringify({ cases: [], evaluators: [] }));
+/* Four cases, two with no name, under two evaluators: a run writes each evaluator's rows in case order. */
+write('anon/unnamed.report.json', JSON.stringify({ overall_score: 0,
+  cases: ['Eq', 'Len'].flatMap(evaluator => [null, null, 'c', 'd'].map(name => ({ name, evaluator }))),
+  scores: Array(8).fill(0), test_passes: Array(8).fill(false) }));
+/* Two experiments equally near a report whose case both hold: a tie, which is not guessed. */
+for (const side of ['left', 'right']) write(`tie/${side}/e.json`, JSON.stringify({ cases: [{ name: 't', input: 'q' }], evaluators: [{ evaluator_type: 'Equals' }] }));
+write('tie/shared.report.json', JSON.stringify({ overall_score: 1, cases: [{ name: 't', evaluator: 'Equals' }], scores: [1], test_passes: [true] }));
 write('sessions/refund.session.json', JSON.stringify(RECORDED));
 write('sessions/refund.diagnosis.json', JSON.stringify(DIAGNOSIS));
 write('sessions/lost.diagnosis.json', JSON.stringify(LOST));
@@ -268,7 +276,7 @@ ${JSON.stringify(DIAGNOSIS, null, 2)}
 
 ## Trace 1 of 3: t-1
 
-### Span 0: invoke agent
+### Span 0: invoke agent (span_id: agent)
 
 Prompt:
 
@@ -282,7 +290,7 @@ Response:
 Done.
 \`\`\`
 
-### Span 1: inference
+### Span 1: inference (span_id: model)
 
 #### assistant
 
@@ -322,7 +330,7 @@ All done.
 
 \`\`\`
 
-### Span 2: tool
+### Span 2: tool (span_id: tool)
 
 Tool call \`refund\`:
 
@@ -363,11 +371,11 @@ No spans.
 
 ## Trace 3 of 3
 
-### Span 4: custom
+### Span 4: custom # not a heading
 
 \`\`\`json
 {
-  "span_type": "custom",
+  "span_type": "custom\\n\\n# not a heading",
   "note": "kept as written"
 }
 \`\`\`
@@ -431,8 +439,8 @@ try {
 - Rows: 5 (1 passed, 3 failed, 1 not applicable)
 - Cases: 4
 - Evaluators: Equals, tone of voice, (unnamed)
-- Experiment: support/support.experiment.json
-`, 'it opens with the figures and the experiment the report was made from');
+- Experiment: support/support.experiment.json (partial: 3 of 4 report case(s) are not in this experiment)
+`, 'it opens with the figures, the experiment the report was made from and how well the two fit');
   ok(copied.includes(`### refund|policy · Equals
 
 - Score: 0.00
@@ -514,19 +522,20 @@ Expected interactions:
 | --- | --- | --- | --- |
 | refund\\|policy | Equals | 0.00 | failed |
 | refund\\|policy | tone of voice | 0.13 | failed |
-| #2 | Equals | 1.00 | passed |
+| #1 | Equals | 1.00 | passed |
 | declined | (unnamed) | 1.00 | not applicable |
 | unjudged | Equals | none | failed |
 `), 'structured values print as the page prints them, and every row is in one table at the end, a pipe in a name escaped and a row with no name numbered', copied.slice(-1600));
-  ok(!copied.includes('### #2') && !copied.includes('### declined'), 'a passing row and one that was not applicable are not among the failing ones');
+  ok(!copied.includes('### #1') && !copied.includes('### declined'), 'a passing row and one that was not applicable are not among the failing ones');
   await waitFor(() => p.text('#actions [data-md="report"]') === 'Copy as Markdown', 'the button to read as before');
 
   const prompt = await p.copy('#actions [data-md="failing"]');
-  is(prompt.split('\n\n## ')[0], `These 3 rows fail in the evaluation report \`${REPORT_FILE}\`. Find the cause of each failure and fix it.
+  is(prompt.split('\n\n## ')[0], `These 3 rows fail in an evaluation report. Each is below with what was asked, what was expected, what came back and the evaluator's reason. Find why each fails. Neither file names the agent that was evaluated: the cause is in that agent, or in the case or the evaluator where the expectation itself is wrong.
 
-- Experiment: \`${EXPERIMENT_FILE}\`
-- To run one case again: \`strands-evals run ${EXPERIMENT_FILE} --case 'refund|policy' --agent module:attr\``,
-  'the prompt opens with one instruction, the files by their full paths and the command for one case');
+- Report: \`${REPORT_FILE}\`
+- Experiment, which holds the cases and the evaluators: \`${EXPERIMENT_FILE}\`
+- To run one case again: \`strands-evals run ${EXPERIMENT_FILE} --case 'refund|policy' --agent MODULE:ATTR\`. \`MODULE:ATTR\` is a placeholder: put the import path of the agent under test there.`,
+  'the prompt says what failed and what it cannot know, gives the files by their full paths, and marks the agent in the command as a placeholder');
   is(prompt.split('\n').filter(line => line.startsWith('## ')).join(), '## refund|policy · Equals,## refund|policy · tone of voice,## unjudged · Equals',
     'and carries each failing row, and no other');
   is(await p.copy('#actions [data-md="path"]'), REPORT_FILE, 'the path copied is the absolute one, which works from any directory');
@@ -538,7 +547,7 @@ Expected interactions:
   is(labels(p, beside(p, 1)), 'Copy as Markdown | Copy link | Copy command', 'the open row offers its Markdown, a link and the command to run it again');
   is(await p.copy(`${beside(p, 1)} [data-md="row"]`), ROW_1, 'a row copies with where it is from, each output of its evaluator and what was diagnosed');
   is(await p.copy(`${beside(p, 1)} [data-md="row-link"]`), `${base}/reports/support/support.report.json/rows/refund%7Cpolicy/tone%0Aof%20voice`, 'its link is that address');
-  is(await p.copy(`${beside(p, 1)} [data-md="row-command"]`), `strands-evals run ${EXPERIMENT_FILE} --case 'refund|policy' --agent module:attr`,
+  is(await p.copy(`${beside(p, 1)} [data-md="row-command"]`), `strands-evals run ${EXPERIMENT_FILE} --case 'refund|policy' --agent MODULE:ATTR`,
     'its command runs that one case of the experiment, with the name quoted for a shell');
 
   await p.click(row(p, 2));
@@ -583,10 +592,30 @@ Expected interactions:
   await p.openReport('nightly');
   await waitFor(() => p.$$('#rep-rows tr.case').length === 2, 'the second report');
   is(labels(p, '#actions'), 'Copy as Markdown | Copy path', 'a report with nothing failing offers no prompt');
-  ok((await p.copy('#actions [data-md="report"]')).includes('- Experiment: none found, so this report was run from code\n\n## Failing rows\n\nNone.\n'),
-    'its Markdown says it was run from code and that nothing fails', p.copied);
+  ok((await p.copy('#actions [data-md="report"]')).includes('- Experiment: none found in this folder; a report made in code has none\n\n## Failing rows\n\nNone.\n'),
+    'its Markdown says no experiment was found and that nothing fails', p.copied);
   await p.click(row(p, 0));
   is(labels(p, beside(p, 0)), 'Copy as Markdown | Copy link', 'and its row has no command to offer');
+
+  // ── a case with no name has one name under every evaluator ──
+  await p.click('.tab[data-view="reports"]');
+  await p.openReport('unnamed');
+  await waitFor(() => p.$$('#rep-rows tr.case').length === 8, 'the report of unnamed cases');
+  const anon = await p.copy('#actions [data-md="report"]');
+  is(anon.split('\n').filter(line => line.startsWith('### ')).join(), '### #0 · Eq,### #1 · Eq,### c · Eq,### d · Eq,### #0 · Len,### #1 · Len,### c · Len,### d · Len',
+    'a case with no name is numbered by its place under each evaluator, so it reads as one case');
+  ok(anon.includes('\n- Cases: 4\n'), 'and is counted once', anon.split('\n## ')[0]);
+  is(anon, await fromServer('/reports/anon/unnamed.report.json.md'), 'as the server writes it');
+
+  // ── a report left unpaired by a tie says so, the same on the page and from the server ──
+  await p.click('.tab[data-view="reports"]');
+  await p.openReport('shared');
+  await waitFor(() => p.$$('#rep-rows tr.case').length === 1, 'the tied report');
+  const tied = await p.copy('#actions [data-md="report"]');
+  ok(tied.includes('- Experiment: not paired: 2 experiments hold every case of this report and are equally near: tie/left/e.json, tie/right/e.json\n'),
+    'a report two experiments tie for says which, and is not called run from code', tied);
+  is(tied, await fromServer('/reports/tie/shared.report.json.md'), 'as the server writes it');
+  is(p.text('#facts'), '1.00 overall · 1 row · 0 failing · not paired', 'and its page header says not paired');
 
   // ── an experiment and one case of it ──
   await p.click('.tab[data-view="experiments"]');
@@ -694,12 +723,12 @@ Metadata:
 }
 \`\`\`
 `, 'a case copies with the experiment it belongs to');
-  is(await p.copy('#case-acts [data-md="case-command"]'), `strands-evals run ${EXPERIMENT_FILE} --case 'refund|policy' --agent module:attr`, 'and with the command that runs it alone');
+  is(await p.copy('#case-acts [data-md="case-command"]'), `strands-evals run ${EXPERIMENT_FILE} --case 'refund|policy' --agent MODULE:ATTR`, 'and with the command that runs it alone');
   await p.type('#form [data-k="input"]', 'Can I still get a refund?');
   ok((await p.copy('#case-acts [data-md="case"]')).includes('```text\nCan I still get a refund?\n```'), 'what is copied is the case as it reads on the page, unsaved edits included', p.copied);
   await p.click('#revert');
   await p.click('#case-list li[data-i="1"]');
-  is(await p.copy('#case-acts [data-md="case-command"]'), `strands-evals run ${EXPERIMENT_FILE} --case 1 --agent module:attr`, 'a case with no name is run by its position');
+  is(await p.copy('#case-acts [data-md="case-command"]'), `strands-evals run ${EXPERIMENT_FILE} --case 1 --agent MODULE:ATTR`, 'a case with no name is run by its position');
 
   await p.click('.tab[data-view="experiments"]');
   await p.openExperiment('empty');
