@@ -593,6 +593,10 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
     ['two experiments, the fuller match wins',
       { 'a-few/experiment.json': named(all.slice(0, 3)), 'most/experiment.json': named(all.slice(0, 12)) },
       '12 of its 15 cases are cases of most/experiment.json.'],
+    ['two experiments that fit equally, neither guessed',
+      { 'a-copy/experiment.json': named(all), 'b-copy/experiment.json': named(all) },
+      'Not matched to one experiment: 2 experiments hold 15 of its 15 cases and are equally near: '
+        + 'a-copy/experiment.json, b-copy/experiment.json.'],
     ['no case in common', { 'other/experiment.json': named(['something_else']) }, ''],
   ]) {
     const q = await openFixture({ files, tab: 'setup' });

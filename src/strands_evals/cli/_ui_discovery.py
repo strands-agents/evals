@@ -251,28 +251,31 @@ def _split_case_ids(split: Any) -> set[str]:
     return ids
 
 
-def tuned_against(split: Any, experiments: Sequence[ScannedFile]) -> dict | None:
-    """Which experiment, if any, supplied the cases an optimizer run split up.
+def tuned_against(split: Any, experiments: Sequence[ScannedFile], directory: str) -> dict | None:
+    """Which experiment, if any, supplied the cases the optimizer run in `directory` split up.
 
     `run.json` does not name its experiment, so this is a guess from case-id overlap and is reported as one.
-    Returns `None` when nothing overlaps. The largest overlap wins, and ties go to the first path.
+    Returns `None` when nothing overlaps. The largest overlap wins, then the nearest. Experiments that still
+    tie are not chosen between: `path` is `None` and `status` is `tie`, with a `detail` naming them.
     """
     wanted = _split_case_ids(split)
-    if not wanted:
+    overlap = {experiment.path: len(wanted & experiment.case_ids) for experiment in experiments}
+    matched = max(overlap.values(), default=0)
+    if not matched:
         return None
 
-    best: dict | None = None
-    for experiment in sorted(experiments, key=lambda f: f.path):
-        matched = len(wanted & experiment.case_ids)
-        if matched and (best is None or matched > best["matched"]):
-            best = {
-                "path": experiment.path,
-                "matched": matched,
-                "split_cases": len(wanted),
-                "experiment_cases": len(experiment.obj.get("cases", [])),
-                "status": "verified" if matched == len(wanted) else "partial",
-            }
-    return best
+    fullest = _nearest([experiment for experiment in experiments if overlap[experiment.path] == matched], directory)
+    found = {"matched": matched, "split_cases": len(wanted)}
+    if len(fullest) > 1:
+        paths = ", ".join(experiment.path for experiment in fullest)
+        detail = f"{len(fullest)} experiments hold {matched} of its {len(wanted)} cases and are equally near: {paths}"
+        return {"path": None, **found, "status": "tie", "detail": detail}
+    return {
+        "path": fullest[0].path,
+        **found,
+        "experiment_cases": len(fullest[0].obj.get("cases", [])),
+        "status": "verified" if matched == len(wanted) else "partial",
+    }
 
 
 def link_status(experiment_obj: dict, report_obj: dict) -> dict:
@@ -434,10 +437,10 @@ def scan(root: Path, depth: int = DEFAULT_DEPTH) -> tuple[list[ScannedFile], lis
         if len(found) + len(skipped) >= MAX_SCAN_FILES:
             truncated = True
             break
-        if _leaves(root, full):
-            skipped.append({"path": rel, "why": OUTSIDE_LINK})
-            continue
         try:
+            if _leaves(root, full):
+                skipped.append({"path": rel, "why": OUTSIDE_LINK})
+                continue
             info = full.stat()
             # A pipe or a device under a `.json` name: reading one can wait for ever.
             if not stat.S_ISREG(info.st_mode):
@@ -559,7 +562,7 @@ def discover(root: Path, depth: int = DEFAULT_DEPTH) -> Discovery:
     optimizer_runs = discover_optimizer_runs(root, depth)
     for optimizer_run in optimizer_runs:
         split = (optimizer_run.get("config") or {}).get("split")
-        optimizer_run["tuned_against"] = tuned_against(split, of_kind[EXPERIMENT])
+        optimizer_run["tuned_against"] = tuned_against(split, of_kind[EXPERIMENT], optimizer_run["dir"])
 
     # A `run.json` recognised as an optimizer run config is not a scan failure.
     run_configs = {_under(run["dir"], RUN_CONFIG_NAME) for run in optimizer_runs}
@@ -689,14 +692,17 @@ def _unread_event_logs(root: Path, depth: int) -> list[dict]:
         if EVENT_LOG_NAME not in filenames:
             continue
         log = here / EVENT_LOG_NAME
-        if _leaves(root, log):
-            why = OUTSIDE_LINK
-        elif not log.is_file():
-            why = NOT_A_FILE
-        elif RUN_CONFIG_NAME not in filenames:
-            why = "no run.json beside it"
-        else:
-            continue
+        try:
+            if _leaves(root, log):
+                why = OUTSIDE_LINK
+            elif not stat.S_ISREG(log.stat().st_mode):
+                why = NOT_A_FILE
+            elif RUN_CONFIG_NAME not in filenames:
+                why = "no run.json beside it"
+            else:
+                continue
+        except OSError as exc:  # a folder that can be listed and not entered
+            why = f"could not read: {exc.__class__.__name__}"
         unread.append({"path": _under(where, EVENT_LOG_NAME), "why": why})
     return unread
 
@@ -714,10 +720,10 @@ def discover_optimizer_runs(root: Path, depth: int = DEFAULT_DEPTH) -> list[dict
             continue
 
         config_path, events_path = here / RUN_CONFIG_NAME, here / EVENT_LOG_NAME
-        # Neither is read through a link out of the folder, and a pipe under either name would never answer.
-        if any(_leaves(root, path) or not path.is_file() for path in (config_path, events_path)):
-            continue
         try:
+            # Neither is read through a link out of the folder, and a pipe under either name would never answer.
+            if any(_leaves(root, path) or not path.is_file() for path in (config_path, events_path)):
+                continue
             config = json.loads(config_path.read_text(encoding="utf-8"))
             config_stat, events_stat = config_path.stat(), events_path.stat()
         except NOT_JSON:

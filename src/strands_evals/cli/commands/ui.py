@@ -32,7 +32,9 @@ def _print_listing(root: Path, args: argparse.Namespace) -> None:
         print(f"{experiment['path']} ({experiment['cases']} cases)  ->  {made}")  # noqa: T201
     for report in result.reports:
         if report["experiment"] is None:
-            print(f"(no experiment)  ->  {scored[report['path']]}")  # noqa: T201
+            # A report with experiments that fit equally says so: it is not one made in code.
+            why = f"not paired: {report['link']['detail']}" if report["link"] else "no experiment"
+            print(f"({why})  ->  {scored[report['path']]}")  # noqa: T201
     for run in result.optimizer_runs:
         search = f"{run['candidates']} candidates, {run['iterations']} iterations"
         champion = f"champion {run['champion_id']}" if run.get("champion_id") else "no champion"

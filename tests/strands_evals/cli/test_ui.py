@@ -73,6 +73,24 @@ def _reads_too_deep() -> bool:
 READS_TOO_DEEP = _reads_too_deep()
 # Fewer than that, and more than a copy made level by level will follow.
 DEEP = "[" * 700 + "1" + "]" * 700
+
+
+def _deepest_read() -> str:
+    """Arrays inside one another, as many as this Python reads with room to spare, up to 5,000.
+
+    On every version that is more than `dataclasses.asdict` follows, which is what a scan was once copied with.
+    """
+    levels = 5000
+    while True:
+        nested = "[" * levels + "1" + "]" * levels
+        try:
+            json.loads(nested)
+            return nested
+        except RecursionError:
+            levels //= 2
+
+
+DEEPEST_READ = _deepest_read()
 MISSING_RUBRIC = {
     "index": 0,
     "evaluator_type": "OutputEvaluator",
@@ -116,9 +134,9 @@ def _report(*names: str, failing: tuple[str, ...] = (), declined: tuple[str, ...
     }
 
 
-def _deep_experiment() -> str:
-    """An experiment file whose evaluator has a setting nested `DEEP`."""
-    return json.dumps(_experiment("a")).replace('"OutputEvaluator"', f'"OutputEvaluator", "extra": {DEEP}')
+def _deep_experiment(nested: str = DEEP) -> str:
+    """An experiment file whose evaluator has a setting nested `DEEP`, or as `nested` is."""
+    return json.dumps(_experiment("a")).replace('"OutputEvaluator"', f'"OutputEvaluator", "extra": {nested}')
 
 
 def _session(session_id: str, *traces: list[tuple[float, float]]) -> dict:
@@ -516,6 +534,31 @@ def test_fingerprint_takes_a_file_name_that_is_not_utf8(tmp_path: Path):
         pytest.skip("this platform has no file name that is not UTF-8")
 
     assert len(fingerprint(tmp_path)) == 64
+
+
+def test_scan_sets_aside_what_is_in_a_folder_it_can_list_but_not_enter(tmp_path: Path):
+    _write(tmp_path / "experiment.json", _experiment("a"))
+    _write(tmp_path / "locked" / "inside.json", _experiment("b"))
+    _optimizer_run(tmp_path / "sealed")
+    for name in ("locked", "sealed"):
+        (tmp_path / name).chmod(0o444)
+    try:
+        if os.access(tmp_path / "locked" / "inside.json", os.R_OK):
+            pytest.skip("this user, or this platform, reads a file whatever its folder allows")
+        found = discover(tmp_path)
+        mark = fingerprint(tmp_path)
+    finally:
+        for name in ("locked", "sealed"):
+            (tmp_path / name).chmod(0o755)
+
+    assert [experiment["path"] for experiment in found.experiments] == ["experiment.json"]
+    assert found.optimizer_runs == []
+    assert {skip["path"]: skip["why"] for skip in found.skipped} == {
+        "locked/inside.json": "could not read: PermissionError",
+        "sealed/run.json": "could not read: PermissionError",
+        "sealed/events.jsonl": "could not read: PermissionError",
+    }
+    assert len(mark) == 64
 
 
 def test_a_task_result_store_is_reported_and_its_files_are_neither_skipped_nor_counted(tmp_path: Path, monkeypatch):
@@ -1016,10 +1059,22 @@ def _tuned(path: str, matched: int, split_cases: int, experiment_cases: int) -> 
                 {"train": ["a", "b", "c"]},
                 _tuned("most/experiment.json", 3, 3, 3),
             ),
-            "a tie goes to the first path": (
-                {"b-copy/experiment.json": "ab", "a-copy/experiment.json": "ab"},
+            "of two that fit equally, the nearer": (
+                {"a/far/experiment.json": "ab", "near/experiment.json": "ab"},
                 {"train": ["a", "b"]},
-                _tuned("a-copy/experiment.json", 2, 2, 2),
+                _tuned("near/experiment.json", 2, 2, 2),
+            ),
+            "a tie is not guessed": (
+                {"b-copy/experiment.json": "ab", "a-copy/experiment.json": "ab"},
+                {"train": ["a", "b", "gone"]},
+                {
+                    "path": None,
+                    "matched": 2,
+                    "split_cases": 3,
+                    "status": "tie",
+                    "detail": "2 experiments hold 2 of its 3 cases and are equally near: "
+                    "a-copy/experiment.json, b-copy/experiment.json",
+                },
             ),
             "nothing overlaps": ({"experiment.json": "xy"}, {"train": ["a", "b"]}, None),
             "no split recorded": ({"experiment.json": "a"}, None, None),
@@ -1731,13 +1786,21 @@ def test_scan_endpoint_survives_a_report_holding_nan(client: Client):
 
 
 def test_scan_endpoint_lists_a_file_nested_deeper_than_a_copy_follows(client: Client):
-    (client.root / "deep.json").write_text(_deep_experiment())
+    (client.root / "deep.json").write_text(_deep_experiment(DEEPEST_READ))
     (client.root / "odd.json").write_text(json.dumps({**_report("alpha"), "overall_score": float("nan")}))
 
     reply = client.send("GET", "/api/scan")
 
     assert reply.status == HTTPStatus.OK
     assert [experiment["path"] for experiment in reply.body["experiments"]] == ["deep.json", "experiment.json"]
+
+
+@pytest.mark.parametrize("method", ["GET", "PUT", "POST"])
+def test_a_request_for_what_is_not_an_address_is_refused_and_the_server_carries_on(client: Client, method):
+    reply = client.send(method, "http://[/", body=b"{}" if method != "GET" else None)
+
+    assert (reply.status, reply.body) == (HTTPStatus.BAD_REQUEST, {"error": "the request target is not an address"})
+    assert client.send("GET", "/api/config").status == HTTPStatus.OK
 
 
 @pytest.mark.parametrize(
@@ -2603,6 +2666,9 @@ def _list_tree(root: Path) -> None:
     _write(root / "report.json", _report("alpha"))
     _write(root / "spare" / "unrun.json", _experiment("beta"))
     _write(root / "code" / "nightly.json", _report("gamma"))
+    for copy in ("one", "two"):
+        _write(root / "tied" / copy / "experiment.json", _experiment("delta"))
+    _write(root / "tied" / "nightly.json", _report("delta"))
     _write(root / "notes.json", {"hello": "world"})
     _optimizer_run(
         root / "tuning",
@@ -2626,8 +2692,8 @@ def test_ui_list_prints_what_it_found_as_json(tmp_path: Path, capsys):
 
     found = asdict(discover(tmp_path))
     assert {name: len(listed) for name, listed in found.items() if name != "truncated"} == {
-        "experiments": 2,
-        "reports": 2,
+        "experiments": 4,
+        "reports": 3,
         "skipped": 1,
         "optimizer_runs": 2,
         "sessions": 2,
@@ -2647,6 +2713,8 @@ def test_ui_list_prints_what_it_found_as_text(tmp_path: Path, capsys):
     assert sorted(printed.out.splitlines()) == [
         "(no experiment)  ->  code/nightly.json (1.00)",
         "(no session)  ->  lost.diagnosis.json (1 failures)",
+        "(not paired: 2 experiments hold every case of this report and are equally near: "
+        "tied/one/experiment.json, tied/two/experiment.json)  ->  tied/nightly.json (1.00)",
         "experiment.json (1 cases)  ->  report.json (1.00)",
         "optimizer run tuning (1 candidates, 1 iterations)  ->  champion c0, stopped: budget",
         "optimizer run tuning/unfinished (0 candidates, 0 iterations)  ->  no champion",
@@ -2654,6 +2722,8 @@ def test_ui_list_prints_what_it_found_as_text(tmp_path: Path, capsys):
         "session recorded/quiet.json (1 traces, 1 spans)  ->  (not diagnosed)",
         "spare/unrun.json (1 cases)  ->  (not run)",
         "task result store store (1 results)",
+        "tied/one/experiment.json (1 cases)  ->  (not run)",
+        "tied/two/experiment.json (1 cases)  ->  (not run)",
     ]
     assert printed.err == f"skipped notes.json: {NOT_RECOGNISED}\n"
 

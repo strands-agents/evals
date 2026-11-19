@@ -400,6 +400,7 @@ $('opt-to-y').onchange = e => { optToY = e.target.value; renderTradeoff(OPT); };
 function sourceLine(run) {
   const t = run.tuned_against;
   if (!t) return '';
+  if (t.status === 'tie') return `Not matched to one experiment: ${esc(t.detail)}.`;
   const link = openLink('experiment', t.path);
   return t.status === 'verified'
     ? `Its ${plural(t.split_cases, 'case')} are cases of ${link}.`

@@ -57,8 +57,8 @@ from ._ui_markdown import (
     experiment_markdown,
     failing_prompt,
     llms_text,
-    report_markdown,
     posted,
+    report_markdown,
     row_markdown,
     session_markdown,
     trace_markdown,
@@ -799,6 +799,11 @@ class UIHandler(BaseHTTPRequestHandler):
         The body names the kind of failure only: what was raised may quote a path, and the log has it.
         """
         self._answered = False
+        try:
+            urlparse(self.path)
+        except ValueError:  # as `http://[/` is not: every route parses it, and so would the log line below
+            self._error(HTTPStatus.BAD_REQUEST, "the request target is not an address")
+            return
         try:
             route()
         except Exception as exc:
