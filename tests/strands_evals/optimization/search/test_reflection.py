@@ -146,6 +146,18 @@ def test_shell_stops_a_command_at_its_timeout(folders):
 
 
 @posix_only
+def test_shell_cuts_a_commands_timeout_to_the_seconds_left_before_its_deadline(folders):
+    shell = _confined_shell(folders.work, folders.roots, [], deadline=time.monotonic() + 1.9)
+    assert shell(command="sleep 5", timeout=300) == (
+        "\n[stopped after 2 seconds: the command and what it started were killed]"  # 1.9 rounded up
+    )
+    late = _confined_shell(folders.work, folders.roots, [], deadline=time.monotonic() - 10)
+    assert late(command="sleep 5", timeout=300).endswith(
+        "[stopped after 1 seconds: the command and what it started were killed]"
+    )
+
+
+@posix_only
 def test_shell_keeps_what_a_timed_out_command_printed(folders):
     shell = _confined_shell(folders.work, folders.roots, [])
     assert shell(command="echo hello; echo err >&2; sleep 5", timeout=1) == (
@@ -485,3 +497,34 @@ def test_text_files_never_differ_only_by_case():
     files = _text_files(["Prompt", "prompt", "VERSION.md"])
     assert len({f.casefold() for f in files.values()}) == 3
     assert files["prompt"] == "prompt-2.txt"
+
+
+def test_turn_and_time_limits_in_config():
+    config = Reflection().config()
+    assert (config["max_turns"], config["max_seconds"]) == (100, 3600)
+    config = Reflection(max_turns=5, max_seconds=None).config()
+    assert (config["max_turns"], config["max_seconds"]) == (5, None)
+
+
+@pytest.mark.parametrize("turns", [1.5, True, "2"])
+def test_max_turns_must_be_an_integer_or_none(turns):
+    with pytest.raises(TypeError, match="max_turns"):
+        Reflection(max_turns=turns)
+
+
+@pytest.mark.parametrize("turns", [0, -1])
+def test_max_turns_must_be_at_least_1(turns):
+    with pytest.raises(ValueError, match="max_turns"):
+        Reflection(max_turns=turns)
+
+
+@pytest.mark.parametrize("seconds", [True, "60"])
+def test_max_seconds_must_be_a_number_or_none(seconds):
+    with pytest.raises(TypeError, match="max_seconds"):
+        Reflection(max_seconds=seconds)
+
+
+@pytest.mark.parametrize("seconds", [0, -1.5, float("nan"), float("inf")])
+def test_max_seconds_must_be_finite_and_above_0(seconds):
+    with pytest.raises(ValueError, match="max_seconds"):
+        Reflection(max_seconds=seconds)

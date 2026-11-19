@@ -2,7 +2,10 @@
 
 import asyncio
 import os
+import signal
+import subprocess
 import tempfile
+import time
 
 import pytest
 from strands.types.exceptions import EventLoopException
@@ -396,3 +399,216 @@ async def test_a_later_slot_raising_logs_the_spend_of_the_patches_never_returned
     assert [e for e, _ in events] == ["proposer_retry"] * 3 + ["proposer_usage"] * 2
     failed, first = usage_events(events)
     assert (failed.tokens, first.tokens) == (0, 45)  # the failing slot's attempts answered nothing; slot 0's patch
+
+
+# ---- a proposal's turn and time limits: `max_turns` and `max_seconds` ----------------------------------------------
+
+
+async def limited(model, *, n=1, **kwargs):
+    """Run one `propose` call on `model` with the given limits; the warning is silenced."""
+    reflection = Reflection(model, **kwargs)
+    reflection._warned = True
+    events = []
+    patches = await reflection.propose(request(n=n, events=events))
+    return patches, events
+
+
+@pytest.fixture
+def started(monkeypatch):
+    """Every process the shell starts, in order."""
+    processes = []
+    popen = subprocess.Popen
+
+    def recording(*args, **kwargs):
+        process = popen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", recording)
+    return processes
+
+
+def killed(processes, command):
+    """Whether the process the shell started for `command` was killed (it would otherwise run on)."""
+    process = next(p for p in processes if p.args[-1] == command)
+    try:
+        return process.wait(timeout=5) == -signal.SIGKILL
+    except subprocess.TimeoutExpired:
+        return False
+
+
+async def test_a_looping_agent_stops_at_the_default_turn_limit_with_what_it_submitted(caplog):
+    model = ScriptedModel([write("p.txt", "Be brief."), submit(prompt="p.txt"), submit(prompt="missing.txt")])
+    (patch,), events = await limited(model)
+    assert model.calls == 100
+    assert patch.updates == {"prompt": "Be brief.\n"}
+    assert patch.state["stopped_by"] == "max_turns" and patch.usage.model_calls == 100
+    assert patch.rationale == "rewritten by Reflection"  # the agent never replied with text
+    assert events == []
+    assert "limit=<max_turns> | reflection agent stopped at its turn or time limit" in caplog.text
+
+
+async def test_a_submission_on_the_last_allowed_turn_is_kept():
+    model = ScriptedModel([write("p.txt", "Be brief."), submit(prompt="p.txt"), "Done."])
+    (patch,), _ = await limited(model, max_turns=2)
+    assert model.calls == 2
+    assert patch.updates == {"prompt": "Be brief.\n"} and patch.state["stopped_by"] == "max_turns"
+
+
+@pytest.mark.parametrize("limits", [{"max_turns": 3}, {"max_turns": None, "max_seconds": None}])
+async def test_a_proposal_that_ends_within_its_limits_is_not_stopped(limits):
+    model = ScriptedModel([write("p.txt", "Be brief."), submit(prompt="p.txt"), "Done."])
+    (patch,), _ = await limited(model, **limits)
+    assert patch.state["stopped_by"] is None and patch.rationale == "Done."
+
+
+async def test_a_send_back_gets_only_the_turns_left():
+    turns = [write("p.txt", "x" * 80), submit(prompt="p.txt"), "Done."]
+    turns += [write("p.txt", "Ask for the number."), submit(prompt="p.txt"), "Shortened."]
+    model = ScriptedModel(turns)
+    (patch,), _ = await limited(model, max_turns=5)
+    assert model.calls == 5  # the send-back's write and submit, not its reply
+    assert patch.updates == {"prompt": "Ask for the number.\n"}
+    assert patch.state["revised"] == [{"prompt": 80}] and patch.state["stopped_by"] == "max_turns"
+
+
+async def test_no_send_back_when_no_turn_is_left():
+    turns = [write("p.txt", "x" * 80), write("t.txt", "warm"), submit(prompt="p.txt", tone="t.txt"), "Done."]
+    turns += [write("p.txt", "Short."), submit(prompt="p.txt"), "Shortened."]
+    model = ScriptedModel(turns)
+    (patch,), _ = await limited(model, max_turns=4)
+    assert model.calls == 4
+    assert patch.updates == {"tone": "warm"} and "over the size_cap" in patch.state["dropped"]["prompt"]
+    assert patch.state["revised"] == [] and patch.state["stopped_by"] == "max_turns"
+
+
+async def test_no_refusal_is_sent_back_when_no_turn_is_left():
+    header = "# Version 0 (the baseline)\nrank: 1\n\nBe brief."
+    turns = [
+        write("p.txt", header),
+        submit(prompt="p.txt"),
+        "Submitted.",
+        write("p.txt", "Be brief."),
+        submit(prompt="p.txt"),
+    ]
+    model = ScriptedModel(turns)
+    patches, events = await limited(model, max_turns=3)
+    assert model.calls == 3 and patches == []
+    assert [e for e, _ in events] == ["proposer_usage"]
+
+
+async def test_a_slow_shell_command_is_killed_at_the_time_limit_and_what_was_submitted_kept(temp_root, started):
+    turns = [write("p.txt", "Be brief."), submit(prompt="p.txt"), ToolUse("shell", {"command": "sleep 30"}), "Done."]
+    begun = time.monotonic()
+    (patch,), events = await limited(ScriptedModel(turns), max_seconds=3)
+    assert time.monotonic() - begun < 10
+    assert patch.updates == {"prompt": "Be brief.\n"} and patch.state["stopped_by"] == "max_seconds"
+    assert patch.usage.model_calls == 3 and events == []
+    assert killed(started, "sleep 30")
+    assert os.listdir(temp_root) == []
+
+
+async def test_the_time_limit_during_a_send_back_keeps_the_first_submission():
+    turns = [write("p.txt", "x" * 80), write("t.txt", "warm"), submit(prompt="p.txt", tone="t.txt"), "Done."]
+    turns += [ToolUse("shell", {"command": "sleep 30"}), "Shortened."]
+    (patch,), _ = await limited(ScriptedModel(turns), max_seconds=3)
+    assert patch.updates == {"tone": "warm"}
+    assert patch.state["revised"] == [{"prompt": 80}] and patch.state["stopped_by"] == "max_seconds"
+
+
+class NeverEnding(ScriptedModel):
+    """A model whose stream never ends; `on_cancel`, when given, is raised in place of the cancellation."""
+
+    def __init__(self, on_cancel=None):
+        super().__init__(["unused"])
+        self.on_cancel = on_cancel
+        self.streaming = asyncio.Event()
+
+    async def stream(self, *args, **kwargs):
+        self.calls += 1
+        self.streaming.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            if self.on_cancel is None:
+                raise
+            raise self.on_cancel from None
+        yield {}  # pragma: no cover
+
+
+@pytest.mark.parametrize("on_cancel", [None, RuntimeError("connection closed")])
+async def test_a_model_stream_that_never_ends_is_stopped_at_the_time_limit_not_failed(on_cancel):
+    model = NeverEnding(on_cancel)
+    patches, events = await limited(model, max_seconds=1)
+    assert patches == [] and model.calls == 1  # never retried, however the model ended once cancelled
+    (usage,) = usage_events(events)
+    assert [e for e, _ in events] == ["proposer_usage"] and usage.tokens == 0
+
+
+async def test_a_cancelled_call_propagates_even_when_the_model_raises_once_cancelled():
+    model = NeverEnding(RuntimeError("connection closed"))
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    task = asyncio.create_task(reflection.propose(request(events=events)))
+    await asyncio.wait_for(model.streaming.wait(), timeout=10)
+    task.cancel()
+    await asyncio.wait({task}, timeout=10)
+    cancelled = task.cancelled()  # the model's error once cancelled was not taken for a failed attempt and retried
+    if not task.done():  # else the retried attempt never ends: stop it, so the test fails instead of hanging
+        model.on_cancel = None
+        task.cancel()
+        await asyncio.wait({task}, timeout=10)
+    assert cancelled and model.calls == 1 and events == []
+
+
+async def test_a_failure_with_no_turn_left_raises_without_a_retry(caplog):
+    model = ScriptedModel([ValueError("The provided model identifier is invalid.")])
+    reflection = Reflection(model, max_turns=1)
+    reflection._warned = True
+    events = []
+    with pytest.raises(ValueError, match="model identifier"):
+        await reflection.propose(request(events=events))
+    assert model.calls == 1 and [e for e, _ in events] == ["proposer_usage"]
+    assert "limit=<max_turns> | reflection agent failed with no turn or time left to retry" in caplog.text
+
+
+async def test_retries_share_the_proposals_turns():
+    turns = [ToolUse("shell", {"command": "ls"}), ValueError("stream broke")]
+    turns += [write("p.txt", "Be brief."), submit(prompt="p.txt"), "Done."]
+    model = ScriptedModel(turns)
+    (patch,), events = await limited(model, max_turns=4)
+    assert model.calls == 4  # 2 in the failed attempt, then 2 in the retry: its reply is never asked for
+    assert patch.updates == {"prompt": "Be brief.\n"} and patch.state["stopped_by"] == "max_turns"
+    assert [e for e, _ in events] == ["proposer_retry"]
+
+
+async def test_the_models_own_timeout_error_is_retried_not_the_time_limit():
+    turns = [TimeoutError("read timed out"), write("p.txt", "Be brief."), submit(prompt="p.txt"), "Done."]
+    (patch,), events = await limited(ScriptedModel(turns), max_seconds=600)
+    assert patch.updates == {"prompt": "Be brief.\n"} and patch.state["stopped_by"] is None
+    assert events == [("proposer_retry", {"error_type": "TimeoutError", "error": "read timed out"})]
+
+
+async def test_each_of_n_proposals_has_its_own_limits():
+    turns = [write("p.txt", "First."), submit(prompt="p.txt"), "One."]
+    turns += [write("p.txt", "Second."), submit(prompt="p.txt"), "Two."]
+    patches, _ = await limited(ScriptedModel(turns), n=2, max_turns=3)
+    assert [(p.updates["prompt"], p.state["stopped_by"]) for p in patches] == [("First.\n", None), ("Second.\n", None)]
+
+
+async def test_a_cancelled_call_kills_its_running_command_and_the_cancellation_propagates(temp_root, started):
+    turns = [ToolUse("shell", {"command": "sleep 30"}), "Done."]
+    reflection = Reflection(ScriptedModel(turns))
+    reflection._warned = True
+    events = []
+    task = asyncio.create_task(reflection.propose(request(events=events)))
+    for _ in range(1000):  # up to 10 s for the command to start
+        if any(p.args[-1] == "sleep 30" for p in started):
+            break
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert events == [] and killed(started, "sleep 30")
+    assert os.listdir(temp_root) == []
