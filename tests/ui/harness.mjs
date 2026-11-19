@@ -15,7 +15,7 @@ const HTML = fs.readFileSync(ASSET, 'utf8')
   .replace(/<script src="([\w.-]+)"><\/script>/g, (_, name) => `<script>\n${beside(name)}</script>`);
 
 /* Every page built. When the suite reports, each one's errors count against it and its window is closed:
-   a served page polls on a timer, which would keep Node alive. */
+   a page polls on a timer, which would keep Node alive. */
 const PAGES = [];
 
 /* What the pages are waiting on: requests in flight, and steps through history the browser has not taken yet. */
@@ -62,7 +62,7 @@ export async function waitFor(cond, what = 'condition', ms = 5000) {
 
 /** Build the page. `fetchImpl` is installed before any script runs, so boot() sees it.
     `cookie` is one the browser already holds, as from an earlier visit. `visible` makes the
-    document one that is being looked at; without it a served page's polling timer does nothing. */
+    document one that is being looked at; without it the page's polling timer does nothing. */
 export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok', token, cookie, visible } = {}) {
   const errs = [];
   /* `token` stands in for the server writing it into the document. */

@@ -164,7 +164,7 @@ const RUN = {
   const p = await page({ fetchImpl: fakeServer(), url: 'http://127.0.0.1:9999/' });
   eq([p.text('#reports-rows'), frog(p, '#reports-rows')],
     ['No reports in this pond yetNo report JSON under /served. How to run an experiment', true],
-    'a served folder with no report says so, and how to make one');
+    'a folder with no report says so, and how to make one');
   await p.click('.tab[data-view="experiments"]');
   eq([p.text('#experiments-rows'), frog(p, '#experiments-rows')],
     ['No experiments in this pond yetNo experiment JSON under /served. Create your first experiment', true],

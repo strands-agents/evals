@@ -58,7 +58,7 @@ try {
   const p = await served();
   const { $, $$, text, click, type, window } = p;
 
-  // ── mode, and the discovery the server did ──
+  // ── the discovery the server did ──
   ok($('#read-only').hidden && text('.tab.on') === 'Reports', 'boots on Reports, with nothing said of read-only', text('.tab.on'));
   ok(text('#root-path') === fs.realpathSync(root), 'shows the served directory', text('#root-path'));
   ok(!$('[data-act="rescan"]').hidden, 'Rescan is offered');

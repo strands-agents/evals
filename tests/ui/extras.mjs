@@ -126,6 +126,19 @@ const report = (score, ...cases) => ({
   'Discard and open opens it, and an experiment with no report says how to run it', p.text('#facts'));
 }
 
+// ── the report an unrun experiment is told to write is one the scan would pair with it by name ──
+{
+  const p = await served({ 'nightly.experiment.json': experiment(CASE), 'smoke.json': experiment(CASE), 'myexperiment.json': experiment(CASE) });
+  const told = [];
+  for (const file of ['nightly.experiment.json', 'smoke.json', 'myexperiment.json']) {
+    await p.click('.tab[data-view="experiments"]');
+    await p.openExperiment(file);
+    told.push(p.text('#facts code').split(' -o ')[1]);
+  }
+  ok(told.join() === 'nightly.report.json,smoke.report.json,myexperiment.report.json',
+    'it takes the experiment’s name, less a trailing experiment that stands apart', told.join());
+}
+
 // ── deep links ──
 {
   const p = await linked('/experiments/experiment.json/cases/refund_edge_case');
