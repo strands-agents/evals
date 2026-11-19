@@ -57,7 +57,12 @@ class EventLog:
     - `score`: `candidate_id`, `split`, `case_names`, `runs`, `rollouts`, `objective_by_run`, `statuses`
       (status -> trial count), `unavailable`.
     - `fit`: `candidates` (ids fitted), `is_fitted`, `error` (when the score model raised), `flagged`,
-      `diagnostics`; one per step, `is_fitted=false` also when the step scored nothing new.
+      `diagnostics`, `estimates` (candidate id -> goal metric -> `Estimate`: each candidate's
+      `Assessment.estimates`, what the ranking takes from the new fit; a candidate the ranking assesses by
+      measured means is left out, which is every candidate while a metric is flagged; `{}` when `is_fitted` is
+      false); one per step, `is_fitted=false` also when the step scored nothing new. An unfitted event without
+      an `error` keeps the earlier fit in use; one with an `error` leaves none in use until the next fitted
+      event.
     - `select`: `parent_id`, `strategy`.
     - `label`: `candidate_id`, `label` (`CandidateLabel`).
     - `invalid`: `block`, `redraw`, `updates`, `reason` (no candidate).

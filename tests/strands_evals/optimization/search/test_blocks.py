@@ -214,8 +214,8 @@ def test_proposer_configs():
     config = Reflection("my-model", system_prompt="be brief", success_threshold=None).config()
     assert config["model"] == "my-model"
     assert config["success_threshold"] is None
-    assert len(config["system_prompt_sha256"]) == 64
-    assert Reflection().config()["system_prompt_sha256"] is None
+    assert config["system_prompt"] == "be brief" and "system_prompt_sha256" not in config
+    assert Reflection().config()["system_prompt"] is None
     assert Reflection().config()["model"] == "global.anthropic.claude-sonnet-5-5"
     with pytest.raises(ValueError, match="success_threshold"):
         Reflection(success_threshold=1.5)

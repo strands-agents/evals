@@ -239,7 +239,9 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
 def _difference(old: Any, new: Any, path: str) -> str | None:
     """Where `old` and `new` first differ, as `"<path> changed: <old> -> <new>"`; None when they are equal.
 
-    Lists of `{"key": ...}` records (the space) are matched by key, so the message names the parameter.
+    Lists of `{"key": ...}` records (the space) are matched by key, so the message names the parameter. Each
+    side is its repr cut to 200 characters; two texts that differ only past what that shows are shown from
+    shortly before the index of their first difference, as `"<path> changed at index <i>: ..."`.
     """
     if isinstance(old, list) and isinstance(new, list):
         if all(isinstance(item, dict) and "key" in item for item in [*old, *new]):
@@ -260,5 +262,16 @@ def _difference(old: Any, new: Any, path: str) -> str | None:
         return next((found for at, a, b in pairs if (found := _difference(a, b, at)) is not None), None)
     if old == new:
         return None
-    shown = [text if len(text := repr(value)) <= 200 else text[:197] + "..." for value in (old, new)]
-    return f"{path} changed: {shown[0]} -> {shown[1]}"
+    if isinstance(old, str) and isinstance(new, str):
+        first = next((i for i, (a, b) in enumerate(zip(old, new, strict=False)) if a != b), min(len(old), len(new)))
+        if len(repr(old[:first])) > 197:  # the shared start alone fills what `_shown` keeps
+            start = max(first - 20, 0)
+            cut = "..." if start else ""
+            return f"{path} changed at index {first}: {cut}{_shown(old[start:])} -> {cut}{_shown(new[start:])}"
+    return f"{path} changed: {_shown(old)} -> {_shown(new)}"
+
+
+def _shown(value: Any) -> str:
+    """`repr(value)`, cut to 200 characters."""
+    text = repr(value)
+    return text if len(text) <= 200 else text[:197] + "..."
