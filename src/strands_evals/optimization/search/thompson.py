@@ -31,17 +31,19 @@ class Thompson(Proposer):
     """Proposes the combination of its block's choices that a posterior draw likes best, unmeasured first.
 
     Each proposal draws one set of effects per goal metric (`sample_effects(1, rng)` and `value_under`) and
-    scores every combination of the block's choices (sampled down to `MAX_COMBINATIONS` if more) with the
-    parent's other values held, each at a template: the best-ranked eligible candidate with those choices and
-    the parent's values outside the block, else the parent with them (keys a combination makes active filled
-    from the best-ranked eligible candidate that has them, else their defaults, as `Candidate.child` does),
-    so a draw scores the candidate the patch would create. It proposes the best fresh combination (not measured with the
-    parent's other values, nor proposed and not yet observed, so a step's proposals differ) that meets the
-    drawn constraints, else the one that misses them least (each miss over its metric model's `unit`).
-    With no fit or any metric flagged, a fresh combination at random. With
-    none fresh, every combination is a choice: the draw's best measured one is a duplicate, which the
-    optimizer redraws, and a `Nested` opener opens its round on, so Thompson keeps choosing which structure
-    to refine. `[]` only when no block key is active under the parent's choices.
+    scores every combination of the block's choices (sampled down to `MAX_COMBINATIONS` if more) at the
+    candidate its patch would create: the parent's values outside the block, the choices, and each key the
+    choices make active that the parent lacks filled from the best-ranked eligible candidate that has it, else
+    its default, as `Candidate.child` fills it. Every combination keeps the parent's value on every key outside
+    the block that stays active under its choices, so a draw compares the choices and the keys under them, not
+    the values of other keys that each structure's best candidate was measured at. It proposes the best fresh
+    combination (not measured with the parent's other values, nor proposed and not yet observed, so a step's
+    proposals differ) that meets the drawn constraints, else the one that misses them least (each miss over its
+    metric model's `unit`). With no fit or any metric flagged, a fresh combination at random. With none fresh,
+    every combination is a choice. If the draw's best was measured, its patch repeats a measured candidate
+    unless the fill gives a key a value that candidate was not measured with, and then the patch makes a new
+    candidate. The optimizer redraws a repeat, and a `Nested` opener opens its round on it. Either way Thompson
+    keeps choosing which structure to refine. `[]` only when no block key is active under the parent's choices.
 
     `random_weights=True` (default): with two or more objectives (`WeightedSum` or `Pareto`), each draw
     weighs them with fresh Dirichlet(1, ..., 1) weights, each term oriented and divided by its metric
@@ -104,7 +106,7 @@ class Thompson(Proposer):
             ids = [ids[i] for i in sorted(picks)]
 
         eligible = [c for c in request.candidates if c.is_eligible]  # in ranking order
-        measured = {_key(c.values, keys) for c in eligible if _agrees(c.values, held, partial=True)}
+        measured = {_key(c.values, keys) for c in eligible if _agrees(c.values, held)}
         held_key = _key(held, sorted(held))
         proposed = {p.combination for p in self._pending if p.held == held_key}
         fit = request.fit if request.fit is not None and not request.fit.flagged else None
@@ -113,18 +115,10 @@ class Thompson(Proposer):
             found = next((c for c in eligible if k in c.values), None)
             return None if found is None else (found.values[k], found.candidate_id)
 
+        # Each combination at the candidate its patch would create, completed as `Candidate.child` completes it.
         templates: list[Values] = []
         if fit is not None:
-            for i in ids:
-                made = next(
-                    (
-                        c
-                        for c in eligible
-                        if _agrees(c.values, combinations[i], partial=False) and _agrees(c.values, held, partial=True)
-                    ),
-                    None,
-                )
-                templates.append(made.values if made else space.complete({**held, **combinations[i]}, fill=inherit))
+            templates = [space.complete({**held, **combinations[i]}, fill=inherit) for i in ids]
 
         objective = request.criteria.objective
         objectives = objective.objectives if isinstance(objective, (WeightedSum, Pareto)) else (objective,)
@@ -176,9 +170,9 @@ def _key(values: Values, keys: Sequence[str]) -> tuple[tuple[str, str, str], ...
     return tuple((k, type(values[k]).__name__, repr(values[k])) for k in keys if k in values)
 
 
-def _agrees(values: Values, ref: Mapping[str, Value], *, partial: bool) -> bool:
-    """`values` hold `ref`'s values, typed (`1` is not `True`); `partial`: only the keys both have."""
-    shared = [k for k in ref if k in values] if partial else list(ref)
+def _agrees(values: Values, ref: Mapping[str, Value]) -> bool:
+    """`values` hold `ref`'s values on the keys both have, typed (`1` is not `True`)."""
+    shared = [k for k in ref if k in values]
     return _key(values, shared) == _key(ref, shared)
 
 
