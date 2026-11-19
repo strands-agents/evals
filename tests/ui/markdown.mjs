@@ -530,11 +530,12 @@ Expected interactions:
   await waitFor(() => p.text('#actions [data-md="report"]') === 'Copy as Markdown', 'the button to read as before');
 
   const prompt = await p.copy('#actions [data-md="failing"]');
-  is(prompt.split('\n\n## ')[0], `These 3 rows fail in the evaluation report \`${REPORT_FILE}\`. Find the cause of each failure and fix it.
+  is(prompt.split('\n\n## ')[0], `These 3 rows fail in an evaluation report. Each is below with what was asked, what was expected, what came back and the evaluator's reason. Find why each fails. Neither file names the agent that was evaluated: the cause is in that agent, or in the case or the evaluator where the expectation itself is wrong.
 
-- Experiment: \`${EXPERIMENT_FILE}\`
-- To run one case again: \`strands-evals run ${EXPERIMENT_FILE} --case 'refund|policy' --agent module:attr\``,
-  'the prompt opens with one instruction, the files by their full paths and the command for one case');
+- Report: \`${REPORT_FILE}\`
+- Experiment, which holds the cases and the evaluators: \`${EXPERIMENT_FILE}\`
+- To run one case again: \`strands-evals run ${EXPERIMENT_FILE} --case 'refund|policy' --agent MODULE:ATTR\`. \`MODULE:ATTR\` is a placeholder: put the import path of the agent under test there.`,
+  'the prompt says what failed and what it cannot know, gives the files by their full paths, and marks the agent in the command as a placeholder');
   is(prompt.split('\n').filter(line => line.startsWith('## ')).join(), '## refund|policy · Equals,## refund|policy · tone of voice,## unjudged · Equals',
     'and carries each failing row, and no other');
   is(await p.copy('#actions [data-md="path"]'), REPORT_FILE, 'the path copied is the absolute one, which works from any directory');
@@ -546,7 +547,7 @@ Expected interactions:
   is(labels(p, beside(p, 1)), 'Copy as Markdown | Copy link | Copy command', 'the open row offers its Markdown, a link and the command to run it again');
   is(await p.copy(`${beside(p, 1)} [data-md="row"]`), ROW_1, 'a row copies with where it is from, each output of its evaluator and what was diagnosed');
   is(await p.copy(`${beside(p, 1)} [data-md="row-link"]`), `${base}/reports/support/support.report.json/rows/refund%7Cpolicy/tone%0Aof%20voice`, 'its link is that address');
-  is(await p.copy(`${beside(p, 1)} [data-md="row-command"]`), `strands-evals run ${EXPERIMENT_FILE} --case 'refund|policy' --agent module:attr`,
+  is(await p.copy(`${beside(p, 1)} [data-md="row-command"]`), `strands-evals run ${EXPERIMENT_FILE} --case 'refund|policy' --agent MODULE:ATTR`,
     'its command runs that one case of the experiment, with the name quoted for a shell');
 
   await p.click(row(p, 2));
@@ -722,12 +723,12 @@ Metadata:
 }
 \`\`\`
 `, 'a case copies with the experiment it belongs to');
-  is(await p.copy('#case-acts [data-md="case-command"]'), `strands-evals run ${EXPERIMENT_FILE} --case 'refund|policy' --agent module:attr`, 'and with the command that runs it alone');
+  is(await p.copy('#case-acts [data-md="case-command"]'), `strands-evals run ${EXPERIMENT_FILE} --case 'refund|policy' --agent MODULE:ATTR`, 'and with the command that runs it alone');
   await p.type('#form [data-k="input"]', 'Can I still get a refund?');
   ok((await p.copy('#case-acts [data-md="case"]')).includes('```text\nCan I still get a refund?\n```'), 'what is copied is the case as it reads on the page, unsaved edits included', p.copied);
   await p.click('#revert');
   await p.click('#case-list li[data-i="1"]');
-  is(await p.copy('#case-acts [data-md="case-command"]'), `strands-evals run ${EXPERIMENT_FILE} --case 1 --agent module:attr`, 'a case with no name is run by its position');
+  is(await p.copy('#case-acts [data-md="case-command"]'), `strands-evals run ${EXPERIMENT_FILE} --case 1 --agent MODULE:ATTR`, 'a case with no name is run by its position');
 
   await p.click('.tab[data-view="experiments"]');
   await p.openExperiment('empty');

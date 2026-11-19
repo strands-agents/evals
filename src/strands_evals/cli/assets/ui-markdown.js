@@ -58,8 +58,8 @@ function mdCaseNames(rows) {
 }
 
 /* `names` is `mdCaseNames` of the rows `r` is one of. `more` is facts about where the row is from,
-   for a row copied on its own. */
-function mdRowParts(r, names, heading, more = []) {
+   for a row copied on its own. `same` is the row its case was written out under, when it already was. */
+function mdRowParts(r, names, heading, more = [], same = null) {
   const outputs = r.outputs.map(o => (o && typeof o === 'object' && !Array.isArray(o) ? o : {}));
   const only = outputs.length === 1 ? outputs[0] : {};
   const several = outputs.length > 1 ? outputs : [];
@@ -71,7 +71,18 @@ function mdRowParts(r, names, heading, more = []) {
     ...mdBlock('Reason', mdPresent(r.reason) ? r.reason : only.reason),
     ...several.flatMap((o, n) => mdBlock(`Reason, output ${n + 1} of ${outputs.length}`, o.reason)),
     ...mdBlock('Diagnosis', r.diagnosis), ...mdBlock('Recommendation', r.recommendation),
-    ...mdCaseBlocks(r.case, ['expected', 'actual'])];
+    ...(same ? [`The case is the same as under "${same}" above.`] : mdCaseBlocks(r.case, ['expected', 'actual']))];
+}
+
+/* Each failing row in full. A case that fails under several evaluators is written out under the first only. */
+function mdFailingParts(rows, names, heading) {
+  const written = new Map();
+  return rows.filter(r => verdictOf(r) === 'fail').flatMap(r => {
+    const title = `${names.get(r)} · ${mdEvaluator(r)}`, blocks = mdCaseBlocks(r.case, ['expected', 'actual']);
+    const key = [names.get(r), ...blocks].join('\u0000');
+    if (!written.has(key)) written.set(key, title);
+    return mdRowParts(r, names, heading, [], blocks.length && written.get(key) !== title ? written.get(key) : null);
+  });
 }
 
 /* The experiment a report was paired with and how well it fits, or why it has none, as the scan found it. */
@@ -89,7 +100,7 @@ function reportMarkdown(path, doc, experiment, link) {
     `- Evaluators: ${[...new Set(rows.map(mdEvaluator))].join(', ') || 'none'}`,
     `- Experiment: ${mdMadeFrom(experiment, link)}`,
   ];
-  const failing = rows.filter(r => verdictOf(r) === 'fail').flatMap(r => mdRowParts(r, names, '###'));
+  const failing = mdFailingParts(rows, names, '###');
   const table = ['| Case | Evaluator | Score | Verdict |', '| --- | --- | --- | --- |',
     ...rows.map(r => `| ${mdCell(names.get(r))} | ${mdCell(mdEvaluator(r))} | ${mdScore(r.score)} | ${mdVerdict(r)} |`)];
   return mdDocument([`# Report: ${path}`, facts.join('\n'), '## Failing rows',
@@ -128,9 +139,10 @@ function experimentMarkdown(path, doc, reports) {
 /* Absolute where the page knows the folder it is served from, so the path works from anywhere. */
 const filePath = rel => (MODE !== 'server' || !ROOT ? rel : rel === '.' ? ROOT : `${ROOT.replace(/\/$/, '')}/${rel}`);
 const shellQuote = s => (/^[\w./:=@%+-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`);
-/* `--case` takes a name, or a 0-based index where no case has that name. */
+/* `--case` takes a name, or a 0-based index where no case has that name. `MODULE:ATTR` stands for the
+   agent under test, which no file here records. */
 const runCommand = (experiment, which) =>
-  `strands-evals run ${shellQuote(filePath(experiment))} --case ${shellQuote(String(which))} --agent module:attr`;
+  `strands-evals run ${shellQuote(filePath(experiment))} --case ${shellQuote(String(which))} --agent MODULE:ATTR`;
 
 const addressOf = route => (MODE === 'server' ? location.origin + route : `${location.href.split('#')[0]}#${route}`);
 
@@ -145,18 +157,25 @@ function rowMarkdown(r) {
   ]));
 }
 
-/** Every failing row of the open report, under one line saying what to do with them. */
+/** Every failing row of the open report, under what can be said of them: what failed, where the files
+    are, and how to run a case again. Which agent was evaluated is in neither file, so it is not named. */
 function failingPrompt() {
-  const rows = ROWS.filter(r => verdictOf(r) === 'fail'), names = mdCaseNames(ROWS);
+  const rows = ROWS.filter(r => verdictOf(r) === 'fail');
   const experiment = openExperimentOf();
   const named = rows.find(r => mdPresent(r.case.name));
-  const facts = experiment ? [`- Experiment: \`${filePath(experiment)}\``] : [];
-  if (experiment && named) facts.push(`- To run one case again: \`${runCommand(experiment, named.case.name)}\``);
+  const facts = [`- Report: \`${reportPath()}\``];
+  if (experiment) facts.push(`- Experiment, which holds the cases and the evaluators: \`${filePath(experiment)}\``);
+  if (experiment && named) {
+    facts.push(`- To run one case again: \`${runCommand(experiment, named.case.name)}\`. `
+      + '`MODULE:ATTR` is a placeholder: put the import path of the agent under test there.');
+  }
   return mdDocument([
-    `${rows.length === 1 ? 'This row fails' : `These ${rows.length} rows fail`} in the evaluation report `
-      + `\`${reportPath()}\`. Find the cause of each failure and fix it.`,
-    ...(facts.length ? [facts.join('\n')] : []),
-    ...rows.flatMap(r => mdRowParts(r, names, '##')),
+    `${rows.length === 1 ? 'This row fails' : `These ${rows.length} rows fail`} in an evaluation report. `
+      + 'Each is below with what was asked, what was expected, what came back and the evaluator\'s reason. '
+      + 'Find why each fails. Neither file names the agent that was evaluated: the cause is in that agent, '
+      + 'or in the case or the evaluator where the expectation itself is wrong.',
+    facts.join('\n'),
+    ...mdFailingParts(ROWS, mdCaseNames(ROWS), '##'),
   ]);
 }
 

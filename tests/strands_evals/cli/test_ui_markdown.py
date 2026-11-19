@@ -119,6 +119,40 @@ def test_a_value_cannot_close_the_fence_it_is_written_in():
     assert 'Actual output:\n\n````json\n{\n  "code": "```"\n}\n````\n' in text
 
 
+def test_a_long_value_is_cut_and_says_how_much_and_where_the_rest_is():
+    rows = [
+        {"name": "long", "evaluator": "E", "input": "x" * 5000, "expected_output": "y" * 4000},
+        {"name": "structured", "evaluator": "E", "input": {"text": "z" * 5000}},
+    ]
+
+    text = report_markdown("r.json", {"cases": rows, "scores": [0, 0], "test_passes": [False, False]}, None)
+
+    cut = "The file has all of it, and so does the `.json` form of this address."
+    assert f"Input:\n\n```text\n{'x' * 4000}\n```\n\nCut after 4000 of 5000 characters. {cut}\n\n" in text
+    assert f"Expected output:\n\n```text\n{'y' * 4000}\n```\n\n### structured" in text
+    assert f'Input:\n\n```json\n{{\n  "text": "{"z" * 3987}\n```\n\nCut after 4000 of 5016 characters. {cut}\n\n' in text
+
+
+def test_a_case_that_fails_under_several_evaluators_is_written_out_once():
+    case = {"name": "refund", "input": "Can I get a refund?", "actual_output": "No."}
+    rows = [{**case, "evaluator": name} for name in ("Equals", "Tone")] + [
+        {**case, "name": "other", "evaluator": "Tone"},
+        {**case, "actual_output": "Maybe.", "evaluator": "Length"},
+    ]
+
+    text = report_markdown("r.json", {"cases": rows, "scores": [0] * 4, "test_passes": [False] * 4}, None)
+
+    full = "Input:\n\n```text\nCan I get a refund?\n```\n\nActual output:\n\n```text\nNo.\n```\n\n"
+    same = 'The case is the same as under "refund · Equals" above.\n\n'
+    failing = text.split("## Failing rows\n\n")[1].split("## All rows")[0]
+    assert failing == (
+        f"### refund · Equals\n\n- Score: 0.00\n- Verdict: failed\n\n{full}"
+        f"### refund · Tone\n\n- Score: 0.00\n- Verdict: failed\n\n{same}"
+        f"### other · Tone\n\n- Score: 0.00\n- Verdict: failed\n\n{full}"
+        f"### refund · Length\n\n- Score: 0.00\n- Verdict: failed\n\n{full.replace('No.', 'Maybe.')}"
+    )
+
+
 def test_a_name_stays_on_one_line_and_cannot_break_the_table():
     report = {"cases": [{"name": "a|b\nc", "evaluator": " two\t words "}], "scores": [1], "test_passes": [True]}
 

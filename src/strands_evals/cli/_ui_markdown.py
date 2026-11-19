@@ -21,6 +21,9 @@ _SPACE = re.compile(r"[ \t\r\n]+")
 # Each pair of fields a report row or a case can carry, in the order the page shows them.
 _ASPECTS = ("output", "trajectory", "interactions", "environment_state")
 
+# The longest value written out whole, in characters. A longer one is cut and says so: the file has the rest.
+VALUE_LIMIT = 4000
+
 
 def _truthy(value: Any) -> bool:
     """Whether JavaScript takes a parsed JSON value as true."""
@@ -125,7 +128,18 @@ def _fence(value: Any) -> str:
 
 
 def _block(label: str, value: Any) -> list[str]:
-    return [f"{label}:", _fence(value)] if _present(value) else []
+    """A labelled value in a fence, cut at `VALUE_LIMIT` characters with a line saying how much was left out."""
+    if not _present(value):
+        return []
+    text = value_text(value)
+    if len(text) <= VALUE_LIMIT:
+        return [f"{label}:", _fence(value)]
+    return [
+        f"{label}:",
+        _fenced(text[:VALUE_LIMIT], "text" if isinstance(value, str) else "json"),
+        f"Cut after {VALUE_LIMIT} of {len(text)} characters. "
+        "The file has all of it, and so does the `.json` form of this address.",
+    ]
 
 
 def _cell(text: str) -> str:
@@ -211,7 +225,8 @@ def _rows(doc: dict) -> list[dict]:
     return rows
 
 
-def _row_parts(row: dict, heading: str) -> list[str]:
+def _row_parts(row: dict) -> tuple[list[str], list[str]]:
+    """A row under its heading: what the evaluator made of it, then the case it judged."""
     outputs = row["outputs"]
     facts = [f"- Score: {_score(row['score'])}", f"- Verdict: {row['verdict']}"]
     only = outputs[0] if len(outputs) == 1 else {}
@@ -225,12 +240,28 @@ def _row_parts(row: dict, heading: str) -> list[str]:
             + ("passed" if _truthy(output.get("test_pass")) else "failed")
             + (f", {_one_line(label)}" if isinstance(label, str) and label else "")
         )
-    parts = [f"{heading} {row['name']} · {row['evaluator']}", "\n".join(facts)]
-    parts += _block("Reason", row["reason"] if _present(row["reason"]) else only.get("reason"))
+    judged = ["\n".join(facts)]
+    judged += _block("Reason", row["reason"] if _present(row["reason"]) else only.get("reason"))
     for n, output in enumerate(several):
-        parts += _block(f"Reason, output {n + 1} of {len(outputs)}", output.get("reason"))
-    parts += _block("Diagnosis", row["diagnosis"]) + _block("Recommendation", row["recommendation"])
-    return parts + _case_blocks(row["case"], ("expected", "actual"))
+        judged += _block(f"Reason, output {n + 1} of {len(outputs)}", output.get("reason"))
+    judged += _block("Diagnosis", row["diagnosis"]) + _block("Recommendation", row["recommendation"])
+    return judged, _case_blocks(row["case"], ("expected", "actual"))
+
+
+def _failing_parts(rows: Sequence[dict], heading: str) -> list[str]:
+    """Each failing row in full. A case that fails under several evaluators is written out under the first only."""
+    parts: list[str] = []
+    written: dict[tuple[str, ...], str] = {}
+    for row in rows:
+        if row["verdict"] != "failed":
+            continue
+        title = f"{row['name']} · {row['evaluator']}"
+        judged, case = _row_parts(row)
+        first = written.setdefault((row["name"], *case), title)
+        if case and first != title:
+            case = [f'The case is the same as under "{first}" above.']
+        parts += [f"{heading} {title}", *judged, *case]
+    return parts
 
 
 def _document(parts: Iterable[str]) -> str:
@@ -259,7 +290,7 @@ def report_markdown(path: str, doc: dict, experiment: str | None, link: dict | N
         f"- Evaluators: {', '.join(dict.fromkeys(row['evaluator'] for row in rows)) or 'none'}",
         f"- Experiment: {_made_from(experiment, link)}",
     ]
-    failing = [part for row in rows if row["verdict"] == "failed" for part in _row_parts(row, "###")]
+    failing = _failing_parts(rows, "###")
     table = ["| Case | Evaluator | Score | Verdict |", "| --- | --- | --- | --- |"]
     table += [
         f"| {_cell(row['name'])} | {_cell(row['evaluator'])} | {_score(row['score'])} | {row['verdict']} |"
