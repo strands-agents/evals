@@ -482,11 +482,14 @@ class Search:
 
         A variable that is a declared name expands to every key under it that the block's proposer can
         propose; the others are left to other blocks or their kind's default block, so
-        `Block(Thompson(), "manager")` takes the choice and leaves `manager.window.window_size` to "numbers".
-        Otherwise it must be a flat key. A key named directly (the declared name of a plain marker, or a
-        flat key) goes to that block even when another block's declared name reaches it, so
-        `Block(TPE(), "manager")` next to `Block(TPE(), "manager.window.window_size")` gives the first
-        block the rest of `manager`.
+        `Block(Thompson(), "manager")` takes the choice and leaves `manager.window.window_size` to "numbers",
+        and a block whose proposer proposes numbers but not choices takes `manager.window.window_size` and
+        leaves the choice to "structure". A variable that isn't a declared name must be a flat key. A
+        variable names a key directly when it is that key and reaches no other: a key under a declared name,
+        such as `manager.window.window_size`, or a declared name whose only key is itself, such as
+        `temperature`. A key named directly goes to that block even when another block's declared name
+        reaches it, so `Block(TPE(), "manager")` next to `Block(TPE(), "manager.window.window_size")` gives
+        the first block the rest of `manager`.
         Keys in no block go to their kind's default block, key by key: text/file keys ->
         `Reflection()` ("text"); a `choice()`'s selector key -> `TPE(n_startup_trials=2)` ("structure");
         `int`, `float`, and `one_of` keys, those under a choice's alternatives included -> `TPE()`
@@ -535,8 +538,9 @@ class Search:
                         f"{label[i]!r} names {variable!r}, which is neither a declared name nor a key; "
                         f"declared names: {sorted(by_name)}"
                     )
+                # A name that reaches several keys names none of them directly, a choice's own key included.
+                direct = expanded == [variable]
                 for key in expanded:
-                    direct = key == variable
                     if not direct and space.param(key).kind not in block.proposer.kinds:
                         skipped.setdefault(i, []).append(key)  # left to another block or its kind's default
                         continue
