@@ -2,8 +2,7 @@
 
 /* What the folder holds: every report and every experiment file, each report knowing the
    experiment it was made from. A report made in code has none, and one experiment can have many. */
-let REPORTS = [], EXPERIMENTS = [], skipped = [], truncated = false, folderLabel = '';
-let showingSample = false;
+let REPORTS = [], EXPERIMENTS = [], skipped = [], truncated = false;
 let scanError = '';                          // why the last scan or open failed, if it did
 let treeMark = null;                         // the server's fingerprint of the tree when it was last scanned
 
@@ -38,30 +37,17 @@ const filed = m => `${m.dir && m.dir !== '.' ? `<span class="dim">${esc(m.dir)} 
   + `<br><span class="path">${KB(m.size)}</span>`;
 
 function renderLists() {
-  $('mode-tag').textContent = MODE === 'server'
-    ? (READONLY ? 'served · read-only' : 'served · saves to disk')
-    : 'standalone file · saves download';
-  $('mode-tag').className = 'mode ' + (MODE === 'server' && !READONLY ? 'live' : 'ro');
-  $('mode-tag').dataset.tip = MODE !== 'server' ? 'Opened without a server, so nothing can be written back. Save downloads a copy.'
-    : READONLY ? 'Served with --read-only. Cases can be read but not saved.'
-      : 'Served by strands-evals ui. Save writes the experiment file in place.';
-  $('root-path').textContent = ROOT || folderLabel;
-  const from = MODE === 'server'
-    ? `Everything ${DEPTH != null ? DEPTH + ' levels ' : ''}under the directory the CLI was started in.`
-    : showingSample
-      ? 'No server behind this page, so it is showing the sample it carries. Open a folder to read your own.'
-      : `Reading the folder you opened${folderLabel ? ` (${folderLabel})` : ''}. Edits save as a download, not back to these files.`;
+  $('read-only').hidden = !READONLY;
+  $('root-path').textContent = ROOT;
+  const from = `Everything ${DEPTH != null ? DEPTH + ' levels ' : ''}under the directory the CLI was started in.`;
   $('reports-sub').textContent = `${from} A report is the result of one run, whether it was run from an experiment file or in code.`;
   $('experiments-sub').textContent = `${from} An experiment file holds the cases and evaluators a run uses.`;
-  app.querySelectorAll('[data-act="rescan"]').forEach(b => { b.hidden = MODE !== 'server'; });
-  app.querySelector('[data-act="pick"]').hidden = MODE === 'server';
 
   const capped = truncated ? ' · <span class="tag warn">scan hit the file cap</span>' : '';
   $('reports-count').innerHTML = plural(REPORTS.length, 'report') + capped;
   $('experiments-count').innerHTML = plural(EXPERIMENTS.length, 'experiment') + capped;
   const failed = scanError ? `<tr><td colspan="4"><span class="tag warn">${esc(scanError)}</span></td></tr>` : '';
-  const nothing = (what, link) => (failed ? '' : blank(`No ${what}s in this pond yet`, MODE === 'server'
-    ? `No ${what} JSON under ${esc(ROOT)}. ${link}` : 'Open a folder to look for experiments and reports.'));
+  const nothing = (what, link) => (failed ? '' : blank(`No ${what}s in this pond yet`, `No ${what} JSON under ${esc(ROOT)}. ${link}`));
 
   redraw($('reports-rows'), failed + (REPORTS.map(r => {
     const open = !repCand && repMeta && repMeta.path === r.path;
@@ -94,9 +80,8 @@ function renderLists() {
 
 /* ══════════ reading the folder, and opening what is in it ══════════ */
 
-/* A file as the server holds it now: `{ document, modified, evaluator_notes }`. Standalone, the copy in memory. */
-const readFile = async meta => (meta.obj ? { document: meta.obj }
-  : api('/api/file?path=' + encodeURIComponent(meta.path)));
+/* A file as the server holds it now: `{ document, modified, evaluator_notes }`. */
+const readFile = meta => api('/api/file?path=' + encodeURIComponent(meta.path));
 const document_for = async meta => (await readFile(meta)).document;
 
 /* Put a file as read into the editor. Save is checked against the time it had when read, so that time

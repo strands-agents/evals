@@ -1,6 +1,6 @@
 /* Nothing the page does not understand is misprinted or lost: a case's input and outputs of any
    shape, and keys the editor has no field for, at every level of an experiment file. */
-import { fakeServer, page, runner, tick } from './harness.mjs';
+import { fakeServer, page, runner, served, tick } from './harness.mjs';
 
 const { ok, same, done } = runner('fidelity');
 const pretty = v => JSON.stringify(v, null, 2);
@@ -33,8 +33,7 @@ const pairs = el => [...el.querySelectorAll('dt')].map(dt => [dt.textContent, dt
 
 // ── a report row shows a value of any shape ──
 {
-  const p = await page();
-  await p.openFolder({ 'run/experiment.json': EXPERIMENT, 'run/report.json': REPORT });
+  const p = await served({ 'run/experiment.json': EXPERIMENT, 'run/report.json': REPORT });
   await p.openReport('run');
   for (const row of p.$$('#rep-rows tr.case')) await p.click(`#rep-rows tr.case[data-i="${row.dataset.i}"]`);
   const shown = i => Object.fromEntries(pairs(p.$(`#rep-rows tr.case[data-i="${i}"] + tr.detail .blocks`)));
@@ -66,10 +65,33 @@ const pairs = el => [...el.querySelectorAll('dt')].map(dt => [dt.textContent, dt
   'nothing on the page, in the report or the editor, prints a value as [object Object]');
 }
 
+// ── a case with no name is one case, whichever evaluator judged it ──
+{
+  const unnamed = { overall_score: 0.5, scores: [1, 0, 1, 0, 1, 0], test_passes: [true, false, true, false, true, false],
+    cases: ['Eq', 'Len'].flatMap(evaluator => [{ input: 'first', evaluator }, { input: 'second', evaluator }, { name: 'c', input: 'third', evaluator }]) };
+  const p = await page({ fetchImpl: fakeServer({
+    scan: { reports: [{ path: 'r.json', name: 'r.json', dir: '.', size: 1, modified: 5, overall_score: 0.5, rows: 6, failing: 3,
+      experiment: null, link: null }] },
+    file: { path: 'r.json', modified: 5, document: unnamed },
+  }) });
+  await p.openReport();
+  same(p.$$('#rep-rows tr.case').map(r => p.text(r.querySelector('td'))), ['#0', '', '#1', '', 'c', ''],
+    'an unnamed case is numbered by its place under its evaluator, so its rows under two evaluators are one case');
+}
+
+// ── a row the report gives no verdict for ──
+{
+  const short = { overall_score: 0.5, scores: [1, 1], test_passes: [true],
+    cases: [{ name: 'judged', evaluator: 'X', input: 'q' }, { name: 'cut off', evaluator: 'X', input: 'q' }] };
+  const p = await served({ 'short/report.json': short });
+  ok(/1 failing/.test(p.text('#reports-rows')), 'a row with no verdict has not passed: the list counts it as failing', p.text('#reports-rows'));
+  await p.openReport();
+  ok(p.text('#r-stats').startsWith('1 / 2Rows passing'), 'and so does the report', p.text('#r-stats'));
+}
+
 // ── the editor keeps a structured field structured ──
 {
-  const p = await page();
-  await p.openFolder({ 'run/experiment.json': EXPERIMENT });
+  const p = await served({ 'run/experiment.json': EXPERIMENT });
   await p.openExperiment();
   const field = k => p.$(`#form [data-k="${k}"]`);
   ok(field('input').dataset.json === '1' && field('input').value === pretty(MULTIMODAL)
@@ -88,20 +110,20 @@ const pairs = el => [...el.querySelectorAll('dt')].map(dt => [dt.textContent, dt
   await p.click('#save');
   same((await p.saved()).cases[0].input, { instruction: 'Now a table', media: [] }, 'a valid JSON edit is saved as the value it parses to, not as text');
 
-  const downloads = p.window.__blobs.length;
+  const saves = p.puts();
   await p.type(field('input'), '{"instruction": ');
   ok(field('input').classList.contains('invalid') && /not valid JSON/.test(p.text('#saved')), 'JSON that does not parse is marked and not applied',
     p.text('#saved'));
   await p.type(field('expected_output'), '{"answer": 43}');
   await p.click('#save');
-  ok(p.window.__blobs.length === downloads && /does not parse/.test(p.text('#saved')), 'and Save refuses while it is on screen', p.text('#saved'));
+  ok(p.puts() === saves && /does not parse/.test(p.text('#saved')), 'and Save refuses while it is on screen', p.text('#saved'));
   await p.type(field('input'), '{"instruction": "Fixed"}');
   await p.click('#save');
   same((await p.saved()).cases[0], { ...EXPERIMENT.cases[0], input: { instruction: 'Fixed' }, expected_output: { answer: 43 } },
     'once it parses again, Save writes it');
 }
 
-// ── served: what goes to the server is the whole document ──
+// ── what goes to the server is the whole document ──
 {
   let sent = null;
   const p = await page({ fetchImpl: fakeServer({
@@ -115,7 +137,7 @@ const pairs = el => [...el.querySelectorAll('dt')].map(dt => [dt.textContent, dt
   await p.type('#form [data-k="input"]', 'changed');
   await p.click('#save');
   await tick(4);
-  same(sent && sent.document, edited('changed'), 'a served save sends the same whole document, unknown keys and structured values included');
+  same(sent && sent.document, edited('changed'), 'a save sends the same whole document, unknown keys and structured values included');
 }
 
 // ── an optimizer trial that returned a dict ──
@@ -126,8 +148,7 @@ const pairs = el => [...el.querySelectorAll('dt')].map(dt => [dt.textContent, dt
     { event: 'trial', iteration: 0, record: trial },
     { event: 'iteration_end', iteration: 0, record: { iteration: 0, rollouts_spent: 1, proposals: [{ candidate_id: 'c0', number: 0, outcome: 'feasible', objective: 1 }] } },
   ];
-  const p = await page();
-  await p.openFolder({ 'r/run.json': { run_id: 'inline' }, 'r/events.jsonl': events.map(e => JSON.stringify(e)).join('\n') + '\n' });
+  const p = await served({ 'r/run.json': { run_id: 'inline' }, 'r/events.jsonl': events.map(e => JSON.stringify(e)).join('\n') + '\n' });
   await p.click('.tab[data-view="opt-candidates"]');
   await p.click('#opt-cands tr.case');
   await p.click('#opt-cands tr.trial');

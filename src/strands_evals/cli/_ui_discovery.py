@@ -1,8 +1,4 @@
-"""What `strands-evals ui` finds in a folder: experiments, reports, sessions, diagnoses and optimizer runs.
-
-The page reads a folder the same way when it has no server (`assets/ui-folder.js` and `assets/ui-sessions.js`),
-and `tests/ui/parity.mjs` holds the two to the same listing.
-"""
+"""What `strands-evals ui` finds in a folder: experiments, reports, sessions, diagnoses and optimizer runs."""
 
 from __future__ import annotations
 
@@ -152,9 +148,6 @@ class EventLog:
     truncated: bool = False
 
 
-# `classify`, `_stem`, `link_status`, `_report_summary`, `read_event_log` and `tuned_against` are mirrored in
-# `assets/ui-folder.js` for the page's no-server mode, and `_session_summary`, `_diagnosis_summary`, `session_of`
-# and `is_task_result` in `assets/ui-sessions.js`. Change one side and the other must follow.
 def classify(obj: Any) -> str | None:
     """Identify a parsed JSON document by its shape, never by its filename.
 

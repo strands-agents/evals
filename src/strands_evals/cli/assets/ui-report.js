@@ -43,14 +43,18 @@ function clearReport() {
 
 /* ══════════ a report's rows, and what every view of them reads them with ══════════ */
 
-/** One row per case and evaluator of a report document. */
+/** One row per case and evaluator of a report document. A case with no name is numbered by its place
+    among the rows of its evaluator, so it has one name under each. */
 function reportRows(doc) {
+  const place = new Map();
   return (doc.cases || []).map((c, i) => {
     /* evaluate() returns a list of EvaluationOutput: a rubric judge has one per criterion. */
     const outputs = arrayOf((doc.detailed_results || [])[i]);
+    const at = place.get(c.evaluator) || 0;
+    place.set(c.evaluator, at + 1);
     return {
       i, case: c, evaluator: c.evaluator,
-      name: c.name != null ? String(c.name) : `#${i}`,
+      name: c.name != null ? String(c.name) : `#${at}`,
       score: (doc.scores || [])[i],
       pass: (doc.test_passes || [])[i],
       reason: (doc.reasons || [])[i] || '',

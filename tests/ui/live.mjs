@@ -1,4 +1,4 @@
-/* Keeping up with the folder: a served page asks whether the tree changed and re-reads what is open,
+/* Keeping up with the folder: the page asks whether the tree changed and re-reads what is open,
    without replacing work in progress. Against a fake server whose tree the test changes. */
 import { fakeServer, page, runner, tick } from './harness.mjs';
 
@@ -240,6 +240,23 @@ ok(input() === 'rewritten a third time', 'Rescan shows the open experiment as it
   await second();
   ok(early === 'v-reports /reports' && at() === 'v-report /reports/other.json' && p.text('#crumbs') === 'Reports/other.json',
     'of two reports asked for in a row the second is the one opened, whichever answers first', `${early} | ${at()}`);
+}
+
+// ── an optimizer run whose log arrives after the reader went elsewhere ──
+{
+  const run = dir => ({ id: dir, dir, run_id: dir, name: dir, events_path: `${dir}/events.jsonl`, config: {},
+    candidates: 0, iterations: 0, modified: 1, has_effects: false });
+  const runs = fakeServer({ scan: { optimizer_runs: [run('first'), run('second')] }, file: () => ({ events: [] }) });
+  const q = await page({ url: 'http://127.0.0.1:9999/optimization', fetchImpl: async (url, opts) => {
+    await slow.get(new URL(String(url), 'http://x').searchParams.get('path'));
+    return runs(url, opts);
+  } });
+  const release = hold('second/events.jsonl');
+  await q.click(q.$$('#opt-runs-rows tr[data-opt-run]')[1]);
+  await q.click('.tab[data-view="reports"]');
+  await release();
+  ok(`${q.view()} ${q.window.location.pathname}` === 'v-reports /reports',
+    'a run that loads late does not take the page back from where the reader went', `${q.view()} ${q.window.location.pathname}`);
 }
 
 // ── a tab nobody is looking at stays quiet, and catches up when it is looked at ──

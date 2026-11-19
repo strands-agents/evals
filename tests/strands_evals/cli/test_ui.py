@@ -2045,8 +2045,8 @@ def test_markdown_prints_a_score_too_large_for_two_decimals(client: Client):
     reply = client.send("GET", "/reports/big.json.md")
 
     assert reply.status == HTTPStatus.OK
-    assert "- Overall score: 1e+26\n" in reply.body
-    assert reply.body.endswith("| alpha | OutputEvaluator | 1e+26 | passed |\n")
+    assert "- Overall score: 100000000000000000000000000.00\n" in reply.body
+    assert reply.body.endswith("| alpha | OutputEvaluator | 100000000000000000000000000.00 | passed |\n")
 
 
 def test_markdown_says_when_a_file_is_nested_too_deeply_to_write(client: Client):
@@ -2059,6 +2059,124 @@ def test_markdown_says_when_a_file_is_nested_too_deeply_to_write(client: Client)
 
     assert reply.status == HTTPStatus.UNPROCESSABLE_ENTITY
     assert reply.body["error"].startswith(("deep.json is nested too deeply", "deep.json could not be parsed: "))
+
+
+# ── the server: Markdown of a document the page sends ──
+
+RENDER = "/api/markdown"
+LINKED = {"status": "verified", "detail": "all 2 report case(s) exist in this experiment"}
+FAILING = _report("alpha", "beta", failing=("beta",))
+
+
+@pytest.mark.parametrize(
+    "body,written",
+    [
+        (
+            {"kind": "report", "path": "tune · c3", "document": FAILING},
+            "# Report: tune · c3\n\n- Overall score: 0.50\n- Rows: 2 (1 passed, 1 failed, 0 not applicable)\n",
+        ),
+        (
+            {"kind": "report", "path": "r.json", "document": FAILING, "experiment": "e.json", "link": LINKED},
+            "- Experiment: e.json (verified: all 2 report case(s) exist in this experiment)\n",
+        ),
+        (
+            {"kind": "row", "row": 1, "document": FAILING, "report": "/served/r.json", "experiment": "/served/e.json"},
+            "# beta · OutputEvaluator\n\n- Score: 0.00\n- Verdict: failed\n- Label: no_match\n"
+            "- Report: `/served/r.json`\n- Experiment: `/served/e.json`\n",
+        ),
+        (
+            {"kind": "failing", "document": FAILING, "report": "/served/r.json", "command": "strands-evals run e"},
+            "This row fails in an evaluation report.",
+        ),
+        (
+            {"kind": "experiment", "path": "e.json", "document": _experiment("edited"), "reports": ["r.json"]},
+            "# Experiment: e.json\n\n- Cases: 1\n- Evaluators: 1\n- Reports: r.json\n",
+        ),
+        (
+            {"kind": "case", "index": 0, "document": {"name": "edited", "input": "q"}, "experiment": "/served/e.json"},
+            "# edited\n\n- Experiment: `/served/e.json`\n\nInput:\n\n```text\nq\n```\n",
+        ),
+        (
+            {"kind": "trace", "document": [{"role": "user", "content": "hi"}], "cost": "1 assistant message"},
+            "# Trace: 1 message\n\n1 assistant message\n\n## Message 1: user\n",
+        ),
+    ],
+    ids=[
+        "a report",
+        "a report with its pairing",
+        "one row",
+        "the failing rows",
+        "an experiment",
+        "one case",
+        "a trace",
+    ],
+)
+def test_a_document_the_page_holds_is_written_as_markdown(client: Client, body, written):
+    reply = client.send("POST", RENDER, body=body)
+
+    assert reply.status == HTTPStatus.OK
+    assert reply.headers["Content-Type"] == "text/markdown; charset=utf-8"
+    assert written in reply.body
+
+
+@pytest.mark.parametrize(
+    "body,message",
+    [
+        ({"kind": "poem", "document": {}}, "'kind' must be report, row, failing, experiment, case or trace"),
+        ({"document": FAILING}, "'kind' must be report, row, failing, experiment, case or trace"),
+        ({"kind": "report", "document": FAILING}, "'path' is missing or is not what a 'report' takes"),
+        (
+            {"kind": "report", "path": "r.json", "document": [1]},
+            "'document' is missing or is not what a 'report' takes",
+        ),
+        (
+            {"kind": "row", "row": True, "document": FAILING, "report": "r"},
+            "'row' is missing or is not what a 'row' takes",
+        ),
+        ({"kind": "row", "row": 2, "document": FAILING, "report": "r"}, "the report has no row 2"),
+        ({"kind": "case", "index": 0, "document": {}}, "'experiment' is missing or is not what a 'case' takes"),
+        ({"kind": "trace", "document": "text"}, "'document' is missing or is not what a 'trace' takes"),
+    ],
+    ids=[
+        "no such kind",
+        "no kind",
+        "no path",
+        "not a document",
+        "a row that is no number",
+        "no such row",
+        "no file",
+        "text",
+    ],
+)
+def test_a_render_request_that_does_not_say_what_to_write_is_refused(client: Client, body, message):
+    assert client.send("POST", RENDER, body=body) == _refused(HTTPStatus.BAD_REQUEST, message)
+
+
+def test_rendering_needs_the_token_and_writes_nothing(serve):
+    client = serve(read_only=True)
+    before = _snapshot(client.root)
+    body = {"kind": "report", "path": "r.json", "document": FAILING}
+
+    assert client.send("POST", RENDER, body=body, headers=WRONG_TOKEN) == _refused(
+        HTTPStatus.UNAUTHORIZED, TOKEN_REFUSAL
+    )
+    cookie_alone = {**NO_TOKEN, "Cookie": client.cookie}
+    assert client.send("POST", RENDER, body=body, headers=cookie_alone).status == HTTPStatus.UNAUTHORIZED
+    assert client.send("POST", RENDER, body=body, headers={"Host": "evil.example"}).status == HTTPStatus.FORBIDDEN
+    assert client.send("POST", RENDER, body=body).status == HTTPStatus.OK
+    assert client.send("POST", "/api/experiment?path=experiment.json", body=SAVE).status == HTTPStatus.NOT_FOUND
+    assert _snapshot(client.root) == before
+
+
+def test_rendering_says_when_a_document_is_nested_too_deeply_to_write(client: Client):
+    """Depth the reader takes on a Python that reads past its own recursion limit; elsewhere it is not JSON."""
+    failing = {"cases": [{"name": "a", "evaluator": "E", "input": "deep"}], "scores": [0], "test_passes": [False]}
+    body = json.dumps({"kind": "report", "path": "r.json", "document": failing})
+
+    reply = client.send("POST", RENDER, body=body.replace('"deep"', "[" * 5000 + "1" + "]" * 5000).encode())
+
+    assert reply.status in (HTTPStatus.UNPROCESSABLE_ENTITY, HTTPStatus.BAD_REQUEST)
+    assert reply.body["error"].startswith(("the document is nested too deeply", "body is not JSON: "))
 
 
 def test_llms_txt_describes_every_address_the_server_answers(client: Client):
@@ -2083,6 +2201,10 @@ def test_llms_txt_describes_every_address_the_server_answers(client: Client):
         "saves the experiment over the file it was read from. `modified` is the time `/api/file` gave; a file changed "
         "since is refused, and so is every save when the server was started with `--read-only`."
     ) in lines
+    assert any(
+        line.startswith('- `POST /api/markdown`: With a body of `{"kind": ..., "document": ...}`: ') for line in lines
+    )
+    assert "`POST /api/markdown` writes the same Markdown for a document sent to it" in reply.body
     for line in (
         "- `/reports/<report file>.md`: its figures, each failing row with its input, expected and actual output "
         "and the evaluator's reason, then every row",

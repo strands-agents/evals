@@ -10,48 +10,6 @@ let sesMeta = null, SES = null;              // the open session, or lone diagno
 let sesFound = [];                           // the diagnoses shown with it, as `{ meta, doc }`
 let sesMark = '';                            // what was on disk when it was read
 
-/* ══════════ reading a folder without the server ══════════
-   `sessionMeta`, `diagnosisMeta`, `sessionOf` and `isTaskResult` mirror `_session_summary`,
-   `_diagnosis_summary`, `session_of` and `is_task_result` in `_ui_discovery.py`. */
-
-const sessionMeta = obj => ({
-  session_id: obj.session_id, traces: sessionTraces(obj).length,
-  spans: sessionSpans(obj).length, seconds: traceStats(obj).seconds,
-});
-const diagnosisMeta = obj => ({
-  session_id: typeof obj.session_id === 'string' ? obj.session_id : null,
-  failures: (obj.failures || []).length, root_causes: (obj.root_causes || []).length,
-});
-
-/* The nearest session with the diagnosis's `session_id`. Two equally near are not guessed between. */
-function sessionOf(diagnosis, sessions) {
-  const named = sessions.filter(s => s.meta.obj.session_id === diagnosis.meta.obj.session_id);
-  const nearest = Math.min(...named.map(s => stepsApart(s.dir, diagnosis.dir)));
-  const closest = named.filter(s => stepsApart(s.dir, diagnosis.dir) === nearest);
-  return closest.length === 1 ? closest[0] : null;
-}
-
-/* One case's saved task output, as `LocalFileTaskResultStore` writes it, and how such a file opens. */
-const TASK_RESULT_HEAD = /^\s*\{\s*"input"\s*:/;
-const isTaskResult = obj => !!obj && typeof obj === 'object' && !Array.isArray(obj)
-  && ['input', 'actual_output', 'expected_output', 'actual_trajectory'].every(key => key in obj);
-
-/** The sessions and diagnoses among the files a folder read found, paired the way the server pairs them. */
-function sessionsFrom(found) {
-  const newest = kind => found.filter(f => f.kind === kind)
-    .sort((a, b) => b.meta.modified - a.meta.modified || (a.meta.path < b.meta.path ? -1 : 1));
-  const sessions = newest('session'), diagnosed = new Map();
-  const diagnoses = newest('diagnosis').map(d => {
-    const s = sessionOf(d, sessions);
-    if (s) diagnosed.set(s.meta.path, (diagnosed.get(s.meta.path) || []).concat(d.meta.path));
-    return Object.assign(d.meta, { dir: d.dir, session: s ? s.meta.path : null });
-  });
-  return {
-    sessions: sessions.map(s => Object.assign(s.meta, { dir: s.dir, diagnoses: diagnosed.get(s.meta.path) || [] })),
-    diagnoses,
-  };
-}
-
 /* ══════════ the list ══════════ */
 
 /* What the Sessions list holds: every session, then each diagnosis whose session is not in the folder. */
@@ -87,10 +45,9 @@ function renderSessions() {
         + diagnosisHolds(m)) + `</td>
         <td class="ev">${m.seconds == null ? '—' : secondsText(m.seconds)}</td>
         <td class="ev">${when(m.modified)}</td></tr>`).join('')
-    || blank('No sessions in this pond yet', (MODE === 'server' ? `No recorded session or diagnosis under ${esc(ROOT)}. `
-      : 'No recorded session or diagnosis among the files that were read. ')
-      + 'Save one with <code>strands-evals fetch ... -o FILE</code>'
-      + `${MODE === 'server' ? ', then Rescan' : ''}. ${docLink('cli/', 'empty-sessions', 'CLI reference')}`);
+    || blank('No sessions in this pond yet', `No recorded session or diagnosis under ${esc(ROOT)}. `
+      + 'Save one with <code>strands-evals fetch ... -o FILE</code>, then Rescan. '
+      + docLink('cli/', 'empty-sessions', 'CLI reference'));
   $('stores').innerHTML = STORES.length
     ? `<p class="stores">${STORES.length === 1 ? 'A task result store was' : `${STORES.length} task result stores were`} found: `
       + STORES.map(s => `<code>${esc(s.dir)}</code> holds ${plural(s.files, 'saved result')}`).join(', ')
@@ -98,7 +55,7 @@ function renderSessions() {
     : '';
 }
 
-/** Take what a scan or a folder read found. The lists are drawn here, since nothing else holds them. */
+/** Take what a scan found. The lists are drawn here, since nothing else holds them. */
 function setSessions(found) {
   SESSIONS = found.sessions || [];
   DIAGNOSES = found.diagnoses || [];
@@ -107,11 +64,6 @@ function setSessions(found) {
 }
 
 /* ══════════ one session ══════════ */
-
-function closeSession() {
-  sesMeta = SES = null;
-  sesFound = [];
-}
 
 function sessionHead() {
   const m = listed(sessionRows(), sesMeta);

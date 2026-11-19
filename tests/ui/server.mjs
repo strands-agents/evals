@@ -1,4 +1,4 @@
-/* Served mode against the real Python server: the page's requests go out over HTTP to
+/* One folder holding everything, against the real Python server: the page's requests go out over HTTP to
    `strands-evals ui`, so the contract is tested rather than a mock of it. */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -43,7 +43,7 @@ fs.writeFileSync(path.join(root, 'half-written.json'), '{"cases": [');
 fs.cpSync(new URL('./fixtures/optimizer-run/', import.meta.url).pathname, path.join(root, 'tuning'),
   { recursive: true });
 
-const { base, stop } = await realServer(root, TOKEN);
+const { base } = await realServer(root, TOKEN);
 // jsdom has no fetch: forward the page's relative requests to the real server.
 const requested = [];
 const forward = async (url, opts = {}) => { requested.push(String(url)); return fetch(base + url, opts); };
@@ -59,10 +59,9 @@ try {
   const { $, $$, text, click, type, window } = p;
 
   // ── mode, and the discovery the server did ──
-  ok(/served · saves to disk/.test(text('#mode-tag')) && text('.tab.on') === 'Reports',
-    'boots on Reports, in a mode that saves to disk', text('#mode-tag'));
+  ok($('#read-only').hidden && text('.tab.on') === 'Reports', 'boots on Reports, with nothing said of read-only', text('.tab.on'));
   ok(text('#root-path') === fs.realpathSync(root), 'shows the served directory', text('#root-path'));
-  ok(!$('[data-act="rescan"]').hidden && $('[data-act="pick"]').hidden, 'Rescan is offered in place of the folder picker');
+  ok(!$('[data-act="rescan"]').hidden, 'Rescan is offered');
 
   const found = $$('#reports-rows tr.row');
   ok(found.length === 1 && $$('#experiments-rows tr.row').length === 2
@@ -232,10 +231,10 @@ try {
   await waitFor(() => picking.$('#v-opt-overview').classList.contains('on'), 'the picked run to open');
   ok(/older-run/.test(picking.text('#crumbs')) && picking.window.location.pathname === '/optimization/older-tuning/overview',
     'picking another opens it and names it in the address', picking.window.location.pathname);
-  picking.window.history.back();
+  await picking.travel(-1);
   await waitFor(() => picking.$('#v-opt-runs').classList.contains('on'), 'Back to return to the list');
   ok(picking.window.location.pathname === '/optimization', 'and Back returns to the list of runs', picking.window.location.pathname);
-  picking.window.history.forward();
+  await picking.travel(1);
   await waitFor(() => picking.$('#v-opt-overview').classList.contains('on'), 'Forward to reopen the run');
 
   const linked = await served('/optimization/older-tuning/overview');
@@ -247,7 +246,7 @@ try {
   await linked.click('.tab[data-view="opt-runs"]');
   await linked.click(linked.$$('#opt-runs-rows tr[data-opt-run]').find(r => /support-tuning/.test(r.textContent)));
   await waitFor(() => /support-tuning/.test(linked.text('#crumbs')), 'the other run to open');
-  linked.window.history.go(-2);
+  await linked.travel(-2);
   await waitFor(() => /older-run/.test(linked.text('#crumbs')), 'Back to reopen the run the address names');
   ok(linked.window.location.pathname === '/optimization/older-tuning/overview', 'Back to a run\'s address reopens that run',
     linked.window.location.pathname);
@@ -282,6 +281,5 @@ try {
 
   done();
 } finally {
-  stop();
   fs.rmSync(root, { recursive: true, force: true });
 }

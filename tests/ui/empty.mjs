@@ -1,6 +1,6 @@
 /* What the page says when there is nothing to show: an address that names something that is not
    there, a list or a view with nothing in it, a file that will not load. Each says why, under the frog. */
-import { page, fakeServer, runner } from './harness.mjs';
+import { SAMPLE, fakeServer, page, runner, served } from './harness.mjs';
 
 const { ok, done } = runner('empty');
 
@@ -12,63 +12,63 @@ const GONE = 'It may have been deleted, renamed or moved, or the link may be fro
 const frog = (p, within) => !!p.$(`${within} .nores > svg.frog[aria-hidden="true"]:first-child + b`);
 const marked = p => p.$$('.sections .tab.on').map(t => t.textContent).join();
 const ways = p => p.$$('#missing .ways a').map(a => `${a.textContent} ${a.getAttribute('href')}`);
-const follow = (p, route) => p.follow(route);
+const here = p => p.window.location.pathname + p.window.location.search;
 const way = (p, label) => p.$$('.ways a').find(a => a.textContent === label);
 
-// ── an address that names something that is not there: the bundled sample, with no server ──
+// ── an address that names something that is not there, in a folder of one experiment and its report ──
 for (const [route, tab, text, links, what] of [
   ['/nope/at/all', '',
     'This lily pad is emptyNo page lives at /nope/at/all. The address may be mistyped, or from an older version of this page.',
-    ['All reports #/reports', 'All experiments #/experiments'], 'an address the page does not have'],
+    ['All reports /reports', 'All experiments /experiments'], 'an address the page does not have'],
   ['/reports/gone.json', 'Reports', `That report hopped awayNo report named gone.json is in this folder. ${GONE}`,
-    ['All reports #/reports'], 'a report that is not in the folder'],
+    ['All reports /reports'], 'a report that is not in the folder'],
   ['/experiments/deep/gone.json', 'Experiments', `That experiment hopped awayNo experiment named deep/gone.json is in this folder. ${GONE}`,
-    ['All experiments #/experiments'], 'an experiment that is not'],
+    ['All experiments /experiments'], 'an experiment that is not'],
   ['/sessions/gone.json', 'Sessions', `That session hopped awayNo session named gone.json is in this folder. ${GONE}`,
-    ['All sessions #/sessions'], 'a session that is not'],
+    ['All sessions /sessions'], 'a session that is not'],
   ['/experiments/report.json', 'Experiments', 'Wrong lily padreport.json is a report, not an experiment.',
-    ['Open it under Reports #/reports/report.json', 'All experiments #/experiments'], 'a file of another kind than the address says'],
+    ['Open it under Reports /reports/report.json', 'All experiments /experiments'], 'a file of another kind than the address says'],
   ['/experiments/experiment.json/cases/no%20such%20case', 'Experiments',
     'No such case in this pondExperiment experiment.json has no case named no such case. It may have been renamed or deleted.',
-    ['Open the experiment #/experiments/experiment.json', 'All experiments #/experiments'], 'a case the experiment does not hold'],
+    ['Open the experiment /experiments/experiment.json', 'All experiments /experiments'], 'a case the experiment does not hold'],
   ['/experiments/experiment.json/cases/%E0%A4%A', 'Experiments',
     'No such case in this pondExperiment experiment.json has no case named %E0%A4%A. It may have been renamed or deleted.',
-    ['Open the experiment #/experiments/experiment.json', 'All experiments #/experiments'], 'a case named by a malformed escape'],
+    ['Open the experiment /experiments/experiment.json', 'All experiments /experiments'], 'a case named by a malformed escape'],
   ['/reports/report.json/rows/nobody/Judge', 'Reports',
     'No such row in this pondReport report.json has no row for case nobody and evaluator Judge. The report may have been written again since.',
-    ['Open the report #/reports/report.json', 'All reports #/reports'], 'a row the report does not hold'],
+    ['Open the report /reports/report.json', 'All reports /reports'], 'a row the report does not hold'],
   ['/reports/compare?r=report.json&r=gone.json', 'Reports',
     `That report hopped awayThis comparison names gone.json, which is not in this folder. ${GONE}`,
-    ['All reports #/reports'], 'a comparison naming a report that is not in the folder'],
+    ['All reports /reports'], 'a comparison naming a report that is not in the folder'],
   ['/optimization/tuning/overview', 'Runs', `That run hopped awayNo optimizer run is at tuning in this folder. ${GONE}`,
-    ['All reports #/reports'], 'an optimizer run in a folder that has none'],
+    ['All reports /reports'], 'an optimizer run in a folder that has none'],
 ]) {
-  const p = await page({ url: `http://127.0.0.1:9999/#${route}` });
-  eq([p.view(), p.window.location.hash, p.text('#missing .nores'), ways(p), marked(p), frog(p, '#missing')],
-    ['v-missing', '#' + route, text + links.map(l => l.split(' #')[0]).join(''), links, tab, true],
+  const p = await served(SAMPLE, { route });
+  eq([p.view(), here(p), p.text('#missing .nores'), ways(p), marked(p), frog(p, '#missing')],
+    ['v-missing', route, text + links.map(l => l.split(' /')[0]).join(''), links, tab, true],
     `${route}: ${what} says so under the frog, keeps its address and marks the list it would be in`);
   ok(p.$('#pagehead').hidden && p.$('#folder').hidden, `${route}: with no page header and no folder bar`, p.$('#pagehead').hidden);
 }
 
 // ── what was asked for comes from the address, so it is shown as text ──
 {
-  const p = await page({ url: 'http://127.0.0.1:9999/#/reports/%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E.json' });
+  const p = await served(SAMPLE, { route: '/reports/%3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E.json' });
   ok(p.text('#missing code') === '<img src=x onerror=alert(1)>.json' && !p.$('#missing img'),
     'a name in the address is shown as it was written, not as markup', p.$('#missing').innerHTML.slice(0, 200));
 }
 
 // ── the ways out are steps Back can undo ──
 {
-  const p = await page({ url: 'http://127.0.0.1:9999/#/experiments/report.json' });
+  const p = await served(SAMPLE, { route: '/experiments/report.json' });
   await p.click(way(p, 'Open it under Reports'));
-  eq([p.view(), p.window.location.hash, p.text('#crumbs')], ['v-report', '#/reports/report.json', 'Reports/report.json'],
+  eq([p.view(), here(p), p.text('#crumbs')], ['v-report', '/reports/report.json', 'Reports/report.json'],
     'a way out of a not-found page opens what it names, at its address');
   await p.travel(-1);
-  eq([p.view(), p.window.location.hash, p.text('#missing b')], ['v-missing', '#/experiments/report.json', 'Wrong lily pad'],
+  eq([p.view(), here(p), p.text('#missing b')], ['v-missing', '/experiments/report.json', 'Wrong lily pad'],
     'and Back returns to the page that said it was not found');
   await p.click('.tab[data-view="reports"]');
-  eq([p.view(), p.window.location.hash], ['v-reports', '#/reports'], 'the sidebar leaves it as it leaves any page');
-  await follow(p, '/experiments/experiment.json/cases/order_status_lookup');
+  eq([p.view(), here(p)], ['v-reports', '/reports'], 'the sidebar leaves it as it leaves any page');
+  await p.visit('/experiments/experiment.json/cases/order_status_lookup');
   eq([p.view(), p.text('#case-list li.on .nm')], ['v-experiment', 'order_status_lookup'],
     'and an address that names something that is there opens it from a not-found page');
 }
@@ -83,37 +83,35 @@ const RUN = {
     { event: 'iteration_end', iteration: 1, record: { iteration: 1, proposals: [{ candidate_id: 'c1', number: 1, outcome: 'unscored', objective: null }], rollouts_spent: 0 } }]),
 };
 {
-  const p = await page();
-  await p.openFolder(RUN);
+  const p = await served(RUN);
   for (const [route, text, links, what] of [
     ['/optimization/r/bogus', 'That run hopped awayNo optimizer run is at r/bogus in this folder. Did you mean run tune-1?',
-      ['Open tune-1 #/optimization/r/overview', 'All optimizer runs #/optimization'], 'a view the run does not have'],
+      ['Open tune-1 /optimization/r/overview', 'All optimizer runs /optimization'], 'a view the run does not have'],
     ['/optimization/elsewhere/overview', `That run hopped awayNo optimizer run is at elsewhere in this folder. ${GONE}`,
-      ['All optimizer runs #/optimization'], 'a run that is not in the folder'],
+      ['All optimizer runs /optimization'], 'a run that is not in the folder'],
     ['/optimization/r/candidates/c9', 'That candidate hopped awayRun tune-1 has no candidate named c9. The link may be from another run.',
-      ['Candidates of this run #/optimization/r/candidates', 'All optimizer runs #/optimization'], 'a candidate the run does not hold'],
+      ['Candidates of this run /optimization/r/candidates', 'All optimizer runs /optimization'], 'a candidate the run does not hold'],
     ['/optimization/r/candidates/c1/report',
       'Nothing to report from this lily padCandidate c1 of run tune-1 recorded no trial, so it has no cases to show as a report.',
-      ['Open the candidate #/optimization/r/candidates/c1', 'Candidates of this run #/optimization/r/candidates'],
+      ['Open the candidate /optimization/r/candidates/c1', 'Candidates of this run /optimization/r/candidates'],
       'the report of a candidate that ran no case'],
   ]) {
-    await follow(p, route);
-    eq([p.view(), p.window.location.hash, p.text('#missing .nores'), ways(p), marked(p)],
-      ['v-missing', '#' + route, text + links.map(l => l.split(' #')[0]).join(''), links, 'Runs'],
+    await p.visit(route);
+    eq([p.view(), here(p), p.text('#missing .nores'), ways(p), marked(p)],
+      ['v-missing', route, text + links.map(l => l.split(' /')[0]).join(''), links, 'Runs'],
       `${route}: ${what} says so, under Optimization`);
   }
   await p.click(way(p, 'Open the candidate'));
-  eq([p.view(), p.window.location.hash, p.$('#opt-cands tr.case').getAttribute('aria-expanded')],
-    ['v-opt-candidates', '#/optimization/r/candidates/c1', 'true'], 'and the way to the candidate opens its row');
-  await follow(p, '/optimization/r');
-  eq([p.view(), p.window.location.hash], ['v-opt-overview', '#/optimization/r/overview'],
+  eq([p.view(), here(p), p.$('#opt-cands tr.case').getAttribute('aria-expanded')],
+    ['v-opt-candidates', '/optimization/r/candidates/c1', 'true'], 'and the way to the candidate opens its row');
+  await p.visit('/optimization/r');
+  eq([p.view(), here(p)], ['v-opt-overview', '/optimization/r/overview'],
     'the address of a run with no view named opens its Overview');
 }
 
 // ── a run with nothing in it yet ──
 {
-  const p = await page();
-  await p.openFolder({ 'r/run.json': { run_id: 'fresh', objective: 'Quality' }, 'r/events.jsonl': jsonl([START]) });
+  const p = await served({ 'r/run.json': { run_id: 'fresh', objective: 'Quality' }, 'r/events.jsonl': jsonl([START]) });
   await p.click('#opt-runs-rows tr');
   const blank = view => [p.$(`#v-${view}`).classList.contains('blank'), p.text(`#v-${view} .optnone`)];
   eq([p.text('#opt-result'), frog(p, '#opt-result')],
@@ -132,20 +130,20 @@ const RUN = {
       + 'Progress charts it by candidate.', true], 'Trade-off says a run with one goal has none');
   eq(blank('opt-setup'), [false, ''], 'and Setup, which has a run.json to show, is drawn');
 
-  await p.openFolder(RUN);
+  for (const [file, held] of Object.entries(RUN)) p.write(file, held);
+  await p.click('[data-act="rescan"]');
   eq([blank('opt-progress'), blank('opt-candidates')], [[false, ''], [false, '']],
     'a run that has proposed a candidate draws its views again');
 }
 {
-  const p = await page();
-  await p.openFolder({ 'r/run.json': {}, 'r/events.jsonl': jsonl([START]) });
+  const p = await served({ 'r/run.json': {}, 'r/events.jsonl': jsonl([START]) });
   await p.click('#opt-runs-rows tr');
   eq([p.$('#v-opt-setup').classList.contains('blank'), p.text('#v-opt-setup .optnone'), frog(p, '#v-opt-setup .optnone')],
     [true, 'No setup on this lily padThis run’s run.json is empty, so there is no record of what the run was told to do.', true],
     'a run whose run.json is empty says there is no setup to show');
 }
 
-// ── a run whose log cannot be read, served ──
+// ── a run whose log cannot be read ──
 {
   const run = { id: 'tuning', dir: 'tuning', run_id: 'tune-2', name: 'tune-2', events_path: 'tuning/events.jsonl', config: {},
     candidates: 0, iterations: 0, modified: 1, has_effects: false };
@@ -179,21 +177,10 @@ const RUN = {
       + 'events.jsonl beside it.', true, true],
     'the address of the runs list in a folder with no run shows it empty, and says what a run is');
 }
-{
-  const p = await page({ url: 'http://127.0.0.1:9999/#/sessions' });
-  eq([p.view(), p.text('#sessions-rows'), frog(p, '#sessions-rows')],
-    ['v-sessions', 'No sessions in this pond yetNo recorded session or diagnosis among the files that were read. '
-      + 'Save one with strands-evals fetch ... -o FILE. CLI reference', true],
-    'with no server, the list of sessions says the same of the files it read');
-  await p.openFolder({});
-  eq(p.text('#reports-rows'), 'No reports in this pond yetOpen a folder to look for experiments and reports.',
-    'and a folder with nothing in it says to open another');
-}
 
 // ── a report with no rows, an experiment with no cases ──
 {
-  const p = await page();
-  await p.openFolder({
+  const p = await served({
     'run/experiment.json': { cases: [], evaluators: [] },
     'run/report.json': { overall_score: 0, scores: [], cases: [], test_passes: [] },
   });
@@ -208,7 +195,7 @@ const RUN = {
     'and an experiment with no cases says how to add one');
 }
 {
-  const p = await page({ url: 'http://127.0.0.1:9999/#/reports/report.json' });
+  const p = await served(SAMPLE, { route: '/reports/report.json' });
   await p.type('#rep-find', 'no row says this');
   ok(p.text('#rep-rows') === 'No rows match' && !p.$('#rep-rows .frog'),
     'a search that matches nothing is not an empty report', p.text('#rep-rows'));
@@ -233,7 +220,7 @@ const RUN = {
   eq([p.view(), p.window.location.pathname, p.text('#missing .nores'), frog(p, '#missing'), marked(p)],
     ['v-missing', '/reports/bad.json', 'This one would not surfacebad.json could not be read: bad.json is not a reportAll reports', true, 'Reports'],
     'a report that will not load says why on a page of its own, at the report’s address');
-  ok(way(p, 'All reports').getAttribute('href') === '/reports', 'served, its way out is a path', way(p, 'All reports').getAttribute('href'));
+  ok(way(p, 'All reports').getAttribute('href') === '/reports', 'its way out is a path', way(p, 'All reports').getAttribute('href'));
   await p.travel(-1);
   eq([p.view(), p.window.location.pathname], ['v-reports', '/reports'], 'and Back returns to the list');
   await p.travel(1);
@@ -255,7 +242,7 @@ const RUN = {
     'and is opened at the same address when a later scan finds it');
 }
 
-// ── served, an address the page does not have ──
+// ── an address the page does not have ──
 {
   const p = await page({ fetchImpl: fakeServer(), url: 'http://127.0.0.1:9999/nope' });
   eq([p.view(), p.window.location.pathname, p.text('#missing b'), ways(p)],

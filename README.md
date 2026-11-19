@@ -200,6 +200,7 @@ the page shows without a browser:
 | `/experiments/<experiment file>.md` | The experiment as Markdown: its evaluators with their settings, then every case. |
 | `/sessions/<session file>.md` | The session as Markdown: what it recorded, each diagnosis made of it, then every span of every trace. A diagnosis file is read the same way. |
 | `/reports/<report file>.json`, `/experiments/<experiment file>.json`, `/sessions/<session file>.json` | The file's document. |
+| `POST /api/markdown` | The Markdown of a document sent to it, or of one row, one case, the failing rows or a trace of one. The page uses it for what has no file of its own. |
 | `/llms.txt` | What the server answers: these addresses, the `/api` routes and how the token is sent. |
 
 These need the token itself, as the `X-Evals-Token` header or as `?t=<token>`; the page's cookie does not
@@ -209,7 +210,8 @@ A page address asked for by something that is not a browser (no `text/html` in i
 
 In the Markdown, a value longer than 4,000 characters is cut, with a line saying how much was left out; the
 `.json` form has all of it. A report writes each failing row in full, a case that fails under several
-evaluators once, and one table line per row. A session's Markdown is the whole transcript.
+evaluators once, and one table line per row. Every row and every span is written, however many there are, and
+a diagnosis is written whole.
 
 `/api/scan` and `ui --list --json` give the same listing. Its `schema_version` is `1`, and moves when a field
 is renamed, removed or changes meaning:
@@ -267,8 +269,10 @@ Limits of `ui`:
 - The check for changes stats every file the scan lists each time the page asks, every few seconds, with no
   cap. On a folder of tens of thousands of files that takes a noticeable part of a second each time.
 - Each `.md` request scans the whole folder, to find what the file is paired with.
-- A comparison, a candidate's report, an optimizer result and the failing-rows prompt are copied from the
-  page only. They have no `.md` address.
+- The page works only when `strands-evals ui` serves it. Opened from disk, it says how to start the server.
+- A comparison, an optimizer result and a candidate are written by the page and copied from it. They have no
+  `.md` address. Neither do a candidate's report and the failing-rows prompt, which the server writes from
+  what the page sends to `POST /api/markdown`.
 - A document nested hundreds of levels deep is listed, but is not written as Markdown (`.md` answers `422`),
   and `--list --json` prints it on one line.
 - Save refuses a file whose modified time differs from the one it was loaded with, and two saves through one

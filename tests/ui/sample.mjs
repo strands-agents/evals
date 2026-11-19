@@ -1,15 +1,15 @@
-/* Standalone mode: the page opened with no server behind it. */
-import { page, runner } from './harness.mjs';
+/* The page from end to end over one experiment and its report: the lists, a report, the cases editor and Save. */
+import { SAMPLE, page, runner, served } from './harness.mjs';
 
-const { ok, done } = runner('standalone');
-const { $, $$, text, click, type, saved, openFolder, openExperiment, openReport, view: on } = await page();   // no fetch, so /api/config fails
+const { ok, done } = runner('sample');
+const sample = await served(SAMPLE);
+const { $, $$, text, click, type, saved, openExperiment, openReport, view: on } = sample;
 const caseCount = () => $$('#case-list li[data-i]').length;
 
-// ── boot: the bundled sample ──
+// ── boot ──
 ok(text('.tab.on') === 'Reports' && $$('.view.on').length === 1, 'lands on Reports, the one view showing', text('.tab.on'));
-ok(/standalone.*download/.test(text('#mode-tag')), 'the mode tag says standalone, and that saves download', text('#mode-tag'));
-ok($('[data-act="rescan"]').hidden && !$('[data-act="pick"]').hidden, 'Open folder is offered in place of Rescan');
-ok(/sample/.test(text('#reports-sub')), 'and the page says it is showing its sample', text('#reports-sub'));
+ok(text('#root-path') === sample.root && $('#read-only').hidden && !$('[data-act="rescan"]').hidden,
+  'over the folder being served, which can be read again, with nothing said of read-only', text('#root-path'));
 
 const report = text('#reports-rows'), experiment = text('#experiments-rows');
 ok($$('#reports-rows tr.row').length === 1 && /0\.92/.test(report) && /5 failing/.test(report)
@@ -38,11 +38,8 @@ await openExperiment();
 
 // ── evaluators and their settings ──
 const chips = () => $$('#evs .evchip').map(c => [...c.children].map(el => el.textContent).join(' '));
-ok(chips().join(' | ') === 'OutputEvaluator | ToolTrajectoryEvaluator threshold=0.9 | support_rubric RubricEvaluator',
-  'a chip shows the name or else the class, the class beside a name, and any settings', chips().join(' | '));
-// Only the server can check an evaluator against the registry.
-ok(text('#evnotes') === '', 'with no verdict on any of them without a server', text('#evnotes'));
-
+ok(chips().join(' | ') === 'OutputEvaluator will not load | ToolTrajectoryEvaluator threshold=0.9 custom | support_rubric RubricEvaluator custom',
+  'a chip shows the name or else the class, the class beside a name, any settings, and what the server made of it', chips().join(' | '));
 await click('#evs .evchip');
 ok($('#evform').hidden === false, 'clicking a chip opens its settings');
 await click('[data-evclose]');
@@ -59,11 +56,11 @@ const before = caseCount();
 await click('#add-case');
 ok(caseCount() === before + 1 && !$('#save').disabled, 'a new case joins the list, unsaved', caseCount());
 await click('#save');
-ok(/has no input/.test(text('#saved')) && await saved() === null, 'Save refuses a case with no input', text('#saved'));
+ok(/has no input/.test(text('#saved')) && saved() === null, 'Save refuses a case with no input', text('#saved'));
 await type('#form [data-k="input"]', 'a brand new question');
 await click('#save');
-ok((await saved()).cases[before].input === 'a brand new question' && text('#dirty') === 'No unsaved changes',
-  'and downloads the file once it has one', text('#saved'));
+ok(saved().cases[before].input === 'a brand new question' && text('#dirty') === 'No unsaved changes',
+  'and writes the file once it has one', text('#saved'));
 await click('#del-case');
 ok(caseCount() === before, 'Delete removes the case', caseCount());
 
@@ -74,8 +71,9 @@ await click('#save');
 ok(/two cases are named/.test(text('#saved')), 'Save refuses two cases of one name', text('#saved'));
 await click('#revert');
 
-// ── an opened folder, and trajectories that are not lists of strings ──
-await openFolder({
+// ── a folder with no report, and trajectories that are not lists of strings ──
+{
+  const { $, $$, text, click, openExperiment, view: on } = await served({
   'tree/experiment.json': {
     cases: [
       { name: 'dicts', session_id: 'sid-1', input: 'hi',
@@ -87,17 +85,28 @@ await openFolder({
     evaluators: [{ evaluator_type: 'ToolTrajectoryEvaluator' }],
   },
 });
-ok($$('#experiments-rows tr.row').length === 1 && !$('#reports-rows tr.row') && /folder you opened/.test(text('#experiments-sub'))
-  && on() === 'v-experiments' && caseCount() === 0,
-'an opened folder replaces the sample, and with no reports in it the page opens on its experiments', text('#experiments-sub'));
-await openExperiment();
-const trajectory = () => text('[aria-labelledby="label-expected_trajectory"]');
-ok(caseCount() === 3 && /search\(q="rome"\)/.test(trajectory()) && /reply\(\)/.test(trajectory()),
-  'a recorded call reads as its name and arguments, not [object Object]', trajectory());
-await click($$('#case-list li[data-i]')[1]);
-ok(/session_id/.test(trajectory()), 'a Session trajectory is shown as JSON, not reported as absent', trajectory());
-await click($$('#case-list li[data-i]')[2]);
-ok($$('#form .chips .chip').length === 2 && !!$('#form .chips .addchip'), 'a list of tool names is chips that can be added to',
-  $$('#form .chips .chip').length);
+  const caseCount = () => $$('#case-list li[data-i]').length;
+  ok($$('#experiments-rows tr.row').length === 1 && !$('#reports-rows tr.row') && on() === 'v-experiments' && caseCount() === 0,
+    'with no reports in the folder the page opens on its experiments', on());
+  await openExperiment();
+  const trajectory = () => text('[aria-labelledby="label-expected_trajectory"]');
+  ok(caseCount() === 3 && /search\(q="rome"\)/.test(trajectory()) && /reply\(\)/.test(trajectory()),
+    'a recorded call reads as its name and arguments, not [object Object]', trajectory());
+  await click($$('#case-list li[data-i]')[1]);
+  ok(/session_id/.test(trajectory()), 'a Session trajectory is shown as JSON, not reported as absent', trajectory());
+  await click($$('#case-list li[data-i]')[2]);
+  ok($$('#form .chips .chip').length === 2 && !!$('#form .chips .addchip'), 'a list of tool names is chips that can be added to',
+    $$('#form .chips .chip').length);
+
+}
+
+// ── opened without its server ──
+{
+  const lone = await page();
+  ok(lone.view() === 'v-missing' && lone.text('#missing') === 'No pond to look inThis page is served by strands-evals ui, and nothing is '
+    + 'answering it. Run strands-evals ui FOLDER and open the link it prints.' && !!lone.$('#missing svg.frog'),
+  'a page with no server behind it says how to start one', lone.text('#missing'));
+  ok(lone.$('.app').classList.contains('unserved') && !lone.$('#reports-rows tr.row'), 'and shows nothing else');
+}
 
 done();

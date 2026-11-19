@@ -1,7 +1,7 @@
 /* The Optimization section: Runs, Setup, Overview, Progress, Candidates, Tunables, Trade-off.
    Driven from the generated fixture run, variants of it, and small logs written inline. */
 import fs from 'node:fs';
-import { page, runner, tick } from './harness.mjs';
+import { SAMPLE, page, runner, served, tick } from './harness.mjs';
 
 const { ok, done } = runner('optimization');
 
@@ -31,8 +31,7 @@ const configWith = change => { const c = structuredClone(CONFIG); change(c); ret
 const go = (q, tab) => q.click(`.tab[data-view="opt-${tab}"]`);
 
 async function open(files, tab) {
-  const q = await page();
-  await q.openFolder(files);
+  const q = await served(files);
   if (tab) await go(q, tab);
   return q;
 }
@@ -127,15 +126,16 @@ const blockDiff = root => {
 
 /* ══════════ the fixture run ══════════ */
 
-const p = await page();
-const { $, $$, text, click } = p;
-
 // ── section visibility ──
-ok($('#sec-opt').hidden && $$('.tab[data-sec="optimization"]').every(t => t.hidden)
-  && $('#sections').classList.contains('lonely'), 'with no optimizer run the section and its tabs are hidden');
-await p.openFolder({
+{
+  const none = await served(SAMPLE);
+  ok(none.$('#sec-opt').hidden && none.$$('.tab[data-sec="optimization"]').every(t => t.hidden)
+    && none.$('#sections').classList.contains('lonely'), 'with no optimizer run the section and its tabs are hidden');
+}
+const p = await served({
   'demo/run.json': CONFIG, 'demo/events.jsonl': jsonl(EVENTS), 'demo/effects.json': EFFECTS, ...TRANSCRIPTS,
 });
+const { $, $$, text, click } = p;
 ok(!$('#sec-opt').hidden && !$('#sections').classList.contains('lonely'), 'a run directory shows the section');
 eq($$('#sections .tab:not([hidden])').map(t => t.dataset.view).join(), 'reports,experiments,opt-runs',
   'and the sidebar gains Runs, beside the two lists of Evals');
@@ -319,7 +319,7 @@ await click('#opt-winner [data-act="copy-winner"]');
 ok(text('#opt-copied') === 'copied 4 settings' && same(JSON.parse(copied), champion),
   'copy hands over the whole champion configuration, inherited settings included', copied);
 await click('#opt-winner [data-act="save-winner"]');
-ok(p.window.__downloads.at(-1) === 'champion.json' && same(await p.saved(), champion),
+ok(p.window.__downloads.at(-1) === 'champion.json' && same(await p.downloaded(), champion),
   'download offers the same document as champion.json', p.window.__downloads.join());
 delete p.window.navigator.clipboard;
 await click('#opt-winner [data-act="copy-winner"]');
@@ -512,8 +512,8 @@ ok(!$('#opt-cands tr.tdetail'), 'a second click closes the trial');
 
 // ── Candidates: trials with no transcript, a failure, an evaluator error ──
 await openTrial(p, 'c6', 'val_case_02');
-has(panel(p).Transcript, /transcripts\/4ed70e0cfecb415b\.json was not among the files read from the opened folder/,
-  'a pointer whose file the folder did not hold names that file');
+has(panel(p).Transcript, /the log points at demo\/transcripts\/4ed70e0cfecb415b\.json ?, which is not in the run directory/,
+  'a pointer whose file the run directory does not hold names that file');
 await openTrial(p, 'c2', 'train_case_05');
 eq(['Ended as', 'Attempts', 'Output', 'Transcript'].map(k => panel(p)[k]),
   ['agent_failure ToolError the refund tool timed out', '2, earlier: agent_failure', 'none recorded',
@@ -663,11 +663,11 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
   await candidate(h);
   const showing = () => `${h.text('#rep-count')} ${h.text('#crumbs').startsWith('Runs') ? 'candidate' : 'own'}`;
   const travel = async delta => { await h.travel(delta); return `${h.$('.view.on').id} ${showing()}`; };
-  eq(h.window.location.hash, '#/optimization/demo/candidates/c10/report', 'a candidate on the report page is named in the address');
+  eq(h.window.location.pathname, '/optimization/demo/candidates/c10/report', 'a candidate on the report page is named in the address');
   eq([await travel(-2), await travel(2)], ['v-report 2 of 2 rows own', 'v-report 15 of 15 rows candidate'],
     'Back to the folder\'s report shows that report, and Forward brings the candidate\'s cases back');
   const reopened = await openFixture({ files: { ...experiment, ...report } });
-  await reopened.follow(h.window.location.hash.slice(1));
+  await reopened.visit(h.window.location.pathname);
   eq([`${reopened.$('.view.on').id} ${reopened.text('#rep-count')}`, reopened.text('#crumbs')],
     ['v-report 15 of 15 rows', `Runs/${RUN_ID}/Candidates/c10`], 'and the address alone reopens them');
   await q2.click('#crumbs [data-go="opt-candidates"]');
@@ -719,7 +719,7 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
   await q.click(q.$$('#opt-runs-rows tr[data-opt-run]')[1]);
   ok(q.text('#crumbs') === 'Runs/second-run' && q.$('#v-opt-overview').classList.contains('on')
     && same(on(), [false, true]), 'picking the other run opens its Overview and moves the mark', q.text('#crumbs'));
-  eq(q.window.location.hash, '#/optimization/b/overview', 'and the address names that run by its directory');
+  eq(q.window.location.pathname, '/optimization/b/overview', 'and the address names that run by its directory');
   await go(q, 'candidates');
   await openCand(q, 'c0');
   await go(q, 'runs');
@@ -1234,7 +1234,7 @@ const TWO_GOALS = 'Pareto(Maximize(Quality), Minimize(tokens))';
     'one goal still gets the plot, with no goal picker', texts(oneGoal, '#opt-eff-chart .eff-row text.tick').join());
 }
 
-// ── served: the run's files are read on request ──
+// ── the run's files are read on request ──
 {
   const trial = EVENTS.find(e => e.event === 'trial' && e.record.candidate_id === 'c10' && e.record.case_name === 'train_case_01');
   const transcript = `demo/transcripts/${trial.record.transcript.hash}.json`;

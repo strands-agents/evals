@@ -1,6 +1,6 @@
 /* What the page hands a coding agent: Markdown for what is open, the path and the command that go
-   with it, and an address for one report row or one candidate. The server writes a report, an
-   experiment and a session as Markdown too, so the two are run over the same files here and compared. */
+   with it, and an address for one report row or one candidate. The server writes the Markdown of a
+   report, an experiment and a session, so the page is run over a real one. */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -88,7 +88,7 @@ const DIAGNOSIS = {
   root_causes: [{ failure_span_id: 'tool', location: 'model', root_cause_explanation: 'No limit is described.', fix_recommendation: 'Describe one.' }],
 };
 const LOST = { session_id: 's-gone', failures: [{ span_id: 'x', category: ['loop'] }], root_causes: [] };
-/* Written as text: keys out of JavaScript's order and numbers JSON.stringify would have rewritten. */
+/* Written as text: keys and numbers a browser would reorder and rewrite, which the Markdown must not. */
 const NUMBERS = '{"b": 1.0, "10": 2, "2": [1e21, 1e-7, 0.30000000000000004, 12345678901234567890, true, null, "é \\u0001 \\" \\\\"], "empty": {}, "none": []}';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ui-markdown-'));
@@ -118,7 +118,7 @@ write('sessions/lost.diagnosis.json', JSON.stringify(LOST));
 fs.cpSync(new URL('./fixtures/optimizer-run/', import.meta.url).pathname, path.join(root, 'tuning'), { recursive: true });
 const ROOT = fs.realpathSync(root);
 
-const { base, stop } = await realServer(root, TOKEN);
+const { base } = await realServer(root, TOKEN);
 const fromServer = async address => (await fetch(base + address, { headers: { 'X-Evals-Token': TOKEN } })).text();
 
 /* A page whose clipboard is the test's: `copy` clicks a button and returns what it put there. */
@@ -346,7 +346,7 @@ Tool result:
 [
  1,
  {
-  "a": 2
+  "a": 2.0
  }
 ]
 \`\`\`
@@ -432,7 +432,7 @@ try {
 
   const copied = await p.copy('#actions [data-md="report"]');
   is(p.text('#actions [data-md="report"]'), 'Copied', 'the button says it copied');
-  is(copied, await fromServer('/reports/support/support.report.json.md'), 'the page and the server write the same Markdown for a report');
+  is(copied, await fromServer('/reports/support/support.report.json.md'), 'which is what the report’s address serves with .md added');
   is(copied.split('\n## ')[0], `# Report: support/support.report.json
 
 - Overall score: 0.38
@@ -484,17 +484,17 @@ Input:
 
 \`\`\`json
 {
+  "b": 1.0,
+  "10": 2,
   "2": [
     1e+21,
-    1e-7,
+    1e-07,
     0.30000000000000004,
-    12345678901234567000,
+    12345678901234567890,
     true,
     null,
     "é \\u0001 \\" \\\\"
   ],
-  "10": 2,
-  "b": 1,
   "empty": {},
   "none": []
 }
@@ -525,7 +525,7 @@ Expected interactions:
 | #1 | Equals | 1.00 | passed |
 | declined | (unnamed) | 1.00 | not applicable |
 | unjudged | Equals | none | failed |
-`), 'structured values print as the page prints them, and every row is in one table at the end, a pipe in a name escaped and a row with no name numbered', copied.slice(-1600));
+`), 'a structured value keeps its keys in order and its numbers as written, and every row is in one table at the end, a pipe in a name escaped and a row with no name numbered', copied.slice(-1600));
   ok(!copied.includes('### #1') && !copied.includes('### declined'), 'a passing row and one that was not applicable are not among the failing ones');
   await waitFor(() => p.text('#actions [data-md="report"]') === 'Copy as Markdown', 'the button to read as before');
 
@@ -551,7 +551,7 @@ Expected interactions:
     'its command runs that one case of the experiment, with the name quoted for a shell');
 
   await p.click(row(p, 2));
-  is(p.window.location.pathname, '/reports/support/support.report.json/rows/%232/Equals', 'a row with no name is addressed by its number');
+  is(p.window.location.pathname, '/reports/support/support.report.json/rows/%231/Equals', 'a row with no name is addressed by its place among the rows of its evaluator');
   ok(!p.$(`${beside(p, 2)} [data-md="row-command"]`), 'and has no command, since there is no name to run it by');
   is(await p.copy(`${beside(p, 2)} [data-md="trace"]`), SESSION_TRACE, 'a recorded session copies span by span');
   ok((await p.copy(`${beside(p, 2)} .mdacts [data-md="row"]`)).includes('Actual trajectory: a recorded session of 3 spans, kept in the report file.'),
@@ -623,7 +623,7 @@ Expected interactions:
   await waitFor(() => p.$$('#case-list li[data-i]').length === 2, 'the cases');
   is(labels(p, '#actions'), 'Copy as Markdown | Copy path', 'an open experiment offers its Markdown and its path');
   const experiment = await p.copy('#actions [data-md="experiment"]');
-  is(experiment, await fromServer('/experiments/support/support.experiment.json.md'), 'the page and the server write the same Markdown for an experiment');
+  is(experiment, await fromServer('/experiments/support/support.experiment.json.md'), 'which is what the experiment’s address serves with .md added');
   is(experiment, `# Experiment: support/support.experiment.json
 
 - Cases: 2
@@ -726,6 +726,9 @@ Metadata:
   is(await p.copy('#case-acts [data-md="case-command"]'), `strands-evals run ${EXPERIMENT_FILE} --case 'refund|policy' --agent MODULE:ATTR`, 'and with the command that runs it alone');
   await p.type('#form [data-k="input"]', 'Can I still get a refund?');
   ok((await p.copy('#case-acts [data-md="case"]')).includes('```text\nCan I still get a refund?\n```'), 'what is copied is the case as it reads on the page, unsaved edits included', p.copied);
+  const edited = await p.copy('#actions [data-md="experiment"]');
+  ok(edited.includes('```text\nCan I still get a refund?\n```') && edited.startsWith('# Experiment: support/support.experiment.json\n\n- Cases: 2\n- Evaluators: 2\n- Reports: support/support.report.json\n'),
+    'and the experiment copies with them too, where the file on disk does not have them yet', edited.slice(0, 300));
   await p.click('#revert');
   await p.click('#case-list li[data-i="1"]');
   is(await p.copy('#case-acts [data-md="case-command"]'), `strands-evals run ${EXPERIMENT_FILE} --case 1 --agent MODULE:ATTR`, 'a case with no name is run by its position');
@@ -762,6 +765,7 @@ Oldest first. Rows are matched by case and evaluator, so reports of different ex
 - Now pass: 0
 - Now fail: 1
 - Kept their verdict: 1
+- Now not applicable: 0
 - Only in #2: 0
 - Only in #1: 0
 
@@ -784,7 +788,7 @@ Oldest first. Rows are matched by case and evaluator, so reports of different ex
   await waitFor(() => p.$('#v-session').classList.contains('on'), 'the session');
   is(labels(p, '#actions'), 'Copy as Markdown | Copy path', 'an open session offers its Markdown and its path');
   const session = await p.copy('#actions [data-md="session"]');
-  is(session, await fromServer('/sessions/sessions/refund.session.json.md'), 'the page and the server write the same Markdown for a session');
+  is(session, await fromServer('/sessions/sessions/refund.session.json.md'), 'which is what the session’s address serves with .md added');
   is(session, SESSION_FILE, 'which holds what it recorded, the diagnosis made of it, then each trace span by span, numbered as on the page');
   is(await p.copy('#actions [data-md="path"]'), `${ROOT}/sessions/refund.session.json`, 'its path is the session file’s');
   is(JSON.stringify(JSON.parse(await fromServer('/sessions/sessions/refund.session.json.json'))), JSON.stringify(RECORDED), 'and as JSON the server answers with the file’s document');
@@ -793,7 +797,7 @@ Oldest first. Rows are matched by case and evaluator, so reports of different ex
   await p.openSession('lost');
   await waitFor(() => p.text('#crumbs').includes('lost.diagnosis.json'), 'the diagnosis on its own');
   const lost = await p.copy('#actions [data-md="session"]');
-  is(lost, await fromServer('/sessions/sessions/lost.diagnosis.json.md'), 'the page and the server write the same Markdown for a diagnosis whose session is not here');
+  is(lost, await fromServer('/sessions/sessions/lost.diagnosis.json.md'), 'which is what its address serves with .md added');
   is(lost, `# Diagnosis: sessions/lost.diagnosis.json
 
 - Session: s-gone, which is not in the folder
@@ -865,24 +869,17 @@ ${JSON.stringify(LOST, null, 2)}
   await p.click(row(p, 0));
   is(labels(p, `${beside(p, 0)} .mdacts`), 'Copy as Markdown', 'and a row of them has no link or command');
 
-  // ── with no server: paths as the folder gives them, addresses after the # ──
-  const alone = await open({ url: 'http://127.0.0.1:9999/index.html' });
-  await alone.openReport();
-  is(await alone.copy('#actions [data-md="path"]'), 'report.json', 'with no server the path is the one relative to the folder');
-  await alone.click(row(alone, 0));
-  const hash = alone.window.location.hash;
-  ok(hash.startsWith('#/reports/report.json/rows/order_status_lookup/'), 'and a row’s address follows the #', hash);
-  is(await alone.copy(`${beside(alone, 0)} [data-md="row-link"]`), `http://127.0.0.1:9999/index.html${hash}`, 'which is the link it copies');
-  const back = await open({ url: `http://127.0.0.1:9999/index.html${hash}` });
-  is(back.$$('#rep-rows tr.case[aria-expanded="true"]').map(tr => tr.dataset.i).join(), '0', 'and opening that link opens the row');
+  // ── what only the page holds is sent to be written ──
+  const candidates = await p.copy('#actions [data-md="report"]');
+  ok(candidates.startsWith(`# Report: ${p.text('#path')}\n\n- Overall score: `) && candidates.includes('\n- Experiment: none found in this folder'),
+    'a candidate’s cases are written as a report under the name the page gives them', candidates.slice(0, 200));
 
   // ── a clipboard that cannot be reached ──
-  delete alone.window.navigator.clipboard;
-  await alone.click('#actions [data-md="report"]');
-  is(alone.text('#actions [data-md="report"]'), 'Could not copy', 'a copy that did not happen says so');
+  delete p.window.navigator.clipboard;
+  await p.click('#actions [data-md="report"]');
+  is(p.text('#actions [data-md="report"]'), 'Could not copy', 'a copy that did not happen says so');
 
   done();
 } finally {
-  stop();
   fs.rmSync(root, { recursive: true, force: true });
 }

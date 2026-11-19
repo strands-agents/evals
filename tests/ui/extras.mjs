@@ -1,16 +1,27 @@
-/* The Evals section beyond the bundled sample: the report table, the two lists, addresses and
-   history, the case editor and what Save writes, served mode against a fake server, keyboard and theme. */
-import { fakeServer, page, runner, tick } from './harness.mjs';
+/* The Evals section beyond one experiment and its report: the report table, the two lists, addresses and
+   history, the case editor and what Save writes, a server that fails or is slow, keyboard and theme. */
+import { SAMPLE, fakeServer, page, runner, served, tick } from './harness.mjs';
 
 const { ok, done } = runner('extras');
-/** A page with no server, opened at an address of its own: there the route follows `#`. */
-const linked = route => page({ url: `http://127.0.0.1:9999/#${route}` });
+/** A page over one experiment and its report, opened at an address of its own. */
+const linked = route => served(SAMPLE, { route });
 /** A page with this experiment, and its report if given, read from a folder and opened. */
 const opened = async (experiment, report) => {
-  const p = await page();
-  await p.openFolder({ 'run/experiment.json': experiment, ...(report && { 'run/report.json': report }) });
+  const p = await served({ 'run/experiment.json': experiment, ...(report && { 'run/report.json': report }) });
   await p.openExperiment();
   return p;
+};
+/** The same over a server that takes whatever is saved: the real one refuses a file holding a case it cannot read. */
+const openedLoosely = async document => {
+  const at = 'run/experiment.json';
+  let sent = null;
+  const p = await page({ fetchImpl: fakeServer({
+    scan: { experiments: [{ path: at, name: 'experiment.json', dir: 'run', size: 1, modified: 5, cases: document.cases.length, evaluators: [], reports: [] }] },
+    file: { path: at, modified: 5, document },
+    put: body => { sent = body.document; return [{ path: at, modified: 5, cases: sent.cases.length }]; },
+  }) });
+  await p.openExperiment();
+  return Object.assign(p, { saved: () => sent });
 };
 const experiment = (...cases) => ({ cases, evaluators: [] });
 const CASE = { name: 'a', session_id: 's-a', input: 'q' };
@@ -46,8 +57,7 @@ const report = (score, ...cases) => ({
 
 // ── the two lists: what each report was made from, and what each experiment has made ──
 {
-  const p = await page();
-  await p.openFolder({
+  const p = await served({
     'paired/experiment.json': experiment({ ...CASE, expected_output: 'yes' }),
     'paired/report.json': report(0.25, CASE),
     'paired/experiment.saved.json': experiment(CASE),
@@ -122,7 +132,7 @@ const report = (score, ...cases) => ({
   ok(p.view() === 'v-experiment' && p.text('#case-list li.on .nm') === 'refund_edge_case',
     'an address opens the experiment and the case it names', `${p.view()} ${p.text('#case-list li.on')}`);
   await p.click('#facts a[data-report]');
-  ok(p.window.location.hash === '#/reports/report.json', 'and its report has an address of its own', p.window.location.hash);
+  ok(p.window.location.pathname === '/reports/report.json', 'and its report has an address of its own', p.window.location.pathname);
 }
 for (const [route, view, rewritten, what] of [
   ['/reports', 'reports', '/reports', 'the list of reports'],
@@ -133,8 +143,8 @@ for (const [route, view, rewritten, what] of [
 ]) {
   const p = await linked(route);
   const on = p.$$('.view.on').map(v => v.id).join();
-  ok(p.$('.app').dataset.ready === '1' && on === `v-${view}` && p.window.location.hash === '#' + rewritten,
-    `${route}: ${what}, and the address says so`, `${on} ${p.window.location.hash}`);
+  ok(p.$('.app').dataset.ready === '1' && on === `v-${view}` && p.window.location.pathname === rewritten,
+    `${route}: ${what}, and the address says so`, `${on} ${p.window.location.pathname}`);
 }
 
 // ── case editor: deleting a case ──
@@ -176,7 +186,7 @@ const badges = p =>
 
 // ── metadata ──
 {
-  const p = await opened(DRAFTS);
+  const p = await openedLoosely(DRAFTS);
   const pick = i => p.click(`#case-list li[data-i="${i}"]`);
   const rows = () => p.$$('.meta-row');
   const field = (n, which) => rows()[n].querySelector(`[data-meta-${which}]`);
@@ -239,7 +249,7 @@ const badges = p =>
 
 // ── review pass over drafts ──
 {
-  const p = await opened(DRAFTS);
+  const p = await openedLoosely(DRAFTS);
   const bar = p.$('#review-bar'), selected = () => p.$('#case-list li.on').dataset.i;
   ok(p.text('#review-case') === 'Review drafts (2)' && bar.hidden,
     'the button counts the drafts, and the bar waits to be asked for', p.text('#review-case'));
@@ -259,7 +269,7 @@ const badges = p =>
     'Save writes the file without the dropped case, the accepted one keeping its other keys', file.join(' '));
 }
 {
-  const p = await opened(DRAFTS);
+  const p = await openedLoosely(DRAFTS);
   const bar = p.$('#review-bar');
   await p.click('#review-case');
   await p.key('Escape');
@@ -285,8 +295,7 @@ const badges = p =>
 // ── a report with no experiment of its name is paired by its cases, or not at all ──
 {
   const T = { name: 't', session_id: 's-t', input: 'q' };
-  const p = await page();
-  await p.openFolder({
+  const p = await served({
     'suite/checkout.json': experiment(CASE),
     'suite/billing.json': experiment({ name: 'z', session_id: 's-z', input: 'q' }),
     'suite/checkout.report.json': report(1, CASE),
@@ -353,24 +362,6 @@ const badges = p =>
   ok(!/never/.test(tools()) && !p.$('#form input[data-add-to]'), 'and Escape gives up without adding it', tools());
 }
 
-// ── opening a folder replaces what is open, so it asks before unsaved edits go with it ──
-{
-  const p = await opened(experiment(CASE));
-  let pickers = 0;
-  p.$('#dirinput').click = () => { pickers += 1; };
-  await p.click('[data-act="pick"]');
-  ok(pickers === 1 && !p.$('.ask'), 'Open folder goes straight to the picker when nothing is unsaved', pickers);
-  await p.type('#form [data-k="input"]', 'unsaved');
-  await p.click('[data-act="pick"]');
-  ok(/^1 unsaved change will be lost if you open a folder\./.test(p.text('.ask')) && pickers === 1,
-    'and asks first when something is', p.text('.ask'));
-  await p.click('.ask [data-answer="no"]');
-  ok(pickers === 1 && p.$('#form [data-k="input"]').value === 'unsaved', 'Stay opens no picker and keeps the edit', pickers);
-  await p.click('[data-act="pick"]');
-  await p.click('.ask [data-answer="yes"]');
-  ok(pickers === 2, 'Discard and open goes on to it', pickers);
-}
-
 // ── a long rubric: cut short on its chip, whole in a text block ──
 {
   const rubric = 'Score 1.0 when the reply is polite and names the policy. '.repeat(6).trim();
@@ -392,8 +383,7 @@ const badges = p =>
 // ── history: a move between pages is a step, and Back and Forward retrace them ──
 {
   const two = { name: 'a2', session_id: 's-a2', input: 'q' };
-  const p = await page();
-  await p.openFolder({
+  const p = await served({
     'one/experiment.json': experiment(CASE, two), 'one/report.json': report(1, CASE),
     'two/experiment.json': experiment(two),
   });
@@ -419,8 +409,8 @@ const badges = p =>
   await travel(-3);
   const steps = history.length;
   await p.click(p.$$('#case-list li[data-i]')[1]);
-  ok(history.length === steps && p.window.location.hash === '#/experiments/one/experiment.json/cases/a2',
-    'picking a case corrects the address without adding a step', p.window.location.hash);
+  ok(history.length === steps && p.window.location.pathname === '/experiments/one/experiment.json/cases/a2',
+    'picking a case corrects the address without adding a step', p.window.location.pathname);
 
   await experiments();
   await p.openExperiment('two /');
@@ -428,7 +418,7 @@ const badges = p =>
   ok(reread.join() === 'v-experiment one/experiment.json,a2,v-experiment two/experiment.json',
     'Back reopens the case that was being read, and the way Forward is still there', reread.join());
 
-  await p.follow('/reports/one/report.json');
+  await p.visit('/reports/one/report.json');
   ok(at() === 'v-report one/report.json', 'an address typed into the open page is followed', at());
 
   await experiments();
@@ -441,8 +431,8 @@ const badges = p =>
     'Back to another experiment asks before dropping them', p.text('.ask'));
   await p.click('.ask [data-answer="no"]');
   ok(!p.$('.ask') && p.$('#form [data-k="input"]').value === 'unsaved'
-    && p.window.location.hash === '#/experiments/one/experiment.json/cases/a',
-  'Stay keeps them, and the address says where the page still is', p.window.location.hash);
+    && p.window.location.pathname === '/experiments/one/experiment.json/cases/a',
+  'Stay keeps them, and the address says where the page still is', p.window.location.pathname);
 
   const fresh = await linked('/reports/report.json');
   ok(fresh.window.history.length === 1, 'opening a link adds no step of its own', fresh.window.history.length);
@@ -472,16 +462,16 @@ const badges = p =>
     'the page ends where the second Back went, not on the report the first was still loading', `${at}, ${p.window.history.length - steps} steps added`);
 }
 
-// ── served mode, against a fake server ──
-const served = put => fakeServer({
+// ── a server that fails, or is slow to answer ──
+const fake = put => fakeServer({
   scan: { experiments: [{ path: 'e.json', name: 'e.json', dir: '.', size: 1, modified: 5, cases: 1, evaluators: [], reports: [] }] },
   file: { path: 'e.json', modified: 5, document: experiment({ name: 'a', input: 'q' }) },
   put,
 });
 {
   const p = await page({ fetchImpl: fakeServer({ scan: () => [{ error: 'scan blew up' }, 500] }) });
-  ok(/^served/.test(p.text('#mode-tag')) && !p.$('tr.row'),
-    'a failed scan leaves the page in served mode, not on the sample', p.text('#mode-tag'));
+  ok(p.view() === 'v-reports' && !p.$('tr.row') && !p.$('.app').classList.contains('unserved'),
+    'a failed scan leaves the page up, with nothing listed', p.view());
   ok(/scan blew up/.test(p.text('#reports-rows')) && /scan blew up/.test(p.text('#experiments-rows')),
     'and is reported on both lists', p.text('#reports-rows'));
 }
@@ -492,7 +482,7 @@ const served = put => fakeServer({
     async () => { await held; return [{ path: 'e.json', modified: 6, cases: 1 }]; },
     () => [{ error: 'e.json is no longer on disk' }, 404],
   ];
-  const p = await page({ fetchImpl: served(() => answers.shift()()) });
+  const p = await page({ fetchImpl: fake(() => answers.shift()()) });
   await p.openExperiment();
   await p.type('#form [data-k="input"]', 'changed');
   await p.click('#save');
@@ -508,11 +498,11 @@ const served = put => fakeServer({
   const offer = p.$('#saved button');
   ok(offer && offer.textContent === 'Download a copy', 'a save answered 404 offers the edits as a download', p.text('#saved'));
   await p.click(offer);
-  ok((await p.saved()).cases[0].input === 'worth keeping' && p.text('#dirty') === '1 unsaved change',
+  ok((await p.downloaded()).cases[0].input === 'worth keeping' && p.text('#dirty') === '1 unsaved change',
     'which holds them, while the page still counts them as unsaved', p.text('#dirty'));
 }
 {
-  const server = served();
+  const server = fake();
   const p = await page({ fetchImpl: server, url: 'http://127.0.0.1:9999/', token: 'from-the-document' });
   await p.openExperiment();
   const tokens = [...new Set(server.sent.map(r => r.headers['X-Evals-Token']))].join();
@@ -521,7 +511,7 @@ const served = put => fakeServer({
 
 // ── keyboard, the current page, and the theme ──
 {
-  const p = await page();
+  const p = await served(SAMPLE);
   await p.key('Enter', p.$('#experiments-rows tr.row'));
   const marked = () => `${p.$$('.tab.on').map(t => t.dataset.view).join()} | ${p.$$('.tab[aria-current="page"]').map(t => t.dataset.view).join()}`;
   ok(p.$('#v-experiment').classList.contains('on'), 'Enter on a row opens it');
@@ -559,14 +549,14 @@ const served = put => fakeServer({
   const inReport = '/reports/odd%20dir/50%25%20done%20%231%3F%26%2B.report.json';
   const inRow = `${inReport}/rows/c%2F1%20%3F%23%25/E%2Fx%20%25`;
   const inCase = '/experiments/odd%20dir/what%3F%20%232.json/cases/c%2F1%20%3F%23%25';
-  const served = route => page({ url: `http://127.0.0.1:9999${route}`, token: 'tok', fetchImpl: fakeServer({
+  const typed = route => page({ url: `http://127.0.0.1:9999${route}`, token: 'tok', fetchImpl: fakeServer({
     scan: {
       reports: [{ path: REPORT, name: REPORT.split('/')[1], dir: 'odd dir', size: 1, modified: 5, rows: 1, overall_score: 1, experiment: null, link: null }],
       experiments: [{ path: EXPERIMENT, name: EXPERIMENT.split('/')[1], dir: 'odd dir', size: 1, modified: 5, cases: 2, evaluators: [], reports: [] }],
     },
     file: path => ({ path, modified: 5, document: path === REPORT ? report : experiment }),
   }) });
-  const q = await served('/');
+  const q = await typed('/');
   const at = () => q.window.location.pathname;
   await q.openReport();
   ok(q.view() === 'v-report' && at() === inReport, 'a report\'s address names its file segment by segment, encoded', `${q.view()} ${at()}`);
@@ -583,10 +573,10 @@ const served = put => fakeServer({
   await q.travel(-1);
   ok(at() === inCase && q.text('#form-title') === CASE, 'Back returns to that case', `${at()} ${q.text('#form-title')}`);
 
-  const typedRow = await served(inRow);
+  const typedRow = await typed(inRow);
   ok(typedRow.view() === 'v-report' && !!typedRow.$('#rep-rows tr.case[aria-expanded="true"]') && typedRow.text('#crumbs') === `Reports/${REPORT}`,
     'the row\'s address opens it with nothing clicked', `${typedRow.view()} ${typedRow.text('#crumbs')}`);
-  const typedCase = await served(inCase);
+  const typedCase = await typed(inCase);
   ok(typedCase.view() === 'v-experiment' && typedCase.text('#form-title') === CASE, 'and so does the case\'s',
     `${typedCase.view()} ${typedCase.text('#form-title')}`);
 }

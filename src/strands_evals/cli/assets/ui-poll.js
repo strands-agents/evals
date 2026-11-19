@@ -1,7 +1,7 @@
 'use strict';
 
 /* ── keeping up with the folder ──
-   Served mode only: when the server's fingerprint of the tree moves, or Rescan is pressed, re-read the
+   When the server's fingerprint of the tree moves, or Rescan is pressed, re-read the
    lists and what is open. */
 
 const POLL_MS = 5000;
@@ -46,7 +46,7 @@ async function rereadFolder() {
 }
 
 async function pollNow() {
-  if (MODE !== 'server' || document.hidden || polling) return;
+  if (document.hidden || polling) return;
   polling = true;
   try {
     let mark;

@@ -86,7 +86,7 @@ const EVALUATOR_PAGES = {
   StateEquals: 'deterministic_evaluators', ToolCalled: 'deterministic_evaluators', SkillInvoked: 'deterministic_evaluators',
   TypedRubricEvaluator: '', Evaluator: 'custom_evaluator',
 };
-/* Summary and settings of every built-in evaluator, as the server read them off the library. Empty with no server. */
+/* Summary and settings of every built-in evaluator, as the server read them off the library. */
 let EVALUATOR_INFO = {};
 
 /** The documentation page for an evaluator type; a type the library does not ship gets the custom-evaluator page. */
@@ -105,7 +105,7 @@ const VIEW_GUIDE = {
     steps: [
       'The address names something this folder does not hold, or that could not be read. The page says what it looked for.',
       'Use a link on the page or the sidebar to go to a list of what is here.',
-      'Served, the page reads the folder again every few seconds and opens what the address names once it is there.',
+      'The page reads the folder again every few seconds and opens what the address names once it is there.',
     ],
     terms: ['report', 'experiment'],
   },

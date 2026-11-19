@@ -1,6 +1,6 @@
 /* The Report's charts and the trace view inside a report row: the verdict grid, the score
    distribution, and what each case cost. */
-import { page, runner } from './harness.mjs';
+import { runner, served } from './harness.mjs';
 
 const { ok, same, done } = runner('charts');
 
@@ -26,8 +26,7 @@ const session = seconds => {
 const NOW = [['a', 'X', 1, 'pass'], ['a', 'Y', 0.2, 'fail'], ['b', 'X', 0, 'fail'], ['b', 'Y', 1, 'na'], ['c', 'X', 0.8, 'pass']];
 const THEN = [['a', 'X', 1, 'pass'], ['a', 'Y', 0.9, 'pass'], ['b', 'X', 0, 'fail'], ['c', 'X', 0.3, 'fail'], ['d', 'X', 1, 'pass']];
 
-const p = await page();
-await p.openFolder({
+const p = await served({
   'now/experiment.json': experiment, 'now/report.json': report(NOW, { a: session(5), c: session(2) }),
   'then/experiment.json': experiment, 'then/report.json': report(THEN),
 });
@@ -47,7 +46,7 @@ await p.click(p.$$('#rep-heat rect.cell')[1]);
 const opened = p.$('#rep-rows tr.case[aria-expanded="true"]');
 ok(opened && opened.dataset.i === '2' && p.$('#rep-find').value === '',
   'selecting a cell opens its row in the table, clearing the filter that hid it', opened && opened.dataset.i);
-ok(p.window.location.hash === '#/reports/now/report.json/rows/b/X', 'and the address names the row', p.window.location.hash);
+ok(p.window.location.pathname === '/reports/now/report.json/rows/b/X', 'and the address names the row', p.window.location.pathname);
 
 // ── the score distribution: per evaluator, over the rows it applied to ──
 same(p.tips('#rep-spread line.hmean'), ['X · mean 0.6 over 3 rows', 'Y · mean 0.2 over 1 row'],
@@ -80,10 +79,5 @@ ok(!p.$('#rep-cost-card').hidden, 'the cost chart is there while there is someth
 await p.openReport('then /');
 ok(p.$('#rep-cost-card').hidden && !p.$('#rep-charts').hidden && p.$$('#rep-heat rect.cell').length === 5,
   'a report with nothing recorded to cost drops the cost chart and keeps the others', p.$$('#rep-heat rect.cell').length);
-
-// ── no report, no charts ──
-await p.openFolder({ 'now/experiment.json': experiment });
-ok(p.$('#rep-charts').hidden && !p.$('#rep-rows tr') && p.text('#r-score') === '—',
-  'a folder with no report in it shows no charts, and nothing else of the last report', p.text('#r-score'));
 
 done();

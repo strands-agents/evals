@@ -393,7 +393,6 @@ tr.case:hover .caret, tr.trial:hover .caret { color: var(--ink1); }
   font-size: 11.5px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--hair);
   color: var(--ink2); background: var(--card); white-space: nowrap;
 }
-.mode.live { color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, var(--hair)); }
 .mode.ro { color: var(--ink3); }
 .tag {
   font-size: 11.5px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--hair);
@@ -944,3 +943,6 @@ table.cmp a, .facts .chip { overflow-wrap: anywhere; }
 .nores .ways a:hover { text-decoration: underline; }
 #missing .nores, .optnone .nores, #opt-to-none .nores { max-width: 62ch; margin: 0 auto; padding: 56px 12px; line-height: 1.6; }
 .view.blank > :not(h2):not(.optnone) { display: none; }
+
+/* ── opened without its server ── */
+.app.unserved .sections, .app.unserved .navlinks, .app.unserved .guide-toggle, .app.unserved #path { display: none; }

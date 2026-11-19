@@ -76,14 +76,12 @@
       </div>
     </header>
 
-    <!-- The folder being read: shown over both lists. -->
+    <!-- The folder being read: shown over the lists. -->
     <div class="folder" id="folder">
-      <span class="mode" id="mode-tag"></span>
+      <span class="mode ro" id="read-only" hidden data-tip="Served with --read-only. Cases can be read but not saved.">read-only</span>
       <span class="path mono" id="root-path"></span>
       <span class="grow"></span>
       <button class="btn" data-act="rescan" data-tip="Read the folder again for new or changed files.">Rescan</button>
-      <button class="btn" data-act="pick">Open folder&hellip;</button>
-      <input type="file" id="dirinput" webkitdirectory directory multiple hidden>
     </div>
 
     <section class="view on" id="v-reports">
@@ -517,7 +515,6 @@
 <script src="ui-report-charts.js"></script>
 <script src="ui-compare.js"></script>
 <script src="ui-report-lenses.js"></script>
-<script src="ui-folder.js"></script>
 <script src="ui-sessions.js"></script>
 <script src="ui-optimizer-record.js"></script>
 <script src="ui-charts.js"></script>
@@ -525,7 +522,6 @@
 <script src="ui-optimizer-result.js"></script>
 <script src="ui-optimizer.js"></script>
 <script src="ui-optimizer-candidates.js"></script>
-<script src="ui-sample.js"></script>
 <script src="ui-poll.js"></script>
 <script src="ui-markdown.js"></script>
 <script src="ui-boot.js"></script>

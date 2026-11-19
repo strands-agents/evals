@@ -1,7 +1,7 @@
 'use strict';
 
 /* ── what every chart is drawn with ──
-   Hand-rolled SVG: the page must work with no server, no network and no build step. */
+   Hand-rolled SVG: the page must work with no network and no build step. */
 
 /* `t` holds the axis title above the plot, `b` two rows under it: tick labels, then the axis name. */
 const W = 640, H = 244, PAD = { t: 26, r: 16, b: 46, l: 48 };

@@ -1,6 +1,6 @@
 /* Two lenses on a report: its rows grouped by what the cases carry, and a row's diagnosis read as
    what failed, why, where and what to do. */
-import { fakeServer, page, runner, tick } from './harness.mjs';
+import { fakeServer, page, runner, served, tick } from './harness.mjs';
 
 const { ok, same, done } = runner('lenses');
 
@@ -46,8 +46,7 @@ const lens = p => {
 
 // ── grouping by what the cases carry ──
 {
-  const p = await page();
-  await p.openFolder({ 'tagged/report.json': TAGGED, 'chaos/report.json': CHAOS, 'bare/report.json': BARE });
+  const p = await served({ 'tagged/report.json': TAGGED, 'chaos/report.json': CHAOS, 'bare/report.json': BARE });
   await p.openReport('tagged');
   const { choices, choose, summary, group, table } = lens(p);
 
@@ -201,8 +200,7 @@ const lens = p => {
   DIAGNOSED.cases[0].actual_trajectory = SESSION;
   DIAGNOSED.cases[1].actual_trajectory = SESSION;
 
-  const p = await page();
-  await p.openFolder({ 'run/report.json': DIAGNOSED });
+  const p = await served({ 'run/report.json': DIAGNOSED });
   await p.openReport('run');
   const { table } = lens(p);
   const marked = () => p.$$('#rep-rows tr.case').filter(tr => tr.querySelector('.tag')).map(tr => p.text(tr.cells[0]));

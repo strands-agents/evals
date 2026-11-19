@@ -63,9 +63,8 @@ function renderOptimizerRuns() {
         ? `<span class="tag">${esc(r.stop_reason)}</span>`
         : '<span class="empty">still running</span>'}</td>
         <td class="ev">${when(r.modified)}</td></tr>`;
-  }).join('') : `<tr><td colspan="6">${emptyState('No optimizer runs in this pond yet', MODE === 'server'
-    ? `No directory under ${esc(ROOT)} holds a run.json with an events.jsonl beside it.`
-    : 'Open a folder that holds an optimizer run directory.')}</td></tr>`;
+  }).join('') : `<tr><td colspan="6">${emptyState('No optimizer runs in this pond yet',
+    `No directory under ${esc(ROOT)} holds a run.json with an events.jsonl beside it.`)}</td></tr>`;
 
   /* The list can be shown empty; a view of one run cannot outlive the run. */
   if (!any && SECTION_OF[currentView()] === 'optimization' && currentView() !== 'opt-runs') show(homeView());
@@ -76,8 +75,12 @@ $('opt-runs-rows').onclick = e => {
   if (!tr) return;
   const i = Number(tr.dataset.optRun);
   if (i === optSel) return show('opt-overview');
-  selectOptimizerRun(i).then(() => show('opt-overview'));
+  openOptimizerRun(i).then(arrived => arrived && show('opt-overview'));
 };
+
+/** Select a run that was asked for. Like the other opens, resolves false when the page moved on while its log was read. */
+const openOptimizerRun = async index =>
+  !!await readToOpen(OPT_RUNS[index].events_path, async () => { await selectOptimizerRun(index); return true; });
 
 /* `keep` re-reads the folder: when the open run is still there, what is open inside it stays open. */
 async function loadOptimizerRuns(runs, keep) {
@@ -126,12 +129,12 @@ async function selectOptimizerRun(index, keep) {
   renderOptimization();
 }
 
-/** A file of the run directory, relative to the tree being read: the same path in both modes. */
+/** A file of the run directory, as its path under the served folder. */
 const runFile = (run, name) => `${run.dir && run.dir !== '.' ? run.dir + '/' : ''}${name}`;
 
 /* `effects.json` is fitted after the run, so most runs have none: one that cannot be read is no different. */
 async function readEffects(run) {
-  if (run.fromFolder || run.has_effects === false) return run.effectsDoc || null;
+  if (run.has_effects === false) return null;
   try {
     return (await api('/api/file?path=' + encodeURIComponent(runFile(run, 'effects.json')))).document;
   } catch {
