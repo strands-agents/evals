@@ -30,8 +30,9 @@ class ProposalRequest:
         scores: The step's parent's train scores (`SplitScores.train`).
         inputs: Train case name -> `case.input`, for the cases in `trials`. Inputs only: no expected field
             (`expected_output`, `expected_trajectory`, ...) and no `metadata` is ever passed.
-        fit: Read-only; None before 2 candidates are eligible, after a refit that raised, or while any
-            metric is flagged (`candidates` then still hold the unflagged metrics' estimates).
+        fit: Read-only; None before 2 candidates are eligible, or after a refit that raised. It can have
+            flagged metrics (`fit.flagged`), whose models failed the held-out check: leave those out, as the
+            ranking does (`candidates` hold only the other metrics' estimates).
         candidates: Every scored candidate so far: eligible ones in ranking order, then the ineligible in
             scoring order. Invalid and duplicate proposals never appear.
         n: How many patches to return: the step's `Step.n_candidates` (at most `proposals_per_iteration`),

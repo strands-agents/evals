@@ -300,13 +300,19 @@ class OptimizationResult(BaseModel):
             f"{cost['test'].tokens} test. Proposers {self.search_cost.tokens}, judges {self.judge_cost.tokens}, "
             f"earlier attempts {self.retry_cost.tokens}, other agents in the rollouts {self.benchmark_cost.tokens}.",
         ]
-        flagged = [m for m, d in self.effects.get("metrics", {}).items() if d.get("diagnostics", {}).get("flagged")]
+        metrics = self.effects.get("metrics", {})
+        flagged = [m for m, d in metrics.items() if d.get("diagnostics", {}).get("flagged")]
         if self.effects.get("reason"):
             lines.append(f"Effects: none ({self.effects['reason']}).")
-        elif flagged:
+        elif flagged and len(flagged) == len(metrics):
             lines.append(
                 f"Effects: the held-out check flagged {', '.join(flagged)}; "
                 "from then on the search ranked by measured means, not the fit."
+            )
+        elif flagged:
+            lines.append(
+                f"Effects: the held-out check flagged {', '.join(flagged)}; from then on the search ranked "
+                f"{'it' if len(flagged) == 1 else 'them'} by measured means and the other metrics by the fit."
             )
         return "\n".join(lines)
 

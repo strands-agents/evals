@@ -819,3 +819,44 @@ def test_label_candidate_ineligible_when_a_train_case_has_no_counted_run():
     label = label_candidate(candidate, None, criteria=criteria)
     assert label.outcome == "ineligible" and "c2" in label.reason
     assert label.estimates == {} and label.p_met == {} and label.unmet_constraints == []
+
+
+def test_a_flagged_metric_with_an_na_case_is_judged_by_its_adjusted_mean():
+    # "a" has no Stars value on the hard case "y"; its plain mean (2.0) would meet the limit. Filled from "b" (no
+    # difference on "x"), its adjusted mean is 3.5, the one the ranking judges and records.
+    criteria = Criteria(Maximize(HELP), [AtMost(STARS, 3.0)], REGISTRY)
+    fit = FakeFit({"a": {HELP: e(0.7), STARS: e(2.0)}, "b": {HELP: e(0.6), STARS: e(2.0)}}, flagged=[STARS])
+    measured = {
+        "a": scores("a", {"x": {HELP: 0.7, STARS: 2.0}, "y": {HELP: 0.7}}, 0.7),
+        "b": scores("b", {"x": {HELP: 0.6, STARS: 2.0}, "y": {HELP: 0.6, STARS: 5.0}}, 0.6),
+    }
+    out = assess(["a", "b"], fit=fit, criteria=criteria, values={"a": {}, "b": {}}, measured=measured, rule=Mean())
+    a = out["a"]
+    assert a.adjusted_means == {STARS: pytest.approx(3.5)} and a.estimates == {HELP: e(0.7)}
+    assert a.violations == (pytest.approx(0.5),) and not a.is_feasible
+    label = label_candidate(measured["a"], a, criteria=criteria)
+    assert label.unmet_constraints == ["Stars <= 3: mean 3.5 violates by 0.5"]
+    assert label.adjusted_means == {STARS: pytest.approx(3.5)} and label.is_from_fit
+
+
+def test_an_unflagged_constraint_never_measured_stays_unmet_under_a_partly_flagged_fit():
+    criteria = Criteria(Maximize(HELP), [AtMost(STARS, 3.0), AtLeast(HELP, 0.5)], REGISTRY)
+    fit = FakeFit({"a": {HELP: e(0.9), STARS: e(2.0)}}, flagged=[HELP])
+    measured = {"a": scores("a", {"x": {HELP: 0.4}}, 0.4)}
+    a = assess(["a"], fit=fit, criteria=criteria, values={"a": {}}, measured=measured, rule=Mean())["a"]
+    assert a.violations == (math.inf, pytest.approx(0.1)) and a.p_met == {}
+    assert a.estimates == {STARS: e(2.0)} and a.adjusted_means == {HELP: pytest.approx(0.4)}
+    label = label_candidate(measured["a"], a, criteria=criteria)
+    assert label.unmet_constraints == [
+        "Stars <= 3: never measured",
+        "HelpfulnessEvaluator >= 0.5: mean 0.4 violates by 0.1",
+    ]
+
+
+def test_a_flagged_term_never_measured_drops_from_a_weighted_sum():
+    criteria = Criteria(WeightedSum(Maximize(HELP), Maximize(STARS)), [], REGISTRY)
+    fit = FakeFit({"a": {HELP: e(0.7), STARS: e(4.0)}}, flagged=[STARS])
+    measured = {"a": scores("a", {"x": {HELP: 0.5}}, 0.5)}
+    a = assess(["a"], fit=fit, criteria=criteria, values={"a": {}}, measured=measured, rule=Mean())["a"]
+    assert a.objective == pytest.approx(criteria.objective_value({HELP: 0.7})) and a.terms is None
+    assert a.adjusted_means == {} and a.is_from_fit

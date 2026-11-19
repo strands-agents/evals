@@ -1082,7 +1082,7 @@ class Optimizer:
                 values={c: candidate.values for c, candidate in self._candidates.items()},
                 parents={c: candidate.parent_id for c, candidate in self._candidates.items()},
                 trial_counts={c: self._trial_count(c) for c in self._candidates},
-                fit=self._fit if self._fit is not None and not self._fit.flagged else None,
+                fit=self._fit,
                 iteration=self._iteration,
                 history=list(self._history),
                 rng=random.Random(f"{self._seed}:{self._iteration}"),
@@ -1396,8 +1396,7 @@ class Optimizer:
                 trials=[r for r in self._records[parent.id].values() if r.split == "train"],
                 scores=self._train[parent.id],
                 inputs={c: cases[c].input for c in train},
-                # A proposer can read any metric from the fit, so a fit with a flagged metric isn't passed on.
-                fit=self._fit if self._fit is not None and not self._fit.flagged else None,
+                fit=self._fit,
                 candidates=summaries,
                 n=count,
                 iteration=iteration,

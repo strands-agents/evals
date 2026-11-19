@@ -1052,7 +1052,7 @@ class _Sequence(ScoreModel):
         return self.fits.pop(0) if self.fits else None
 
 
-async def test_a_flagged_fit_reaches_no_proposer_and_no_selection(tmp_path):
+async def test_a_flagged_fit_reaches_the_proposers_and_the_selection(tmp_path):
     seen = []
 
     class Watching(TopRanked):
@@ -1072,9 +1072,10 @@ async def test_a_flagged_fit_reaches_no_proposer_and_no_selection(tmp_path):
         proposals_per_iteration=1,
     )
     await _search(optimizer)
-    assert optimizer._fit is not None and optimizer._fit.flagged  # kept, but used by nothing
-    assert proposer.requests and all(r.fit is None for r in proposer.requests)
-    assert seen and all(fit is None for fit in seen)
+    # Passed on with its flags: each consumer leaves out the flagged metrics' models, as the ranking does.
+    assert optimizer._fit is not None and optimizer._fit.flagged
+    assert proposer.requests and all(r.fit is not None and r.fit.flagged for r in proposer.requests)
+    assert seen and all(fit is not None and fit.flagged for fit in seen)
 
 
 class _GroundedFlagged:
@@ -2298,8 +2299,18 @@ async def test_the_summary_names_the_flagged_metrics_or_why_there_are_no_effects
         return [line for line in text.splitlines() if line.startswith("Effects:")]
 
     assert effects_lines({"metrics": metrics, "reason": None}) == [
-        "Effects: the held-out check flagged tokens, seconds; from then on the search ranked by measured means, "
-        "not the fit."
+        "Effects: the held-out check flagged tokens, seconds; from then on the search ranked them by measured "
+        "means and the other metrics by the fit."
+    ]
+    one = {**metrics, "seconds": {"diagnostics": {"flagged": False}}}
+    assert effects_lines({"metrics": one, "reason": None}) == [
+        "Effects: the held-out check flagged tokens; from then on the search ranked it by measured means and the "
+        "other metrics by the fit."
+    ]
+    every = {m: {"diagnostics": {"flagged": True}} for m in metrics}
+    assert effects_lines({"metrics": every, "reason": None}) == [
+        "Effects: the held-out check flagged Temperature, tokens, seconds; from then on the search ranked by "
+        "measured means, not the fit."
     ]
     # Empty effects with a reason (as a flagged fit gave before) print only the reason.
     empty = {"effects": [], "factors": [], "omitted": [], "metrics": metrics, "reason": "flagged: tokens, seconds"}

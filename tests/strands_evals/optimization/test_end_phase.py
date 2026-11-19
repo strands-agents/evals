@@ -826,3 +826,19 @@ def test_pick_judges_a_flagged_metric_by_its_measured_mean_and_the_others_by_the
     assert report.champion_id == "b" and report.objectives == {"0": 0.6, "a": 0.8, "b": 0.7}
     assert report.infeasible == {"a": "tokens <= 1000: mean 1200 violates by 200"}
     assert report.estimates["a"] == {HELP: Estimate(mean=0.8, sd=0.01)}
+    # Tokens, judged by its adjusted mean, is reported for every candidate, though each is assessed from the fit.
+    assert report.adjusted_means == {"0": {TOKENS: 800.0}, "a": {TOKENS: 1200.0}, "b": {TOKENS: 900.0}}
+
+
+def test_choose_finalists_judges_a_flagged_constraint_metric_by_its_adjusted_mean():
+    # The fit (flagged on tokens) ranks "a" first, but its tokens sit at the limit with a spread, so only "b"
+    # (always 600) holds with margin. Judging "a" by the fit's 500 tokens would have let it hold too.
+    criteria = Criteria(Maximize(HELP), [AtMost(TOKENS, 1000)], REGISTRY, feasibility_threshold=0.9)
+    tokens = {"0": [600.0] * 6, "a": [900.0, 1100.0, 900.0, 1100.0, 1000.0, 1000.0], "b": [600.0] * 6}
+    train = {
+        c: _train_scores(c, {f"t{i}": {HELP: 0.5, TOKENS: t} for i, t in enumerate(ts)}, criteria)
+        for c, ts in tokens.items()
+    }
+    fit = _TokensFlagged({"0": 0.5, "a": 0.8, "b": 0.7})
+    finalists, ranking, _ = _choose(train, criteria, 1, fit=fit)
+    assert ranking[:2] == ["a", "b"] and finalists == ["b"]
