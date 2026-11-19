@@ -120,6 +120,57 @@ const state = p => [p.text('#dirty'), p.$('#save').disabled];
   same(await awayAndBack(), ['v-experiment', 'c', '/experiments/e.json/cases/c'], 'as is the one selected after Revert');
 }
 
+// ── a name being typed, in a browser that rations how often the address may be written ──
+{
+  const three = { cases: ['a', 'b', 'c'].map(name => ({ name, session_id: `s-${name}`, input: 'q' })), evaluators: [] };
+  const p = await page({ fetchImpl: fakeServer({
+    scan: { experiments: [{ path: 'e.json', name: 'e.json', dir: '.', size: 1, modified: 5, cases: 3, evaluators: [], reports: [] }] },
+    file: { path: 'e.json', modified: 5, document: three },
+  }) });
+  await p.openExperiment();
+  await p.click(p.$$('#case-list li[data-i]')[1]);
+
+  /* Safari raises this after 100 history calls in 30 seconds. `rationed` is when the page has used them up. */
+  const written = [];
+  let rationed = false;
+  for (const call of ['pushState', 'replaceState']) {
+    const really = p.window.history[call].bind(p.window.history);
+    p.window.history[call] = (...args) => {
+      if (rationed) throw new p.window.DOMException(`Attempt to use history.${call}() more than 100 times per 30 seconds`, 'SecurityError');
+      written.push(call);
+      return really(...args);
+    };
+  }
+  const name = field(p, 'name');
+  const key = async (value, event = 'input') => {
+    name.value = value;
+    name.dispatchEvent(new p.window.Event(event, { bubbles: true }));
+    await tick();
+  };
+  const at = () => p.window.location.pathname;
+
+  for (const typed of ['b', 'bx', 'bxy', 'bxyz']) await key(typed);
+  same([written.length, p.text('#form-title'), p.text('#case-list li.on .nm')], [0, 'bxyz', 'bxyz'],
+    'each key of a name moves the form and the list, and none of them writes the address');
+  await key('bxyz', 'change');
+  same([written.join(), at()], ['replaceState', '/experiments/e.json/cases/bxyz'], 'leaving the field writes it once, in place');
+  await key('bq');
+  await new Promise(resolve => setTimeout(resolve, 650));
+  same([written.join(), at()], ['replaceState,replaceState', '/experiments/e.json/cases/bq'],
+    'and so does a pause in the typing, for a reader who goes Back without leaving the field');
+
+  rationed = true;
+  await key('r2');
+  await key('r2', 'change');
+  await p.click('#del-case');
+  same([p.errs.length, at(), /^Removed r2\./.test(p.text('#saved')), !!p.$('#saved .reload')],
+    [0, '/experiments/e.json/cases/bq', true, true],
+    'a browser that will write no more addresses leaves this one behind, and the editor carries on: Delete still offers Undo');
+  rationed = false;
+  await p.click('#saved .reload');
+  same(at(), '/experiments/e.json/cases/r2', 'and the next write the browser allows puts the address right');
+}
+
 // ── a second save, straight after the first ──
 {
   let stamp = 5;

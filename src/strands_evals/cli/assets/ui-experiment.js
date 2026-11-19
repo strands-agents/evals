@@ -326,6 +326,13 @@ function metaControl(key, v) {
 
 /* The address names the selected case, so it follows a new selection or a new name, in place. */
 const followCase = () => writeAddress(currentView(), true);
+/* A name being typed moves the address when the typing pauses or the field is left, not on each key:
+   a browser rations how often a page may write it. */
+let renaming = 0;
+function followName(now) {
+  clearTimeout(renaming);
+  if (now) followCase(); else renaming = setTimeout(followCase, 500);
+}
 
 /* ── review pass over drafts ── */
 const draftIdx = () => cases.map((c, i) => (isDraft(c) ? i : -1)).filter(i => i >= 0);
@@ -425,9 +432,10 @@ $('form').addEventListener('input', e => {
   } else {
     cases[sel][k] = raw;
   }
-  if (k === 'name') { $('form-title').textContent = cases[sel].name || '(unnamed)'; followCase(); }
+  if (k === 'name') { $('form-title').textContent = cases[sel].name || '(unnamed)'; followName(); }
   note(''); refreshDirty();
 });
+$('form').addEventListener('change', e => { if (e.target.dataset.k === 'name') followName(true); });
 
 $('form').addEventListener('click', e => {
   if (!cases[sel]) return;

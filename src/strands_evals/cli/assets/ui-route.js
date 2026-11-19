@@ -93,11 +93,15 @@ function writeAddress(view, replace) {
   if (following) return;
   const route = routeFor(view);
   if (route === lastRoute) return;
-  lastRoute = route;
   const push = !replace && app.dataset.ready;
   /* Whatever else the address carries stays; the reports of a comparison left behind do not. */
   const others = new URLSearchParams(location.search);
   others.delete('r');
   const kept = others.toString() && (route.includes('?') ? '&' : '?') + others;
-  history[push ? 'pushState' : 'replaceState'](null, '', route + kept);
+  /* Safari refuses a page more than 100 of these in 30 seconds. The address is then left as it was,
+     and the next write puts it right. */
+  try {
+    history[push ? 'pushState' : 'replaceState'](null, '', route + kept);
+    lastRoute = route;
+  } catch { /* nothing was written */ }
 }

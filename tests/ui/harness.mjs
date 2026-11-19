@@ -137,10 +137,12 @@ export async function page({ fetchImpl, url = 'http://127.0.0.1:9999/?t=tok', to
       el.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
       await tick();
     },
+    /** Type `value` into a field and leave it, as a reader does before acting on anything else. */
     type: async (s, value) => {
       const el = typeof s === 'string' ? d.querySelector(s) : s;
       el.value = value;
       el.dispatchEvent(new window.Event('input', { bubbles: true }));
+      el.dispatchEvent(new window.Event('change', { bubbles: true }));
       await tick();
     },
     /** What hovering each match of a selector says: the text of its `<title>`. */
