@@ -511,8 +511,8 @@ def test_scan_sets_aside_a_file_holding_a_number_too_long_to_read(tmp_path: Path
 def test_fingerprint_takes_a_file_name_that_is_not_utf8(tmp_path: Path):
     try:
         (tmp_path / os.fsdecode(b"caf\xe9.json")).write_text("{}")
-    except OSError:
-        pytest.skip("this filesystem refuses a name that is not UTF-8")
+    except (OSError, UnicodeDecodeError):
+        pytest.skip("this platform has no file name that is not UTF-8")
 
     assert len(fingerprint(tmp_path)) == 64
 
