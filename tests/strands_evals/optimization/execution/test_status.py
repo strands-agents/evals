@@ -1,4 +1,5 @@
 import asyncio
+import errno
 
 import botocore.exceptions as botocore_errors
 import pytest
@@ -58,6 +59,9 @@ CASES = [
         if hasattr(botocore_errors, "LoginError")  # botocore >= 1.41 only
         else []
     ),
+    pytest.param(botocore_errors.ProfileNotFound(profile="bedrock"), INFRASTRUCTURE, id="ProfileNotFound"),
+    pytest.param(OSError(errno.EMFILE, "Too many open files"), INFRASTRUCTURE, id="OSError-EMFILE"),
+    pytest.param(OSError(errno.ENFILE, "Too many open files in system"), INFRASTRUCTURE, id="OSError-ENFILE"),
     # A wrong key or missing model access: no re-run fixes it.
     pytest.param(_client_error("UnrecognizedClientException"), AGENT, id="ClientError-UnrecognizedClientException"),
     pytest.param(_client_error("AccessDeniedException"), AGENT, id="ClientError-AccessDeniedException"),
@@ -81,6 +85,8 @@ CASES = [
     pytest.param(ValueError("bad output"), AGENT, id="ValueError"),
     pytest.param(asyncio.TimeoutError(), AGENT, id="user-deadline"),
     pytest.param(KeyError("missing"), AGENT, id="KeyError"),
+    pytest.param(OSError(errno.ENOENT, "No such file or directory"), AGENT, id="OSError-ENOENT"),
+    pytest.param(OSError("no errno"), AGENT, id="OSError-no-errno"),
 ]
 
 

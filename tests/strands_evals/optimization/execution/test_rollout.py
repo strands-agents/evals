@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager, contextmanager
 
 import opentelemetry.trace as trace_api
 import pytest
+from botocore.exceptions import ProfileNotFound
 from opentelemetry.context import Context
 from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider
 from opentelemetry.sdk.trace.sampling import ALWAYS_OFF
@@ -453,6 +454,20 @@ async def test_an_agent_failure_is_logged_and_raised(traces):
     entry = log.records()["case-1"]
     assert entry.status is TrialStatus.AGENT_FAILURE
     assert entry.error_type == "EventLoopException"
+
+
+async def test_a_credential_error_building_the_agent_is_infrastructure(traces):
+    log = TrialLog()
+
+    def build():
+        raise ProfileNotFound(profile="bedrock")
+
+    with pytest.raises(ProfileNotFound):
+        await _run(instrument(make_task(build, default_rollout), log, traces), _case(), traces)
+
+    entry = log.records()["case-1"]
+    assert entry.status is TrialStatus.INFRASTRUCTURE_INVALID
+    assert entry.error_type == "ProfileNotFound"
 
 
 async def test_an_environment_error_records_its_cause(traces):
