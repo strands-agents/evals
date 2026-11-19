@@ -5,13 +5,21 @@ import os
 import tempfile
 
 import pytest
-from strands.types.exceptions import EventLoopException
+from botocore.exceptions import (
+    ClientError,
+    EventStreamError,
+    NoCredentialsError,
+    ReadTimeoutError,
+    TokenRetrievalError,
+)
+from strands.types.exceptions import EventLoopException, MaxTokensReachedException, ModelThrottledException
 
 from strands_evals.optimization import Criteria, InfrastructureError, Maximize, Reflection, Space, TextValue
 from strands_evals.optimization.candidate import Candidate
+from strands_evals.optimization.prompt_templates.reflection.reflection_v0 import CUT_OFF
 from strands_evals.optimization.search.proposer import ProposalRequest
 from strands_evals.types.trace import TextContent, ToolResultContent, UserMessage
-from tests.strands_evals.optimization.scripted_model import ScriptedModel, ToolUse
+from tests.strands_evals.optimization.scripted_model import CutOff, ScriptedModel, ToolUse
 from tests.strands_evals.optimization.search.test_reflection_evidence import (
     REGISTRY,
     scores_of,
@@ -72,6 +80,25 @@ async def propose(turns, *, warn=False, **kwargs):
     events = []
     patches = await reflection.propose(request(events=events))
     return patches, events, reflection
+
+
+@pytest.fixture(autouse=True)
+def no_retry_wait(monkeypatch):
+    """Strands' backoff before a failed model call is tried again, made 0 seconds."""
+    monkeypatch.setattr("strands_evals.optimization.search.reflection._RETRY_DELAY", 0)
+
+
+class Recording(ScriptedModel):
+    """A scripted model that keeps the conversation each call was sent."""
+
+    def __init__(self, turns):
+        super().__init__(turns)
+        self.sent = []
+
+    async def stream(self, messages, *args, **kwargs):
+        self.sent.append(list(messages))
+        async for event in super().stream(messages, *args, **kwargs):
+            yield event
 
 
 @pytest.fixture(autouse=True)
@@ -152,26 +179,184 @@ async def test_every_submission_refused_proposes_nothing():
     assert (await propose(turns, over_limit_retries=1))[0] == []
 
 
-async def test_a_failed_agent_call_is_retried_and_logged():
-    turns = [ValueError("bad stream"), write("p.txt", "Be brief."), submit(prompt="p.txt"), "Done."]
-    (patch,), events, _ = await propose(turns)
-    assert patch.updates == {"prompt": "Be brief.\n"}
-    assert events == [("proposer_retry", {"error_type": "ValueError", "error": "bad stream"})]
+TRANSIENT = [
+    ModelThrottledException("ThrottlingException: Too many tokens, please wait before trying again."),
+    EventStreamError({"Error": {"Code": "modelStreamErrorException", "Message": "Retry."}}, "ConverseStream"),
+    ClientError({"Error": {"Code": "ServiceUnavailableException", "Message": "Unavailable."}}, "ConverseStream"),
+    ReadTimeoutError(endpoint_url="https://bedrock-runtime.us-west-2.amazonaws.com/model/m/converse-stream"),
+]
 
 
-async def test_an_infrastructure_failure_on_every_attempt_raises():
-    with pytest.raises(InfrastructureError):
-        await propose([InfrastructureError("bedrock is down")])
-
-
-async def test_any_failure_on_every_attempt_raises_after_three_retries():
-    """A wrong model id or no access fails every attempt the same way: raised, never hidden as `[]`."""
-    reflection = Reflection(ScriptedModel([ValueError("The provided model identifier is invalid.")]))
+@pytest.mark.parametrize("error", TRANSIENT, ids=lambda error: type(error).__name__)
+async def test_a_transient_model_error_is_retried_in_the_same_conversation(error):
+    model = Recording([write("p.txt", "Be brief."), error, error, submit(prompt="p.txt"), "Done."])
+    reflection = Reflection(model)
     reflection._warned = True
     events = []
-    with pytest.raises(ValueError, match="model identifier"):
+    (patch,) = await reflection.propose(request(events=events))
+    assert patch.updates == {"prompt": "Be brief.\n"} and patch.rationale == "Done."
+    assert events == [("proposer_retry", {"error_type": type(error).__name__, "error": str(error)})] * 2
+    # The task, then the write and its result, sent again after each failure, then the submit and its result.
+    assert [len(sent) for sent in model.sent] == [1, 3, 3, 3, 5]
+
+
+async def test_the_tries_are_counted_per_model_call():
+    error = TRANSIENT[1]
+    turns = [*[error] * 7, write("p.txt", "Be brief."), *[error] * 7, submit(prompt="p.txt"), "Done."]
+    (patch,), events, _ = await propose(turns)
+    assert patch.updates == {"prompt": "Be brief.\n"}
+    assert [e for e, _ in events] == ["proposer_retry"] * 14
+
+
+async def test_a_transient_error_on_every_try_is_raised_after_8_tries():
+    error = EventStreamError({"Error": {"Code": "internalServerException", "Message": "Oops."}}, "ConverseStream")
+    model = ScriptedModel([error])
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    with pytest.raises(EventStreamError):
         await reflection.propose(request(events=events))
-    assert [e for e, _ in events] == ["proposer_retry"] * 3 + ["proposer_usage"]
+    assert model.calls == 8
+    assert [e for e, _ in events] == ["proposer_retry"] * 8 + ["proposer_usage"]  # the 8th failure is raised
+
+
+async def test_an_infrastructure_failure_on_every_try_raises():
+    model = ScriptedModel([InfrastructureError("bedrock is down")])
+    reflection = Reflection(model)
+    reflection._warned = True
+    with pytest.raises(InfrastructureError):
+        await reflection.propose(request())
+    assert model.calls == 8
+
+
+async def test_a_stream_broken_after_it_started_is_retried_in_the_same_conversation():
+    class BreaksMidStream(Recording):
+        """The second call's stream breaks after its first delta."""
+
+        async def stream(self, *args, **kwargs):
+            broken = self.calls == 1
+            async for event in super().stream(*args, **kwargs):
+                yield event
+                if broken and "contentBlockDelta" in event:
+                    raise TRANSIENT[1]
+
+    turns = [ToolUse("shell", {"command": "ls"}), write("p.txt", "Be")]
+    turns += [write("p.txt", "Be brief."), submit(prompt="p.txt"), "Done."]
+    model = BreaksMidStream(turns)
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    (patch,) = await reflection.propose(request(events=events))
+    assert patch.updates == {"prompt": "Be brief.\n"}
+    assert [e for e, _ in events] == ["proposer_retry"]
+    assert [len(sent) for sent in model.sent] == [1, 3, 3, 5, 7]  # the broken reply was never added
+
+
+CREDENTIAL_ERRORS = [
+    NoCredentialsError(),
+    TokenRetrievalError(provider="sso", error_msg="the SSO session has expired"),
+    ClientError(
+        {"Error": {"Code": "ExpiredTokenException", "Message": "The security token is expired."}}, "ConverseStream"
+    ),
+]
+
+
+@pytest.mark.parametrize("error", CREDENTIAL_ERRORS, ids=lambda error: type(error).__name__)
+async def test_a_credential_error_is_raised_at_once(error):
+    """Missing, unloadable, or expired credentials: waiting doesn't fix them, so no try is spent on a retry."""
+    model = ScriptedModel([error])
+    reflection = Reflection(model)
+    reflection._warned = True
+    with pytest.raises(type(error)):
+        await reflection.propose(request())
+    assert model.calls == 1
+
+
+NOT_TRANSIENT = [
+    ClientError(
+        {"Error": {"Code": "AccessDeniedException", "Message": "You don't have access to the model."}},
+        "ConverseStream",
+    ),
+    ClientError(
+        {"Error": {"Code": "ValidationException", "Message": "The provided model identifier is invalid."}},
+        "ConverseStream",
+    ),
+    ValueError("no such model"),
+]
+
+
+@pytest.mark.parametrize("error", NOT_TRANSIENT, ids=lambda error: str(error)[:40])
+async def test_an_error_not_worth_retrying_is_raised_at_once(error):
+    """A wrong model id or no access fails every try the same way: raised at once, never hidden as `[]`."""
+    model = ScriptedModel([error])
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    with pytest.raises(type(error)):
+        await reflection.propose(request(events=events))
+    assert model.calls == 1
+    assert [e for e, _ in events] == ["proposer_usage"]
+
+
+async def test_a_reply_cut_at_the_output_limit_is_sent_back_in_the_same_conversation():
+    model = Recording(
+        [ToolUse("shell", {"command": "ls"}), CutOff(), write("p.txt", "Be brief."), submit(prompt="p.txt"), "Done."]
+    )
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    (patch,) = await reflection.propose(request(events=events))
+    assert patch.updates == {"prompt": "Be brief.\n"} and patch.rationale == "Done."
+    assert events == []
+    after = model.sent[2]  # the task, the `ls` call and its result, the cut reply, then the send-back
+    assert len(after) == 5 and "Write a new version of the parameters" in after[0]["content"][0]["text"]
+    assert after[3]["role"] == "assistant" and not any("toolUse" in block for block in after[3]["content"])
+    assert after[4] == {"role": "user", "content": [{"text": CUT_OFF}]}
+
+
+async def test_a_value_submitted_before_a_cut_reply_is_kept():
+    (patch,), events, _ = await propose([write("p.txt", "Be brief."), submit(prompt="p.txt"), CutOff(), "Done."])
+    assert patch.updates == {"prompt": "Be brief.\n"} and patch.rationale == "Done."
+    assert events == []
+
+
+async def test_a_send_back_cut_at_the_output_limit_is_sent_back_again():
+    turns = [write("p.txt", "x" * 80), submit(prompt="p.txt"), "Done.", CutOff()]
+    turns += [write("p.txt", "Ask for the number."), submit(prompt="p.txt"), "Shortened."]
+    (patch,), events, _ = await propose(turns)
+    assert patch.updates == {"prompt": "Ask for the number.\n"} and patch.state["revised"] == [{"prompt": 80}]
+    assert events == []
+
+
+async def test_the_cut_replies_are_counted_over_the_whole_conversation():
+    """One cut in the first call and two in an over-limit send-back: the third is raised."""
+    model = ScriptedModel([CutOff(), write("p.txt", "x" * 80), submit(prompt="p.txt"), "Done.", CutOff()])
+    reflection = Reflection(model)
+    reflection._warned = True
+    with pytest.raises(MaxTokensReachedException, match="3 times"):
+        await reflection.propose(request())
+    assert model.calls == 6  # the cut, the write, the submit, the answer, then the send-back's two cuts
+
+
+async def test_a_third_cut_discards_an_earlier_submission():
+    model = ScriptedModel([write("p.txt", "Be brief."), submit(prompt="p.txt"), CutOff()])
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    with pytest.raises(MaxTokensReachedException):
+        await reflection.propose(request(events=events))
+    assert [e for e, _ in events] == ["proposer_usage"]
+
+
+async def test_a_reply_cut_at_the_output_limit_every_time_is_raised_after_2_send_backs():
+    model = ScriptedModel([CutOff()])
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    with pytest.raises(MaxTokensReachedException, match="cut at the model's output limit 3 times"):
+        await reflection.propose(request(events=events))
+    assert model.calls == 3
+    assert [e for e, _ in events] == ["proposer_usage"]
 
 
 async def test_a_value_naming_a_shown_case_is_screened():
@@ -336,23 +521,23 @@ async def test_a_value_still_over_its_cap_after_the_send_backs_logs_the_total_sp
     assert usage.tokens == 6 * 15  # the first call and its send-back
 
 
-async def test_every_attempt_failing_logs_all_their_spend_then_raises():
-    turns = [ToolUse("shell", {"command": "ls"}), ValueError("stream broke")] * 4
+async def test_a_failing_agent_logs_its_spend_then_raises():
+    turns = [ToolUse("shell", {"command": "ls"}), ValueError("stream broke")]
     reflection = Reflection(ScriptedModel(turns))
     reflection._warned = True
     events = []
     with pytest.raises(EventLoopException, match="stream broke"):  # Strands wraps an error after a tool call
         await reflection.propose(request(events=events))
-    assert [e for e, _ in events] == ["proposer_retry"] * 3 + ["proposer_usage"]
-    assert usage_events(events)[0].tokens == 4 * 15  # each attempt's one model call that answered
+    assert [e for e, _ in events] == ["proposer_usage"]
+    assert usage_events(events)[0].tokens == 15  # the one model call that answered
 
 
 async def test_a_patch_carries_its_calls_spend_and_logs_none():
-    turns = [ToolUse("shell", {"command": "ls"}), ValueError("stream broke")]
+    turns = [ToolUse("shell", {"command": "ls"}), TRANSIENT[1]]
     turns += [write("p.txt", "Be brief."), submit(prompt="p.txt"), "Done."]
     (patch,), events, _ = await propose(turns)
     assert [e for e, _ in events] == ["proposer_retry"]
-    assert patch.usage.tokens == 4 * 15  # the failed attempt's call and the successful attempt's three
+    assert patch.usage.tokens == 4 * 15  # the four model calls that answered, around the one retried
 
 
 async def test_nothing_to_learn_from_logs_no_spend():
@@ -393,6 +578,6 @@ async def test_a_later_slot_raising_logs_the_spend_of_the_patches_never_returned
     events = []
     with pytest.raises(ValueError, match="model gone"):
         await reflection.propose(request(n=2, events=events))
-    assert [e for e, _ in events] == ["proposer_retry"] * 3 + ["proposer_usage"] * 2
+    assert [e for e, _ in events] == ["proposer_usage"] * 2
     failed, first = usage_events(events)
-    assert (failed.tokens, first.tokens) == (0, 45)  # the failing slot's attempts answered nothing; slot 0's patch
+    assert (failed.tokens, first.tokens) == (0, 45)  # the failing slot's call answered nothing; slot 0's patch

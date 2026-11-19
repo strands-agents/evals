@@ -15,16 +15,18 @@ from .protocols import Fit
 def effects(fit: Fit) -> list[dict[str, Any]]:
     """Per goal metric and option (choice option, number bin, text rewritten vs default).
 
-    Each row: `metric`, `key`, `level`, `reference`, `mean`, `ci90`, `p_positive`, in the metric's units:
-    the level's effect against the reference level, every other factor at its reference (a number bin's
-    includes its trend between the two bins). A `BayesBenchModel` fit only (`Fit` has no effects method);
-    another model's fit gives `[]`.
+    Each row: `metric`, `key`, `level`, `reference`, `mean`, `ci90`, `p_positive`, `flagged`. The effect is
+    in the metric's units: the level's effect against the reference level, every other factor at its
+    reference (a number bin's includes its trend between the two bins). `flagged` is whether the fit's
+    held-out check flagged the metric (`Fit.flagged`). A `BayesBenchModel` fit only (`Fit` has no effects
+    method); another model's fit gives `[]`.
 
     Args:
         fit: The search fit.
     """
     if not isinstance(fit, BayesBenchFit):
         return []
+    flagged = set(fit.flagged)
     rows = []
     for metric, model in fit.metrics.items():
         for factor, level, contrast_row in fit.design.contrasts():
@@ -39,6 +41,7 @@ def effects(fit: Fit) -> list[dict[str, Any]]:
                     "mean": estimate.mean,
                     "ci90": list(estimate.ci90),
                     "p_positive": contrast.p_positive,
+                    "flagged": metric in flagged,
                 }
             )
     return rows
@@ -50,12 +53,18 @@ def effects_json(fit: Fit | None, criteria: Criteria, *, error: str | None = Non
     `{"effects": effects(fit), "factors", "omitted" (design(fit)), "goals", "metrics", "reason": None}`.
     `goals` lists each objective and constraint (`role`, `index`, `metric`, `better`: "higher" | "lower");
     `metrics` gives each fitted goal metric's scale (`unit`, `offset`), noise, observation count,
-    held-out diagnostics, and prior scales with the weights of the likeliest grid points. With no fit, a last
-    refit that raised (`error`), or any metric flagged, `effects`, `factors`, and `omitted` are empty and
-    `reason` says why: "no fit: fewer than 2 eligible candidates",
-    "the model raised: ...", "flagged: ...", or, for a fit from another score model than
-    `BayesBenchModel`, "effects need a BayesBenchModel fit". `metrics` is filled for a flagged fit too, so
-    the diagnostics show why.
+    held-out diagnostics, and prior scales with the weights of the likeliest grid points. With no fit, a
+    last refit that raised (`error`), or a fit from another score model than `BayesBenchModel`, `effects`,
+    `factors`, `omitted`, and `metrics` are empty and `reason` says why: "no fit: fewer than 2 eligible
+    candidates", "the model raised: ...", or "effects need a BayesBenchModel fit".
+
+    A fit with flagged metrics still gives every metric's effects. Each row's `flagged` says whether its own
+    metric's held-out check flagged, as `metrics[metric]["diagnostics"]["flagged"]` does: a complete window
+    of earlier fits' predictions for later candidates missed by more, or more to one side, than their stated
+    uncertainty allows. False is not a pass while the first window is incomplete (see `n_holdout` and
+    `messages`). The flag is sticky: every later search fit carries it. The search doesn't use a fit with
+    any flagged metric (the ranking is by measured means; selection and the proposers get no fit), so a
+    flagged fit's effects are a report only.
 
     Args:
         fit: The search fit, or None.
@@ -97,9 +106,6 @@ def effects_json(fit: Fit | None, criteria: Criteria, *, error: str | None = Non
         }
         for metric, d in fit.diagnostics.items()
     }
-    if fit.flagged:
-        out["reason"] = f"flagged: {', '.join(fit.flagged)}"
-        return out
     out["effects"] = effects(fit)
     out.update(design(fit))
     return out

@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pytest
 
 from strands_evals.types.evaluation import EvaluationOutput
-from strands_evals.types.optimization import TrialRecord, TrialStatus, Usage
+from strands_evals.types.optimization import AttemptRecord, TrialRecord, TrialStatus, Usage
 from strands_evals.types.trace import (
     AgentInvocationSpan,
     AssistantMessage,
@@ -158,6 +158,25 @@ def test_trial_record_without_trajectory_round_trips_through_json():
     restored = TrialRecord.model_validate_json(record.model_dump_json())
 
     assert restored == record
+
+
+def test_a_record_saved_without_benchmark_usage_loads_with_none_spent():
+    attempt = AttemptRecord(
+        status=TrialStatus.INFRASTRUCTURE_INVALID,
+        error_type="InfrastructureError",
+        error="down",
+        usage=_usage(),
+        judge_usage=Usage.zero(),
+        pass_index=0,
+        rollouts=1,
+    )
+    saved = _record(None).model_copy(update={"previous_attempts": [attempt]}).model_dump(mode="json")
+    del saved["benchmark_usage"], saved["previous_attempts"][0]["benchmark_usage"]
+
+    restored = TrialRecord.model_validate(saved)
+
+    assert restored.benchmark_usage == Usage.zero()
+    assert restored.previous_attempts[0].benchmark_usage == Usage.zero()
 
 
 def test_status_is_restored_as_trial_status():

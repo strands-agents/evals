@@ -366,9 +366,11 @@ class Criteria:
         return tuple(_oriented(t, metrics[t.metric]) for t in self._terms)
 
     def unmet_constraints(self, metrics_by_case: Mapping[str, Mapping[str, float]]) -> list[str]:
-        """One sentence per constraint not met on measured means; a constraint never measured counts as unmet.
+        """One sentence per constraint not met on plain measured means; a constraint never measured counts as unmet.
 
-        Sentences, as `CandidateLabel.unmet_constraints`; the per-constraint margins are `Assessment.violations`.
+        Worded as `CandidateLabel.unmet_constraints`. The ranking and the label judge measured means adjusted for
+        N/A cases instead (`assess`), so for a candidate with N/A cases the result can differ from
+        `Assessment.violations`.
 
         `metrics_by_case` maps case name -> metric name -> value, as `CandidateScores.metrics_by_case`.
         """
@@ -478,7 +480,9 @@ def _case_metrics(
     Evaluator metrics: completed runs as measured, `agent_failure` runs as `criteria.agent_failure_value(metric)`
     (left out when None, and applied even to an evaluator another run of the case found N/A), N/A rows
     dropped, an evaluator that raised left out. Usage metrics: completed and `agent_failure` runs as measured
-    (a crash's tokens are real cost). `infrastructure_invalid` and `evaluator_invalid` runs are left out.
+    (a crash's tokens are real cost), except an `agent_failure` run whose candidate made no model call, which
+    is left out: it measured nothing, and counting 0 would rank a crashing candidate as the cheapest.
+    `infrastructure_invalid` and `evaluator_invalid` runs are left out.
     An evaluator value outside its range (beyond float noise at an end) is taken out with the reason "give
     the evaluator a score_range = (low, high)", never clipped, and a NaN or infinite evaluator or usage value
     with "is not a finite number"; the trial's saved status is left as is.
@@ -503,13 +507,16 @@ def _case_metrics(
         )
         if record.status not in (TrialStatus.COMPLETED, TrialStatus.AGENT_FAILURE):
             continue
-        for metric in USAGE_METRICS:
-            usage = _usage_value(record.usage, metric)
-            if usage is not None and not math.isfinite(usage):
-                not_finite = f"{metric}={usage!r} is not a finite number"
-                unavailable.setdefault(record.case_name, {}).setdefault(record.run_index, {})[metric] = not_finite
-                continue
-            values[metric][record.run_index] = usage
+        # A crash before the candidate's first model call measured no cost; counting 0 would rank it cheapest.
+        usage_measured = record.status is TrialStatus.COMPLETED or record.usage.model_calls > 0
+        if usage_measured:
+            for metric in USAGE_METRICS:
+                usage = _usage_value(record.usage, metric)
+                if usage is not None and not math.isfinite(usage):
+                    not_finite = f"{metric}={usage!r} is not a finite number"
+                    unavailable.setdefault(record.case_name, {}).setdefault(record.run_index, {})[metric] = not_finite
+                    continue
+                values[metric][record.run_index] = usage
         for metric in registry.evaluators:
             if record.status is TrialStatus.AGENT_FAILURE:
                 values[metric][record.run_index] = criteria.agent_failure_value(metric)
@@ -576,8 +583,8 @@ def measured_metrics(scores: CandidateScores, registry: MetricRegistry) -> dict[
     The unit is the case (its mean over runs, `scores.metrics_by_case`); for a metric only one case has a
     value for (a single-case split, or the other cases unmeasured), the unit is that case's runs, so it still
     gets an interval. Chosen per metric. A metric with no value is left out. For reporting only
-    (`CandidateLabel`, `ValidationReport`, `TestReport`, `CandidateSummary`); the ranking keeps using
-    `CandidateScores.objective` and the fit.
+    (`CandidateLabel`, `ValidationReport`, `TestReport`, `CandidateSummary`); the ranking uses the fit, or
+    measured means adjusted for the cases a candidate has no value on.
 
     Args:
         scores: One candidate's scores on one split.
@@ -658,8 +665,8 @@ def _split_scores(
         if (case_values := [case[metric] for case in metrics_by_case.values() if metric in case])
     }
     objective = criteria.objective_value(goal_means)
-    # Eligible candidates are fitted and ranked by `objective` (and under Pareto by every term), so it must be
-    # measured: a goal evaluator N/A on every case passes the per-case check below but can leave it unmeasured.
+    # Eligible candidates are fitted and ranked on these goal means (and under Pareto on every term), so `objective`
+    # must be measured: a goal evaluator N/A on every case passes the per-case check below but can leave it unmeasured.
     eligible = (
         objective is not None
         and (not criteria.is_pareto or criteria.terms(goal_means) is not None)
