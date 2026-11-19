@@ -5,7 +5,9 @@ import math
 import shutil
 import threading
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import botocore.exceptions
 import pytest
@@ -48,12 +50,16 @@ from strands_evals.optimization import (
     tunable,
 )
 from strands_evals.optimization.declaration.space import Space
-from strands_evals.optimization.optimizer import _slots_used
+from strands_evals.optimization.optimizer import _executor_threads, _loop_executor_threads, _slots_used
 from strands_evals.optimization.record.resume import load_state
 from strands_evals.optimization.record.run_directory import RunDirectory
 from strands_evals.optimization.search.blocks import _saved
 from strands_evals.optimization.selection.top_ranked import TopRanked
 from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
+
+# Many tests here call run_async with max_workers=64 on pytest's loop, whose default executor is smaller; their
+# rollouts use no threads. The tests of that warning record warnings with the "always" filter, which overrides this.
+pytestmark = pytest.mark.filterwarnings("ignore:the event loop's default executor:UserWarning")
 
 
 class Score(Evaluator):
@@ -526,6 +532,77 @@ def test_setup_warns_when_a_step_runs_in_batches(tmp_path):
     optimizer = _optimizer(base_dir=tmp_path)
     with pytest.warns(UserWarning, match=r"4 candidates x 8 train cases x 1 runs = 32 trials, but max_workers is 4"):
         optimizer._setup()
+
+
+# run() and the event loop's default executor
+
+
+def test_run_gives_its_loop_a_default_executor_wider_than_max_workers(tmp_path):
+    # 40 calls must all be in a thread at once: more than max_workers, and more than asyncio's default (at most 32)
+    n = 40
+    optimizer = _optimizer(base_dir=tmp_path, max_workers=5)
+    barrier = threading.Barrier(n, timeout=10)
+    threads = []
+
+    def wait():
+        threads.append(threading.current_thread())
+        barrier.wait()  # breaks unless all n calls are running at once
+
+    async def run_async():
+        await asyncio.gather(*(asyncio.to_thread(wait) for _ in range(n)))
+        return "done"
+
+    optimizer.run_async = run_async
+    assert optimizer.run() == "done"
+    assert not any(thread.is_alive() for thread in threads)  # the executor is shut down with the loop
+
+
+def test_run_does_not_warn_about_the_default_executor(tmp_path):
+    optimizer = _searching(
+        Block(Scripted({"temperature": 0.5}), "temperature"),
+        schedule=Alternate(),
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = optimizer.run()
+    assert isinstance(result, OptimizationResult)
+    assert not [w for w in caught if "default executor" in str(w.message)]
+
+
+async def test_run_async_warns_when_the_loops_default_executor_is_smaller_than_max_workers(tmp_path):
+    optimizer = _quiet(base_dir=tmp_path, rollout_fn=_rollout(InfrastructureError("sandbox down")), rerun_passes=0)
+    warning = (
+        r"default executor has \d+ threads but max_workers is 64: .*set_default_executor\(ThreadPoolExecutor\(512\)\)"
+    )
+    with pytest.warns(UserWarning, match=warning), pytest.raises(RuntimeError, match="unmeasured"):
+        await optimizer.run_async()
+
+
+def test_run_async_does_not_warn_once_the_loop_has_max_workers_threads(tmp_path):
+    optimizer = _quiet(base_dir=tmp_path, rollout_fn=_rollout(InfrastructureError("sandbox down")), rerun_passes=0)
+
+    async def main():
+        asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(64))
+        with pytest.raises(RuntimeError, match="unmeasured"):
+            await optimizer.run_async()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        asyncio.run(main())
+    assert not [w for w in caught if "default executor" in str(w.message)]
+
+
+def test_executor_sizes():
+    assert (_executor_threads(1), _executor_threads(64)) == (32, 512)  # 8 per trial, at least 32
+    small = ThreadPoolExecutor(max_workers=3)
+    assert _loop_executor_threads(SimpleNamespace(_default_executor=small)) == 3
+    # not created yet: asyncio will create ThreadPoolExecutor() with its default size
+    assert _loop_executor_threads(SimpleNamespace(_default_executor=None)) == ThreadPoolExecutor()._max_workers
+    assert _loop_executor_threads(SimpleNamespace(_default_executor=object())) is None  # another kind of executor
+    assert _loop_executor_threads(object()) is None  # a loop that doesn't expose the attribute
 
 
 # the search loop
