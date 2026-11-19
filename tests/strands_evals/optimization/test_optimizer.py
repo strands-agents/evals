@@ -1847,7 +1847,7 @@ async def test_the_result_reloads_whole_without_the_run_folder_and_summarizes(tm
     text = result.summary()
     assert f"Ships candidate {result.best.number} ({result.best.id})" in text
     assert "Validation:" in text and "Test, the champion vs the baseline" in text
-    assert "temperature: 0.0 -> 1.0" in text
+    assert "Changes: 0 files or text values in diff()\n  temperature: 0.0 -> 1.0" in text
     with pytest.raises(ValueError, match="unknown grain"):
         result.to_rows("trial")
 

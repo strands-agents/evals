@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from strands_evals.optimization import FileText, JsonField, SkillLibrary, Space, TextValue, tunable
+from strands_evals.optimization import FileText, Float, Int, JsonField, OneOf, SkillLibrary, Space, TextValue, tunable
 from strands_evals.optimization.declaration.files import _location_in_copy, _write_text_atomically
 from strands_evals.optimization.declaration.tunable import _KEPT_UNTIL_EXIT
 
@@ -141,17 +141,11 @@ def test_json_field_non_string_value_must_be_json(project):
         space.validate({"limits": "NaN"})
 
 
-@pytest.mark.parametrize("value", ['"7"', "[7]", '{"turns": "7"}', "true", "null"])
-def test_a_non_string_json_field_takes_only_its_baselines_kind(project, value):
-    space = Space({"turns": JsonField(project / "config" / "agent.json", "/agent/limits/turns")})
-    with pytest.raises(ValueError, match="expected a JSON number like the file's 4"):
-        space.validate({"turns": value})
-
-
-def test_a_numeric_json_field_takes_an_int_or_a_float(project):
-    space = Space({"turns": JsonField(project / "config" / "agent.json", "/agent/limits/turns")})
-    space.validate({"turns": "4.5"})
-    space.validate({"turns": "5"})
+@pytest.mark.parametrize("value", ['"7"', "[7]", "7", "true", "null"])
+def test_an_object_json_field_takes_only_an_object(project, value):
+    space = Space({"limits": JsonField(project / "config" / "agent.json", "/agent/limits")})
+    with pytest.raises(ValueError, match="expected a JSON object like the file's"):
+        space.validate({"limits": value})
 
 
 def test_a_null_json_field_takes_any_kind(tmp_path):
@@ -161,10 +155,10 @@ def test_a_null_json_field_takes_any_kind(tmp_path):
         space.validate({"stop": value})
 
 
-def test_an_out_of_range_json_number_fails_validation(project):
-    space = Space({"turns": JsonField(project / "config" / "agent.json", "/agent/limits/turns")})
-    with pytest.raises(ValueError, match="turns: not valid JSON"):
-        space.validate({"turns": "1e400"})
+def test_an_out_of_range_json_number_in_an_array_fails_validation(project):
+    space = Space({"tags": JsonField(project / "config" / "agent.json", "/agent/tags")})
+    with pytest.raises(ValueError, match="tags: not valid JSON"):
+        space.validate({"tags": "[1e400]"})
 
 
 def test_size_cap_is_checked_on_the_json_text_as_stored(project, tmp_path):
@@ -193,21 +187,21 @@ def test_canonical_json_keeps_key_order_and_leaves_bad_json_to_validate(project)
 @pytest.mark.parametrize("edited", [{"agent": "flat"}, {"other": 1}])
 def test_writing_a_json_field_the_file_lost_since_declaration_names_it(project, edited):
     path = project / "config" / "agent.json"
-    field = JsonField(path, "/agent/limits/turns")
+    field = JsonField(path, "/agent/limits/turns", Int(1, 20))
     path.write_text(json.dumps(edited), newline="")
     with pytest.raises(TypeError, match="has no field at '/agent/limits/turns'"):
-        field.write("5", path)
+        field.write(5, path)
 
 
 def test_a_json_file_deleted_or_broken_since_declaration_is_named_in_the_copy_error(project, tmp_path_factory):
     path = project / "config" / "agent.json"
-    space = Space({"turns": JsonField(path, "/agent/limits/turns")})
+    space = Space({"turns": JsonField(path, "/agent/limits/turns", Int(1, 20))})
     path.write_text("{oops", newline="")
     with pytest.raises(TypeError, match="agent.json is no longer valid JSON"):
-        space.create_candidate_copy({"turns": "5"}, tmp_path_factory.mktemp("run") / "broken")
+        space.create_candidate_copy({"turns": 5}, tmp_path_factory.mktemp("run") / "broken")
     path.unlink()
     with pytest.raises(TypeError, match="agent.json no longer exists"):
-        space.create_candidate_copy({"turns": "5"}, tmp_path_factory.mktemp("run") / "deleted")
+        space.create_candidate_copy({"turns": 5}, tmp_path_factory.mktemp("run") / "deleted")
 
 
 def test_a_string_json_field_is_never_rewritten(project):
@@ -224,6 +218,169 @@ def test_json_field_source_names_the_pointer(project):
     space = Space({"prompt": JsonField(project / "config" / "agent.json", "/agent/system_prompt")})
     assert space.param("prompt").source.pointer == "/agent/system_prompt"
     assert space.param("prompt").source.as_path is False
+
+
+# JsonField: numbers, booleans, and markers
+
+
+SETTINGS = {"temperature": 0.7, "max_turns": 2, "stream": False, "top_p": 1, "model": "small", "stop": None}
+
+
+@pytest.fixture
+def settings(tmp_path):
+    path = tmp_path / "settings" / "agent.json"
+    path.parent.mkdir()
+    extra = {"tags": ["a"], "seed": 2**53 + 1, "huge": 10**400}
+    path.write_text(json.dumps({**SETTINGS, **extra}, indent=4) + "\n", newline="")
+    return path
+
+
+def typed_space(settings):
+    return Space(
+        {
+            "temperature": JsonField(settings, "/temperature", Float(0.0, 1.0)),
+            "max_turns": JsonField(settings, "/max_turns", Int(1, 20)),
+            "stream": JsonField(settings, "/stream"),
+            "top_p": JsonField(settings, "/top_p", Float(0.0, 1.0)),
+            "model": JsonField(settings, "/model", OneOf("small", "large")),
+            "stop": JsonField(settings, "/stop", OneOf(None, "END")),
+        }
+    )
+
+
+def test_a_json_number_is_searched_with_its_int_or_float(settings):
+    space = Space(
+        {
+            "max_turns": JsonField(settings, "/max_turns", Int(1, 20)),
+            "temperature": JsonField(settings, "/temperature", Float(0.01, 1.0, log=True)),
+        }
+    )
+    turns, temperature = space.param("max_turns"), space.param("temperature")
+    assert (turns.kind, turns.default, turns.min_value, turns.max_value) == ("int", 2, 1, 20)
+    assert type(turns.default) is int
+    assert (temperature.kind, temperature.default, temperature.log) == ("float", 0.7, True)
+    assert turns.source.pointer == "/max_turns"
+
+
+def test_a_float_takes_an_integer_in_the_file_as_a_float(settings):
+    space = Space({"top_p": JsonField(settings, "/top_p", Float(0.0, 1.0))})
+    assert (space.param("top_p").default, type(space.param("top_p").default)) == (1.0, float)
+    space.validate({"top_p": 0.5})
+
+
+def test_a_json_boolean_is_a_choice_of_false_and_true(settings):
+    space = Space({"stream": JsonField(settings, "/stream")})
+    info = space.param("stream")
+    assert (info.kind, info.default, info.options) == ("one_of", False, (False, True))
+    space.validate({"stream": True})
+    for value in ("true", 1, None):
+        with pytest.raises(ValueError, match="is not one of"):
+            space.validate({"stream": value})
+
+
+def test_a_one_of_searches_a_json_string_or_null_among_its_options(settings):
+    space = typed_space(settings)
+    assert (space.param("model").kind, space.param("model").default) == ("one_of", "small")
+    assert (space.param("stop").kind, space.param("stop").default) == ("one_of", None)
+    with pytest.raises(ValueError, match="'medium' is not one of"):
+        space.validate(space.complete({"model": "medium"}))
+
+
+@pytest.mark.parametrize(
+    "value, message",
+    [
+        ("2.0", "expected int, got '2.0'"),
+        ("2", "expected int, got '2'"),
+        (2.0, "expected int, got 2.0"),
+        (2.5, "expected int, got 2.5"),
+        (True, "expected int, got True"),
+        (-1, "-1 is outside \\[1, 20\\]"),
+        (10**9, "1000000000 is outside \\[1, 20\\]"),
+    ],
+)
+def test_an_int_json_field_takes_only_ints_within_its_bounds(settings, value, message):
+    space = Space({"max_turns": JsonField(settings, "/max_turns", Int(1, 20))})
+    space.validate({"max_turns": 3})
+    with pytest.raises(ValueError, match=f"max_turns: {message}"):
+        space.validate(space.complete({"max_turns": value}))
+
+
+def test_a_json_number_without_a_marker_fails_at_declaration(settings):
+    with pytest.raises(TypeError, match="is a number \\(0.7\\); pass the Int or Float"):
+        JsonField(settings, "/temperature")
+
+
+@pytest.mark.parametrize(
+    "pointer, marker, message",
+    [
+        ("/temperature", Float(0.0, 0.5), "the file's value 0.7"),
+        ("/temperature", Int(0, 1), "the file's value 0.7"),
+        ("/stream", Int(0, 1), "the file's value False"),
+        ("/model", OneOf("tiny", "large"), "the file's value 'small'"),
+        ("/stop", Int(0, 1), "is null, which only a OneOf listing None can hold"),
+        ("/tags", OneOf("a", "b"), "is a JSON array; a marker applies to"),
+        ("/seed", Float(0.0, 2.0**60), "beyond 2\\*\\*53, where a float stops holding every integer"),
+        ("/huge", Float(0.0, 1.0), "beyond 2\\*\\*53"),
+        ("/max_turns", Int(1, 20, default=3), "pass the marker without default="),
+        ("/model", TextValue(), "marker must be an Int, Float, or OneOf"),
+    ],
+)
+def test_a_marker_that_does_not_fit_the_field_fails_at_declaration(settings, pointer, marker, message):
+    with pytest.raises(TypeError, match=message):
+        JsonField(settings, pointer, marker)
+
+
+@pytest.mark.parametrize(
+    "pointer, marker, kwargs",
+    [
+        ("/max_turns", Int(1, 20), {"size_cap": 10}),
+        ("/model", OneOf("small", "large"), {"edit_instructions": "Pick one."}),
+        ("/stream", None, {"size_cap": 10}),
+    ],
+)
+def test_text_options_for_a_key_that_is_not_text_fail_at_declaration(settings, pointer, marker, kwargs):
+    with pytest.raises(TypeError, match="apply only to a text value"):
+        JsonField(settings, pointer, marker, **kwargs)
+
+
+def test_the_factory_receives_json_numbers_and_booleans_as_values(settings):
+    @tunable(
+        temperature=JsonField(settings, "/temperature", Float(0.0, 1.0)),
+        max_turns=JsonField(settings, "/max_turns", Int(1, 20)),
+        stream=JsonField(settings, "/stream"),
+        model=JsonField(settings, "/model"),
+    )
+    def make(**values):
+        return values
+
+    assert make() == {"temperature": 0.7, "max_turns": 2, "stream": False, "model": "small"}
+    bound = make.bind({"max_turns": 3, "stream": True})()
+    assert (bound["max_turns"], type(bound["max_turns"]), bound["stream"]) == (3, int, True)
+
+
+def test_the_baseline_copy_of_typed_json_fields_keeps_the_files_bytes(settings, tmp_path):
+    space = typed_space(settings)
+    workspace = tmp_path / "run" / "optimization_files"
+    space.create_candidate_copy(space.complete({}), workspace)
+    assert copied(space, workspace, settings).read_bytes() == settings.read_bytes()
+
+
+def test_the_copy_writes_typed_json_fields_as_json_values(settings, tmp_path):
+    space = typed_space(settings)
+    changed = {"temperature": 0.25, "max_turns": 3, "stream": True, "top_p": 0.5, "model": "large", "stop": "END"}
+    workspace = tmp_path / "run" / "optimization_files"
+    space.create_candidate_copy(space.complete(changed), workspace)
+    document = json.loads(copied(space, workspace, settings).read_text())
+    assert {key: document[key] for key in SETTINGS} == changed
+    assert type(document["max_turns"]) is int and document["stream"] is True
+
+
+def test_an_unchanged_float_over_an_integer_keeps_the_files_integer(settings, tmp_path):
+    space = typed_space(settings)
+    workspace = tmp_path / "run" / "optimization_files"
+    space.create_candidate_copy(space.complete({"max_turns": 3}), workspace)
+    document = json.loads(copied(space, workspace, settings).read_text())
+    assert (document["max_turns"], document["top_p"], type(document["top_p"])) == (3, 1, int)
 
 
 # Overlapping declarations
