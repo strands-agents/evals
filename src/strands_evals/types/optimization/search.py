@@ -147,8 +147,9 @@ class Observation(BaseModel):
 
 
 class Evidence(BaseModel):
-    """A candidate another block proposed, told to every other block's proposer (except one waiting for an open
-    `Nested` round's end, which is told only the round's best).
+    """A scored candidate told to a proposer that didn't propose it: the baseline, told to every block's proposer
+    at setup (`origin` is `["baseline"]`), and each candidate another block proposed, told to every other block's
+    proposer (except one waiting for an open `Nested` round's end, which is told only the round's best).
 
     `objective`, `term_values`, and `violations` are snapshots, as in `Observation`.
     """
