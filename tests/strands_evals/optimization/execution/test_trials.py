@@ -2,6 +2,7 @@ import asyncio
 import copy
 import datetime
 import enum
+import errno
 import gc
 import json
 import logging
@@ -11,6 +12,7 @@ import threading
 
 import opentelemetry.trace as trace_api
 import pytest
+from botocore.exceptions import CredentialRetrievalError, ProfileNotFound
 from pydantic import BaseModel
 from strands import Agent
 from strands.types.exceptions import ModelThrottledException
@@ -19,7 +21,7 @@ from strands_evals import Case
 from strands_evals.evaluators import Evaluator
 from strands_evals.optimization import Budget, InfrastructureError, TextValue, tunable
 from strands_evals.optimization.declaration.tunable import _FactoryArgumentError
-from strands_evals.optimization.execution.rollout import make_task
+from strands_evals.optimization.execution.rollout import default_rollout, make_task
 from strands_evals.optimization.execution.traces import TraceCapture
 from strands_evals.optimization.execution.trials import TrialRunner, _EvaluatorProxy, _TrialState
 from strands_evals.optimization.record.run_directory import RunDirectory
@@ -666,6 +668,36 @@ async def test_an_infrastructure_failure_is_re_run_within_the_allowance(traces):
     assert record.rollouts + sum(a.rollouts for a in record.previous_attempts) == spent
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        OSError(errno.EMFILE, "Too many open files"),
+        ProfileNotFound(profile="bedrock"),
+        CredentialRetrievalError(provider="assume-role", error_msg="metadata service timed out"),
+    ],
+    ids=["OSError-EMFILE", "ProfileNotFound", "CredentialRetrievalError"],
+)
+async def test_a_factory_that_runs_out_of_files_or_credentials_is_re_run(traces, error):
+    built = []
+
+    def factory():
+        built.append(error)
+        if len(built) == 1:
+            raise error
+        return Agent(model=ScriptedModel(["answer"]), callback_handler=None)
+
+    records, spent = await _runner(traces, MemoryCache(), _cases("a"), [Fixed()]).run(
+        "cand", make_task(factory, default_rollout), ["a"], runs=1, allowance=2
+    )
+
+    record = records[0]
+    assert record.status is TrialStatus.COMPLETED
+    assert spent == 2
+    assert [(a.status, a.error_type) for a in record.previous_attempts] == [
+        (TrialStatus.INFRASTRUCTURE_INVALID, type(error).__name__)
+    ]
+
+
 async def test_an_exhausted_allowance_leaves_the_trial_infrastructure_invalid(traces):
     async def task(case):
         raise InfrastructureError("sandbox down")
@@ -744,6 +776,61 @@ async def test_a_re_judge_keeps_each_cost_with_what_it_bought(traces):
     assert record.judge_usage["Flaky"].tokens == 400  # the re-judge's own spend
     assert record.previous_attempts[-1].judge_usage.tokens == 400  # only the failed judge's spend: retry cost
     assert record.usage.tokens == 15
+
+
+def _conversation_task(fail_first=None):
+    """`make_task` on a factory agent answering a simulated user built in the rollout: on attempt n, the agent
+    spends 15·n tokens and the user 1,000·n; the first attempt raises `fail_first` after both have spoken."""
+    tries = []
+
+    def factory():
+        n = len(tries)
+        agent_usage = {"inputTokens": 10 * n, "outputTokens": 5 * n, "totalTokens": 15 * n}
+        return Agent(model=ScriptedModel(["answer"], usage=agent_usage), callback_handler=None)
+
+    async def rollout(agent_factory, case):
+        tries.append(case.name)
+        n = len(tries)
+        usage = {"inputTokens": 980 * n, "outputTokens": 20 * n, "totalTokens": 1000 * n}
+        user = Agent(model=ScriptedModel(["thanks"], usage=usage), callback_handler=None)
+        reply = await user.invoke_async(str(await agent_factory().invoke_async(case.input)))
+        if fail_first is not None and len(tries) == 1:
+            raise fail_first
+        return {"output": str(reply)}
+
+    return make_task(factory, rollout)
+
+
+async def test_the_benchmarks_agents_are_recorded_apart_from_the_candidates(traces):
+    records, _ = await _runner(traces, MemoryCache(), _cases("a"), [Fixed()]).run(
+        "cand", _conversation_task(), ["a"], runs=1, allowance=0
+    )
+
+    assert (records[0].usage.tokens, records[0].benchmark_usage.tokens) == (15, 1000)
+
+
+@pytest.mark.parametrize(
+    "error, allowance",
+    [(ModelThrottledException("slow down"), 0), (InfrastructureError("sandbox down"), 2)],
+    ids=["retried-by-experiment", "re-run-pass"],
+)
+async def test_an_earlier_attempt_keeps_its_benchmark_usage(traces, error, allowance):
+    records, _ = await _runner(traces, MemoryCache(), _cases("a"), [Fixed()]).run(
+        "cand", _conversation_task(fail_first=error), ["a"], runs=1, allowance=allowance
+    )
+
+    (earlier,) = records[0].previous_attempts
+    assert (earlier.usage.tokens, earlier.benchmark_usage.tokens) == (15, 1000)
+    assert (records[0].usage.tokens, records[0].benchmark_usage.tokens) == (30, 2000)
+
+
+async def test_a_re_judge_keeps_the_benchmark_usage_with_the_output(traces):
+    records, _ = await _runner(traces, MemoryCache(), _cases("a"), [Fixed("Flaky", failures=1)]).run(
+        "cand", _conversation_task(), ["a"], runs=1, allowance=0
+    )
+
+    assert records[0].benchmark_usage.tokens == 1000
+    assert records[0].previous_attempts[-1].benchmark_usage.tokens == 0
 
 
 # rejudge

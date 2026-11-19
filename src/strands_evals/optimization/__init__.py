@@ -50,7 +50,7 @@ from .declaration.tunable import BuildContext, TunableFactory, tunable
 from .end_phase import FinalPick
 from .execution.rollout import EnvironmentFn, RolloutFn, TaskFn
 from .execution.status import InfrastructureError
-from .optimizer import Optimizer
+from .optimizer import Optimizer, ProposerError
 from .result import CandidateView, Grain, OptimizationResult
 from .score_model.bayesbench import BayesBenchModel
 from .score_model.design import design
@@ -140,6 +140,7 @@ __all__ = [
     "ProposalOutcome",
     "ProposalRequest",
     "Proposer",
+    "ProposerError",
     "Range",
     "Reflection",
     "RolloutFn",

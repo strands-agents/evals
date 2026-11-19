@@ -79,6 +79,13 @@ REFUSED = (
     "submit_optimized_params."
 )
 
+# Sent in the same conversation when the agent's reply was cut off at the model's output limit; the reply stays in the
+# conversation, each tool call in it replaced by a note that it was incomplete.
+CUT_OFF = (
+    "Your last reply was cut off at the output limit, so any tool call in it did not run. Continue where you were, "
+    "keeping each reply shorter: write a long text to its file in several commands, appending part by part."
+)
+
 _TASK_OPENING = """\
 Write a new version of the parameters below, so that the agent does better on this study's goal. You have two kinds \
 of evidence: the versions measured so far, and the current version's conversations.

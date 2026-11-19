@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, BeforeValidator, ConfigDict, PlainSerializer
 
 from .estimates import Estimate
 from .scores import LabelOutcome, Measured
@@ -15,6 +16,23 @@ Value = str | int | float | bool | None
 Values = Mapping[str, Value]  # flat typed mapping, dotted keys
 
 ObservationOutcome = Literal[LabelOutcome, "invalid", "duplicate"]
+
+
+def _violation_from_json(value: Any) -> Any:
+    """JSON null back to infinity: how `_violation_to_json` writes a constraint never measured."""
+    return math.inf if value is None else value
+
+
+def _violation_to_json(value: float) -> float | None:
+    """Infinity (a constraint never measured) as null, since JSON has no infinity; any other value as is."""
+    return None if value == math.inf else value
+
+
+# One constraint's violation (`Assessment.violations`): <= 0 when met, infinite when its metric was never measured,
+# which JSON (the event log) holds as null.
+_Violation = Annotated[
+    float, BeforeValidator(_violation_from_json), PlainSerializer(_violation_to_json, when_used="json")
+]
 
 
 class Patch(BaseModel):
@@ -46,15 +64,20 @@ class CandidateSummary(BaseModel):
             `agent_failure_score=None`, which doesn't count them), so `trial_count - failures` completed: how a
             proposer tells a version that crashed from one that scored low.
         ranking_objective: What the ranking used when the request was built (`Assessment.objective`): the
-            objective over the fit's resolved estimates (a flagged metric's measured mean instead), or
-            `measured_objective` without a usable fit.
+            objective over the fit's resolved estimates (a flagged metric's measured mean instead), or without a
+            usable fit the objective over the measured means as the ranking adjusts them (`measured_objective`
+            unless the candidate has an N/A case that another assessed candidate was judged on).
         term_values: Each objective term's raw value under that ranking, as `Observation.term_values`;
             None for an ineligible candidate.
         rank: Position in that ranking, 1 = best; None for an ineligible candidate.
         estimates: Per goal metric the fit judged (a flagged metric is left out); empty when assessed by
             measured means.
-        violations: Per constraint, <= 0 when met (`Assessment.violations`); None for an ineligible
-            candidate, which has no assessment.
+        adjusted_means: Per goal metric, the adjusted mean the ranking used when assessed by measured means
+            (`Assessment.adjusted_means`): the plain mean in `measured`, or, for a candidate with an N/A case
+            that another assessed candidate was judged on, that mean with such cases filled in; empty when
+            assessed from the fit or ineligible.
+        violations: Per constraint, <= 0 when met, infinite when never measured (`Assessment.violations`;
+            null in JSON); None for an ineligible candidate, which has no assessment.
         is_feasible: Meets every constraint as the ranking assessed it; None for an ineligible candidate.
         is_eligible: Every train case measured for every goal metric (`CandidateScores.is_eligible`).
         changed_keys: Keys changed from its parent.
@@ -75,7 +98,8 @@ class CandidateSummary(BaseModel):
     term_values: list[float] | None
     rank: int | None
     estimates: dict[str, Estimate]
-    violations: list[float] | None
+    adjusted_means: dict[str, float]
+    violations: list[_Violation] | None
     is_feasible: bool | None
     is_eligible: bool
     changed_keys: list[str]
@@ -102,10 +126,11 @@ class Observation(BaseModel):
             candidate's from the step's start; for a same-step twin, told after the refit, that candidate's
             then. None if never measured.
         term_values: Each objective term's raw value (not oriented, unlike `Assessment.terms`: the resolved
-            estimate, else the measured mean), in objective order, taken with `objective`; what `TPE` is told
-            under `Pareto`. None when `objective` is None.
+            estimate, else the adjusted mean the ranking used, `Assessment.adjusted_means`), in objective order,
+            taken with `objective`; what `TPE` is told under `Pareto`. None when `objective` is None.
         reason: One sentence from train data, e.g. "tokens <= 4000: mean 4210 violates by 210".
-        violations: Per constraint, <= 0 when met, taken with `objective`; None when `objective` is None.
+        violations: Per constraint, <= 0 when met, infinite when never measured (null in the event log), taken
+            with `objective`; None when `objective` is None.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -119,12 +144,13 @@ class Observation(BaseModel):
     term_values: list[float] | None
     outcome: ObservationOutcome
     reason: str
-    violations: list[float] | None
+    violations: list[_Violation] | None
 
 
 class Evidence(BaseModel):
-    """A candidate another block proposed, told to every other block's proposer (except one waiting for an open
-    `Nested` round's end, which is told only the round's best).
+    """A scored candidate told to a proposer that didn't propose it: the baseline, told to every block's proposer
+    at setup (`origin` is `["baseline"]`), and each candidate another block proposed, told to every other block's
+    proposer (except one waiting for an open `Nested` round's end, which is told only the round's best).
 
     `objective`, `term_values`, and `violations` are snapshots, as in `Observation`.
     """
@@ -136,5 +162,5 @@ class Evidence(BaseModel):
     origin: list[str]
     objective: float | None
     term_values: list[float] | None
-    violations: list[float] | None
+    violations: list[_Violation] | None
     outcome: ObservationOutcome

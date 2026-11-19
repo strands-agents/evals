@@ -27,7 +27,8 @@ class FitData:
     Attributes:
         space: The declared space.
         text_blocks: Block name -> its text keys (each block's "rewritten?" factor).
-        candidates: Candidate id -> values, in scoring order (baseline first).
+        candidates: Candidate id -> values, in scoring order (the baseline first; the end phase's validation
+            fit leaves out a baseline with no completed validation trial).
         cases: The split's case names (train for the search fit, validation in the end phase).
         scores: Candidate id -> its `CandidateScores` on the split. A model fits the candidates whose
             `is_eligible` is true (constraint violators included), from each one's `metrics_by_run`
@@ -55,7 +56,8 @@ class MetricModel(Protocol):
     """
 
     def at(self, values: Values, candidate: str | None = None) -> Estimate:
-        """The metric's mean over the cases.
+        """The metric's mean over the cases it has a value on: a case where no fitted candidate has one (an
+        evaluator N/A there) is left out.
 
         Args:
             values: The configuration to predict: declared key -> value (see the class docstring).
