@@ -126,6 +126,11 @@ class ScannedFile:
         """For an experiment: every identifier one of its cases can be referred to by."""
         return _experiment_case_ids(self.obj)
 
+    @functools.cached_property
+    def names_only(self) -> bool:
+        """For an experiment: whether no case of it has a `session_id`, as in a file written by hand."""
+        return _names_only(self.obj)
+
 
 @dataclass
 class Discovery:
@@ -207,12 +212,22 @@ def _stem(name: str) -> str:
     return _STEM_SUFFIX.sub("", base)
 
 
-def _case_keys(report_obj: dict) -> set[str]:
-    """Identity of each row in a report, preferring session_id and falling back to name."""
+def _names_only(experiment_obj: dict) -> bool:
+    cases = experiment_obj.get("cases", [])
+    return not any(isinstance(case, dict) and case.get("session_id") is not None for case in cases)
+
+
+def _case_keys(report_obj: dict, by_name: bool = False) -> set[str]:
+    """Identity of each row in a report, preferring session_id and falling back to name.
+
+    `by_name` prefers the name, for an experiment whose cases have no session_id: a run gives each of them one
+    of its own, and the row of a task that raised records it.
+    """
+    first, then = ("name", "session_id") if by_name else ("session_id", "name")
     keys = set()
     for row in report_obj.get("cases", []):
         if isinstance(row, dict):
-            key = row.get("session_id") or row.get("name")
+            key = row.get(first) or row.get(then)
             if key is not None:
                 keys.add(str(key))
     return keys
@@ -285,7 +300,7 @@ def link_status(experiment_obj: dict, report_obj: dict) -> dict:
     (`verified`, `partial`, `mismatch` or `unverified`) with a `detail` string.
     """
     exp_keys = _experiment_case_ids(experiment_obj)
-    rep_keys = _case_keys(report_obj)
+    rep_keys = _case_keys(report_obj, _names_only(experiment_obj))
     if not exp_keys or not rep_keys:
         return {"status": "unverified", "detail": "no case identifiers to compare"}
 
@@ -503,8 +518,9 @@ def experiment_of(
         return named[0], link_status(named[0].obj, report.obj)
 
     # The experiments `link_status` would call verified.
-    wanted = _case_keys(report.obj)
-    holding = _nearest([e for e in experiments if wanted and wanted <= e.case_ids], report.directory)
+    wanted = {by_name: _case_keys(report.obj, by_name) for by_name in (False, True)}
+    fits = [e for e in experiments if wanted[e.names_only] and wanted[e.names_only] <= e.case_ids]
+    holding = _nearest(fits, report.directory)
     if len(holding) == 1:
         return holding[0], link_status(holding[0].obj, report.obj)
     if holding:

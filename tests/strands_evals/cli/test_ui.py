@@ -735,6 +735,29 @@ def test_discover_pairs_the_only_report_with_the_only_experiment_beside_it_and_s
     assert (report["experiment"], report["link"]["status"]) == ("cases.json", status)
 
 
+def test_discover_pairs_the_reports_of_an_experiment_written_by_hand_by_their_case_names(tmp_path: Path):
+    """Its cases have no session_id, so each run gives them one, which the row of a task that raised records."""
+    by_hand = {"cases": [{"name": name, "input": "q"} for name in "abc"], "evaluators": []}
+    _write(tmp_path / "hand.experiment.json", by_hand)
+    for run in ("first", "second"):
+        report = _report("a", "b", "c", failing=("b",))
+        report["cases"][1]["session_id"] = f"given-in-the-{run}-run"
+        _write(tmp_path / f"{run}.json", report)
+    # Where the experiment does name its cases by session_id, a row is still told by the one it carries.
+    _write(tmp_path / "ids" / "experiment.json", _experiment("z"))
+    _write(tmp_path / "ids" / "other.json", {**_report("z"), "cases": [{"name": "z", "session_id": "another"}]})
+    _write(tmp_path / "ids" / "third.json", _report("z"))
+
+    paired = {r["path"]: (r["experiment"], r["link"] and r["link"]["status"]) for r in discover(tmp_path).reports}
+
+    assert paired == {
+        "first.json": ("hand.experiment.json", "verified"),
+        "second.json": ("hand.experiment.json", "verified"),
+        "ids/other.json": (None, None),
+        "ids/third.json": ("ids/experiment.json", "verified"),
+    }
+
+
 def test_discover_leaves_a_report_unpaired_when_no_experiment_holds_all_of_its_cases(tmp_path: Path):
     _write(tmp_path / "suite" / "experiment.json", _experiment("a"))
     _write(tmp_path / "runs" / "latest.json", _report("a", "b"))
