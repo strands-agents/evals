@@ -34,6 +34,7 @@ def _message(**fields):
         label_metrics=["Helpfulness"],
         label_ranked=False,
         judged_by_version=[],
+        feasibility_threshold=0.9,
         variables=[TextVariable(name="prompt", value="Be brief.", edit_instructions=None, size_cap=None)],
         work_folder="/w",
     )
@@ -61,6 +62,8 @@ def test_versions_table_without_limits():
         ],
     )
     assert "2 versions, best first for this study's goal. Each version's results" in message
+    assert "shows its measured mean alone, marked `(measured)`). A version without a rank (`-`) is missing" in message
+    assert "A limit is met" not in message
     assert (
         "| Rank | Version | Built from | Changed | Helpfulness | Conversations |\n"
         "|---|---|---|---|---|---|\n"
@@ -76,6 +79,42 @@ def test_versions_table_with_limits(meets, cell):
     assert "best first for this study's goal (its limits: tokens <= 4000; Correctness >= 0.8)." in message
     assert "| Helpfulness | Meets the limits | Conversations |\n|---|---|---|---|---|---|---|\n" in message
     assert f"| 0.8 | {cell} | 8 |\n" in message
+
+
+@pytest.mark.parametrize(("threshold", "percent"), [(0.9, "90%"), (0.95, "95%"), (0.57, "57%")])
+def test_how_limits_are_judged_is_stated_with_the_threshold(threshold, percent):
+    message = _message(limits=["tokens <= 4000"], feasibility_threshold=threshold)
+    assert (
+        f"marked `(measured)`). A limit is met when the study is at least {percent} sure that the version's mean is "
+        'within it, so a version whose estimate is just inside a limit can still show "no". A version with no '
+        "estimate is judged on its measured mean instead, and a limit it has no measurement for counts as missed. "
+        "Versions that meet every limit rank above those that do not. The current version (marked ←)"
+    ) in message
+
+
+_LIMITS_RULE = (
+    "A limit is met when the study is at least 90% sure that the version's mean is within it, so a version whose "
+    'estimate is just inside a limit can still show "no". A version with no estimate is judged on its measured mean '
+    "instead, and a limit it has no measurement for counts as missed. Versions that meet every limit rank above those "
+    "that do not. "
+)
+_UNRANKED = "A version without a rank (`-`) is missing a result, so its numbers may cover only some of the cases. "
+
+
+@pytest.mark.parametrize(
+    ("limits", "ranks", "between"),
+    [
+        ([], [1, 2], ""),
+        ([], [1, None], _UNRANKED),
+        (["tokens <= 4000"], [1, 2], _LIMITS_RULE),
+        (["tokens <= 4000"], [1, None], _LIMITS_RULE + _UNRANKED),
+    ],
+)
+def test_the_versions_paragraph_states_the_limits_rule_and_unranked_versions_only_when_they_apply(
+    limits, ranks, between
+):
+    message = _message(limits=limits, versions=[_row(rank=r) for r in ranks])
+    assert f"marked `(measured)`). {between}The current version (marked ←)" in message
 
 
 def test_digest_paragraph_and_labels_step():

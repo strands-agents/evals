@@ -11,6 +11,7 @@ from strands import Agent
 
 from strands_evals import Case
 from strands_evals.optimization import (
+    AtLeast,
     AtMost,
     Criteria,
     Maximize,
@@ -650,7 +651,7 @@ def test_versions_folder_has_one_folder_per_version_with_each_text_alone(folders
         assert f.read() == "Be brief.\n"
     with open(os.path.join(versions, "rank-001-version-1", "version.md")) as f:
         assert f.read() == (
-            "# Version 1\nrank: 1\nbuilt from: version 0\nScore: 0.84 (measured 0.9)\ntokens: 120\n"
+            "# Version 1\nrank: 1\nbuilt from: version 0\nScore: 0.84 (measured 0.9)\ntokens: 120 (measured)\n"
             "meets the limits: yes\n"
             'conversations: 2\n\n## Other values\n{\n "tone": "warm"\n}\n\n'
             "## Its texts, each in its own file in this folder (the text alone)\n"
@@ -665,13 +666,80 @@ def test_versions_folder_has_one_folder_per_version_with_each_text_alone(folders
     assert (first.is_current, first.changed, first.cells, first.meets_limits) == (
         True,
         ["prompt", "other values"],
-        ["0.84 (measured 0.9)", "120"],  # the estimate and the measured mean, or the measured mean alone
+        ["0.84 (measured 0.9)", "120 (measured)"],  # the estimate and the measured mean, or the measured mean alone
         True,
     )
     assert (second.is_baseline, second.built_from, second.meets_limits, second.conversations) == (True, None, False, 2)
-    assert (third.rank, third.meets_limits, third.changed) == (None, None, ["prompt"])
+    assert (third.rank, third.meets_limits, third.changed) == (None, True, ["prompt"])  # ineligible: measured
     assert evidence.limits == ["tokens <= 150"]
     assert evidence.goal_metrics == ["Score", "tokens"]
+
+
+def test_versions_show_each_estimate_as_the_ranking_rounds_it(folders):
+    """Each estimate is shown after `round_to_sd`, the value the ranking compares: under a lone objective, two
+    versions the ranking tied show the same estimate. A mean rounded to -0.0 shows as 0, and an estimate without a
+    measured mean shows alone."""
+    baseline = Candidate.baseline(SPACE)
+    child = baseline.child(SPACE, {"prompt": "Be brief.\n"}, origin=["text"], rationale="")
+    other = baseline.child(SPACE, {"prompt": "Be kind.\n"}, origin=["text"], rationale="")
+    tokens = Estimate(mean=100.4, sd=30)
+    candidates = [
+        summary(
+            child,
+            number=1,
+            rank=1,
+            score=0.5,
+            tokens=1250.0,
+            estimates={"Score": Estimate(mean=0.5389, sd=0.21), "tokens": Estimate(mean=1234.4, sd=400)},
+        ),
+        summary(
+            baseline, number=0, rank=2, score=0.6, estimates={"Score": Estimate(mean=0.5432, sd=0.21), "tokens": tokens}
+        ),
+        summary(
+            other, number=2, rank=3, score=0.0, estimates={"Score": Estimate(mean=-0.004, sd=0.3), "tokens": tokens}
+        ),
+    ]
+    candidates[2] = candidates[2].model_copy(update={"measured": {"Score": candidates[2].measured["Score"]}})
+    criteria = Criteria(Maximize("Score"), [AtMost("tokens", 5000)], REGISTRY)
+    req = request([trial("a", score=0.9)], criteria=criteria, parent=child, candidates=candidates)
+    evidence = _build_evidence(req, 0.5, *folders)
+    assert [v.cells for v in evidence.versions] == [
+        ["0.54 (measured 0.5)", "1,230 (measured 1,250)"],
+        ["0.54 (measured 0.6)", "100 (measured 100)"],
+        ["0 (measured 0)", "100"],
+    ]
+    with open(os.path.join(folders[1], "rank-002-version-0", "version.md")) as f:
+        assert "\nScore: 0.54 (measured 0.6)\ntokens: 100 (measured 100)\nmeets the limits: yes\n" in f.read()
+
+
+@pytest.mark.parametrize(
+    ("constraints", "tokens", "meets", "cell"),
+    [
+        ([AtMost("tokens", 150)], 400.0, False, "400 (measured)"),
+        ([AtMost("tokens", 150)], 100.0, True, "100 (measured)"),
+        ([AtMost("tokens", 150)], 150.0 * (1 + 1e-12), True, "150 (measured)"),  # at the limit up to float noise
+        ([AtMost("tokens", 150)], None, False, "-"),  # never measured
+        ([AtMost("tokens", 150), AtLeast("Score", 0.95)], 100.0, False, "100 (measured)"),  # Score 0.9 < 0.95
+    ],
+)
+def test_an_ineligible_version_is_judged_against_the_limits_on_its_measured_means(
+    folders, constraints, tokens, meets, cell
+):
+    baseline = Candidate.baseline(SPACE)
+    lost = baseline.child(SPACE, {"prompt": "Lost.\n"}, origin=["text"], rationale="")
+    unranked = summary(lost, number=2, rank=None, score=0.9, tokens=tokens or 0.0, eligible=False)
+    if tokens is None:
+        unranked = unranked.model_copy(update={"measured": {"Score": unranked.measured["Score"]}})
+    criteria = Criteria(Maximize("Score"), constraints, REGISTRY)
+    req = request(
+        [trial("a", score=0.9)], criteria=criteria, candidates=[summary(baseline, number=0, rank=1), unranked]
+    )
+    evidence = _build_evidence(req, 0.5, *folders)
+    assert evidence.goal_metrics == ["Score", "tokens"]
+    assert evidence.versions[1].meets_limits is meets
+    assert evidence.versions[1].cells == ["0.9 (measured)", cell]
+    with open(os.path.join(folders[1], "unranked-version-2", "version.md")) as f:
+        assert f"\nScore: 0.9 (measured)\ntokens: {cell}\nmeets the limits: {'yes' if meets else 'no'}\n" in f.read()
 
 
 def test_text_file_names():

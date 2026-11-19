@@ -7,7 +7,7 @@ import tempfile
 import pytest
 from strands.types.exceptions import EventLoopException
 
-from strands_evals.optimization import Criteria, InfrastructureError, Maximize, Reflection, Space, TextValue
+from strands_evals.optimization import AtMost, Criteria, InfrastructureError, Maximize, Reflection, Space, TextValue
 from strands_evals.optimization.candidate import Candidate
 from strands_evals.optimization.search.proposer import ProposalRequest
 from strands_evals.types.trace import TextContent, ToolResultContent, UserMessage
@@ -30,8 +30,8 @@ SPACE = Space(
 )
 
 
-def request(*, n=1, keys=("prompt", "tone"), trials=None, events=None):
-    criteria = Criteria(Maximize("Score"), [], REGISTRY)
+def request(*, n=1, keys=("prompt", "tone"), trials=None, events=None, criteria=None):
+    criteria = criteria or Criteria(Maximize("Score"), [], REGISTRY)
     trials = trials or [
         trial("order-123", score=0.2, output="I could not find the order you asked about, sorry."),
         trial("b", score=0.9),
@@ -285,6 +285,22 @@ async def test_a_send_back_after_a_long_first_turn_still_has_the_task_message():
     task = model.first_messages[0]
     assert "Write a new version of the parameters" in task["content"][0]["text"]
     assert model.first_messages[-1] == task  # the send-back's call starts from the task message too
+
+
+async def test_the_task_message_states_the_runs_feasibility_threshold():
+    class Recording(ScriptedModel):
+        async def stream(self, messages, *args, **kwargs):
+            self.task = messages[0]["content"][0]["text"]
+            async for event in super().stream(messages, *args, **kwargs):
+                yield event
+
+    model = Recording(["Nothing to change."])
+    reflection = Reflection(model)
+    reflection._warned = True
+    criteria = Criteria(Maximize("Score"), [AtMost("tokens", 150)], REGISTRY, feasibility_threshold=0.8)
+    assert await reflection.propose(request(criteria=criteria)) == []
+    assert "(its limits: tokens <= 150)." in model.task
+    assert "A limit is met when the study is at least 80% sure that the version's mean is within it" in model.task
 
 
 async def test_the_three_folders_share_one_folder_of_the_call():

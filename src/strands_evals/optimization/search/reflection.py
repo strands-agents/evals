@@ -56,6 +56,7 @@ from ..prompt_templates.reflection.reflection_v0 import (
     system_prompt,
     task_message,
 )
+from ..score_model.ranking import round_to_sd
 from ..scoring.objectives import AtLeast, AtMost, Maximize, Pareto, WeightedSum
 from .proposer import ProposalRequest, Proposer
 
@@ -258,6 +259,7 @@ class Reflection(Proposer):
                 label_metrics=evidence.label_metrics,
                 label_ranked=evidence.label_ranked,
                 judged_by_version=evidence.judged_by_version,
+                feasibility_threshold=request.criteria.feasibility_threshold,
                 variables=[
                     TextVariable(
                         name=k,
@@ -1055,7 +1057,8 @@ def _digest_text(rows: Sequence[dict[str, Any]], threshold: float, limit: int) -
 def _write_versions(folder: str, request: ProposalRequest, goal_metrics: Sequence[str]) -> list[VersionRow]:
     """One folder per measured version, in `request.candidates` order, named by its rank (`rank-001-version-26`,
     `unranked-version-5`): `version.md` holds its results (each goal metric as `_shown`, and whether it meets
-    the limits as the ranking assessed it) and other values, and each of the block's texts is a file of its own
+    the limits: as the ranking assessed it, or on its measured means for an ineligible version, which the ranking
+    leaves out) and other values, and each of the block's texts is a file of its own
     (`_text_files`) holding the text alone, so a copy of a version's text is the text and nothing else. Returns the
     versions table's rows."""
     keys = list(request.keys)
@@ -1067,6 +1070,11 @@ def _write_versions(folder: str, request: ProposalRequest, goal_metrics: Sequenc
         changed = [k for k in keys if parent is not None and c.values.get(k) != parent.values.get(k)]
         if parent is not None and any(c.values.get(k) != parent.values.get(k) for k in set(c.values) - set(keys)):
             changed.append("other values")
+        meets = c.is_feasible
+        if meets is None and request.criteria.constraints:
+            # An ineligible version: its measured means passed as one case, so `unmet_constraints` judges each as
+            # the ranking's measured-means path does (equal up to float noise is met, never measured is not).
+            meets = not request.criteria.unmet_constraints({"measured": {m: x.mean for m, x in c.measured.items()}})
         row = VersionRow(
             rank=c.rank,
             number=c.number,
@@ -1075,7 +1083,7 @@ def _write_versions(folder: str, request: ProposalRequest, goal_metrics: Sequenc
             is_baseline=c.parent_id is None,
             changed=changed,
             cells=[_shown(c, m) for m in goal_metrics],
-            meets_limits=c.is_feasible if request.criteria.constraints else None,
+            meets_limits=meets if request.criteria.constraints else None,
             conversations=c.trial_count - c.failures,
         )
         rows.append(row)
@@ -1114,13 +1122,17 @@ def _cell(x: float | None) -> str:
 
 
 def _shown(c: CandidateSummary, metric: str) -> str:
-    """A metric as the versions table shows it: the fit's estimate the ranking used, then the measured mean over the
-    version's train cases (`0.84 (measured 0.9)`); the measured mean alone when there is no estimate (no usable fit, a
-    flagged metric, an ineligible version)."""
+    """A metric as the versions table shows it: the fit's estimate, rounded as the ranking rounds an objective's
+    (`round_to_sd`, so an objective's cell is the value the ranking compared, at `_cell`'s precision), then the
+    measured mean over the version's train cases (`0.84 (measured 0.9)`); the measured mean alone, marked, when there
+    is no estimate (no usable fit, a flagged metric, a version not in the fit, an ineligible version):
+    `0.9 (measured)`."""
     measured = c.measured[metric].mean if metric in c.measured else None
     if metric not in c.estimates:
-        return _cell(measured)
-    estimate = _cell(c.estimates[metric].mean)
+        return "-" if measured is None else f"{_cell(measured)} (measured)"
+    e = c.estimates[metric]
+    # `+ 0.0`: a mean rounded to -0.0 shows as 0, like the 0.0 it ties with.
+    estimate = _cell(round_to_sd(e.mean, e.sd) + 0.0)
     return estimate if measured is None else f"{estimate} (measured {_cell(measured)})"
 
 
