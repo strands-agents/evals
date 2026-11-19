@@ -21,7 +21,6 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, cast
 
 from botocore.config import Config as BotocoreConfig
-from botocore.exceptions import NoCredentialsError
 from strands import Agent, ModelRetryStrategy, tool
 from strands.agent.agent_result import AgentResult
 from strands.agent.conversation_manager import SlidingWindowConversationManager
@@ -50,7 +49,7 @@ from ...types.trace import (
     _to_aware_utc,
 )
 from ..declaration.space import ParamKind
-from ..execution.status import classify
+from ..execution.status import classify, is_credential_error
 from ..prompt_templates.reflection.reflection_v0 import (
     CUT_OFF,
     REFUSED,
@@ -1271,9 +1270,10 @@ def _leak(value: str, held: Any, names: Sequence[str], sources: Sequence[str]) -
 
 class _TransientRetry(ModelRetryStrategy):
     """Strands' retry of a failed model call, with its exponential backoff (`_MODEL_ATTEMPTS` tries in all), extended
-    from throttling to the other errors a trial is re-run for (`classify`) except missing credentials: the model
+    from throttling to the other errors a trial is re-run for (`classify`) except credential errors: the model
     service's own errors, also inside a streamed response, and a lost connection. Each failure with one of these goes
-    to `on_retry`. Anything else, such as no access to the model or an invalid model id, is raised at once."""
+    to `on_retry`. Anything else is raised at once: no access to the model, an invalid model id, or credentials that
+    are missing or expired (`is_credential_error`), which waiting can't fix."""
 
     def __init__(self, on_retry: Callable[[Exception], None]) -> None:
         super().__init__(max_attempts=_MODEL_ATTEMPTS, initial_delay=_RETRY_DELAY, max_delay=_MAX_RETRY_DELAY)
@@ -1282,7 +1282,7 @@ class _TransientRetry(ModelRetryStrategy):
     def is_retryable(self, exception: Exception) -> bool:
         """Whether the failed model call is tried again after a wait, while tries remain."""
         retryable = super().is_retryable(exception) or (
-            classify(exception) is TrialStatus.INFRASTRUCTURE_INVALID and not isinstance(exception, NoCredentialsError)
+            classify(exception) is TrialStatus.INFRASTRUCTURE_INVALID and not is_credential_error(exception)
         )
         if retryable:
             self._on_retry(exception)

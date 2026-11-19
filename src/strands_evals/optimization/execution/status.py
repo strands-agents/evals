@@ -59,21 +59,52 @@ _CREDENTIAL_ERRORS = (
     *filter(None, [getattr(botocore.exceptions, "LoginError", None)]),
 )
 
+# Error codes of expired caller credentials, lowercased: how an expired Bedrock session or a request signed too
+# long ago arrives (`requestexpired` is the EC2-style APIs' code).
+_EXPIRED_CREDENTIAL_CODES = frozenset({"expiredtokenexception", "expiredtoken", "requestexpired"})
+
 # Error codes of the service's own failures and of expired caller credentials, lowercased; botocore reports them
 # in `response["Error"]["Code"]`, also for an error inside a streamed response (`EventStreamError`). A wrong key
 # (`UnrecognizedClientException`) or missing model access (`AccessDeniedException`) isn't here: no re-run fixes it.
-_SERVICE_ERROR_CODES = frozenset(
-    {
-        "internalserverexception",
-        "serviceunavailableexception",
-        "modelstreamerrorexception",
-        "modelnotreadyexception",
-        "throttlingexception",
-        "expiredtokenexception",
-        "expiredtoken",
-        "requestexpired",  # EC2-style APIs: expired temporary credentials, or a request signed too long ago
-    }
+_SERVICE_ERROR_CODES = (
+    frozenset(
+        {
+            "internalserverexception",
+            "serviceunavailableexception",
+            "modelstreamerrorexception",
+            "modelnotreadyexception",
+            "throttlingexception",
+        }
+    )
+    | _EXPIRED_CREDENTIAL_CODES
 )
+
+
+def is_credential_error(error: BaseException) -> bool:
+    """Whether the environment's credentials failed: missing, unloadable, or expired (`_CREDENTIAL_ERRORS`, or a
+    `response["Error"]["Code"]` in `_EXPIRED_CREDENTIAL_CODES`).
+
+    Waiting doesn't fix these (a fresh `aws login` or SSO session does), so a model-call retry strategy should
+    raise them at once; `classify` still counts them as `INFRASTRUCTURE_INVALID`, since a later re-run of the
+    trial may see refreshed credentials.
+    """
+    cause = _cause(error)
+    return isinstance(cause, _CREDENTIAL_ERRORS) or _error_code(cause) in _EXPIRED_CREDENTIAL_CODES
+
+
+def _cause(error: BaseException) -> BaseException:
+    """Follow `EventLoopException.original_exception` to the underlying error."""
+    while isinstance(error, EventLoopException) and error.original_exception is not None:
+        error = error.original_exception
+    return error
+
+
+def _error_code(error: BaseException) -> str:
+    """The botocore error code (`response["Error"]["Code"]`), lowercased; empty when there is none."""
+    response = getattr(error, "response", None)
+    details = response.get("Error") if isinstance(response, Mapping) else None
+    code = details.get("Code") if isinstance(details, Mapping) else None
+    return str(code or "").lower()
 
 
 def classify(error: BaseException) -> TrialStatus:
@@ -102,16 +133,11 @@ def classify(error: BaseException) -> TrialStatus:
     evaluator is in `evaluator_errors`. Under `agent_failure_score="worst"` an infrastructure failure misread as
     `AGENT_FAILURE` would score the worst end instead of being re-run.
     """
-    cause = error
-    while isinstance(cause, EventLoopException) and cause.original_exception is not None:
-        cause = cause.original_exception
+    cause = _cause(error)
     if isinstance(cause, InfrastructureError) or is_throttling_error(cause):
         return TrialStatus.INFRASTRUCTURE_INVALID
     if isinstance(cause, _TRANSPORT_ERRORS + _CREDENTIAL_ERRORS):
         return TrialStatus.INFRASTRUCTURE_INVALID
-    response = getattr(cause, "response", None)
-    details = response.get("Error") if isinstance(response, Mapping) else None
-    code = details.get("Code") if isinstance(details, Mapping) else None
-    if str(code or "").lower() in _SERVICE_ERROR_CODES:
+    if _error_code(cause) in _SERVICE_ERROR_CODES:
         return TrialStatus.INFRASTRUCTURE_INVALID
     return TrialStatus.AGENT_FAILURE

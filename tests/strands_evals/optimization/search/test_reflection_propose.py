@@ -5,7 +5,13 @@ import os
 import tempfile
 
 import pytest
-from botocore.exceptions import ClientError, EventStreamError, NoCredentialsError, ReadTimeoutError
+from botocore.exceptions import (
+    ClientError,
+    EventStreamError,
+    NoCredentialsError,
+    ReadTimeoutError,
+    TokenRetrievalError,
+)
 from strands.types.exceptions import EventLoopException, MaxTokensReachedException, ModelThrottledException
 
 from strands_evals.optimization import Criteria, InfrastructureError, Maximize, Reflection, Space, TextValue
@@ -246,11 +252,22 @@ async def test_a_stream_broken_after_it_started_is_retried_in_the_same_conversat
     assert [len(sent) for sent in model.sent] == [1, 3, 3, 5, 7]  # the broken reply was never added
 
 
-async def test_missing_credentials_are_raised_at_once():
-    model = ScriptedModel([NoCredentialsError()])
+CREDENTIAL_ERRORS = [
+    NoCredentialsError(),
+    TokenRetrievalError(provider="sso", error_msg="the SSO session has expired"),
+    ClientError(
+        {"Error": {"Code": "ExpiredTokenException", "Message": "The security token is expired."}}, "ConverseStream"
+    ),
+]
+
+
+@pytest.mark.parametrize("error", CREDENTIAL_ERRORS, ids=lambda error: type(error).__name__)
+async def test_a_credential_error_is_raised_at_once(error):
+    """Missing, unloadable, or expired credentials: waiting doesn't fix them, so no try is spent on a retry."""
+    model = ScriptedModel([error])
     reflection = Reflection(model)
     reflection._warned = True
-    with pytest.raises(NoCredentialsError):
+    with pytest.raises(type(error)):
         await reflection.propose(request())
     assert model.calls == 1
 

@@ -30,8 +30,7 @@ def _print_result(result: OptimizationResult, args: argparse.Namespace, run_dir:
 
 
 def _finish(result: OptimizationResult, args: argparse.Namespace, run_dir: Path) -> int:
-    """Print the result; exit 3 with the proposer's error when the search stopped on one (the end phase still ran,
-    so the result is printed, but a script checking the exit code shouldn't read a dead search as success).
+    """Print the result.
 
     `run_dir` is the folder as found now, not `result.run_dir`, which is where the run was written (a folder may
     have moved since)."""
@@ -44,14 +43,17 @@ def _finish(result: OptimizationResult, args: argparse.Namespace, run_dir: Path)
             file=sys.stderr,
         )
         return EXIT_INTERRUPTED
-    if result.stop_reason != "proposer_error":
-        return EXIT_OK
-    events = (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
-    failures = [event for event in map(json.loads, events) if event.get("event") == "proposer_error"]
-    failure = failures[-1] if failures else None
-    cause = f"{failure['error_type']}: {failure['error']}" if failure else "see events.jsonl"
-    block = f" (block {failure['block']!r})" if failure else ""
-    emit_error(f"the search stopped: a proposer{block} raised {cause}")
+    return EXIT_OK
+
+
+def _proposer_stopped(error: Exception, run_dir: Path, *, debug: bool) -> int:
+    """`ProposerError`: the search stopped before the end phase, so there is no result to print; exit 3 with the
+    proposer's error (a script checking the exit code shouldn't read a dead search as success) and say how to
+    continue with the CLI."""
+    emit_error(str(error), debug=debug, exc=error)
+    print(  # noqa: T201
+        f"strands-evals optimize: continue with `strands-evals optimize resume {run_dir}`", file=sys.stderr
+    )
     return EXIT_RUNTIME_ERROR
 
 
@@ -91,7 +93,7 @@ def _run(args: argparse.Namespace) -> int:
     result; `cli.json` is written as soon as the run folder exists. Returns the exit code (2 on bad input, 3 when
     the search stopped on a proposer error, 130 on Ctrl-C)."""
     try:
-        from ...optimization import Budget, FinalPick, Optimizer
+        from ...optimization import Budget, FinalPick, Optimizer, ProposerError
         from .. import _optimize
     except ImportError as missing:  # the `optimization` extra isn't installed
         emit_error(str(missing))
@@ -183,6 +185,8 @@ def _run(args: argparse.Namespace) -> int:
         result = asyncio.run(_optimize.drive(optimizer, on_folder))
     except KeyboardInterrupt:
         return _interrupted(optimizer.run_dir)
+    except ProposerError as error:
+        return _proposer_stopped(error, error.run_dir, debug=debug)
     return _finish(result, args, Path(result.run_dir))
 
 
@@ -221,7 +225,7 @@ def _resume(args: argparse.Namespace) -> int:
     reopen it with `Optimizer.resume` in its working directory, and print the result. Returns the exit code, as
     `_run`'s."""
     try:
-        from ...optimization import Budget, Optimizer
+        from ...optimization import Budget, Optimizer, ProposerError
         from .. import _optimize
     except ImportError as missing:  # the `optimization` extra isn't installed
         emit_error(str(missing))
@@ -255,6 +259,8 @@ def _resume(args: argparse.Namespace) -> int:
             result = asyncio.run(_optimize.drive(optimizer, lambda _: None))
         except KeyboardInterrupt:
             return _interrupted(run_dir)
+        except ProposerError as error:
+            return _proposer_stopped(error, run_dir, debug=debug)
     return _finish(result, args, run_dir)
 
 
