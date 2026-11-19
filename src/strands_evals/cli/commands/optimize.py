@@ -234,7 +234,8 @@ def _resume(args: argparse.Namespace) -> int:
     debug = getattr(args, "debug", False)
 
     run_dir = Path(args.run_dir).resolve()
-    if (run_dir / "result.json").is_file():  # finished: print the saved result; no agent, experiment, or config
+    if (run_dir / "result.json").is_file() and _test_saved_as_done(run_dir):
+        # finished: print the saved result; no agent, experiment, or config
         return _print_finished(run_dir, args)
     try:
         saved = _optimize.read_run_json(run_dir)
@@ -263,6 +264,26 @@ def _resume(args: argparse.Namespace) -> int:
         except ProposerError as error:
             return _proposer_stopped(error, run_dir, debug=debug)
     return _finish(result, args, run_dir)
+
+
+def _test_saved_as_done(run_dir: Path) -> bool:
+    """Whether the run's `test` event was written, so its result is final.
+
+    A test report skipped for the budget, or left to re-runs of infrastructure failures, writes `result.json`
+    with no `test` event, and `Optimizer.resume` can still run the test; printing the saved result instead
+    would dead-end the resume the report's reason asks for. A missing or unreadable events.jsonl prints the
+    saved result, as before."""
+    try:
+        lines = (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return True
+    for line in reversed(lines):
+        try:
+            if json.loads(line).get("event") == "test":
+                return True
+        except json.JSONDecodeError:  # a kill can truncate the last line
+            continue
+    return False
 
 
 def _print_finished(run_dir: Path, args: argparse.Namespace) -> int:
