@@ -1,7 +1,7 @@
 """A report, an experiment and a session as Markdown, and the description of the server served at `/llms.txt`.
 
-The page writes the same Markdown for its copy actions (`assets/ui-markdown.js`), and
-`tests/ui/markdown.mjs` holds the two to the same text.
+This is the only writer of that Markdown. A file is read at its address with `.md` added, and the page sends
+what only it holds (one row, one case, a candidate's report, an experiment with unsaved edits) to be written.
 """
 
 from __future__ import annotations
@@ -10,11 +10,9 @@ import json
 import math
 import re
 from collections.abc import Iterable, Sequence
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, localcontext
 from typing import Any
 
-_INDEX_KEY = re.compile(r"0|[1-9][0-9]*")
-_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 _TICKS = re.compile("`+")
 _SPACE = re.compile(r"[ \t\r\n]+")
 
@@ -25,73 +23,11 @@ _ASPECTS = ("output", "trajectory", "interactions", "environment_state")
 VALUE_LIMIT = 4000
 
 
-def _truthy(value: Any) -> bool:
-    """Whether JavaScript takes a parsed JSON value as true."""
-    if value is None or value is False or value == "":
-        return False
-    if isinstance(value, int | float) and not isinstance(value, bool):
-        return value == value and value != 0
-    return True
-
-
-def _number(value: float) -> str:
-    """A number as JavaScript prints it: whole numbers without a point, exponents only past 1e21 and 1e-7."""
-    if not math.isfinite(value):
-        return "null"
-    if value == 0:
-        return "0"
-    _, digits, exponent = Decimal(repr(abs(value))).normalize().as_tuple()
-    text = "".join(map(str, digits))
-    point = len(text) + int(exponent)
-    if len(text) <= point <= 21:
-        body = text + "0" * (point - len(text))
-    elif 0 < point <= 21:
-        body = f"{text[:point]}.{text[point:]}"
-    elif -6 < point <= 0:
-        body = "0." + "0" * -point + text
-    else:
-        fraction = f".{text[1:]}" if len(text) > 1 else ""
-        body = f"{text[0]}{fraction}e{'+' if point > 0 else '-'}{abs(point - 1)}"
-    return ("-" if value < 0 else "") + body
-
-
-def _key_order(obj: dict) -> list[str]:
-    """Keys in the order JavaScript keeps them: array indices first, ascending, then as written."""
-    index = sorted((key for key in obj if _INDEX_KEY.fullmatch(key) and int(key) < 2**32 - 1), key=int)
-    listed = set(index)
-    return index + [key for key in obj if key not in listed]
-
-
-def stringify(value: Any, indent: str = "", step: str = "  ") -> str:
-    """`JSON.stringify(value, null, 2)`, character for character. `step` is the indent of one level."""
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, str):
-        return _LONE_SURROGATE.sub(lambda m: f"\\u{ord(m.group()):04x}", json.dumps(value, ensure_ascii=False))
-    if isinstance(value, int):
-        if abs(value) < 2**53:
-            return str(value)
-        try:
-            return _number(float(value))
-        except OverflowError:
-            return "null"
-    if isinstance(value, float):
-        return _number(value)
-    inner = indent + step
-    if isinstance(value, dict):
-        items = [f"{inner}{stringify(key)}: {stringify(value[key], inner, step)}" for key in _key_order(value)]
-        return "{\n" + ",\n".join(items) + f"\n{indent}}}" if items else "{}"
-    items = [inner + stringify(item, inner, step) for item in value]
-    return "[\n" + ",\n".join(items) + f"\n{indent}]" if items else "[]"
-
-
 def value_text(value: Any) -> str:
     """A value as the page reads it: text as it is, anything structured as indented JSON."""
     if value is None:
         return ""
-    return value if isinstance(value, str) else stringify(value)
+    return value if isinstance(value, str) else json.dumps(value, indent=2, ensure_ascii=False)
 
 
 def _one_line(value: Any) -> str:
@@ -102,19 +38,20 @@ def _present(value: Any) -> bool:
     return value is not None and value != ""
 
 
+def _is_number(value: Any) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+
 def _score(value: Any) -> str:
-    """Two decimals, rounded as JavaScript's `toFixed(2)` rounds. From 1e21 up it prints the number whole."""
-    if isinstance(value, bool) or not isinstance(value, int | float):
+    """Two decimals, with a half rounded up as the page rounds it."""
+    if not _is_number(value) or (isinstance(value, float) and not math.isfinite(value)):
         return "none"
-    try:
-        number = float(value)
-    except OverflowError:  # an integer past what JavaScript reads as a number
-        return "none"
-    if not math.isfinite(number):
-        return "none"
-    if abs(number) >= 1e21:
-        return _number(number)
-    return ("-" if number < 0 else "") + str(Decimal(abs(number)).quantize(Decimal("0.01"), ROUND_HALF_UP))
+    # A float is rounded from the number it stores, which is what the page shows. One too large to store exactly
+    # is taken as written, so it does not print the digits it never had.
+    number = Decimal(repr(value)) if isinstance(value, float) and abs(value) >= 2**53 else Decimal(value)
+    with localcontext() as context:
+        context.prec = max(28, number.adjusted() + 4)
+        return str(number.quantize(Decimal("0.01"), ROUND_HALF_UP))
 
 
 def _fenced(text: str, lang: str) -> str:
@@ -123,23 +60,31 @@ def _fenced(text: str, lang: str) -> str:
     return f"{ticks}{lang}\n{text}\n{ticks}"
 
 
-def _fence(value: Any) -> str:
-    return _fenced(value_text(value), "text" if isinstance(value, str) else "json")
+def _capped(text: str, lang: str) -> list[str]:
+    """Text in a fence, cut at `VALUE_LIMIT` characters with a line saying how much was left out."""
+    if len(text) <= VALUE_LIMIT:
+        return [_fenced(text, lang)]
+    return [
+        _fenced(text[:VALUE_LIMIT], lang),
+        f"Cut after {VALUE_LIMIT} of {len(text)} characters: the file has the rest.",
+    ]
+
+
+def _lang(value: Any) -> str:
+    return "text" if isinstance(value, str) else "json"
+
+
+def _value(value: Any) -> list[str]:
+    return _capped(value_text(value), _lang(value))
+
+
+def _whole(value: Any) -> str:
+    """A document written out in full, however long: a diagnosis is read whole or not at all."""
+    return _fenced(value_text(value), _lang(value))
 
 
 def _block(label: str, value: Any) -> list[str]:
-    """A labelled value in a fence, cut at `VALUE_LIMIT` characters with a line saying how much was left out."""
-    if not _present(value):
-        return []
-    text = value_text(value)
-    if len(text) <= VALUE_LIMIT:
-        return [f"{label}:", _fence(value)]
-    return [
-        f"{label}:",
-        _fenced(text[:VALUE_LIMIT], "text" if isinstance(value, str) else "json"),
-        f"Cut after {VALUE_LIMIT} of {len(text)} characters. "
-        "The file has all of it, and so does the `.json` form of this address.",
-    ]
+    return [f"{label}:", *_value(value)] if _present(value) else []
 
 
 def _cell(text: str) -> str:
@@ -167,18 +112,18 @@ def _name(value: Any, index: int) -> str:
     return _one_line(value) if _present(value) else f"#{index}"
 
 
-def _session_spans(value: Any) -> int | None:
-    """How many spans a recorded session holds, or None when the value is not one."""
+def _spans(value: Any) -> list | None:
+    """The spans of a recorded session, trace after trace, or None when the value is not one."""
     if not isinstance(value, dict) or not isinstance(value.get("traces"), list):
         return None
-    return sum(len(t["spans"]) for t in value["traces"] if isinstance(t, dict) and isinstance(t.get("spans"), list))
+    return [span for trace in value["traces"] for span in _list(_dict(trace).get("spans"))]
 
 
 def _trajectory(label: str, value: Any) -> list[str]:
-    spans = _session_spans(value)
+    spans = _spans(value)
     if spans is None:
         return _block(label, value)
-    return [f"{label}: a recorded session of {_count(spans, 'span')}, kept in the report file."]
+    return [f"{label}: a recorded session of {_count(len(spans), 'span')}, kept in the report file."]
 
 
 def _case_blocks(case: dict, sides: Sequence[str]) -> list[str]:
@@ -204,20 +149,20 @@ def _rows(doc: dict) -> list[dict]:
         evaluator = _one_line(case["evaluator"]) if _present(case.get("evaluator")) else "(unnamed)"
         place[evaluator] = place.get(evaluator, -1) + 1
         outputs = [_dict(output) for output in _list(_at(doc.get("detailed_results"), index))]
-        declined = bool(outputs) and all(
-            o.get("label") == "not_applicable" and _truthy(o.get("test_pass")) for o in outputs
-        )
-        passed = _truthy(_at(doc.get("test_passes"), index))
-        reason = _at(doc.get("reasons"), index)
+        declined = bool(outputs) and all(o.get("label") == "not_applicable" and o.get("test_pass") for o in outputs)
         rows.append(
             {
                 "case": case,
                 "name": _name(case.get("name"), place[evaluator]),
                 "evaluator": evaluator,
                 "score": _at(doc.get("scores"), index),
-                "reason": reason if _truthy(reason) else "",
+                "reason": _at(doc.get("reasons"), index) or "",
                 "outputs": outputs,
-                "verdict": "not applicable" if declined else "passed" if passed else "failed",
+                "verdict": "not applicable"
+                if declined
+                else "passed"
+                if _at(doc.get("test_passes"), index)
+                else "failed",
                 "diagnosis": _at(doc.get("diagnoses"), index),
                 "recommendation": _at(doc.get("recommendations"), index),
             }
@@ -225,8 +170,11 @@ def _rows(doc: dict) -> list[dict]:
     return rows
 
 
-def _row_parts(row: dict) -> tuple[list[str], list[str]]:
-    """A row under its heading: what the evaluator made of it, then the case it judged."""
+def _row_parts(row: dict, more: Sequence[str] = ()) -> tuple[list[str], list[str]]:
+    """A row under its heading: what the evaluator made of it, then the case it judged.
+
+    `more` is facts about where the row is from, for a row written on its own.
+    """
     outputs = row["outputs"]
     facts = [f"- Score: {_score(row['score'])}", f"- Verdict: {row['verdict']}"]
     only = outputs[0] if len(outputs) == 1 else {}
@@ -237,10 +185,10 @@ def _row_parts(row: dict) -> tuple[list[str], list[str]]:
         label = output.get("label")
         facts.append(
             f"- Output {n + 1} of {len(outputs)}: score {_score(output.get('score'))}, "
-            + ("passed" if _truthy(output.get("test_pass")) else "failed")
+            + ("passed" if output.get("test_pass") else "failed")
             + (f", {_one_line(label)}" if isinstance(label, str) and label else "")
         )
-    judged = ["\n".join(facts)]
+    judged = ["\n".join([*facts, *more])]
     judged += _block("Reason", row["reason"] if _present(row["reason"]) else only.get("reason"))
     for n, output in enumerate(several):
         judged += _block(f"Reason, output {n + 1} of {len(outputs)}", output.get("reason"))
@@ -302,6 +250,46 @@ def report_markdown(path: str, doc: dict, experiment: str | None, link: dict | N
     )
 
 
+def row_markdown(doc: dict, index: int, report: str, experiment: str | None) -> str | None:
+    """One row of a report on its own, or None when the report has no such row.
+
+    `report` and `experiment` are how to name the two files to the reader.
+    """
+    rows = _rows(doc)
+    if not 0 <= index < len(rows):
+        return None
+    row = rows[index]
+    where = [f"- Report: `{report}`", *([f"- Experiment: `{experiment}`"] if experiment else [])]
+    judged, case = _row_parts(row, where)
+    return _document([f"# {row['name']} · {row['evaluator']}", *judged, *case])
+
+
+def failing_prompt(doc: dict, report: str, experiment: str | None, command: str | None) -> str:
+    """Every failing row of a report, under what can be said of them: what failed, where the files are, and
+    `command`, which runs one of the cases again. Which agent was evaluated is in neither file, so it is not named.
+    """
+    rows = _rows(doc)
+    failed = sum(row["verdict"] == "failed" for row in rows)
+    facts = [f"- Report: `{report}`"]
+    if experiment:
+        facts.append(f"- Experiment, which holds the cases and the evaluators: `{experiment}`")
+    if command:
+        facts.append(
+            f"- To run one case again: `{command}`. "
+            "`MODULE:ATTR` is a placeholder: put the import path of the agent under test there."
+        )
+    return _document(
+        [
+            f"{'This row fails' if failed == 1 else f'These {failed} rows fail'} in an evaluation report. "
+            "Each is below with what was asked, what was expected, what came back and the evaluator's reason. "
+            "Find why each fails. Neither file names the agent that was evaluated: the cause is in that agent, "
+            "or in the case or the evaluator where the expectation itself is wrong.",
+            "\n".join(facts),
+            *_failing_parts(rows, "##"),
+        ]
+    )
+
+
 def _evaluator_parts(evaluator: dict, index: int) -> list[str]:
     kind, name = evaluator.get("evaluator_type"), evaluator.get("name")
     title = _name(name if _present(name) else kind, index)
@@ -309,6 +297,14 @@ def _evaluator_parts(evaluator: dict, index: int) -> list[str]:
         title += f" ({_one_line(kind)})"
     settings = {key: value for key, value in evaluator.items() if key not in ("evaluator_type", "name")}
     return [f"### {title}", *(_block("Settings", settings) if settings else [])]
+
+
+def _case_parts(case: dict, index: int, heading: str) -> list[str]:
+    return [
+        f"{heading} {_name(case.get('name'), index)}",
+        *_case_blocks(case, ("expected",)),
+        *_block("Metadata", case.get("metadata")),
+    ]
 
 
 def experiment_markdown(path: str, doc: dict, reports: Sequence[str]) -> str:
@@ -327,33 +323,17 @@ def experiment_markdown(path: str, doc: dict, reports: Sequence[str]) -> str:
     return _document(parts + (listed or ["None."]))
 
 
-def _case_parts(case: dict, index: int, heading: str) -> list[str]:
-    return [
-        f"{heading} {_name(case.get('name'), index)}",
-        *_case_blocks(case, ("expected",)),
-        *_block("Metadata", case.get("metadata")),
-    ]
+def case_markdown(case: Any, index: int, experiment: str) -> str:
+    """One case of an experiment on its own. `index` names it when it has no name of its own."""
+    heading, *blocks = _case_parts(_dict(case), index, "#")
+    return _document([heading, f"- Experiment: `{experiment}`", *blocks])
 
 
-# ── a session ── `mdSpan`, `mdMessage`, `mdContent` and the helpers they read in `assets/ui-markdown.js`,
-# `assets/ui-trace.js` and `assets/ui-core.js`, line for line.
-
-# What JavaScript's `trim` strips.
-_JS_SPACE = "\t\n\x0b\x0c\r \xa0\u1680\u2028\u2029\u202f\u205f\u3000\ufeff" + "".join(map(chr, range(0x2000, 0x200B)))
-
-
-def _is_number(value: Any) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool)
-
-
-def _as_text(value: Any) -> str:
-    """`String(value)` for a value that is not a list."""
-    if isinstance(value, dict):
-        return "[object Object]"
-    return value if isinstance(value, str) else stringify(value)
+# ── a session, and a trace on its own ──
 
 
 def _round(value: float) -> int:
+    """To the nearest whole number, with a half rounded up as the page rounds it."""
     return math.floor(value + 0.5)
 
 
@@ -369,73 +349,64 @@ def _compact(n: float) -> str:
     return f"{_round(n / 1e3)}k" if abs(n) >= 1e4 else str(_round(n))
 
 
-def _no_constant(name: str) -> Any:
-    raise ValueError(name)
-
-
-def _block_text(value: Any) -> str:
+def _tool_output(value: Any) -> str:
     """Tool output as the page reads it: JSON in a string is laid out, and a lone `{"output": "..."}` is its text."""
     if not isinstance(value, str):
-        return stringify(value, step=" ")
-    text = value.strip(_JS_SPACE)
+        return json.dumps(value, indent=1, ensure_ascii=False)
+    text = value.strip()
     if not text or text[0] not in "[{" or text[-1] not in "]}":
         return value
     try:
-        parsed = json.loads(text, parse_constant=_no_constant)
+        parsed = json.loads(text)
     except (ValueError, RecursionError):
         return value
     if isinstance(parsed, dict) and len(parsed) == 1 and isinstance(parsed.get("output"), str):
         return parsed["output"]
-    return stringify(parsed, step=" ")
-
-
-def _flat(value: Any) -> str:
-    """`String(value)` on one line: what a session names is written outside a fence, where a line break could
-    start a heading."""
-    return _SPACE.sub(" ", _as_text(value)).strip(" ")
+    return json.dumps(parsed, indent=1, ensure_ascii=False)
 
 
 def _call(name: Any, arguments: Any) -> list[str]:
-    return [f"Tool call `{_flat(name) if _truthy(name) else '?'}`:", _fenced(stringify(arguments), "json")]
+    # What a session names is written outside a fence, where a line break could start a heading.
+    named = _one_line(name) if _present(name) else "?"
+    return [f"Tool call `{named}`:", *_capped(json.dumps(arguments, indent=2, ensure_ascii=False), "json")]
 
 
 def _result(text: str, status: Any) -> list[str]:
-    return [f"Tool result{f' ({_flat(status)})' if _truthy(status) else ''}:", _fenced(text, "text")]
+    return [f"Tool result{f' ({_one_line(status)})' if _present(status) else ''}:", *_capped(text, "text")]
 
 
 def _span_result(result: dict) -> list[str]:
     error = result.get("error")
-    text = error if isinstance(error, str) else _block_text(result.get("content"))
-    return _result(text, "error" if _truthy(error) else None)
+    text = error if isinstance(error, str) else _tool_output(result.get("content"))
+    return _result(text, "error" if error else None)
 
 
 def _content(block: Any) -> list[str]:
     """One block of a message, in either vocabulary: the Strands blocks or a session's `content_type` ones."""
-    if not isinstance(block, dict | list):
-        return [_fenced("" if block is None else _as_text(block), "text")]
-    held = _dict(block)
-    if isinstance(held.get("text"), str):
-        return [_fence(held["text"])]
-    if _truthy(held.get("toolUse")):
-        use = _dict(held["toolUse"])
+    if not isinstance(block, dict):
+        return _capped(value_text(block), "text" if isinstance(block, str) or block is None else "json")
+    if isinstance(block.get("text"), str):
+        return _value(block["text"])
+    if block.get("toolUse"):
+        use = _dict(block["toolUse"])
         return _call(use.get("name"), use.get("input"))
-    if held.get("content_type") == "tool_use":
-        return _call(held.get("name"), held.get("arguments"))
-    if _truthy(held.get("toolResult")):
-        result = _dict(held["toolResult"])
+    if block.get("content_type") == "tool_use":
+        return _call(block.get("name"), block.get("arguments"))
+    if block.get("toolResult"):
+        result = _dict(block["toolResult"])
         parts = []
         for item in _list(result.get("content")):
             if isinstance(item, dict):
                 item = item["json"] if "json" in item else item["text"] if isinstance(item.get("text"), str) else item
-            parts.append(_block_text(item))
+            parts.append(_tool_output(item))
         status = result.get("status")
-        return _result("\n".join(parts), status if _truthy(status) and status != "success" else None)
-    if held.get("content_type") == "tool_result":
-        return _span_result(held)
-    if _truthy(held.get("reasoningContent")):
-        text = _dict(_dict(held["reasoningContent"]).get("reasoningText")).get("text")
-        return ["Reasoning:", _fenced(text if isinstance(text, str) else "", "text")]
-    return [_fence(block)]
+        return _result("\n".join(parts), status if status != "success" else None)
+    if block.get("content_type") == "tool_result":
+        return _span_result(block)
+    if block.get("reasoningContent"):
+        text = _dict(_dict(block["reasoningContent"]).get("reasoningText")).get("text")
+        return ["Reasoning:", *_capped(text if isinstance(text, str) else "", "text")]
+    return _value(block)
 
 
 def _usage(usage: Any) -> list[str]:
@@ -446,8 +417,8 @@ def _usage(usage: Any) -> list[str]:
         for key, word in (("inputTokens", "in"), ("outputTokens", "out"))
         if _is_number(usage.get(key))
     ]
-    cached: Any = usage.get("cacheReadInputTokens")
-    if _is_number(cached) and _truthy(cached):
+    cached = usage.get("cacheReadInputTokens")
+    if _is_number(cached) and cached:
         parts.append(f"{_compact(cached)} cache read")
     return [" · ".join(parts) + " tokens"] if parts else []
 
@@ -456,10 +427,10 @@ def _message(message: Any, heading: str) -> list[str]:
     message = _dict(message)
     content = message.get("content")
     if not isinstance(content, list):
-        content = [{"text": "" if content is None else _as_text(content)}]
+        content = [{"text": value_text(content)}]
     role = message.get("role")
     parts = [
-        f"{heading} {_flat(role) if _truthy(role) else 'unknown'}",
+        f"{heading} {_one_line(role) if _present(role) else 'unknown'}",
         *_usage(_dict(message.get("metadata")).get("usage")),
     ]
     return parts + [part for block in content for part in _content(block)]
@@ -468,7 +439,7 @@ def _message(message: Any, heading: str) -> list[str]:
 def _span(span: Any, index: int, heading: str) -> list[str]:
     """One span under a heading that carries its `span_id`, which is what a diagnosis names it by."""
     held = _dict(span)
-    kind = held.get("span_type") if _truthy(held.get("span_type")) else "span"
+    kind = held.get("span_type") or "span"
     span_id = _dict(held.get("span_info")).get("span_id")
     named = f" (span_id: {_one_line(span_id)})" if _present(span_id) else ""
 
@@ -491,7 +462,7 @@ def _span(span: Any, index: int, heading: str) -> list[str]:
             *_block("Prompt", held.get("user_prompt")),
             *_block("Response", held.get("agent_response")),
         ]
-    return [head(_flat(kind)), _fence(span)]
+    return [head(_one_line(kind)), *_value(span)]
 
 
 def session_markdown(path: str, doc: dict, seconds: float | None, diagnoses: Sequence[tuple[str, Any]]) -> str:
@@ -507,7 +478,7 @@ def session_markdown(path: str, doc: dict, seconds: float | None, diagnoses: Seq
     facts.append(f"- Diagnoses: {', '.join(made for made, _ in diagnoses) or 'none found'}")
     parts = [f"# Session: {path}", "\n".join(facts)]
     for made, diagnosis in diagnoses:
-        parts += [f"## Diagnosis: {made}", _fence(diagnosis)]
+        parts += [f"## Diagnosis: {made}", _whole(diagnosis)]
     first = 0
     for at, spans in enumerate(traces):
         trace_id = _dict(doc["traces"][at]).get("trace_id")
@@ -516,6 +487,24 @@ def session_markdown(path: str, doc: dict, seconds: float | None, diagnoses: Seq
         parts += [part for i, span in enumerate(spans) for part in _span(span, first + i, "###")] or ["No spans."]
         first += len(spans)
     return _document(parts)
+
+
+def trace_markdown(doc: Any, cost: str | None = None) -> str:
+    """A recorded session or a list of messages on its own, as the conversation it was.
+
+    `cost` is what the page says it took, for the line under the heading.
+    """
+    said = [cost] if cost else []
+    spans = _spans(doc)
+    if spans is not None:
+        parts = [f"# Trace: {_count(len(spans), 'span')} of a recorded session", *said]
+        return _document(parts + [part for i, span in enumerate(spans) for part in _span(span, i, "##")])
+    if isinstance(doc, list):
+        parts = [f"# Trace: {_count(len(doc), 'message')}", *said]
+        return _document(
+            parts + [part for i, message in enumerate(doc) for part in _message(message, f"## Message {i + 1}:")]
+        )
+    return _document(["# Trace", *_value(doc)])
 
 
 def diagnosis_markdown(path: str, doc: dict, session: str | None) -> str:
@@ -527,7 +516,7 @@ def diagnosis_markdown(path: str, doc: dict, session: str | None) -> str:
         f"- Failures: {len(_list(doc.get('failures')))}",
         f"- Root causes: {len(_list(doc.get('root_causes')))}",
     ]
-    return _document([f"# Diagnosis: {path}", "\n".join(facts), _fence(doc)])
+    return _document([f"# Diagnosis: {path}", "\n".join(facts), _whole(doc)])
 
 
 # What sits under each root of the page's addresses. `ui-route.js` is where they are parsed.
@@ -599,7 +588,10 @@ def llms_text(
             "\n".join(forms),
             f"In Markdown a value longer than {VALUE_LIMIT} characters is cut, with a line saying how much was left "
             "out: the JSON form has all of it. A report writes a case that fails under several evaluators once. "
-            "A session is written whole.",
+            "Every row and every span is written, however many there are, and a diagnosis is written whole.",
+            "`POST /api/markdown` writes the same Markdown for a document sent to it. The page uses it for what "
+            "has no file of its own: one row, one case, a trace inside a report, a candidate's report, and an "
+            "experiment with edits that are not saved.",
             "## Routes",
             "\n".join(f"- `{route}`: {holds}" for route, holds in routes.items()),
             "## Page addresses",

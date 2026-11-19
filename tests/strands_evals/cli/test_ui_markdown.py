@@ -1,54 +1,19 @@
-"""Tests for the Markdown `strands-evals ui` writes: values must read exactly as the page prints them."""
+"""Tests for the Markdown `strands-evals ui` writes, which nothing else writes."""
 
 from __future__ import annotations
-
-import json
 
 import pytest
 
 from strands_evals.cli._ui_markdown import (
+    case_markdown,
     experiment_markdown,
+    failing_prompt,
     report_markdown,
+    row_markdown,
     session_markdown,
-    stringify,
+    trace_markdown,
     value_text,
 )
-
-
-@pytest.mark.parametrize(
-    "written,printed",
-    [
-        ("1.0", "1"),
-        ("-0.0", "0"),
-        ("100", "100"),
-        ("0.30000000000000004", "0.30000000000000004"),
-        ("123.456", "123.456"),
-        ("1e20", "100000000000000000000"),
-        ("1e21", "1e+21"),
-        ("1.5e300", "1.5e+300"),
-        ("0.000001", "0.000001"),
-        ("1e-7", "1e-7"),
-        ("-2.5e-10", "-2.5e-10"),
-        ("9007199254740993", "9007199254740992"),
-        ("12345678901234567890", "12345678901234567000"),
-        ("1e400", "null"),
-        ("NaN", "null"),
-        ("true", "true"),
-        ("null", "null"),
-        (r'"\u00e9 \u0001 \" \\ \n \ud83d\ude00 \ud800"', r'"é \u0001 \" \\ \n 😀 \ud800"'),
-        ("[]", "[]"),
-        ("{}", "{}"),
-        ("[1, [], {}]", "[\n  1,\n  [],\n  {}\n]"),
-        (
-            '{"b": 1, "10": 2, "2": 3, "01": 4, "-1": 5}',
-            '{\n  "2": 3,\n  "10": 2,\n  "b": 1,\n  "01": 4,\n  "-1": 5\n}',
-        ),
-        ('{"a": {"b": [true]}}', '{\n  "a": {\n    "b": [\n      true\n    ]\n  }\n}'),
-    ],
-)
-def test_stringify_prints_a_value_as_javascript_does(written, printed):
-    """Each expectation is what `JSON.stringify(JSON.parse(written), null, 2)` gives in a browser."""
-    assert stringify(json.loads(written)) == printed
 
 
 def test_value_text_leaves_text_alone_and_prints_nothing_for_none():
@@ -57,6 +22,15 @@ def test_value_text_leaves_text_alone_and_prints_nothing_for_none():
         "",
         '{\n  "a": 1\n}',
     ]
+
+
+def test_a_structured_value_keeps_its_keys_in_order_and_its_numbers_as_json_writes_them():
+    value = {"b": 1.0, "10": 2, "2": [1e21, 0.30000000000000004, 12345678901234567890, True, None, "é \u0001"]}
+
+    assert value_text(value) == (
+        '{\n  "b": 1.0,\n  "10": 2,\n  "2": [\n    1e+21,\n    0.30000000000000004,\n    12345678901234567890,\n'
+        '    true,\n    null,\n    "é \\u0001"\n  ]\n}'
+    )
 
 
 @pytest.mark.parametrize(
@@ -68,16 +42,16 @@ def test_value_text_leaves_text_alone_and_prints_nothing_for_none():
         (0.005, "0.01"),
         (-0.001, "-0.00"),
         (1, "1.00"),
-        (999999999999999900000, "999999999999999868928.00"),
-        (1e21, "1e+21"),
-        (-1e26, "-1e+26"),
-        (123456789012345678901234567890, "1.2345678901234568e+29"),
-        (10**400, "none"),
+        (999999999999999900000, "999999999999999900000.00"),
+        (1e21, "1000000000000000000000.00"),
+        (-1e26, "-100000000000000000000000000.00"),
+        (float("inf"), "none"),
+        (True, "none"),
         (None, "none"),
     ],
 )
 def test_a_score_is_rounded_as_the_page_rounds_it(score, printed):
-    """Each expectation is `score.toFixed(2)` in a browser, which rounds the exact binary value half up."""
+    """Two decimals, with a half of the number as it is stored rounded up, and no noise in one too large to store."""
     text = report_markdown("r.json", {"overall_score": score, "cases": []}, None)
 
     assert f"- Overall score: {printed}\n" in text
@@ -119,7 +93,7 @@ def test_a_value_cannot_close_the_fence_it_is_written_in():
     assert 'Actual output:\n\n````json\n{\n  "code": "```"\n}\n````\n' in text
 
 
-def test_a_long_value_is_cut_and_says_how_much_and_where_the_rest_is():
+def test_a_long_value_is_cut_and_says_how_much_was_left_out():
     rows = [
         {"name": "long", "evaluator": "E", "input": "x" * 5000, "expected_output": "y" * 4000},
         {"name": "structured", "evaluator": "E", "input": {"text": "z" * 5000}},
@@ -127,12 +101,12 @@ def test_a_long_value_is_cut_and_says_how_much_and_where_the_rest_is():
 
     text = report_markdown("r.json", {"cases": rows, "scores": [0, 0], "test_passes": [False, False]}, None)
 
-    cut = "The file has all of it, and so does the `.json` form of this address."
-    assert f"Input:\n\n```text\n{'x' * 4000}\n```\n\nCut after 4000 of 5000 characters. {cut}\n\n" in text
-    assert f"Expected output:\n\n```text\n{'y' * 4000}\n```\n\n### structured" in text
     assert (
-        f'Input:\n\n```json\n{{\n  "text": "{"z" * 3987}\n```\n\nCut after 4000 of 5016 characters. {cut}\n\n' in text
+        f"Input:\n\n```text\n{'x' * 4000}\n```\n\nCut after 4000 of 5000 characters: the file has the rest.\n\n" in text
     )
+    assert f"Expected output:\n\n```text\n{'y' * 4000}\n```\n\n### structured" in text
+    cut = "Cut after 4000 of 5016 characters: the file has the rest."
+    assert f'Input:\n\n```json\n{{\n  "text": "{"z" * 3987}\n```\n\n{cut}\n\n' in text
 
 
 def test_a_case_that_fails_under_several_evaluators_is_written_out_once():
@@ -219,19 +193,18 @@ def test_an_experiment_with_nothing_in_it_says_so():
     "content,printed",
     [
         ("in transit", "in transit"),
-        ('{"status": "in transit", "items": [1, 2.0]}', '{\n "status": "in transit",\n "items": [\n  1,\n  2\n ]\n}'),
-        ('\ufeff {"output": "in transit"}\n', "in transit"),
+        ('{"status": "in transit", "items": [1, 2.5]}', '{\n "status": "in transit",\n "items": [\n  1,\n  2.5\n ]\n}'),
+        (' {"output": "in transit"}\n', "in transit"),
         ('{"output": 7}', '{\n "output": 7\n}'),
         ('{"output": "a", "more": 1}', '{\n "output": "a",\n "more": 1\n}'),
         ('{"half": ', '{"half": '),
-        ('{"n": NaN}', '{"n": NaN}'),
         ("[] and then some", "[] and then some"),
         ({"status": ["in transit"]}, '{\n "status": [\n  "in transit"\n ]\n}'),
         (None, "null"),
     ],
 )
-def test_tool_output_reads_as_the_page_reads_it(content, printed):
-    """Each expectation is what `blockText` in `assets/ui-trace.js` gives for the same tool result."""
+def test_tool_output_is_laid_out_when_it_is_json_and_unwrapped_when_it_is_an_envelope(content, printed):
+    """As the page shows a tool result: JSON in a string is laid out, and a lone `{"output": "..."}` is its text."""
     span = {"span_type": "execute_tool", "tool_call": {"name": "lookup"}, "tool_result": {"content": content}}
 
     text = session_markdown("s.json", {"session_id": "s", "traces": [{"spans": [span]}]}, None, [])
@@ -269,7 +242,7 @@ def test_what_a_session_names_stays_on_its_line_and_a_span_carries_its_id():
     [(4, "- Time: 4s\n"), (4.25, "- Time: 4.25s\n"), (1.005, "- Time: 1.00s\n"), (123.5, "- Time: 124s\n"), (None, "")],
 )
 def test_a_session_gives_its_time_as_the_page_prints_it(seconds, printed):
-    """Each expectation is `nice(seconds)` in a browser; a session whose spans carry no times has no line for it."""
+    """As the page prints it; a session whose spans carry no times has no line for it."""
     text = session_markdown("s.json", {"session_id": "s", "traces": []}, seconds, [])
 
     assert text == f"# Session: s.json\n\n- Session: s\n- Traces: 0\n- Spans: 0\n{printed}- Diagnoses: none found\n"
@@ -285,10 +258,113 @@ def test_a_session_gives_its_time_as_the_page_prints_it(seconds, printed):
     ],
 )
 def test_token_counts_are_shortened_as_the_page_shortens_them(usage, printed):
-    """Each expectation is `usageLine` in `assets/ui-trace.js` for the same usage."""
+    """As the page shortens them under a message."""
     message = {"role": "assistant", "content": [], "metadata": {"usage": usage}}
     span = {"span_type": "inference", "messages": [message]}
 
     text = session_markdown("s.json", {"session_id": "s", "traces": [{"spans": [span]}]}, None, [])
 
     assert text.endswith(f"#### assistant\n\n{printed}\n")
+
+
+REPORT = {
+    "overall_score": 0.5,
+    "cases": [
+        {"name": "refund", "evaluator": "Equals", "input": "Can I get a refund?", "actual_output": "No."},
+        {"name": "refund", "evaluator": "Tone", "input": "Can I get a refund?", "actual_output": "No."},
+        {"name": "hours", "evaluator": "Equals", "input": "When are you open?", "actual_output": "9 to 5."},
+    ],
+    "scores": [0, 0.25, 1],
+    "test_passes": [False, False, True],
+    "reasons": ['expected "Yes"', "curt", ""],
+}
+CASE = "Input:\n\n```text\nCan I get a refund?\n```\n\nActual output:\n\n```text\nNo.\n```\n"
+
+
+def test_a_row_on_its_own_says_which_files_it_is_from():
+    assert row_markdown(REPORT, 1, "/served/r.json", "/served/e.json") == (
+        "# refund · Tone\n\n- Score: 0.25\n- Verdict: failed\n- Report: `/served/r.json`\n"
+        f"- Experiment: `/served/e.json`\n\nReason:\n\n```text\ncurt\n```\n\n{CASE}"
+    )
+
+
+def test_a_row_with_no_experiment_names_only_its_report_and_a_row_that_is_not_there_is_none():
+    text = row_markdown(REPORT, 2, "tune · c3", None)
+
+    assert text.startswith("# hours · Equals\n\n- Score: 1.00\n- Verdict: passed\n- Report: `tune · c3`\n\nInput:")
+    assert [row_markdown(REPORT, 3, "r.json", None), row_markdown(REPORT, -1, "r.json", None)] == [None, None]
+
+
+def test_the_failing_rows_are_written_as_a_prompt_with_each_case_once_and_the_command_to_run_one():
+    command = "strands-evals run /served/e.json --case refund --agent MODULE:ATTR"
+
+    text = failing_prompt(REPORT, "/served/r.json", "/served/e.json", command)
+
+    assert text == (
+        "These 2 rows fail in an evaluation report. Each is below with what was asked, what was expected, "
+        "what came back and the evaluator's reason. Find why each fails. Neither file names the agent that was "
+        "evaluated: the cause is in that agent, or in the case or the evaluator where the expectation itself is "
+        "wrong.\n\n"
+        "- Report: `/served/r.json`\n"
+        "- Experiment, which holds the cases and the evaluators: `/served/e.json`\n"
+        f"- To run one case again: `{command}`. `MODULE:ATTR` is a placeholder: put the import path of the agent "
+        "under test there.\n\n"
+        f'## refund · Equals\n\n- Score: 0.00\n- Verdict: failed\n\nReason:\n\n```text\nexpected "Yes"\n```\n\n{CASE}\n'
+        "## refund · Tone\n\n- Score: 0.25\n- Verdict: failed\n\nReason:\n\n```text\ncurt\n```\n\n"
+        'The case is the same as under "refund · Equals" above.\n'
+    )
+
+
+def test_a_prompt_for_one_failing_row_of_a_report_made_in_code_names_neither_experiment_nor_command():
+    report = {"cases": [{"name": "a", "evaluator": "E"}], "scores": [0], "test_passes": [False]}
+
+    text = failing_prompt(report, "r.json", None, None)
+
+    assert text.startswith("This row fails in an evaluation report.")
+    assert "\n\n- Report: `r.json`\n\n## a · E\n" in text
+
+
+def test_a_case_on_its_own_names_its_experiment_and_is_numbered_when_it_has_no_name():
+    case = {"input": {"q": 1}, "expected_output": "x" * 5000, "metadata": {"tier": "gold"}}
+
+    assert case_markdown(case, 2, "/served/e.json") == (
+        '# #2\n\n- Experiment: `/served/e.json`\n\nInput:\n\n```json\n{\n  "q": 1\n}\n```\n\n'
+        f"Expected output:\n\n```text\n{'x' * 4000}\n```\n\n"
+        "Cut after 4000 of 5000 characters: the file has the rest.\n\n"
+        'Metadata:\n\n```json\n{\n  "tier": "gold"\n}\n```\n'
+    )
+
+
+def test_a_recorded_session_on_its_own_is_written_span_by_span_under_what_it_took():
+    spans = [
+        {"span_type": "invoke_agent", "user_prompt": "Where is order 7?", "agent_response": "In transit."},
+        {"span_type": "execute_tool", "tool_call": {"name": "lookup", "arguments": {"order": 7}}, "tool_result": {}},
+    ]
+
+    text = trace_markdown({"session_id": "s", "traces": [{"spans": spans[:1]}, {"spans": spans[1:]}]}, "1 tool call")
+
+    assert text == (
+        "# Trace: 2 spans of a recorded session\n\n1 tool call\n\n"
+        "## Span 0: invoke agent\n\nPrompt:\n\n```text\nWhere is order 7?\n```\n\n"
+        "Response:\n\n```text\nIn transit.\n```\n\n"
+        '## Span 1: tool\n\nTool call `lookup`:\n\n```json\n{\n  "order": 7\n}\n```\n\n'
+        "Tool result:\n\n```text\nnull\n```\n"
+    )
+
+
+def test_a_list_of_messages_on_its_own_is_written_message_by_message_and_anything_else_as_it_is():
+    messages = [{"role": "user", "content": [{"text": "hi"}]}, {"role": "assistant", "content": "hello"}]
+
+    assert trace_markdown(messages) == (
+        "# Trace: 2 messages\n\n## Message 1: user\n\n```text\nhi\n```\n\n"
+        "## Message 2: assistant\n\n```text\nhello\n```\n"
+    )
+    assert trace_markdown({"neither": 1}) == '# Trace\n\n```json\n{\n  "neither": 1\n}\n```\n'
+
+
+def test_a_long_value_in_a_session_is_cut_like_any_other():
+    span = {"span_type": "inference", "messages": [{"role": "assistant", "content": [{"text": "w" * 4500}]}]}
+
+    text = trace_markdown({"session_id": "s", "traces": [{"spans": [span]}]})
+
+    assert text.endswith(f"```text\n{'w' * 4000}\n```\n\nCut after 4000 of 4500 characters: the file has the rest.\n")

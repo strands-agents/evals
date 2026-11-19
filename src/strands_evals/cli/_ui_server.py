@@ -50,7 +50,17 @@ from ._ui_discovery import (
     session_seconds,
 )
 from ._ui_evaluators import check_evaluators, evaluator_catalog
-from ._ui_markdown import diagnosis_markdown, experiment_markdown, llms_text, report_markdown, session_markdown
+from ._ui_markdown import (
+    case_markdown,
+    diagnosis_markdown,
+    experiment_markdown,
+    failing_prompt,
+    llms_text,
+    report_markdown,
+    row_markdown,
+    session_markdown,
+    trace_markdown,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +226,47 @@ def write_json_atomic(target: Path, payload: dict) -> float:
         Path(handle.name).unlink(missing_ok=True)
         raise
     return target.stat().st_mtime
+
+
+def _rendered(body: dict) -> str:
+    """The Markdown a body sent to `/api/markdown` asks for.
+
+    Raises:
+        ValueError: If the body does not say what to write, or names a row the report does not have.
+    """
+
+    def held(key: str, kind: type | tuple[type, ...], optional: bool = False) -> Any:
+        value = body.get(key)
+        if (value is None and optional) or (isinstance(value, kind) and not isinstance(value, bool)):
+            return value
+        raise ValueError(f"'{key}' is missing or is not what a '{body.get('kind')}' takes")
+
+    kind = body.get("kind")
+    if kind == "trace":
+        return trace_markdown(held("document", (dict, list)), held("cost", str, optional=True))
+    if kind == "case":
+        return case_markdown(held("document", dict), held("index", int), held("experiment", str))
+    document = held("document", dict)
+    if kind == "report":
+        return report_markdown(
+            held("path", str), document, held("experiment", str, optional=True), held("link", dict, optional=True)
+        )
+    if kind == "row":
+        text = row_markdown(document, held("row", int), held("report", str), held("experiment", str, optional=True))
+        if text is None:
+            raise ValueError(f"the report has no row {body['row']}")
+        return text
+    if kind == "failing":
+        return failing_prompt(
+            document,
+            held("report", str),
+            held("experiment", str, optional=True),
+            held("command", str, optional=True),
+        )
+    if kind == "experiment":
+        reports = held("reports", list)
+        return experiment_markdown(held("path", str), document, [made for made in reports if isinstance(made, str)])
+    raise ValueError("'kind' must be report, row, failing, experiment, case or trace")
 
 
 # Neither refusal says anything of the folder or the token: only how one is sent.
@@ -505,7 +556,8 @@ class UIHandler(BaseHTTPRequestHandler):
 
     def _get_llms(self, query: dict[str, list[str]]) -> None:
         """This description of what the server answers."""
-        handlers = {**self._GET_ROUTES, "PUT /api/experiment": UIHandler._put_experiment}
+        sent = {f"{method} {path}": route for (method, path), (route, _) in self._BODY_ROUTES.items()}
+        handlers = {**self._GET_ROUTES, **sent}
         routes = {route: " ".join((handler.__doc__ or "").split()) for route, handler in handlers.items()}
         text = llms_text(routes, PAGE_ROOTS, DATA_ROOTS, DATA_FORMS)
         self._send(HTTPStatus.OK, text.encode("utf-8"), "text/plain; charset=utf-8")
@@ -529,7 +581,7 @@ class UIHandler(BaseHTTPRequestHandler):
         if form == ".json":
             self._json(HTTPStatus.OK, obj)
             return
-        obj = finite(obj)  # as the page is sent it, so both write the same Markdown
+        obj = finite(obj)  # NaN and Infinity are not JSON: a score that is one reads as none
         # The path as the scan writes it, so the file is found in the listing however it was asked for.
         root = self.config.root.resolve()
         path = target.relative_to(root).as_posix()
@@ -631,6 +683,22 @@ class UIHandler(BaseHTTPRequestHandler):
                 "evaluator_notes": check_evaluators(document.get("evaluators")),
             },
         )
+
+    def _post_markdown(self, query: dict[str, list[str]], body: dict) -> None:
+        """With a body of `{"kind": ..., "document": ...}`: the Markdown of a document the sender holds, or of a part
+        of one, for what has no file to read as `.md`. `kind` is `report` (with `path`, `experiment`, `link`), `row`
+        (with `row`, `report`, `experiment`), `failing` (the failing rows as a prompt, with `report`, `experiment`,
+        `command`), `experiment` (with `path`, `reports`), `case` (with `index`, `experiment`) or `trace` (with `cost`).
+        """
+        try:
+            text = _rendered(body)
+        except ValueError as exc:
+            self._error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+        except RecursionError:
+            self._error(HTTPStatus.UNPROCESSABLE_ENTITY, "the document is nested too deeply to write as Markdown")
+            return
+        self._send(HTTPStatus.OK, text.encode("utf-8", "replace"), "text/markdown; charset=utf-8")
 
     def _wants_html(self) -> bool:
         """Whether a browser is opening a page: one asks for `text/html`, and a program fetching data does not."""
@@ -769,17 +837,28 @@ class UIHandler(BaseHTTPRequestHandler):
     def do_HEAD(self) -> None:  # noqa: N802
         self.do_GET()
 
-    def do_PUT(self) -> None:  # noqa: N802
-        self._answer(self._put)
+    # The routes that take a JSON body, each with whether it writes to the folder.
+    _BODY_ROUTES: dict[tuple[str, str], tuple[Callable[[UIHandler, dict[str, list[str]], dict], None], bool]] = {
+        ("PUT", "/api/experiment"): (_put_experiment, True),
+        ("POST", "/api/markdown"): (_post_markdown, False),
+    }
 
-    def _put(self) -> None:
+    def do_PUT(self) -> None:  # noqa: N802
+        self._answer(self._take_body)
+
+    def do_POST(self) -> None:  # noqa: N802
+        self._answer(self._take_body)
+
+    def _take_body(self) -> None:
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
-
+        found = self._BODY_ROUTES.get((self.command, parsed.path))
+        if found is None:
+            self._reject_unread(*(self._refusal(query) or (HTTPStatus.NOT_FOUND, f"no route for {parsed.path}")))
+            return
+        route, writes = found
         refusal = self._refusal(query)
-        if refusal is None and parsed.path != "/api/experiment":
-            refusal = HTTPStatus.NOT_FOUND, f"no route for {parsed.path}"
-        if refusal is None and self.config.read_only:
+        if refusal is None and writes and self.config.read_only:
             refusal = HTTPStatus.FORBIDDEN, "server started with --read-only"
         if refusal:
             self._reject_unread(*refusal)
@@ -787,7 +866,7 @@ class UIHandler(BaseHTTPRequestHandler):
 
         body = self._json_body()
         if body is not None:
-            self._put_experiment(query, body)
+            route(self, query, body)
 
 
 class _Server(ThreadingHTTPServer):
