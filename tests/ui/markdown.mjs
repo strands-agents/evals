@@ -104,6 +104,10 @@ write('code/weekly.report.json', JSON.stringify({ overall_score: 0.25, run_info:
 /* The older report says nothing of when it ran, so it is placed by its file's time. */
 fs.utimesSync(path.join(root, 'code/nightly.report.json'), Date.UTC(2026, 10, 1) / 1000, Date.UTC(2026, 10, 1) / 1000);
 write('empty/experiment.json', JSON.stringify({ cases: [], evaluators: [] }));
+/* Four cases, two with no name, under two evaluators: a run writes each evaluator's rows in case order. */
+write('anon/unnamed.report.json', JSON.stringify({ overall_score: 0,
+  cases: ['Eq', 'Len'].flatMap(evaluator => [null, null, 'c', 'd'].map(name => ({ name, evaluator }))),
+  scores: Array(8).fill(0), test_passes: Array(8).fill(false) }));
 /* Two experiments equally near a report whose case both hold: a tie, which is not guessed. */
 for (const side of ['left', 'right']) write(`tie/${side}/e.json`, JSON.stringify({ cases: [{ name: 't', input: 'q' }], evaluators: [{ evaluator_type: 'Equals' }] }));
 write('tie/shared.report.json', JSON.stringify({ overall_score: 1, cases: [{ name: 't', evaluator: 'Equals' }], scores: [1], test_passes: [true] }));
@@ -517,11 +521,11 @@ Expected interactions:
 | --- | --- | --- | --- |
 | refund\\|policy | Equals | 0.00 | failed |
 | refund\\|policy | tone of voice | 0.13 | failed |
-| #2 | Equals | 1.00 | passed |
+| #1 | Equals | 1.00 | passed |
 | declined | (unnamed) | 1.00 | not applicable |
 | unjudged | Equals | none | failed |
 `), 'structured values print as the page prints them, and every row is in one table at the end, a pipe in a name escaped and a row with no name numbered', copied.slice(-1600));
-  ok(!copied.includes('### #2') && !copied.includes('### declined'), 'a passing row and one that was not applicable are not among the failing ones');
+  ok(!copied.includes('### #1') && !copied.includes('### declined'), 'a passing row and one that was not applicable are not among the failing ones');
   await waitFor(() => p.text('#actions [data-md="report"]') === 'Copy as Markdown', 'the button to read as before');
 
   const prompt = await p.copy('#actions [data-md="failing"]');
@@ -590,6 +594,16 @@ Expected interactions:
     'its Markdown says no experiment was found and that nothing fails', p.copied);
   await p.click(row(p, 0));
   is(labels(p, beside(p, 0)), 'Copy as Markdown | Copy link', 'and its row has no command to offer');
+
+  // ── a case with no name has one name under every evaluator ──
+  await p.click('.tab[data-view="reports"]');
+  await p.openReport('unnamed');
+  await waitFor(() => p.$$('#rep-rows tr.case').length === 8, 'the report of unnamed cases');
+  const anon = await p.copy('#actions [data-md="report"]');
+  is(anon.split('\n').filter(line => line.startsWith('### ')).join(), '### #0 · Eq,### #1 · Eq,### c · Eq,### d · Eq,### #0 · Len,### #1 · Len,### c · Len,### d · Len',
+    'a case with no name is numbered by its place under each evaluator, so it reads as one case');
+  ok(anon.includes('\n- Cases: 4\n'), 'and is counted once', anon.split('\n## ')[0]);
+  is(anon, await fromServer('/reports/anon/unnamed.report.json.md'), 'as the server writes it');
 
   // ── a report left unpaired by a tie says so, the same on the page and from the server ──
   await p.click('.tab[data-view="reports"]');

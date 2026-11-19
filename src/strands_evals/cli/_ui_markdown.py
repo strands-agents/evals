@@ -171,10 +171,16 @@ def _case_blocks(case: dict, sides: Sequence[str]) -> list[str]:
 
 
 def _rows(doc: dict) -> list[dict]:
-    """One row per case and evaluator, read as the page reads them."""
+    """One row per case and evaluator, read as the page reads them.
+
+    A case with no name is numbered by its place among the rows of its evaluator, so it has one name under each.
+    """
     rows = []
+    place: dict[str, int] = {}
     for index, case in enumerate(_list(doc.get("cases"))):
         case = _dict(case)
+        evaluator = _one_line(case["evaluator"]) if _present(case.get("evaluator")) else "(unnamed)"
+        place[evaluator] = place.get(evaluator, -1) + 1
         outputs = [_dict(output) for output in _list(_at(doc.get("detailed_results"), index))]
         declined = bool(outputs) and all(
             o.get("label") == "not_applicable" and _truthy(o.get("test_pass")) for o in outputs
@@ -184,8 +190,8 @@ def _rows(doc: dict) -> list[dict]:
         rows.append(
             {
                 "case": case,
-                "name": _name(case.get("name"), index),
-                "evaluator": _one_line(case["evaluator"]) if _present(case.get("evaluator")) else "(unnamed)",
+                "name": _name(case.get("name"), place[evaluator]),
+                "evaluator": evaluator,
                 "score": _at(doc.get("scores"), index),
                 "reason": reason if _truthy(reason) else "",
                 "outputs": outputs,

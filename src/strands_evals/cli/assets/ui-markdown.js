@@ -46,10 +46,20 @@ function mdCaseBlocks(c, sides) {
 
 const mdVerdict = r => ({ pass: 'passed', fail: 'failed', na: 'not applicable' }[verdictOf(r)]);
 const mdEvaluator = r => (mdPresent(r.evaluator) ? mdLine(r.evaluator) : '(unnamed)');
-const mdRowName = r => mdName(r.case.name, r.i);
+/* Each row's case name. A case with no name is numbered by its place among the rows of its evaluator,
+   so it has one name under each. */
+function mdCaseNames(rows) {
+  const place = new Map();
+  return new Map(rows.map(r => {
+    const at = place.get(mdEvaluator(r)) || 0;
+    place.set(mdEvaluator(r), at + 1);
+    return [r, mdName(r.case.name, at)];
+  }));
+}
 
-/* `more` is facts about where the row is from, for a row copied on its own. */
-function mdRowParts(r, heading, more = []) {
+/* `names` is `mdCaseNames` of the rows `r` is one of. `more` is facts about where the row is from,
+   for a row copied on its own. */
+function mdRowParts(r, names, heading, more = []) {
   const outputs = r.outputs.map(o => (o && typeof o === 'object' && !Array.isArray(o) ? o : {}));
   const only = outputs.length === 1 ? outputs[0] : {};
   const several = outputs.length > 1 ? outputs : [];
@@ -57,7 +67,7 @@ function mdRowParts(r, heading, more = []) {
   if (typeof only.label === 'string' && only.label) facts.push(`- Label: ${mdLine(only.label)}`);
   several.forEach((o, n) => facts.push(`- Output ${n + 1} of ${outputs.length}: score ${mdScore(o.score)}, `
     + (o.test_pass ? 'passed' : 'failed') + (typeof o.label === 'string' && o.label ? `, ${mdLine(o.label)}` : '')));
-  return [`${heading} ${mdRowName(r)} · ${mdEvaluator(r)}`, facts.concat(more).join('\n'),
+  return [`${heading} ${names.get(r)} · ${mdEvaluator(r)}`, facts.concat(more).join('\n'),
     ...mdBlock('Reason', mdPresent(r.reason) ? r.reason : only.reason),
     ...several.flatMap((o, n) => mdBlock(`Reason, output ${n + 1} of ${outputs.length}`, o.reason)),
     ...mdBlock('Diagnosis', r.diagnosis), ...mdBlock('Recommendation', r.recommendation),
@@ -71,17 +81,17 @@ const mdMadeFrom = (experiment, link) => (experiment ? experiment + (link ? ` ($
 /** A report: its figures, each failing row in full, then every row in one table. `experiment` and
     `link` are the scan's pairing of it. */
 function reportMarkdown(path, doc, experiment, link) {
-  const rows = reportRows(doc), n = verdictCounts(rows);
+  const rows = reportRows(doc), n = verdictCounts(rows), names = mdCaseNames(rows);
   const facts = [
     `- Overall score: ${mdScore(doc.overall_score)}`,
     `- Rows: ${rows.length} (${n.pass} passed, ${n.fail} failed, ${n.na} not applicable)`,
-    `- Cases: ${new Set(rows.map(mdRowName)).size}`,
+    `- Cases: ${new Set(names.values()).size}`,
     `- Evaluators: ${[...new Set(rows.map(mdEvaluator))].join(', ') || 'none'}`,
     `- Experiment: ${mdMadeFrom(experiment, link)}`,
   ];
-  const failing = rows.filter(r => verdictOf(r) === 'fail').flatMap(r => mdRowParts(r, '###'));
+  const failing = rows.filter(r => verdictOf(r) === 'fail').flatMap(r => mdRowParts(r, names, '###'));
   const table = ['| Case | Evaluator | Score | Verdict |', '| --- | --- | --- | --- |',
-    ...rows.map(r => `| ${mdCell(mdRowName(r))} | ${mdCell(mdEvaluator(r))} | ${mdScore(r.score)} | ${mdVerdict(r)} |`)];
+    ...rows.map(r => `| ${mdCell(names.get(r))} | ${mdCell(mdEvaluator(r))} | ${mdScore(r.score)} | ${mdVerdict(r)} |`)];
   return mdDocument([`# Report: ${path}`, facts.join('\n'), '## Failing rows',
     ...(failing.length ? failing : ['None.']), '## All rows', table.join('\n')]);
 }
@@ -129,7 +139,7 @@ const reportPath = () => (repCand ? repMeta.path : filePath(repMeta.path));
 
 function rowMarkdown(r) {
   const experiment = openExperimentOf();
-  return mdDocument(mdRowParts(r, '#', [
+  return mdDocument(mdRowParts(r, mdCaseNames(ROWS), '#', [
     `- Report: \`${reportPath()}\``,
     ...(experiment ? [`- Experiment: \`${filePath(experiment)}\``] : []),
   ]));
@@ -137,7 +147,7 @@ function rowMarkdown(r) {
 
 /** Every failing row of the open report, under one line saying what to do with them. */
 function failingPrompt() {
-  const rows = ROWS.filter(r => verdictOf(r) === 'fail');
+  const rows = ROWS.filter(r => verdictOf(r) === 'fail'), names = mdCaseNames(ROWS);
   const experiment = openExperimentOf();
   const named = rows.find(r => mdPresent(r.case.name));
   const facts = experiment ? [`- Experiment: \`${filePath(experiment)}\``] : [];
@@ -146,7 +156,7 @@ function failingPrompt() {
     `${rows.length === 1 ? 'This row fails' : `These ${rows.length} rows fail`} in the evaluation report `
       + `\`${reportPath()}\`. Find the cause of each failure and fix it.`,
     ...(facts.length ? [facts.join('\n')] : []),
-    ...rows.flatMap(r => mdRowParts(r, '##')),
+    ...rows.flatMap(r => mdRowParts(r, names, '##')),
   ]);
 }
 

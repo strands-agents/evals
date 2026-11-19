@@ -123,6 +123,27 @@ def test_a_name_stays_on_one_line_and_cannot_break_the_table():
     assert "- Evaluators: two words\n" in text
 
 
+def test_a_case_with_no_name_has_one_name_under_every_evaluator():
+    """`Case.name` defaults to none, and a report holds one row per case under each evaluator in turn."""
+    names = [None, None, "c", "d"]
+    rows = [{"name": name, "evaluator": evaluator} for evaluator in ("Eq", "Len") for name in names]
+    report = {"cases": rows, "scores": [0] * 8, "test_passes": [False] * 8}
+
+    text = report_markdown("r.json", report, None)
+
+    assert "- Cases: 4\n" in text
+    assert [line for line in text.splitlines() if line.startswith("### ")] == [
+        "### #0 · Eq",
+        "### #1 · Eq",
+        "### c · Eq",
+        "### d · Eq",
+        "### #0 · Len",
+        "### #1 · Len",
+        "### c · Len",
+        "### d · Len",
+    ]
+
+
 def test_a_row_is_not_applicable_only_when_every_output_declined_and_passed():
     declined = {"score": 1, "test_pass": True, "label": "not_applicable"}
     report = {
