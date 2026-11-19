@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import sys
 from collections.abc import Iterable, Sequence
 from decimal import ROUND_HALF_UP, Decimal, localcontext
 from typing import Any
@@ -413,16 +414,21 @@ def _content(block: Any) -> list[str]:
     return _value(block)
 
 
+def _is_count(value: Any) -> bool:
+    """A number a float can hold. A longer integer, like NaN and Infinity, is no count of anything."""
+    return _is_number(value) and abs(value) <= sys.float_info.max
+
+
 def _usage(usage: Any) -> list[str]:
     if not isinstance(usage, dict):
         return []
     parts = [
         f"{_compact(usage[key])} {word}"
         for key, word in (("inputTokens", "in"), ("outputTokens", "out"))
-        if _is_number(usage.get(key))
+        if _is_count(usage.get(key))
     ]
     cached = usage.get("cacheReadInputTokens")
-    if _is_number(cached) and cached:
+    if _is_count(cached) and cached:
         parts.append(f"{_compact(cached)} cache read")
     return [" · ".join(parts) + " tokens"] if parts else []
 

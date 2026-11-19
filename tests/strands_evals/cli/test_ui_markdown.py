@@ -256,7 +256,9 @@ def test_a_session_gives_its_time_as_the_page_prints_it(seconds, printed):
         ({"inputTokens": 12345, "outputTokens": 1234567}, "12k in · 1.23M out tokens"),
         ({"inputTokens": 5, "cacheReadInputTokens": 0}, "5 in tokens"),
         ({"outputTokens": 2, "cacheReadInputTokens": 20500}, "2 out · 21k cache read tokens"),
+        ({"inputTokens": 10**400, "outputTokens": 7, "cacheReadInputTokens": float("nan")}, "7 out tokens"),
     ],
+    ids=["a half", "thousands and millions", "nothing cached", "cached", "a count no float holds"],
 )
 def test_token_counts_are_shortened_as_the_page_shortens_them(usage, printed):
     """As the page shortens them under a message."""
