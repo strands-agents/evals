@@ -51,15 +51,15 @@ const server = fakeServer({
   },
 });
 const asked = () => server.sent.splice(0).map(r => r.url.split('?')[0]).join(' ');
-/* Hold the answer for one file until the test lets it go, as a slow read would. */
-let slow = null;
+/* Hold the answer for a file until the test lets it go, as a slow read would. */
+const slow = new Map();
 const hold = path => {
   let release;
-  slow = { path, until: new Promise(resolve => { release = resolve; }) };
-  return async () => { slow = null; release(); await tick(); };
+  slow.set(path, new Promise(resolve => { release = resolve; }));
+  return async () => { slow.delete(path); release(); await tick(); };
 };
 const fetchImpl = async (url, opts) => {
-  if (slow && String(url).includes(`path=${slow.path}`)) await slow.until;
+  await slow.get(new URL(String(url), 'http://x').searchParams.get('path'));
   return server(url, opts);
 };
 
@@ -184,6 +184,37 @@ ok(input() === 'rewritten a third time', 'Rescan shows the open experiment as it
   await p.click('.tab[data-view="experiments"]');
   await release();
   ok(p.$('#v-experiments').classList.contains('on'), 'nor a comparison whose reports load late', p.$('.view.on').id);
+}
+
+// ── a step through history that a click overtakes ──
+{
+  const at = () => `${p.view()} ${p.window.location.pathname}`;
+  await p.openReport('r.json');
+  await p.openReport('other.json');
+  let release = hold('r.json');
+  await p.travel(-1);
+  await p.click('.tab[data-view="experiments"]');
+  await release();
+  ok(at() === 'v-experiments /experiments', 'Back to a report that is slow to load, then a click elsewhere: the page stays where the click went', at());
+  await p.travel(-1);
+  ok(at() === 'v-report /reports/r.json' && p.text('#crumbs') === 'Reports/r.json', 'and the click was a step of its own, which Back undoes', at());
+
+  release = hold('other.json');
+  p.window.visit('/reports/other.json');
+  await tick();
+  await p.click('.tab[data-view="experiments"]');
+  await release();
+  ok(at() === 'v-experiments /experiments', 'the same when the slow report was asked for by a link in the page', at());
+
+  await p.click('.tab[data-view="reports"]');
+  const first = hold('r.json'), second = hold('other.json');
+  await p.openReport('r.json');
+  await p.openReport('other.json');
+  await first();
+  const early = at();
+  await second();
+  ok(early === 'v-reports /reports' && at() === 'v-report /reports/other.json' && p.text('#crumbs') === 'Reports/other.json',
+    'of two reports asked for in a row the second is the one opened, whichever answers first', `${early} | ${at()}`);
 }
 
 // ── a tab nobody is looking at stays quiet, and catches up when it is looked at ──

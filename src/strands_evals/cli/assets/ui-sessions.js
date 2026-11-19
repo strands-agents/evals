@@ -152,11 +152,12 @@ async function openSession(path) {
   const named = sessionRows().find(m => m.path === path)
     || SESSIONS.find(s => s.path === (DIAGNOSES.find(d => d.path === path) || {}).session);
   const read = named && await readToOpen(path, () => readSession(named));
-  if (!read) return;
+  if (!read) return false;
   loadSession(named, read);
   scanError = '';
   renderLists();
   show('session');
+  return true;
 }
 
 /** Re-read the open session when its file, or a diagnosis made of it, changed on disk. */
