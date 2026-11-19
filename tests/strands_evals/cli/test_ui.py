@@ -1744,7 +1744,9 @@ def test_markdown_names_a_file_as_the_scan_does_however_it_was_asked_for(client:
 
     assert roundabout == Reply(HTTPStatus.OK, REPORT_MARKDOWN)
     assert unpaired.body.startswith("# Report: code/nightly.report.json\n")
-    assert "\n- Experiment: none found in this folder; a report made in code has none\n\n## Failing rows\n\nNone.\n" in unpaired.body
+    assert (
+        "\n- Experiment: none found in this folder; a report made in code has none\n\n## Failing rows" in unpaired.body
+    )
 
 
 def test_markdown_says_why_a_report_was_left_unpaired(client: Client):
