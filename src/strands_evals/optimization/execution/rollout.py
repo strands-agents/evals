@@ -13,12 +13,16 @@ from contextlib import AbstractAsyncContextManager, AbstractContextManager, supp
 from dataclasses import dataclass, field
 from typing import Any
 
+from opentelemetry.trace import Span
+from strands import Agent
+from strands.multiagent.base import MultiAgentBase
+
 from ...case import Case
 from ...telemetry import get_tracer
 from ...types.optimization import TrialStatus
 from ..declaration.tunable import _FactoryArgumentError
 from .status import InfrastructureError, classify
-from .traces import ATTEMPT_SPAN, ROLLOUT_SPAN, SPAN_KIND, TraceCapture
+from .traces import ATTEMPT_SPAN, FACTORY_AGENT, FACTORY_TAGGED, ROLLOUT_SPAN, SPAN_KIND, TraceCapture
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +37,9 @@ EnvironmentFn = Callable[
 # asyncio's shared pool holds at most min(32, cpus + 4) threads, which would cap the sync trials running
 # at once. None (outside a `TrialRunner` call) -> that shared pool.
 _THREAD_POOL: contextvars.ContextVar[Executor | None] = contextvars.ContextVar("trial_thread_pool", default=None)
+
+# Type names of objects a factory built that couldn't be tagged, each warned about once per process.
+_UNTAGGED_WARNED: set[str] = set()
 
 
 @dataclass
@@ -96,6 +103,9 @@ class TrialLog:
 async def default_rollout(agent_factory: Callable[..., Any], case: Case) -> dict[str, Any]:
     """Build an agent and return `{"output": str(await agent.invoke_async(case.input))}`.
 
+    The factory runs once per attempt, so models it builds should share one `boto3.Session` rather than
+    each make their own (see `Optimizer`).
+
     Args:
         agent_factory: Builds a fresh agent; called with no arguments.
         case: The case to run.
@@ -111,9 +121,9 @@ def make_task(
 ) -> TaskFn:
     """Wrap a rollout as a task: per-attempt environment, then `rollout_fn` inside a `rollout` span.
 
-    `rollout_fn` receives `agent_factory._with_resources(resources)` (without `environment`,
-    `agent_factory` itself): `default_rollout` calls it with no arguments; a custom rollout may pass the
-    factory function's non-tunable kwargs. A setup error, never a trial status, raises
+    `rollout_fn` receives a factory that calls `agent_factory._with_resources(resources)` (without
+    `environment`, `agent_factory` itself): `default_rollout` calls it with no arguments; a custom rollout
+    may pass the factory function's non-tunable kwargs. A setup error, never a trial status, raises
     `_FactoryArgumentError`: an environment that gives no mapping, a resource or kwarg named like a
     declared marker, a call kwarg the function doesn't accept, or a required parameter left unsupplied.
     An error creating or entering the environment is raised as `InfrastructureError(...) from error`, so
@@ -125,6 +135,16 @@ def make_task(
     or come from an async context manager, which runs on the event loop. A trial cancelled while a sync
     `__enter__` runs waits for it to finish, exits the environment, then re-raises the cancellation (a
     second cancellation during that wait leaves the environment entered).
+
+    The factory `rollout_fn` receives also tags each strands `Agent` or multi-agent system it returns,
+    through its `trace_attributes`, to tell the candidate's model calls (its agents and everything under
+    them: sub-agents, a `ToolSimulator` behind one of its tools) from every other agent's in the attempt,
+    such as a simulated user or an agent the environment built. Those are `TrialRecord.benchmark_usage`,
+    never the candidate's usage, and Reflection doesn't read them. So an agent the rollout builds itself,
+    even from the parts of the one the factory returned, is not the candidate's, and an attempt whose
+    factory agent never runs records no candidate usage. Anything else the factory returns (a config dict,
+    a wrapper object) can't be tagged: a warning says so once per type, and every model call in the attempt
+    counts as the candidate's, as on the `build_task` path.
 
     Args:
         agent_factory: The candidate's bound factory.
@@ -175,9 +195,45 @@ def make_task(
 
 
 async def _rollout(rollout_fn: RolloutFn, agent_factory: Callable[..., Any], case: Case) -> Any:
-    """Run `rollout_fn` inside the `rollout` span, whose duration is `Usage.seconds`."""
-    with get_tracer().start_as_current_span(f"rollout {case.name}", attributes={SPAN_KIND: ROLLOUT_SPAN}):
-        return await _call(rollout_fn, agent_factory, case)
+    """Run `rollout_fn` inside the `rollout` span, whose duration is `Usage.seconds`, with a tagging factory."""
+    attributes: dict[str, str | bool] = {SPAN_KIND: ROLLOUT_SPAN, FACTORY_TAGGED: True}
+    with get_tracer().start_as_current_span(f"rollout {case.name}", attributes=attributes) as span:
+        return await _call(rollout_fn, _tagging(agent_factory, span), case)
+
+
+def _tagging(agent_factory: Callable[..., Any], rollout_span: Span) -> Callable[..., Any]:
+    """`agent_factory`, setting `FACTORY_AGENT` in the `trace_attributes` of each strands `Agent` or multi-agent
+    system it builds (an async factory's once awaited).
+
+    Strands reads `trace_attributes` at each invocation, so the agent's spans carry the tag. Arguments are
+    passed through unchanged. Anything else built is returned as is, sets `FACTORY_TAGGED` False on the rollout
+    span, and is warned about once per type.
+    """
+
+    def tag(built: Any) -> Any:
+        attributes = getattr(built, "trace_attributes", None)
+        if isinstance(built, (Agent, MultiAgentBase)) and isinstance(attributes, dict):
+            attributes[FACTORY_AGENT] = True
+            return built
+        rollout_span.set_attribute(FACTORY_TAGGED, False)
+        if type(built).__qualname__ not in _UNTAGGED_WARNED:
+            _UNTAGGED_WARNED.add(type(built).__qualname__)
+            logger.warning(
+                "built=<%s> | the factory returned no strands agent or multi-agent system, so other agents in the "
+                "rollout can't be told apart | every model call counts as the candidate's and reflection reads every "
+                "agent | return the agent itself to tell them apart",
+                type(built).__qualname__,
+            )
+        return built
+
+    async def tag_when_built(built: Any) -> Any:
+        return tag(await built)
+
+    def build(*args: Any, **kwargs: Any) -> Any:
+        built = agent_factory(*args, **kwargs)
+        return tag_when_built(built) if inspect.isawaitable(built) else tag(built)
+
+    return build
 
 
 async def _exit_environment(
@@ -224,6 +280,8 @@ def instrument(task: TaskFn, log: TrialLog, traces: TraceCapture) -> TaskFn:
     `completed` with no usage and no trajectory. A rollout-returned `trajectory` that is not None wins;
     a returned dict without one gets a copy with the `Session` added, never the dict itself changed;
     a non-dict return becomes `{"output": value, "trajectory": session}`. No agent spans -> trajectory None.
+    The `Session` keeps every agent in the attempt; when the factory's agents are told apart from the
+    others (see `make_task`), each span's metadata says which (`CANDIDATE_SPAN_KEY`).
     Attempts `Experiment` retried on throttling go into `TrialLogEntry.previous_attempts`. An
     `InfrastructureError` raised from another error records that error's type and message.
 

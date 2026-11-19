@@ -52,6 +52,7 @@ from .end_phase import (
     pick,
 )
 from .execution.rollout import EnvironmentFn, RolloutFn, TaskFn, default_rollout, make_task
+from .execution.status import classify
 from .execution.traces import TraceCapture
 from .execution.trials import TrialRunner
 from .record.events import closed_events
@@ -87,9 +88,10 @@ class Optimizer:
 
     Each iteration the schedule plans a step, selection picks a parent, proposers propose, every candidate is
     scored on train, and the score model is refitted. There is no champion during the run: after the search
-    stops, the top finalists and the baseline are measured on validation, a fresh fit picks the champion
-    (only a candidate meeting every constraint ships, else the baseline), and the champion is compared with
-    the baseline on test, reported only.
+    stops, the finalists (the top of the ranking, those meeting every constraint with margin first) and the
+    baseline are measured on validation, a fresh fit picks the champion (only a candidate meeting every
+    constraint ships, else the baseline), and the champion is compared with the baseline on test, reported
+    only.
 
     Pass either `factory` (a `TunableFactory`, positionally as in `Optimizer(experiment, create_agent)` or
     by keyword) or `build_task=` with `space=`. `environment=` and `rollout_fn=` work only with `factory=`.
@@ -99,6 +101,15 @@ class Optimizer:
     Build the agent inside `task`, never in `build_task` itself: an agent shared across cases and
     runs carries conversation state from one trial into the next, so every trial must build its
     own. The factory path enforces this; `build_task` can't.
+
+    A model that makes its own `boto3.Session` (`BedrockModel()` does) reads the AWS config files and
+    resolves credentials again on every attempt. With many trials at once that can run the process out of
+    file descriptors or overload the credential provider, so build one `boto3.Session` up front and pass
+    it to every model (`BedrockModel(boto_session=session)`). A session is not thread-safe: when the agent
+    is built in a worker thread (a sync `rollout_fn` or task), build its models under a lock. Each model
+    still opens its own connections, so a high `max_workers` may also need a higher open-file limit
+    (`ulimit -n`). The credential and "Too many open files" errors this causes are
+    `infrastructure_invalid` and re-run, not scored.
     """
 
     def __init__(
@@ -311,6 +322,12 @@ class Optimizer:
         self._records: dict[str, dict[tuple[str, int], TrialRecord]] = {}
         self._rollouts: dict[tuple[str, SplitName], int] = {}  # a _score call's spend, until its event
 
+    @property
+    def run_dir(self) -> Path | None:
+        """The run's folder: None until `run()` / `run_async()` creates it, before the baseline is scored; after
+        `resume`, the reopened folder."""
+        return self._run.root if self._run is not None else None
+
     def _config(self) -> dict[str, Any]:
         """`run.json`'s contents but `schema_version` and `code` (added by `RunDirectory.create`).
 
@@ -504,6 +521,7 @@ class Optimizer:
         self._last_fit: Fit | None = None  # the last successful fit, the next refit's `previous`
         self._fit_errors: set[str] = set()
         self._fit_error: str | None = None  # the last refit's error while no refit has succeeded since
+        self._build_errors: set[str] = set()  # infrastructure errors the build check has warned about
         self._saved: dict[str, Candidate] = {baseline.id: baseline}  # every saved candidate, by id
         self._open_rounds: list[OpenRound] = []
         self._search_cost = Usage.zero()
@@ -658,7 +676,16 @@ class Optimizer:
             n, front = self._final_pick.n_finalists, None
             if criteria.is_pareto:
                 n, front = max(n, PARETO_MIN_FINALISTS), pareto_front(assessments, ranking)
-            finalists = choose_finalists(ranking, baseline, n, front=front)
+            finalists = choose_finalists(
+                ranking,
+                baseline,
+                n,
+                assessments=assessments,
+                train=self._train,
+                criteria=criteria,
+                n_validation_cases=len(self._case_split.validation),
+                front=front,
+            )
             run.events.append("finalists", iteration=self._iteration, candidate_ids=finalists)
         if resumed is not None and resumed.validation is not None:
             report = resumed.validation
@@ -666,11 +693,19 @@ class Optimizer:
             report = await self._pick(finalists)
         if resumed is not None and resumed.is_test_done:
             test, test_reason, front_test = resumed.test, resumed.test_reason, resumed.front_test
+            test_failed_ids = resumed.test_failed_ids
         else:
-            test, test_reason, front_test, final = await self._test(report)
+            test, test_reason, front_test, test_failed_ids, final = await self._test(report)
             if final:
-                run.events.append("test", iteration=self._iteration, report=test, reason=test_reason, front=front_test)
-        return self._finish(stop_reason, finalists, report, test, test_reason, front_test)
+                run.events.append(
+                    "test",
+                    iteration=self._iteration,
+                    report=test,
+                    reason=test_reason,
+                    front=front_test,
+                    failed=test_failed_ids,
+                )
+        return self._finish(stop_reason, finalists, report, test, test_reason, front_test, test_failed_ids)
 
     async def _pick(self, finalists: Sequence[str]) -> ValidationReport:
         """E2 and E3: the finalists and the baseline on validation, then the pick on a fresh validation fit."""
@@ -678,12 +713,19 @@ class Optimizer:
         criteria, baseline = self._criteria, self._baseline.id
         ids = [baseline, *finalists]
         validation = dict(zip(ids, await self._score_split(ids, "validation"), strict=True))
-        # A fresh fit on the validation runs only, never mixed with the search fit (no previous fit).
+        completed = {c: self._completed_count(c, "validation") for c in ids}
+        # A fresh fit on the validation runs only, never mixed with the search fit (no previous fit). A candidate
+        # with no completed validation trial isn't assessed, so it stays out of the fit too: its failure values
+        # would move the intercept, the noise, and the case effects the others' estimates use (and a baseline's
+        # would set an unbounded metric's unit).
+        fitted = [c for c in ids if completed[c] > 0]
         fit: Fit | None = None
-        problem: str | None = "fewer than 2 eligible candidates"
-        if sum(validation[c].is_eligible for c in ids) >= 2:
+        problem: str | None = "fewer than 2 eligible candidates" + (
+            "" if len(fitted) == len(ids) else " with a completed validation trial"
+        )
+        if sum(validation[c].is_eligible for c in fitted) >= 2:
             try:
-                fit = self._score_model.fit(self._fit_data(ids, "validation", validation))
+                fit = self._score_model.fit(self._fit_data(fitted, "validation", validation))
             except Exception as error:  # noqa: BLE001 - a failed validation fit picks by measured means
                 problem = f"the model raised: {type(error).__name__}: {error}"
             else:
@@ -695,6 +737,7 @@ class Optimizer:
             fit=fit,
             values={c: self._candidates[c].values for c in ids},
             trial_counts={c: self._trial_count(c, "validation") for c in ids},
+            completed=completed,
             criteria=criteria,
             rule=self._final_pick.rule,
             problem=problem,
@@ -710,6 +753,7 @@ class Optimizer:
         test: TestReport | None,
         test_reason: str | None,
         front_test: dict[str, TestReport],
+        test_failed_ids: Sequence[str],
     ) -> OptimizationResult:
         """`effects.json`, the diffs, and `result.json`, from the end phase's reports; returns the result, as
         `result.json` reloads it (so the returned result and a reloaded one are equal).
@@ -732,7 +776,7 @@ class Optimizer:
         for c in report.front if criteria.is_pareto else []:
             run.save_diff(f"front/{views[c].number}-{c}", views[c].diff(), views[c].changed_values())
         agent_cost: dict[SplitName, Usage] = {split: Usage.zero() for split in SPLIT_NAMES}
-        judge_cost = retry_cost = Usage.zero()
+        judge_cost = retry_cost = benchmark_cost = Usage.zero()
         # Every saved trial, as `spent` counts them: after a resume, a killed iteration's trials too.
         for saved in run._trials.values():
             agent_cost[saved["split"]] = agent_cost[saved["split"]] + Usage.model_validate(saved["usage"])
@@ -742,6 +786,10 @@ class Optimizer:
                 retry_cost = (
                     retry_cost + Usage.model_validate(attempt["usage"]) + Usage.model_validate(attempt["judge_usage"])
                 )
+            # Absent from trials saved before benchmark usage was recorded.
+            for spent in (saved, *saved["previous_attempts"]):
+                if spent.get("benchmark_usage") is not None:
+                    benchmark_cost = benchmark_cost + Usage.model_validate(spent["benchmark_usage"])
         result = OptimizationResult(
             run_id=run.root.name,
             run_dir=run.root,
@@ -751,6 +799,7 @@ class Optimizer:
             test=test,
             test_reason=test_reason,
             front_test=front_test,
+            test_failed_ids=list(test_failed_ids),
             effects=effects,
             iterations=list(self._iterations),
             rollouts_spent=self._budget.spent,
@@ -759,6 +808,7 @@ class Optimizer:
             search_cost=self._search_cost,
             judge_cost=judge_cost,
             retry_cost=retry_cost,
+            benchmark_cost=benchmark_cost,
             reports=_reports(self._records, cases=self._cases, evaluators=self._evaluators, split=self._case_split),
             rows=self._rows(views, finalists, report),
         )
@@ -812,20 +862,21 @@ class Optimizer:
 
     async def _test(
         self, report: ValidationReport
-    ) -> tuple[TestReport | None, str | None, dict[str, TestReport], bool]:
+    ) -> tuple[TestReport | None, str | None, dict[str, TestReport], list[str], bool]:
         """E4: the champion and the baseline on test (and under `Pareto` every validated front member), report only.
 
         Returns:
             The champion's report (None when skipped: no test cases, the budget, or no completed test trial
             of the champion or the baseline), why it or some front members were skipped, under `Pareto`
-            each tested front member's report, and whether the outcome is final. It isn't when the report
-            was skipped for the budget, or when each of the champion and the baseline with no completed test
-            trial still has one left `infrastructure_invalid`: a resume can then still produce the report,
-            and the reason names the `max_rollouts` that affords every arm's remaining trials.
+            each tested front member's report, the tested candidates with no completed test trial, and whether
+            the outcome is final. It isn't when the report was skipped for the budget, or when each of the
+            champion and the baseline with no completed test trial still has one left `infrastructure_invalid`:
+            a resume can then still produce the report, and the reason names the `max_rollouts` that affords
+            every arm's remaining trials.
         """
         cases = list(self._case_split.test)
         if not cases:
-            return None, "no test cases", {}, True
+            return None, "no test cases", {}, [], True
         baseline, champion = self._baseline.id, report.champion_id
         front = report.front if self._criteria.is_pareto else []
         runner = self._runner()
@@ -842,7 +893,7 @@ class Optimizer:
                 f"the test report needs {total} rollouts, {allowance} are left; resume with max_rollouts >= "
                 f"{needed} to run it" + (" with every front member" if len(pending) > len(chosen) else "")
             )
-            return None, reason, {}, False
+            return None, reason, {}, [], False
         skipped = []
         for c in pending:
             if c in chosen:
@@ -861,11 +912,7 @@ class Optimizer:
         )
         assert self._run is not None
         # An arm with no completed test trial measured nothing: its scores would be the failure value alone.
-        failed = [
-            c
-            for c in chosen
-            if not any(r.split == "test" and r.status is TrialStatus.COMPLETED for r in self._records[c].values())
-        ]
+        failed = [c for c in chosen if self._completed_count(c, "test") == 0]
         if champion in failed or baseline in failed:
             arm = "the baseline" if baseline in failed else "the champion"
             # Trials left `infrastructure_invalid` are what a resume runs again (`TrialRunner.pending`).
@@ -877,8 +924,8 @@ class Optimizer:
                     f"every test trial of {arm} failed, {n} on infrastructure; resume with max_rollouts >= "
                     f"{needed} to run them again"
                 )
-                return None, reason, {}, False
-            return None, f"every test trial of {arm} failed, so there is nothing to compare", {}, True
+                return None, reason, {}, failed, False
+            return None, f"every test trial of {arm} failed, so there is nothing to compare", {}, failed, True
         reports = {
             c: self._test_report(c, scores)
             for c in dict.fromkeys([champion, *front])
@@ -892,7 +939,8 @@ class Optimizer:
         if failed:
             numbers = ", ".join(str(self._run.number(c)) for c in failed)
             reasons.append(f"every test trial of front members {numbers} failed")
-        return reports[champion], "; ".join(reasons) or None, {c: reports[c] for c in front if c in reports}, True
+        front_test = {c: reports[c] for c in front if c in reports}
+        return reports[champion], "; ".join(reasons) or None, front_test, failed, True
 
     def _test_report(self, candidate_id: str, scores: Mapping[str, CandidateScores]) -> TestReport:
         """`candidate_id` against the baseline per test case (paired t-interval at `TEST_LEVEL`); the baseline
@@ -976,7 +1024,7 @@ class Optimizer:
         self._run.events.append("fit", **event, is_fitted=True, error=None)
 
     def _fit_data(self, ids: Sequence[str], split: SplitName, scores: Mapping[str, CandidateScores]) -> FitData:
-        """What the score model fits: `ids` (the baseline first) with their scores on `split`."""
+        """What the score model fits: `ids` (the baseline first, when among them) with their scores on `split`."""
         return FitData(
             space=self._space,
             text_blocks={
@@ -1029,6 +1077,14 @@ class Optimizer:
     def _trial_count(self, candidate_id: str, split: SplitName = "train") -> int:
         """Trials on `split` that count (`_counted`)."""
         return sum(1 for r in self._records.get(candidate_id, {}).values() if r.split == split and self._counted(r))
+
+    def _completed_count(self, candidate_id: str, split: SplitName) -> int:
+        """Trials on `split` that completed (an `agent_failure` scored by `agent_failure_score` isn't one)."""
+        return sum(
+            1
+            for r in self._records.get(candidate_id, {}).values()
+            if r.split == split and r.status is TrialStatus.COMPLETED
+        )
 
     async def _step(
         self,
@@ -1600,8 +1656,11 @@ class Optimizer:
         A candidate whose factory raises (a constructor rejecting a combination of values) is invalid, redrawn
         at no cost, instead of every trial being an `agent_failure` scored at the worst end. Built with no
         resources and no call kwargs, so a factory that needs a resource from `environment` or a kwarg only the
-        rollout passes can't be built here and isn't checked (its trials run as usual). On the `build_task` path
-        the agent is built inside the task, so nothing is checked.
+        rollout passes can't be built here and isn't checked (its trials run as usual). Neither is a factory that
+        fails on infrastructure (`classify`: expired credentials, a dropped connection): that is no fault of the
+        values, so the proposer isn't told they're invalid; the trials run, and are re-run, as in any outage (a
+        warning once per distinct error). On the `build_task` path the agent is built inside the task, so nothing
+        is checked.
         """
         if self._factory is None:
             return None
@@ -1612,7 +1671,18 @@ class Optimizer:
                 await built
         except _FactoryArgumentError:
             return None
-        except Exception as error:  # noqa: BLE001 - any failure to build makes the candidate invalid
+        except Exception as error:  # noqa: BLE001 - any other failure to build makes the candidate invalid
+            if classify(error) is TrialStatus.INFRASTRUCTURE_INVALID:
+                text = f"{type(error).__name__}: {error}"
+                if text not in self._build_errors:
+                    self._build_errors.add(text)
+                    warnings.warn(
+                        f"the agent couldn't be built ({text}); its trials run, and are re-run, as "
+                        "infrastructure failures",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                return None
             return f"the agent can't be built: {type(error).__name__}: {error}"
         return None
 

@@ -78,6 +78,7 @@ class ResumeState:
         test: The `test` event's report; None when skipped or not reached.
         test_reason: Why it was skipped (the `test` event's reason); None otherwise.
         front_test: The `test` event's front reports (`{}` unless the objective is a `Pareto`).
+        test_failed_ids: The `test` event's tested candidates with no completed test trial.
         stop_reason: The last `stop` event's reason.
         trials: (candidate id, run index, case name) -> the last `trial` event's saved record by the end of the
             closed iterations (every trial once the search stopped), so scores are rebuilt as the uninterrupted run
@@ -102,6 +103,7 @@ class ResumeState:
     test: TestReport | None
     test_reason: str | None
     front_test: dict[str, TestReport]
+    test_failed_ids: list[str]
     stop_reason: StopReason | None
     trials: dict[tuple[str, int, str], Mapping[str, Any]]
 
@@ -159,6 +161,7 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
         test=None,
         test_reason=None,
         front_test={},
+        test_failed_ids=[],
         stop_reason=None,
         trials={},
     )
@@ -227,6 +230,7 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
             state.test = None if event["report"] is None else TestReport.model_validate(event["report"])
             state.test_reason = event.get("reason")
             state.front_test = {key: TestReport.model_validate(report) for key, report in event["front"].items()}
+            state.test_failed_ids = list(event.get("failed", []))
         elif name == "stop":
             state.stop_reason = event["reason"]
     return state
