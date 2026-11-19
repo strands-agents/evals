@@ -231,13 +231,20 @@ const MD_COPY = {
   trace: n => TRACE_DOCS[n] && writtenMarkdown({ kind: 'trace', document: TRACE_DOCS[n], cost: costText(traceStats(TRACE_DOCS[n])) }),
 };
 
+/* Counts the copies begun: text that arrives after a later copy was asked for is not the one wanted. */
+let copying = 0;
+
 /* The button says what happened, then goes back to what it does. */
 app.addEventListener('click', async e => {
   const b = e.target.closest('[data-md]');
   if (!b) return;
   const text = MD_COPY[b.dataset.md](b.dataset.arg);
   if (!text) return;
+  const mine = ++copying;
+  const wanted = Promise.resolve(text).then(now => (mine === copying ? now : Promise.reject(new Error('overtaken'))));
   if (!b.dataset.label) b.dataset.label = b.textContent;
-  b.textContent = await copyText(text) ? 'Copied' : 'Could not copy';
+  const copied = await copyText(wanted);
+  if (mine !== copying) return;
+  b.textContent = copied ? 'Copied' : 'Could not copy';
   setTimeout(() => { b.textContent = b.dataset.label; }, 1600);
 });

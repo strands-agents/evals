@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { page, realServer, runner, waitFor } from './harness.mjs';
+import { page, realServer, runner, tick, waitFor } from './harness.mjs';
 
 const { ok, done } = runner('markdown');
 const TOKEN = 'markdown-token';
@@ -873,6 +873,43 @@ ${JSON.stringify(LOST, null, 2)}
   const candidates = await p.copy('#actions [data-md="report"]');
   ok(candidates.startsWith(`# Report: ${p.text('#path')}\n\n- Overall score: `) && candidates.includes('\n- Experiment: none found in this folder'),
     'a candidate’s cases are written as a report under the name the page gives them', candidates.slice(0, 200));
+
+  // ── a copy the server is slow to write, one it cannot write, and a clipboard that takes a promise ──
+  {
+    const q = await served('/reports/support/support.report.json');
+    await q.click(row(q, 1));
+    const answer = q.window.fetch;
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    q.window.fetch = (url, opts) => (url === '/api/markdown' ? held.then(() => answer(url, opts)) : answer(url, opts));
+    await q.click(`${beside(q, 1)} [data-md="row"]`);
+    is(await q.copy('#actions [data-md="path"]'), REPORT_FILE, 'a copy made while the server is still writing an earlier one is on the clipboard');
+    release();
+    await tick(10);
+    is(`${q.copied} | ${q.text(`${beside(q, 1)} [data-md="row"]`)}`, `${REPORT_FILE} | Copy as Markdown`,
+      'and the earlier one, answered late, neither replaces it nor says it copied');
+    q.window.fetch = answer;
+
+    fs.renameSync(REPORT_FILE, REPORT_FILE + '.gone');
+    const refused = await q.copy('#actions [data-md="report"]');
+    fs.renameSync(REPORT_FILE + '.gone', REPORT_FILE);
+    is(`${refused} | ${q.text('#actions [data-md="report"]')}`, 'null | Could not copy',
+      'Markdown the server will not write puts nothing on the clipboard, and the button says so');
+
+    const handed = [];
+    q.window.ClipboardItem = class { constructor(parts) { handed.push(parts['text/plain']); } };
+    q.window.navigator.clipboard.write = async () => {
+      const reader = new q.window.FileReader();
+      reader.onload = () => { q.copied = reader.result; };
+      reader.readAsText(await handed.at(-1));
+    };
+    q.copied = null;
+    q.$(`${beside(q, 1)} [data-md="row"]`).dispatchEvent(new q.window.MouseEvent('click', { bubbles: true }));
+    ok(handed.length === 1 && typeof handed[0].then === 'function' && q.copied === null,
+      'a clipboard that takes a promise of the text is handed one within the click, before the server has answered', handed.length);
+    await waitFor(() => q.copied === ROW_1, 'the row to reach the clipboard');
+    is(q.text(`${beside(q, 1)} [data-md="row"]`), 'Copied', 'and the button says it copied once the text is there');
+  }
 
   // ── a clipboard that cannot be reached ──
   delete p.window.navigator.clipboard;
