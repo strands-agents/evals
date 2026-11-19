@@ -10,11 +10,11 @@ Discovery, pairing and write logic lives in Python and is covered by
 where the page reads a folder the user picks. These suites cover the page: they run the real files
 in jsdom and assert on what they put on screen.
 
-Not wired into CI, because CI has no Node toolchain. Run them by hand when the assets change:
+CI runs them as the `UI Tests` job of `.github/workflows/test-lint.yml`. To run them by hand:
 
 ```bash
 cd tests/ui
-npm install          # jsdom only
+npm ci               # jsdom only, at the versions in package-lock.json
 npm test             # writes the fixture, then every suite
 node standalone.mjs  # or one at a time
 npm run fixture      # what `npm test` does first, for running a suite on its own
