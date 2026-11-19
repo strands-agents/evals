@@ -95,27 +95,30 @@ const state = p => [p.text('#dirty'), p.$('#save').disabled];
 // ── the address names the selected case ──
 {
   const three = { cases: ['a', 'b', 'c'].map(name => ({ name, session_id: `s-${name}`, input: 'q' })), evaluators: [] };
-  const p = await opened({ 'e/experiment.json': three });
-  const at = () => p.window.location.hash;
+  const p = await page({ fetchImpl: fakeServer({
+    scan: { experiments: [{ path: 'e.json', name: 'e.json', dir: '.', size: 1, modified: 5, cases: 3, evaluators: [], reports: [] }] },
+    file: { path: 'e.json', modified: 5, document: three },
+  }) });
+  await p.openExperiment();
   /* Leave for the Reports list and come Back: the step that fails when the address names a case that is gone. */
   const awayAndBack = async () => {
     await p.click('.tab[data-view="reports"]');
     await p.travel(-1);
-    return [p.view(), p.text('#form-title'), at()];
+    return [p.view(), p.text('#form-title'), p.window.location.pathname];
   };
   await p.click(p.$$('#case-list li[data-i]')[1]);
   await p.type(field(p, 'name'), 'b2');
-  same(await awayAndBack(), ['v-experiment', 'b2', '#/experiments/e/experiment.json/cases/b2'],
+  same(await awayAndBack(), ['v-experiment', 'b2', '/experiments/e.json/cases/b2'],
     'a renamed case takes its address with it, so Back returns to the case');
   await p.click('#del-case');
-  same(await awayAndBack(), ['v-experiment', 'c', '#/experiments/e/experiment.json/cases/c'],
+  same(await awayAndBack(), ['v-experiment', 'c', '/experiments/e.json/cases/c'],
     'deleting it moves the address to the case selected in its place');
   await p.click('#saved .reload');
-  same(await awayAndBack(), ['v-experiment', 'b2', '#/experiments/e/experiment.json/cases/b2'], 'and Undo moves it back');
+  same(await awayAndBack(), ['v-experiment', 'b2', '/experiments/e.json/cases/b2'], 'and Undo moves it back');
   await p.click('#add-case');
-  same(await awayAndBack(), ['v-experiment', 'case_4', '#/experiments/e/experiment.json/cases/case_4'], 'a case that was added is named too');
+  same(await awayAndBack(), ['v-experiment', 'case_4', '/experiments/e.json/cases/case_4'], 'a case that was added is named too');
   await p.click('#revert');
-  same(await awayAndBack(), ['v-experiment', 'c', '#/experiments/e/experiment.json/cases/c'], 'as is the one selected after Revert');
+  same(await awayAndBack(), ['v-experiment', 'c', '/experiments/e.json/cases/c'], 'as is the one selected after Revert');
 }
 
 // ── a second save, straight after the first ──
