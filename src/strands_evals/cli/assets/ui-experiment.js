@@ -21,6 +21,8 @@ const removedCases = () => savedCases.length - orig.filter(s => s !== NEW_CASE).
 const evalsDirty = () => JSON.stringify(evals) !== origEvals;
 const countDirty = () => dirtyCases().length + removedCases() + (evalsDirty() ? 1 : 0);
 const readOnly = () => MODE === 'server' && READONLY;
+/* Text in a field that could not be applied as typed, such as JSON that does not parse yet. */
+const unapplied = () => !!($('form').querySelector('.invalid') || $('evform').querySelector('.invalid'));
 
 function loadExperiment(meta, doc) {
   expMeta = meta; EXP = doc;

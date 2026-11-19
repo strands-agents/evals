@@ -26,7 +26,7 @@ async function refreshOpen() {
   const was = expMeta, read = await readFile(experiment);
   if (expMeta !== was) return;
   /* Asked after the read: an edit made while it was on its way counts too. */
-  if (countDirty() || review || $('v-experiment').inert) {
+  if (countDirty() || unapplied() || review || $('v-experiment').inert) {
     note('This file changed on disk while you were editing it.', 'stale');
     return;
   }

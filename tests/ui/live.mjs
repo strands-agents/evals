@@ -131,6 +131,31 @@ ok(input() === 'rewritten again', 'the offer beside it reloads from disk', input
   await p.click(p.$$('#case-list li[data-i]')[1]);
 }
 
+// ── nor over text that is typed but not applied yet ──
+{
+  const half = '[{"node_name": "search"';
+  await p.type('#form [data-k="expected_interactions"]', half);
+  write('e.json', experiment('rewritten under half-written JSON'));
+  await p.poll();
+  ok(p.$('#form [data-k="expected_interactions"]').value === half && /changed on disk/.test(p.text('#saved')),
+    'JSON that does not parse yet is not an applied edit, and is kept all the same', `${p.$('#form [data-k="expected_interactions"]').value} | ${p.text('#saved')}`);
+  await p.click('#saved .reload');
+  await p.click(p.$$('#case-list li[data-i]')[1]);
+}
+
+// ── the case being read is renamed on disk ──
+{
+  const renamed = experiment('renamed on disk');
+  renamed.cases[1].name = 'z';
+  write('e.json', renamed);
+  await p.poll();
+  ok(p.window.location.pathname === '/experiments/e.json/cases/a' && p.text('#form-title') === 'a',
+    'when the case being read is gone from the file, the address moves to the case shown in its place', p.window.location.pathname);
+  write('e.json', experiment('named as before'));
+  await p.poll();
+  await p.click(p.$$('#case-list li[data-i]')[1]);
+}
+
 // ── Rescan re-reads what is open as well as the lists ──
 write('e.json', experiment('rewritten a third time'));
 await p.click('[data-act="rescan"]');
