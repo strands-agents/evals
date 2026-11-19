@@ -7,7 +7,6 @@ import hashlib
 import inspect
 import json
 import random
-import statistics
 import threading
 import warnings
 from collections import Counter
@@ -52,6 +51,7 @@ from .end_phase import (
     pick,
 )
 from .execution.rollout import EnvironmentFn, RolloutFn, TaskFn, default_rollout, make_task
+from .execution.status import classify
 from .execution.traces import TraceCapture
 from .execution.trials import TrialRunner
 from .record.events import closed_events
@@ -76,7 +76,7 @@ from .search.blocks import Block, ScheduleContext, Search, Step
 from .search.proposer import ProposalRequest, Proposer
 from .selection.base import Selection, SelectionContext
 from .selection.top_ranked import TopRanked
-from .setup.budget import Budget, BudgetTracker
+from .setup.budget import Budget, BudgetTracker, end_phase_reserve
 from .setup.splits import Split
 
 _DEFAULT_BASE_DIR = Path(".strands-evals/optimization/runs")
@@ -87,9 +87,10 @@ class Optimizer:
 
     Each iteration the schedule plans a step, selection picks a parent, proposers propose, every candidate is
     scored on train, and the score model is refitted. There is no champion during the run: after the search
-    stops, the top finalists and the baseline are measured on validation, a fresh fit picks the champion
-    (only a candidate meeting every constraint ships, else the baseline), and the champion is compared with
-    the baseline on test, reported only.
+    stops, the finalists (the top of the ranking, those meeting every constraint with margin first) and the
+    baseline are measured on validation, a fresh fit picks the champion (only a candidate meeting every
+    constraint ships, else the baseline), and the champion is compared with the baseline on test, reported
+    only.
 
     Pass either `factory` (a `TunableFactory`, positionally as in `Optimizer(experiment, create_agent)` or
     by keyword) or `build_task=` with `space=`. `environment=` and `rollout_fn=` work only with `factory=`.
@@ -99,6 +100,15 @@ class Optimizer:
     Build the agent inside `task`, never in `build_task` itself: an agent shared across cases and
     runs carries conversation state from one trial into the next, so every trial must build its
     own. The factory path enforces this; `build_task` can't.
+
+    A model that makes its own `boto3.Session` (`BedrockModel()` does) reads the AWS config files and
+    resolves credentials again on every attempt. With many trials at once that can run the process out of
+    file descriptors or overload the credential provider, so build one `boto3.Session` up front and pass
+    it to every model (`BedrockModel(boto_session=session)`). A session is not thread-safe: when the agent
+    is built in a worker thread (a sync `rollout_fn` or task), build its models under a lock. Each model
+    still opens its own connections, so a high `max_workers` may also need a higher open-file limit
+    (`ulimit -n`). The credential and "Too many open files" errors this causes are
+    `infrastructure_invalid` and re-run, not scored.
     """
 
     def __init__(
@@ -157,7 +167,18 @@ class Optimizer:
                 patch of each of its blocks). The schedule may give a step fewer (`Step.n_candidates`).
             max_workers: Parallel trials, shared by the candidates scored at once.
             rerun_passes: Max re-run passes per scoring call: trials still `infrastructure_invalid` are re-run, and
-                evaluators that failed are re-judged on the saved output (0 rollouts).
+                evaluators that failed are re-judged on the saved output (0 rollouts). The end phase's reserves
+                include room for these re-runs (`end_phase_reserve`). A trial whose agent or evaluator failed on
+                infrastructure is re-run once a jittered 2.5-5 s has passed since it failed, doubling each pass up
+                to 30-60 s; the pass's other trials start at once.
+                Retries inside a model call belong to the model client, which the factory configures. For Bedrock,
+                botocore's `standard` mode retries connection errors, timeouts, 500/502/503/504 responses, and
+                throttling with jittered backoff, but not an error inside a streamed response.
+                `AWS_RETRY_MODE=standard` and `AWS_MAX_ATTEMPTS=10` set it for every client that doesn't set
+                `retries` itself, judges on the default model included. In code, give `BedrockModel`
+                `boto_client_config=botocore.config.Config(retries={"mode": "standard", "total_max_attempts": 10},
+                read_timeout=120)`; it sets the 120 s read timeout only when given no `boto_client_config`. More
+                attempts also mean longer throttling backoff and more retried timeouts.
             seed: Seeds the split (unless `Split(seed=)` is set), selection, TPE, and Thompson.
             base_dir: Where run directories go.
             name: The run folder's prefix (lowercase letters, digits, `-`, `_`); for reading only.
@@ -266,15 +287,16 @@ class Optimizer:
         finalists = self._final_pick.n_finalists
         if self._criteria.is_pareto:
             finalists = max(finalists, PARETO_MIN_FINALISTS)
-        validation_reserve = (finalists + 1) * validation * runs_per_candidate
+        validation_reserve = end_phase_reserve(finalists + 1, validation * runs_per_candidate, rerun_passes)
         # Champion and baseline; under Pareto every front member.
-        test_reserve = ((finalists + 1) if self._criteria.is_pareto else 2) * test * runs_per_candidate
+        test_arms = (finalists + 1) if self._criteria.is_pareto else 2
+        test_reserve = end_phase_reserve(test_arms, test * runs_per_candidate, rerun_passes)
         needed = train * runs_per_candidate + validation_reserve + test_reserve
         if budget.max_rollouts < needed:
             raise ValueError(
                 f"Budget(max_rollouts={budget.max_rollouts}) can't cover the baseline ({train} train cases x "
                 f"{runs_per_candidate} runs) plus the end phase's reserve ({validation_reserve} validation, "
-                f"{test_reserve} test): give max_rollouts >= {needed}"
+                f"{test_reserve} test, re-run headroom included): give max_rollouts >= {needed}"
             )
         iteration = proposals_per_iteration * train * runs_per_candidate
         if budget.max_rollouts < needed + iteration:
@@ -308,6 +330,12 @@ class Optimizer:
         # Candidate id -> (case name, run index) -> its trial record, as scored this process.
         self._records: dict[str, dict[tuple[str, int], TrialRecord]] = {}
         self._rollouts: dict[tuple[str, SplitName], int] = {}  # a _score call's spend, until its event
+
+    @property
+    def run_dir(self) -> Path | None:
+        """The run's folder: None until `run()` / `run_async()` creates it, before the baseline is scored; after
+        `resume`, the reopened folder."""
+        return self._run.root if self._run is not None else None
 
     def _config(self) -> dict[str, Any]:
         """`run.json`'s contents but `schema_version` and `code` (added by `RunDirectory.create`).
@@ -428,8 +456,19 @@ class Optimizer:
     def run(self) -> OptimizationResult:
         """Run the search and the end phase; the sync form of `run_async`.
 
+        A Ctrl-C cancels the run, waits for the cancellation to finish, then raises `KeyboardInterrupt`; a second
+        Ctrl-C stops the wait, and the cancellation finishes in the background. Trials and proposer calls in flight
+        are cancelled, and a cancelled trial isn't saved. Work in a thread can't be stopped. The wait covers such
+        work on asyncio's default executor (e.g. a model call that streams in a thread, as Bedrock's do) and a sync
+        `environment`'s exit, which may wait for a sync rollout to free a trial thread. A sync rollout itself keeps
+        running in the background until its call returns, and the process can't exit before then. The interrupt
+        writes no `stop` event, so the run directory is left as a killed run leaves it, and `Optimizer.resume`
+        continues it; a new run's directory is the most recently created folder under `base_dir`.
+
         Raises:
             RuntimeError: As `run_async`.
+            ProposerError: As `run_async`.
+            KeyboardInterrupt: A Ctrl-C, once the run is cancelled.
         """
         return _run_in_thread(self.run_async)
 
@@ -445,6 +484,9 @@ class Optimizer:
                 metric has no value on any train case. A `stop` event with
                 reason `"setup"` is written first, and the message names the unmeasured cases or the
                 metric, the trial status counts, and the first error.
+            ProposerError: A proposer raised. The search stops before the end phase, with the
+                `proposer_error` event and no `stop` event, so `Optimizer.resume` continues it as it would a
+                killed run.
         """
         await self._start()
         resumed = self._resumed
@@ -456,7 +498,8 @@ class Optimizer:
         return await self._end_phase(reason)
 
     async def _start(self) -> None:
-        """Set up the run, score the baseline, and write the setup's fit (None: one eligible candidate).
+        """Set up the run, score the baseline, write the setup's fit (None: one eligible candidate), and tell
+        every block's proposer the baseline as evidence.
 
         After `resume`, the state the event log holds is restored instead; with no closed iteration (killed
         before the first ended) only the setup ran, so it runs again on cached trials.
@@ -485,12 +528,11 @@ class Optimizer:
         self._refit(scored=True)
         assert self._run is not None
         _, assessments = self._rank()
-        self._run.events.append(
-            "label",
-            iteration=0,
-            candidate_id=self._baseline.id,
-            label=label_candidate(scores, assessments.get(self._baseline.id), criteria=self._criteria),
-        )
+        assessment = assessments.get(self._baseline.id)
+        label = label_candidate(scores, assessment, criteria=self._criteria)
+        self._run.events.append("label", iteration=0, candidate_id=self._baseline.id, label=label)
+        for block, _ in self._blocks:
+            self._share(_block_name(block), self._baseline, label.outcome, assessment)
 
     def _init_state(self, baseline: Candidate) -> None:
         """The search's state before anything is scored."""
@@ -502,6 +544,7 @@ class Optimizer:
         self._last_fit: Fit | None = None  # the last successful fit, the next refit's `previous`
         self._fit_errors: set[str] = set()
         self._fit_error: str | None = None  # the last refit's error while no refit has succeeded since
+        self._build_errors: set[str] = set()  # infrastructure errors the build check has warned about
         self._saved: dict[str, Candidate] = {baseline.id: baseline}  # every saved candidate, by id
         self._open_rounds: list[OpenRound] = []
         self._search_cost = Usage.zero()
@@ -573,7 +616,11 @@ class Optimizer:
         self._iteration = state.iteration
 
     async def _run_search(self) -> StopReason:
-        """Run iterations until a stop: budget, iteration cap, the schedule's None, or a proposer raising."""
+        """Run iterations until a stop: budget, iteration cap, or the schedule's None.
+
+        Raises:
+            ProposerError: A proposer raised (from its error): the search stops where it is, with no `stop` event.
+        """
         assert self._run is not None
         per_candidate = len(self._case_split.train) * self._runs_per_candidate
         blocks = [block for block, _ in self._blocks]
@@ -614,8 +661,21 @@ class Optimizer:
             parent_id = self._select(list(step.parents) if step.parents is not None else ranking, assessments)
             try:
                 record = await self._step(step, n, self._candidates[parent_id], ranking, assessments)
-            except _ProposerFailed:
-                return "proposer_error"
+            except _ProposerFailed as failed:
+                block, error = failed.args[0], failed.__cause__
+                message = (
+                    f"the proposer of block {block!r} raised {type(error).__name__}: {error}. The search stopped in "
+                    f"iteration {self._iteration}, before the end phase, so no validation or test rollout was spent; "
+                    f"once the cause is fixed, continue it with Optimizer.resume({str(self._run.root)!r}, ...), "
+                    "passing a newly built search (resume tells its proposers the run's history)"
+                )
+                steps = _slots_used(self._iterations) // self._proposals_per_iteration
+                if steps:  # a cap the closed iterations have used: resume stops the search at once
+                    message += (
+                        f"; to end it with what it found instead, also pass budget=Budget(max_rollouts="
+                        f"{budget.max_rollouts}, max_iterations={steps})"
+                    )
+                raise ProposerError(message, block, self._run.root) from error
             self._iterations.append(record)
             if self._on_iteration is not None:
                 outcome = self._on_iteration(record)
@@ -632,7 +692,6 @@ class Optimizer:
             "budget": "the rollout budget left after the end phase's reserve can't score another candidate",
             "iterations": f"used Budget(max_iterations={cap})'s candidate slots ({cap} steps' worth)",
             "exhausted": "the schedule has nothing left to try",
-            "proposer_error": "a proposer raised; see the proposer_error event",
         }
         self._run.events.append("stop", iteration=self._iteration, reason=reason, message=messages.get(reason, ""))
 
@@ -642,7 +701,9 @@ class Optimizer:
         `result.json`.
 
         After `resume`, each of E1, E3 (with E2), and E4 that the event log already holds is reused as saved, so a
-        finished run only rewrites its files.
+        finished run only rewrites its files. A test report that measured nothing for a reason a resume can
+        change (infrastructure failures, or a budget that can't afford it) writes no `test` event, so `resume`
+        runs it again.
         """
         assert self._run is not None
         run, criteria, baseline = self._run, self._criteria, self._baseline.id
@@ -654,7 +715,16 @@ class Optimizer:
             n, front = self._final_pick.n_finalists, None
             if criteria.is_pareto:
                 n, front = max(n, PARETO_MIN_FINALISTS), pareto_front(assessments, ranking)
-            finalists = choose_finalists(ranking, baseline, n, front=front)
+            finalists = choose_finalists(
+                ranking,
+                baseline,
+                n,
+                assessments=assessments,
+                train=self._train,
+                criteria=criteria,
+                n_validation_cases=len(self._case_split.validation),
+                front=front,
+            )
             run.events.append("finalists", iteration=self._iteration, candidate_ids=finalists)
         if resumed is not None and resumed.validation is not None:
             report = resumed.validation
@@ -662,10 +732,19 @@ class Optimizer:
             report = await self._pick(finalists)
         if resumed is not None and resumed.is_test_done:
             test, test_reason, front_test = resumed.test, resumed.test_reason, resumed.front_test
+            test_failed_ids = resumed.test_failed_ids
         else:
-            test, test_reason, front_test = await self._test(report)
-            run.events.append("test", iteration=self._iteration, report=test, reason=test_reason, front=front_test)
-        return self._finish(stop_reason, finalists, report, test, test_reason, front_test)
+            test, test_reason, front_test, test_failed_ids, final = await self._test(report)
+            if final:
+                run.events.append(
+                    "test",
+                    iteration=self._iteration,
+                    report=test,
+                    reason=test_reason,
+                    front=front_test,
+                    failed=test_failed_ids,
+                )
+        return self._finish(stop_reason, finalists, report, test, test_reason, front_test, test_failed_ids)
 
     async def _pick(self, finalists: Sequence[str]) -> ValidationReport:
         """E2 and E3: the finalists and the baseline on validation, then the pick on a fresh validation fit."""
@@ -673,12 +752,19 @@ class Optimizer:
         criteria, baseline = self._criteria, self._baseline.id
         ids = [baseline, *finalists]
         validation = dict(zip(ids, await self._score_split(ids, "validation"), strict=True))
-        # A fresh fit on the validation runs only, never mixed with the search fit (no previous fit).
+        completed = {c: self._completed_count(c, "validation") for c in ids}
+        # A fresh fit on the validation runs only, never mixed with the search fit (no previous fit). A candidate
+        # with no completed validation trial isn't assessed, so it stays out of the fit too: its failure values
+        # would move the intercept, the noise, and the case effects the others' estimates use (and a baseline's
+        # would set an unbounded metric's unit).
+        fitted = [c for c in ids if completed[c] > 0]
         fit: Fit | None = None
-        problem: str | None = "fewer than 2 eligible candidates"
-        if sum(validation[c].is_eligible for c in ids) >= 2:
+        problem: str | None = "fewer than 2 eligible candidates" + (
+            "" if len(fitted) == len(ids) else " with a completed validation trial"
+        )
+        if sum(validation[c].is_eligible for c in fitted) >= 2:
             try:
-                fit = self._score_model.fit(self._fit_data(ids, "validation", validation))
+                fit = self._score_model.fit(self._fit_data(fitted, "validation", validation))
             except Exception as error:  # noqa: BLE001 - a failed validation fit picks by measured means
                 problem = f"the model raised: {type(error).__name__}: {error}"
             else:
@@ -690,6 +776,7 @@ class Optimizer:
             fit=fit,
             values={c: self._candidates[c].values for c in ids},
             trial_counts={c: self._trial_count(c, "validation") for c in ids},
+            completed=completed,
             criteria=criteria,
             rule=self._final_pick.rule,
             problem=problem,
@@ -705,6 +792,7 @@ class Optimizer:
         test: TestReport | None,
         test_reason: str | None,
         front_test: dict[str, TestReport],
+        test_failed_ids: Sequence[str],
     ) -> OptimizationResult:
         """`effects.json`, the diffs, and `result.json`, from the end phase's reports; returns the result, as
         `result.json` reloads it (so the returned result and a reloaded one are equal).
@@ -727,7 +815,7 @@ class Optimizer:
         for c in report.front if criteria.is_pareto else []:
             run.save_diff(f"front/{views[c].number}-{c}", views[c].diff(), views[c].changed_values())
         agent_cost: dict[SplitName, Usage] = {split: Usage.zero() for split in SPLIT_NAMES}
-        judge_cost = retry_cost = Usage.zero()
+        judge_cost = retry_cost = benchmark_cost = Usage.zero()
         # Every saved trial, as `spent` counts them: after a resume, a killed iteration's trials too.
         for saved in run._trials.values():
             agent_cost[saved["split"]] = agent_cost[saved["split"]] + Usage.model_validate(saved["usage"])
@@ -737,6 +825,10 @@ class Optimizer:
                 retry_cost = (
                     retry_cost + Usage.model_validate(attempt["usage"]) + Usage.model_validate(attempt["judge_usage"])
                 )
+            # Absent from trials saved before benchmark usage was recorded.
+            for spent in (saved, *saved["previous_attempts"]):
+                if spent.get("benchmark_usage") is not None:
+                    benchmark_cost = benchmark_cost + Usage.model_validate(spent["benchmark_usage"])
         result = OptimizationResult(
             run_id=run.root.name,
             run_dir=run.root,
@@ -746,6 +838,7 @@ class Optimizer:
             test=test,
             test_reason=test_reason,
             front_test=front_test,
+            test_failed_ids=list(test_failed_ids),
             effects=effects,
             iterations=list(self._iterations),
             rollouts_spent=self._budget.spent,
@@ -754,6 +847,7 @@ class Optimizer:
             search_cost=self._search_cost,
             judge_cost=judge_cost,
             retry_cost=retry_cost,
+            benchmark_cost=benchmark_cost,
             reports=_reports(self._records, cases=self._cases, evaluators=self._evaluators, split=self._case_split),
             rows=self._rows(views, finalists, report),
         )
@@ -796,7 +890,8 @@ class Optimizer:
         }
 
     async def _score_split(self, ids: Sequence[str], split: SplitName) -> list[CandidateScores]:
-        """Score already-measured candidates on an end-phase split at once (the reserves cover the first passes)."""
+        """Score already-measured candidates on an end-phase split at once (the reserves cover the first passes
+        and each arm's re-run headroom)."""
         runner = self._runner()
         cases = list(getattr(self._case_split, split))
         return await self._score_together(
@@ -804,17 +899,23 @@ class Optimizer:
             split,
         )
 
-    async def _test(self, report: ValidationReport) -> tuple[TestReport | None, str | None, dict[str, TestReport]]:
+    async def _test(
+        self, report: ValidationReport
+    ) -> tuple[TestReport | None, str | None, dict[str, TestReport], list[str], bool]:
         """E4: the champion and the baseline on test (and under `Pareto` every validated front member), report only.
 
         Returns:
             The champion's report (None when skipped: no test cases, the budget, or no completed test trial
-            of the champion or the baseline), why it or some front members were skipped, and under
-            `Pareto` each tested front member's report.
+            of the champion or the baseline), why it or some front members were skipped, under `Pareto`
+            each tested front member's report, the tested candidates with no completed test trial, and whether
+            the outcome is final. It isn't when the report was skipped for the budget, or when each of the
+            champion and the baseline with no completed test trial still has one left `infrastructure_invalid`:
+            a resume can then still produce the report, and the reason names the `max_rollouts` that affords
+            every arm's remaining trials.
         """
         cases = list(self._case_split.test)
         if not cases:
-            return None, "no test cases", {}
+            return None, "no test cases", {}, [], True
         baseline, champion = self._baseline.id, report.champion_id
         front = report.front if self._criteria.is_pareto else []
         runner = self._runner()
@@ -826,7 +927,12 @@ class Optimizer:
         total = sum(pending[c] for c in chosen)
         if not self._budget.can_afford(total, phase="test"):
             allowance = self._budget.allowance(phase="test")
-            return None, f"the test report needs {total} rollouts, {allowance} are left", {}
+            needed = self._budget.spent + sum(pending.values())
+            reason = (
+                f"the test report needs {total} rollouts, {allowance} are left; resume with max_rollouts >= "
+                f"{needed} to run it" + (" with every front member" if len(pending) > len(chosen) else "")
+            )
+            return None, reason, {}, [], False
         skipped = []
         for c in pending:
             if c in chosen:
@@ -845,14 +951,20 @@ class Optimizer:
         )
         assert self._run is not None
         # An arm with no completed test trial measured nothing: its scores would be the failure value alone.
-        failed = [
-            c
-            for c in chosen
-            if not any(r.split == "test" and r.status is TrialStatus.COMPLETED for r in self._records[c].values())
-        ]
+        failed = [c for c in chosen if self._completed_count(c, "test") == 0]
         if champion in failed or baseline in failed:
             arm = "the baseline" if baseline in failed else "the champion"
-            return None, f"every test trial of {arm} failed, so there is nothing to compare", {}
+            # Trials left `infrastructure_invalid` are what a resume runs again (`TrialRunner.pending`).
+            left = {c: runner.pending(c, cases, runs=self._runs_per_candidate) for c in pending}
+            if all(left[c] for c in (champion, baseline) if c in failed):
+                n = left[baseline if baseline in failed else champion]
+                needed = self._budget.spent + sum(left.values())
+                reason = (
+                    f"every test trial of {arm} failed, {n} on infrastructure; resume with max_rollouts >= "
+                    f"{needed} to run them again"
+                )
+                return None, reason, {}, failed, False
+            return None, f"every test trial of {arm} failed, so there is nothing to compare", {}, failed, True
         reports = {
             c: self._test_report(c, scores)
             for c in dict.fromkeys([champion, *front])
@@ -866,7 +978,8 @@ class Optimizer:
         if failed:
             numbers = ", ".join(str(self._run.number(c)) for c in failed)
             reasons.append(f"every test trial of front members {numbers} failed")
-        return reports[champion], "; ".join(reasons) or None, {c: reports[c] for c in front if c in reports}
+        front_test = {c: reports[c] for c in front if c in reports}
+        return reports[champion], "; ".join(reasons) or None, front_test, failed, True
 
     def _test_report(self, candidate_id: str, scores: Mapping[str, CandidateScores]) -> TestReport:
         """`candidate_id` against the baseline per test case (paired t-interval at `TEST_LEVEL`); the baseline
@@ -950,7 +1063,7 @@ class Optimizer:
         self._run.events.append("fit", **event, is_fitted=True, error=None)
 
     def _fit_data(self, ids: Sequence[str], split: SplitName, scores: Mapping[str, CandidateScores]) -> FitData:
-        """What the score model fits: `ids` (the baseline first) with their scores on `split`."""
+        """What the score model fits: `ids` (the baseline first, when among them) with their scores on `split`."""
         return FitData(
             space=self._space,
             text_blocks={
@@ -1003,6 +1116,14 @@ class Optimizer:
     def _trial_count(self, candidate_id: str, split: SplitName = "train") -> int:
         """Trials on `split` that count (`_counted`)."""
         return sum(1 for r in self._records.get(candidate_id, {}).values() if r.split == split and self._counted(r))
+
+    def _completed_count(self, candidate_id: str, split: SplitName) -> int:
+        """Trials on `split` that completed (an `agent_failure` scored by `agent_failure_score` isn't one)."""
+        return sum(
+            1
+            for r in self._records.get(candidate_id, {}).values()
+            if r.split == split and r.status is TrialStatus.COMPLETED
+        )
 
     async def _step(
         self,
@@ -1407,9 +1528,10 @@ class Optimizer:
                         if r.split == "train" and r.status is TrialStatus.AGENT_FAILURE
                     ),
                     ranking_objective=None if a is None else a.objective,
-                    term_values=None if a is None or a.objective is None else self._term_values(c, a),
+                    term_values=None if a is None or a.objective is None else self._term_values(a),
                     rank=position.get(c),
                     estimates={} if a is None else dict(a.estimates),
+                    adjusted_means={} if a is None else dict(a.adjusted_means),
                     violations=None if a is None else list(a.violations),
                     is_feasible=None if a is None else a.is_feasible,
                     is_eligible=scores.is_eligible,
@@ -1420,17 +1542,16 @@ class Optimizer:
             )
         return out
 
-    def _term_values(self, candidate_id: str, a: Assessment) -> list[float] | None:
-        """Each objective term's raw value (the resolved estimate, else the measured mean), in objective order."""
+    def _term_values(self, a: Assessment) -> list[float] | None:
+        """Each objective term's raw value (the resolved estimate, else the adjusted mean the ranking used), in
+        objective order; None when a term's metric has no adjusted mean."""
         objective = self._criteria.objective
-        metrics = [
-            d.metric for d in (objective.objectives if isinstance(objective, (WeightedSum, Pareto)) else (objective,))
-        ]
+        parts = objective.objectives if isinstance(objective, (WeightedSum, Pareto)) else (objective,)
         if a.is_from_fit:
-            return [round_to_sd(a.estimates[m].mean, a.estimates[m].sd) for m in metrics]
-        by_case = self._train[candidate_id].metrics_by_case.values()
-        means = [[case[m] for case in by_case if m in case] for m in metrics]
-        return None if any(not v for v in means) else [statistics.fmean(v) for v in means]
+            return [round_to_sd(a.estimates[d.metric].mean, a.estimates[d.metric].sd) for d in parts]
+        if any(d.metric not in a.adjusted_means for d in parts):
+            return None
+        return [a.adjusted_means[d.metric] for d in parts]
 
     def _tell(
         self,
@@ -1455,7 +1576,7 @@ class Optimizer:
             source_id=source_id,
             round_candidate_ids=None if round_candidate_ids is None else list(round_candidate_ids),
             objective=assessment.objective if measured and assessment is not None else None,
-            term_values=self._term_values(source_id or candidate_id, assessment)  # type: ignore[arg-type]
+            term_values=self._term_values(assessment)
             if measured and assessment is not None and assessment.objective is not None
             else None,
             outcome=outcome,
@@ -1468,14 +1589,14 @@ class Optimizer:
         self._proposer(block).observe(observation)
 
     def _share(self, block: str, candidate: Candidate, outcome: ObservationOutcome, a: Assessment | None) -> None:
-        """Tell another block's proposer about a scored candidate (`Proposer.evidence`)."""
+        """Tell a block's proposer about a scored candidate it didn't propose (`Proposer.evidence`)."""
         assert self._run is not None
         evidence = Evidence(
             candidate_id=candidate.id,
             values=dict(candidate.values),
             origin=list(candidate.origin),
             objective=None if a is None else a.objective,
-            term_values=None if a is None or a.objective is None else self._term_values(candidate.id, a),
+            term_values=None if a is None or a.objective is None else self._term_values(a),
             violations=None if a is None else list(a.violations),
             outcome=outcome,
         )
@@ -1574,8 +1695,11 @@ class Optimizer:
         A candidate whose factory raises (a constructor rejecting a combination of values) is invalid, redrawn
         at no cost, instead of every trial being an `agent_failure` scored at the worst end. Built with no
         resources and no call kwargs, so a factory that needs a resource from `environment` or a kwarg only the
-        rollout passes can't be built here and isn't checked (its trials run as usual). On the `build_task` path
-        the agent is built inside the task, so nothing is checked.
+        rollout passes can't be built here and isn't checked (its trials run as usual). Neither is a factory that
+        fails on infrastructure (`classify`: expired credentials, a dropped connection): that is no fault of the
+        values, so the proposer isn't told they're invalid; the trials run, and are re-run, as in any outage (a
+        warning once per distinct error). On the `build_task` path the agent is built inside the task, so nothing
+        is checked.
         """
         if self._factory is None:
             return None
@@ -1586,7 +1710,18 @@ class Optimizer:
                 await built
         except _FactoryArgumentError:
             return None
-        except Exception as error:  # noqa: BLE001 - any failure to build makes the candidate invalid
+        except Exception as error:  # noqa: BLE001 - any other failure to build makes the candidate invalid
+            if classify(error) is TrialStatus.INFRASTRUCTURE_INVALID:
+                text = f"{type(error).__name__}: {error}"
+                if text not in self._build_errors:
+                    self._build_errors.add(text)
+                    warnings.warn(
+                        f"the agent couldn't be built ({text}); its trials run, and are re-run, as "
+                        "infrastructure failures",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                return None
             return f"the agent can't be built: {type(error).__name__}: {error}"
         return None
 
@@ -1784,8 +1919,15 @@ class Optimizer:
         `proposals_per_iteration`, and `rerun_passes`. Only `budget`, `max_workers`, and `on_iteration` may differ
         (`None` keeps the saved value).
 
-        Resume continues a run that was killed; it never extends a finished one. Every stop runs the end
-        phase, so a finished run only finishes or returns its end phase. To search more, start a new run.
+        Resume continues a run that was killed, or whose search a proposer stopped by raising (it stops as a
+        killed run does, before the end phase); it never extends a finished one. Every `stop` event runs the
+        end phase, so a finished run only finishes or returns its end phase. A test report that measured nothing
+        for a reason a resume can change (trials left `infrastructure_invalid`, or a budget that couldn't
+        afford it) isn't saved as done, so resuming that run runs the test again. To search more, start a new run.
+        Pass a newly built search, not the one the run used in this process: resume tells its proposers the
+        run's history, and the proposers that ran the search already hold it. A search a proposer stopped ends
+        with what it found when resumed with a `max_iterations` its closed iterations have already used (the
+        `ProposerError` message gives the `Budget`).
         A killed search may get a larger `Budget`, which only moves where it stops. The resumed run proposes what
         an uninterrupted one would, with two exceptions: near the rollout cap, what the killed iteration spent
         counts from the start, while its trials are reused at no cost, so a step can be cut narrower or the
@@ -1808,7 +1950,9 @@ class Optimizer:
             selection: As in `__init__`; must match the run.
             score_model: As in `__init__`; must match the run.
             environment: As in `__init__`.
-            budget: A new budget for a killed search; None keeps the saved one.
+            budget: A new budget for a killed or stopped search, or for a test report that wasn't saved as done
+                (its reason names the `max_rollouts` it needs); None keeps the one in `run.json`, the first
+                run's, so pass a larger budget again on every later resume.
             max_workers: None keeps the saved value.
             on_iteration: Called only for iterations run after the resume.
 
@@ -1857,7 +2001,8 @@ class Optimizer:
             raise RuntimeError(f"run {run.run_id} stopped at setup, so there is nothing to resume; start a new run")
         tracker = optimizer._budget
         budget = Budget(**saved["budget"]) if budget is None else budget
-        # What the pick still needs: the whole reserve before the finalists exist, else their unrun validation trials.
+        # What the pick still needs: the whole reserve (re-run headroom included) before the finalists exist, else
+        # their unrun validation trials.
         if state.validation is not None:
             left = 0
         elif state.finalists is None:
@@ -1921,8 +2066,27 @@ async def _gather_or_cancel(awaitables: Sequence[Any]) -> list[Any]:
         raise
 
 
+class ProposerError(RuntimeError):
+    """A proposer raised (the `__cause__`), so the search stopped before the end phase; `Optimizer.resume`
+    continues it.
+
+    Attributes:
+        block: The name of the block whose proposer raised.
+        run_dir: The run directory to resume.
+    """
+
+    def __init__(self, message: str, block: str, run_dir: Path) -> None:
+        super().__init__(message, block, run_dir)  # every argument in `args`, so the error pickles
+        self.block = block
+        self.run_dir = run_dir
+
+    def __str__(self) -> str:
+        return str(self.args[0])
+
+
 class _ProposerFailed(Exception):
-    """A proposer raised; its `proposer_error` event is written and the run stops with `proposer_error`."""
+    """A proposer raised (the `__cause__`; `args[0]` is the block's name); its `proposer_error` event is written,
+    then `_run_search` raises `ProposerError`."""
 
 
 @dataclass(frozen=True)

@@ -99,6 +99,9 @@ class TunableFactory:
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """Build the baseline (every value at its default); never copies files.
 
+        Like any build, it gets deep copies of the fixed `component()` kwargs and `choice()`
+        alternatives (see `component()`).
+
         Arguments passed here, by position or by keyword, win over the declared values, as in a
         plain call of the function.
         """

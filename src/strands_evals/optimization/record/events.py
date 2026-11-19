@@ -78,7 +78,8 @@ class EventLog:
       `best_after` candidate's objective, or None; snapshots).
     - `finalists`: `candidate_ids` (ranked). `picked`: `report` (`ValidationReport`). `test`: `report`
       (`TestReport` or None), `reason` (also naming the front members it couldn't afford), `front` (under a
-      `Pareto` objective, each tested front member's `TestReport`, the champion's included; `{}` otherwise).
+      `Pareto` objective, each tested front member's `TestReport`, the champion's included; `{}` otherwise),
+      `failed` (the tested candidates with no completed test trial).
 
     Resume reads: `spent` from the trial events (the last per key: its `rollouts` plus its
     `previous_attempts`'); candidates, numbers, parents, and rounds from `propose` and `iteration_end`;
