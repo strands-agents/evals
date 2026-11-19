@@ -71,7 +71,7 @@ from .score_model.effects import effects_json
 from .score_model.protocols import Fit, FitData, ScoreModel
 from .score_model.ranking import Assessment, Mean, assess, label_candidate, pareto_front, rank, round_to_sd
 from .scoring.metrics import USAGE_METRICS, MetricRegistry
-from .scoring.objectives import Constraint, Criteria, Maximize, Objective, Pareto, WeightedSum, measured_metrics, score
+from .scoring.objectives import Constraint, Criteria, Objective, Pareto, WeightedSum, measured_metrics, score
 from .search.blocks import Block, ScheduleContext, Search, Step
 from .search.proposer import ProposalRequest, Proposer
 from .selection.base import Selection, SelectionContext
@@ -1486,6 +1486,7 @@ class Optimizer:
                     term_values=None if a is None or a.objective is None else self._term_values(a),
                     rank=position.get(c),
                     estimates={} if a is None else dict(a.estimates),
+                    adjusted_means={} if a is None else dict(a.adjusted_means),
                     violations=None if a is None else list(a.violations),
                     is_feasible=None if a is None else a.is_feasible,
                     is_eligible=scores.is_eligible,
@@ -1497,18 +1498,15 @@ class Optimizer:
         return out
 
     def _term_values(self, a: Assessment) -> list[float] | None:
-        """Each objective term's raw value (the resolved estimate, else the measured mean the ranking used), in
-        objective order."""
+        """Each objective term's raw value (the resolved estimate, else the adjusted mean the ranking used), in
+        objective order; None when a term's metric has no adjusted mean."""
         objective = self._criteria.objective
         parts = objective.objectives if isinstance(objective, (WeightedSum, Pareto)) else (objective,)
         if a.is_from_fit:
             return [round_to_sd(a.estimates[d.metric].mean, a.estimates[d.metric].sd) for d in parts]
-        # `terms` holds the ranking's measured means, oriented: undo the negation under `Minimize`.
-        return (
-            None
-            if a.terms is None
-            else [t if isinstance(d, Maximize) else -t for d, t in zip(parts, a.terms, strict=True)]
-        )
+        if any(d.metric not in a.adjusted_means for d in parts):
+            return None
+        return [a.adjusted_means[d.metric] for d in parts]
 
     def _tell(
         self,

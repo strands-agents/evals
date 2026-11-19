@@ -345,6 +345,28 @@ def test_choose_finalists_expects_the_train_measurement_rate_on_validation():
     assert _choose(train, FLOOR, 2, n_validation_cases=30)[0] == ["a", "b"]
 
 
+def test_choose_finalists_judges_the_margin_on_the_adjusted_mean_without_a_fit():
+    # "b" leaves the evaluator nothing to judge on the hard cases t3-t5, where the others drop 0.2. On its judged cases
+    # alone (mean 0.95) it would clear the floor with margin and go first; with those cases filled in it is judged at
+    # 0.85, as "a" is, and neither has margin, so the ranking's order (the cheaper "a" first) stands.
+    criteria = Criteria(Minimize(TOKENS), [AtLeast(HELP, 0.82)], REGISTRY, feasibility_threshold=0.9)
+    train = {
+        "0": _train_scores("0", {f"t{i}": {HELP: 0.4 if i < 3 else 0.2, TOKENS: 50.0} for i in range(6)}, criteria),
+        "a": _train_scores("a", {f"t{i}": {HELP: 0.95 if i < 3 else 0.75, TOKENS: 100.0} for i in range(6)}, criteria),
+        "b": _train_scores(
+            "b",
+            {
+                f"t{i}": {HELP: h, TOKENS: 200.0} if h is not None else {TOKENS: 200.0}
+                for i, h in enumerate([0.9, 1.0, 0.95, None, None, None])
+            },
+            criteria,
+        ),
+    }
+    finalists, ranking, _ = _choose(train, criteria, 1)
+    assert ranking == ["a", "b", "0"]
+    assert finalists == ["a"]
+
+
 def test_choose_finalists_with_one_train_case_keeps_the_ranking_order():
     train = {
         c: _train_scores(c, {"t0": {HELP: helps[0], TOKENS: FLOOR_TOKENS[c]}}, FLOOR) for c, helps in FLOOR_HELP.items()
@@ -581,11 +603,13 @@ def test_pick_by_measured_means_fills_a_finalist_s_n_a_case_and_the_baseline_win
         fit=None,
         values={c: {} for c in validation},
         trial_counts={c: 2 for c in validation},
+        completed={c: 2 for c in validation},
         criteria=criteria,
         rule=Mean(),
     )
     assert report.objectives["a"] == report.objectives["0"]
     assert report.champion_id == "0"
+    assert report.adjusted_means["a"] == {HELP: report.objectives["0"]} == report.adjusted_means["0"]
 
 
 def test_pick_under_pareto_a_gain_tie_with_another_trade_off_ships_the_baseline():

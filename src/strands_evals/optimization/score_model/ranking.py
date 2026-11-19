@@ -3,8 +3,9 @@
 Shared by `TopRanked`, the finalists, inheritance fill, `Nested`'s round best, the order of
 `ProposalRequest.candidates`, and the candidate label (`label_candidate`). Here, left of
 `selection/` and `end_phase.py`, so neither imports the other. Without a fit, after a refit that raised
-(until one succeeds), and while any metric is flagged, every candidate is assessed by measured means,
-adjusted for the cases where an evaluator found nothing to judge for a candidate.
+(until one succeeds), and while any metric is flagged, every candidate is assessed by measured means: its
+adjusted means (`Assessment.adjusted_means`), the plain means with the cases where an evaluator found nothing
+to judge for it filled in from the other candidates.
 """
 
 from __future__ import annotations
@@ -43,22 +44,26 @@ class Assessment:
 
     Attributes:
         objective: `Criteria.objective_value` over each goal metric's resolved estimate, or, when assessed by
-            measured means, over each goal metric's adjusted mean (see `assess`); equal to
+            measured means, over `adjusted_means` (see `assess`); equal to
             `CandidateScores.objective` when no other assessed candidate has a value on a case this one lacks.
         terms: `Criteria.terms` over the same values (oriented, the rule applied, resolved): what
             `pareto_front` compares and the `Pareto` tie-break reads; None when `objective` is None or any
             objective's metric is unmeasured (`objective` can still be set then: `objective_value` drops a
             missing evaluator term).
         is_feasible: Every constraint has P(met) >= `criteria.feasibility_threshold` under the fit, or is
-            met on measured means; a constraint whose metric the candidate has no value for on any case is
+            met on `adjusted_means`; a constraint whose metric the candidate has no value for on any case is
             unmet either way.
         violations: Per constraint, <= 0 when met: the metric's quantile at
             `criteria.feasibility_threshold` (`AtMost`) or at 1 minus it (`AtLeast`) against the limit, or the
-            measured mean, as for `objective`, against the limit; 0 when equal up to float noise; infinite,
+            metric's adjusted mean (`adjusted_means`) against the limit; 0 when equal up to float noise; infinite,
             under the fit as well, when the candidate has no value of the metric on any case.
         total_violation: The sum of the positive violations (0 when feasible); what "least violation" ranks by.
         p_met: Per constraint whose metric was measured; empty when assessed by measured means.
         estimates: Per goal metric, `fit.estimates(values, candidate)`; empty when assessed by measured means.
+        adjusted_means: Per goal metric the candidate has a value of, the mean `objective`, `terms`, and
+            `violations` were computed from when assessed by measured means (see `assess`): its plain mean
+            (`CandidateScores.metrics_by_case` averaged) when no other assessed candidate has a value on a case
+            it lacks, else that mean with those cases filled in; empty when assessed from the fit.
         is_from_fit: False when assessed by measured means (no fit, the last refit raised, any metric flagged, or
             the candidate not in the fit).
     """
@@ -71,6 +76,7 @@ class Assessment:
     total_violation: float
     p_met: dict[str, float]
     estimates: dict[str, Estimate]
+    adjusted_means: dict[str, float]
     is_from_fit: bool
 
 
@@ -127,12 +133,13 @@ def assess(
 
     A case where an evaluator found nothing to judge doesn't make a candidate ineligible, so plain means would
     compare candidates on different cases: one that leaves the evaluator nothing to judge on the hard cases
-    could rank above one that was judged there. So each goal metric's measured mean is taken over the cases
-    any candidate in `ids` has a value for (those assessed from the fit included); a case the candidate has no
-    value on is filled with the other candidates' mean there, shifted by the candidate's mean difference from
-    them on the cases they share, and clipped to the metric's range. A candidate with a value on every such
-    case keeps its plain mean; one with gaps depends on who else is in `ids`. Constraints are judged on the
-    same means.
+    could rank above one that was judged there. So instead of its plain mean, each goal metric gets an
+    adjusted mean (`Assessment.adjusted_means`) over the cases any candidate in `ids` has a value for (those
+    assessed from the fit included): the candidate's own values, plus each case it has no value on filled
+    with the other candidates' mean there, shifted by the candidate's mean difference from them on the cases
+    they share, and clipped to the metric's range. A candidate with a value on every such case gets its plain
+    mean; one with gaps depends on who else is in `ids`. Constraints are judged on the same adjusted means.
+    The plain means stay in `CandidateScores` and `measured_metrics`.
 
     Args:
         ids: The candidates to assess.
@@ -171,13 +178,14 @@ def assess(
             p = {str(c): p_met(c, estimates[c.metric]) for c in criteria.constraints if c.metric in observed}
             objective_value = criteria.objective_value(point)
             terms = criteria.terms(point)
+            adjusted_means: dict[str, float] = {}
             from_fit = True
         else:
             if adjusted is None:
                 adjusted = _adjusted_means(ids, measured, criteria)
             point = adjusted[candidate_id]
             judged = [point.get(c.metric) for c in criteria.constraints]
-            p, estimates = {}, {}
+            p, estimates, adjusted_means = {}, {}, dict(point)
             objective_value = criteria.objective_value(point)
             terms = criteria.terms(point)
             from_fit = False
@@ -200,6 +208,7 @@ def assess(
             total_violation=sum((v for v in violations if v > 0), 0.0),
             p_met=p,
             estimates=estimates,
+            adjusted_means=adjusted_means,
             is_from_fit=from_fit,
         )
     return out
@@ -393,7 +402,7 @@ def label_candidate(
             if v > 0
         ]
     else:
-        # The measured mean the ranking judged (the bound plus or minus its violation), in
+        # The adjusted mean the ranking judged (the bound plus or minus its violation), in
         # `Criteria.unmet_constraints`' wording.
         unmet = [
             f"{c}: never measured"
@@ -408,6 +417,7 @@ def label_candidate(
         unmet_constraints=unmet,
         estimates=dict(assessment.estimates),
         p_met=dict(assessment.p_met),
+        adjusted_means=dict(assessment.adjusted_means),
         is_from_fit=assessment.is_from_fit,
         measured=measured,
     )

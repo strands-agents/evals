@@ -132,6 +132,7 @@ def summary(
     trial_count=2,
     failures=0,
     estimates=None,
+    adjusted_means=None,
     feasible=True,
 ):
     return CandidateSummary(
@@ -148,6 +149,7 @@ def summary(
         term_values=[score] if eligible else None,
         rank=rank,
         estimates=estimates or {},
+        adjusted_means=adjusted_means or {},
         violations=[] if eligible else None,
         is_feasible=feasible if eligible else None,
         is_eligible=eligible,
@@ -672,6 +674,24 @@ def test_versions_folder_has_one_folder_per_version_with_each_text_alone(folders
     assert (third.rank, third.meets_limits, third.changed) == (None, None, ["prompt"])
     assert evidence.limits == ["tokens <= 150"]
     assert evidence.goal_metrics == ["Score", "tokens"]
+
+
+def test_versions_without_a_fit_show_the_adjusted_mean_the_ranking_used(folders):
+    # The child is N/A on the hard cases: measured 0.9, ranked on 0.65 with them filled in, below the baseline's 0.75.
+    baseline = Candidate.baseline(SPACE)
+    child = baseline.child(SPACE, {"prompt": "Be brief.\n"}, origin=["text"], rationale="")
+    criteria = Criteria(Maximize("Score"), [], REGISTRY)
+    candidates = [
+        summary(baseline, number=0, rank=1, score=0.75, adjusted_means={"Score": 0.75}),
+        summary(child, number=1, rank=2, score=0.9, adjusted_means={"Score": 0.65}),
+    ]
+    req = request([trial("a", score=0.9)], criteria=criteria, parent=child, candidates=candidates)
+    _build_evidence(req, 0.5, *folders)
+    _, versions = folders
+    with open(os.path.join(versions, "rank-001-version-0", "version.md")) as f:
+        assert "\nScore: 0.75\nconversations" in f.read()  # no N/A case filled in: the measured mean alone
+    with open(os.path.join(versions, "rank-002-version-1", "version.md")) as f:
+        assert "\nScore: 0.65 (measured 0.9)\nconversations" in f.read()
 
 
 def test_text_file_names():

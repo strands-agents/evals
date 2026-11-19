@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Literal, get_args
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from .estimates import Estimate
 
@@ -125,18 +125,23 @@ class CandidateLabel(BaseModel):
 
     `infeasible` means the ranking's feasibility says no (still a possible parent, ranked lower);
     `ineligible` means some train case, or the objective, is unmeasured (out of the fit and the parents until a re-run
-    succeeds). `estimates`, `p_met`, `is_from_fit`, and `measured` are the ranking's view at this step
-    as a snapshot, never read on resume.
+    succeeds). `estimates`, `p_met`, `adjusted_means`, `is_from_fit`, and `measured` are the ranking's view at
+    this step as a snapshot, never read on resume.
 
     Attributes:
         outcome: `feasible`, `infeasible`, or `ineligible`.
         reason: One sentence, e.g. "tokens <= 4000: P(met) 0.62 < 0.9".
         unmet_constraints: Each constraint not met, as the ranking assessed it, as a sentence (e.g. "tokens <= 4000:
             P(met) 0.62 < 0.9"); unlike the per-constraint margins elsewhere named `violations`. On measured
-            means the sentence's mean is the one the ranking judged, which can differ from the mean in
-            `measured` for a candidate with N/A cases that another assessed candidate was judged on.
+            means the sentence's mean is the adjusted one the ranking judged (`adjusted_means`), which can
+            differ from the mean in `measured` for a candidate with N/A cases that another assessed candidate
+            was judged on.
         estimates: Per goal metric (`Assessment.estimates`); empty when `is_from_fit` is False.
         p_met: Per constraint whose metric was measured (`Assessment.p_met`); empty when `is_from_fit` is False.
+        adjusted_means: Per goal metric, the adjusted mean the ranking used (`Assessment.adjusted_means`): the
+            plain mean in `measured`, or with the N/A cases another assessed candidate was judged on filled in;
+            empty when `is_from_fit` is True or the candidate is ineligible (and in a label saved before it
+            existed).
         is_from_fit: False when assessed by measured means.
         measured: Every metric measured on train, usage included; a metric with no value is left out.
     """
@@ -148,6 +153,7 @@ class CandidateLabel(BaseModel):
     unmet_constraints: list[str]
     estimates: dict[str, Estimate]
     p_met: dict[str, float]
+    adjusted_means: dict[str, float] = Field(default_factory=dict)
     is_from_fit: bool
     measured: dict[str, Measured]
 
@@ -164,6 +170,10 @@ class ValidationReport(BaseModel):
             validation or no validation trial of it completed.
         estimates: Candidate id -> goal metric -> the validation fit's estimate; empty when assessed by
             measured means.
+        adjusted_means: Candidate id -> goal metric -> the adjusted validation mean the pick used when
+            assessed by measured means (`Assessment.adjusted_means`): the plain mean in `measured`, or with
+            the N/A cases another assessed candidate was judged on filled in; only candidates assessed by
+            measured means (none in a report saved before it existed).
         infeasible: Candidate id -> why it can't ship (a constraint not met on validation, not eligible
             there, or no validation trial of it completed).
         measured: Candidate id -> every metric measured on validation.
@@ -178,6 +188,7 @@ class ValidationReport(BaseModel):
     front: list[str]
     objectives: dict[str, float | None]
     estimates: dict[str, dict[str, Estimate]]
+    adjusted_means: dict[str, dict[str, float]] = Field(default_factory=dict)
     infeasible: dict[str, str]
     measured: dict[str, dict[str, Measured]]
     problem: str | None

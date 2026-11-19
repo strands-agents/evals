@@ -86,6 +86,7 @@ def assessment(candidate_id, objective, *, feasible=True, violation=0.0, terms=N
         total_violation=0.0 if feasible else violation,
         p_met={},
         estimates={},
+        adjusted_means={},
         is_from_fit=True,
     )
 
@@ -243,6 +244,7 @@ def test_a_flagged_fit_or_an_unfitted_candidate_is_assessed_by_measured_means():
     fit = FakeFit({"a": {HELP: e(0.7)}})
     out = assess(["a", "b"], fit=fit, criteria=criteria, values=values, measured=measured, rule=LowerBound(0.1))
     assert out["a"].is_from_fit and out["a"].objective == round_to_sd(e(0.7).quantile(0.1), 0.01)
+    assert out["a"].adjusted_means == {}  # assessed from the fit
     # rule ignored; b has no value on y, filled from a's measured 0.4 shifted by b's +0.7 on x and clipped to 1
     assert not out["b"].is_from_fit and out["b"].objective == pytest.approx(0.95) and out["b"].estimates == {}
     flagged = FakeFit({"a": {HELP: e(0.7)}}, flagged=[HELP])
@@ -341,6 +343,7 @@ def test_measured_means_fill_the_cases_a_candidate_leaves_unjudged():
     out = assess(["b", "a"], fit=None, criteria=criteria, values=values, measured=measured, rule=Mean())
     assert out["a"].objective == 0.75  # a value on every case: its plain mean
     assert out["b"].objective == pytest.approx(0.65)  # h1 and h2 filled at a's 0.5 shifted by b's -0.1
+    assert out["a"].adjusted_means == {HELP: 0.75} and out["b"].adjusted_means == {HELP: pytest.approx(0.65)}
     assert rank(out, ["b", "a"]) == ["a", "b"]
     # Alone, there is nothing to fill from.
     assert (
@@ -400,9 +403,9 @@ def test_measured_constraints_and_the_label_judge_the_filled_means():
     assert out["a"].is_feasible
     assert out["b"].violations == (pytest.approx(0.05),) and not out["b"].is_feasible
     assert out["c"].violations == (math.inf,)
-    assert label_candidate(measured["b"], out["b"], criteria=criteria).unmet_constraints == [
-        f"{HELP} >= 0.7: mean 0.65 violates by 0.05"
-    ]
+    label = label_candidate(measured["b"], out["b"], criteria=criteria)
+    assert label.unmet_constraints == [f"{HELP} >= 0.7: mean 0.65 violates by 0.05"]
+    assert label.adjusted_means == {HELP: pytest.approx(0.65), STARS: 3.0}
     assert label_candidate(measured["c"], out["c"], criteria=criteria).unmet_constraints == [
         f"{HELP} >= 0.7: never measured"
     ]
@@ -644,6 +647,7 @@ def _label_assessment(candidate_id, *, objective, feasible, violation=0.0, from_
         total_violation=sum(v for v in violations if v > 0),
         p_met=p_met or {},
         estimates={HELP: Estimate(mean=objective, sd=0.01)} if from_fit else {},
+        adjusted_means={} if from_fit else {HELP: objective},
         is_from_fit=from_fit,
     )
 

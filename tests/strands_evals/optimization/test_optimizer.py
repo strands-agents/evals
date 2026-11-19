@@ -2110,7 +2110,40 @@ async def test_without_a_fit_n_a_cases_are_filled_for_the_ranking_and_the_term_v
     assert baseline.ranking_objective == baseline.measured_objective
     assert partial.ranking_objective == pytest.approx(baseline.ranking_objective - 0.1)
     assert partial.term_values == [partial.ranking_objective]
+    assert partial.adjusted_means == {"EvenOnly": pytest.approx(partial.ranking_objective)}
+    assert baseline.adjusted_means == {"EvenOnly": baseline.measured_objective}
     assert (baseline.rank, partial.rank) == (1, 2)
+
+
+async def test_without_a_fit_the_label_rows_and_summary_report_the_adjusted_means(tmp_path):
+    optimizer = _optimizer(
+        _experiment(evaluators=[EvenOnly()]),
+        rollout_fn=_temperature_rollout,
+        search=Search(
+            [Block(Scripted({"temperature": 0.5}), "temperature"), Block(Scripted(), "manager")], schedule=Joint()
+        ),
+        objective=Maximize("EvenOnly"),
+        score_model=_Sequence(),  # never fits: the search and the final pick use measured means
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path,
+    )
+    result = await optimizer.run_async()
+    validation = optimizer._case_split.validation
+    assert 0 < sum(int(case[4:]) % 2 for case in validation) < len(validation)  # judged and N/A cases
+    partial = next(c.id for c in result.candidates.values() if c.values["temperature"] == 0.5)
+    (row,) = [r for r in result.to_rows("proposal") if r["candidate_id"] == partial]
+    assert row["train.EvenOnly"] == pytest.approx(0.9)  # its judged cases only
+    assert row["adjusted.EvenOnly"] == pytest.approx(row["objective_at_step"])  # what the ranking used
+    assert row["adjusted.EvenOnly"] < row["train.EvenOnly"]
+    v = result.validation
+    assert v.problem is not None and not any(v.estimates.values())
+    adjusted = v.adjusted_means[partial]["EvenOnly"]
+    assert adjusted == pytest.approx(v.objectives[partial]) and adjusted < v.measured[partial]["EvenOnly"].mean
+    assert v.adjusted_means[result.baseline_id] == {"EvenOnly": v.measured[result.baseline_id]["EvenOnly"].mean}
+    assert f"{adjusted:.3g} (measured 0.9)" in result.summary()
+    assert f"{v.objectives[result.baseline_id]:.3g} (measured)" in result.summary()
 
 
 # ---- resume inside a two-level Nested -------------------------------------------------------------------
