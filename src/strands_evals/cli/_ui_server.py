@@ -147,7 +147,8 @@ def finite(value: Any) -> Any:
     while todo:
         into, key, item = todo.pop()
         if isinstance(item, dict):
-            into[key] = copy = dict.fromkeys(item)
+            copy: Any = dict.fromkeys(item)
+            into[key] = copy
             todo.extend((copy, name, held) for name, held in item.items())
         elif isinstance(item, list):
             into[key] = copy = [None] * len(item)
