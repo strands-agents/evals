@@ -73,7 +73,7 @@ def _trial(candidate_id, case_name, *, rollouts=1, previous=0):
     }
 
 
-def _iteration_end(log, iteration, parent, blocks, *, exhausted=(), round=None, role="inner"):
+def _iteration_end(log, iteration, parent, blocks, *, exhausted=(), round=None, role="inner", best_after=()):
     record = {
         "iteration": iteration,
         "parent_id": parent,
@@ -84,7 +84,9 @@ def _iteration_end(log, iteration, parent, blocks, *, exhausted=(), round=None, 
         "proposals": [],
         "rollouts_spent": 0,
     }
-    log.append("iteration_end", iteration=iteration, record=record, exhausted=list(exhausted), best_after=[])
+    log.append(
+        "iteration_end", iteration=iteration, record=record, exhausted=list(exhausted), best_after=list(best_after)
+    )
 
 
 def _propose(log, candidate_id, parent, origin, *, rescore=False, **fields):
@@ -121,7 +123,7 @@ def run(tmp_path):
     log.append("trial", record=_trial("c1", "a"))
     log.append("fit", candidates=["base", "c1"], is_fitted=False, error="ValueError: boom", flagged=[], diagnostics={})
     log.append("evidence", block="numbers", evidence=_evidence("c1"))
-    _iteration_end(log, 1, "base", ["structure"], round=(0,), role="opener")
+    _iteration_end(log, 1, "base", ["structure"], round=(0,), role="opener", best_after=["c1", "base"])
     # Iteration 2: the inner Nested's opener repeats a measured candidate (a duplicate), and is still open.
     inner = _patch("inner")
     log.append("select", iteration=2, parent_id="c1", strategy="top_ranked")
@@ -131,7 +133,9 @@ def run(tmp_path):
     log.append("observe", block="numbers", candidate_id=None, observation=_observation(None, _patch(9, tokens=7)))
     log.append("proposer_usage", block="numbers", redraw=0, usage=_usage(3))  # a call that returned no patch
     log.append("fit", candidates=["base", "c1"], is_fitted=True, error=None, flagged=[], diagnostics={})
-    _iteration_end(log, 2, "c1", ["numbers"], exhausted=["numbers"], round=(0, 0), role="opener")
+    _iteration_end(
+        log, 2, "c1", ["numbers"], exhausted=["numbers"], round=(0, 0), role="opener", best_after=["c1", "base"]
+    )
     # Iteration 3, killed: its search events are dropped, its trials stay.
     log.append("select", iteration=3, parent_id="c1", strategy="top_ranked")
     _propose(log, "c3", "c1", "numbers")
@@ -161,6 +165,7 @@ def test_load_state_rebuilds_the_search_up_to_the_last_closed_iteration(run):
     assert state.parents == {"base": None, "c1": "base"}
     assert state.history == ["base", "c1"]
     assert [r.iteration for r in state.iterations] == [1, 2]
+    assert state.best_after == [["c1", "base"], ["c1", "base"]]  # one per iteration_end, in order
     assert state.exhausted == {"numbers"}
     assert state.fits == [
         FitReplay(["base"], False, None),
