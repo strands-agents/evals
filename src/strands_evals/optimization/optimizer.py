@@ -488,7 +488,8 @@ class Optimizer:
         return await self._end_phase(reason)
 
     async def _start(self) -> None:
-        """Set up the run, score the baseline, and write the setup's fit (None: one eligible candidate).
+        """Set up the run, score the baseline, write the setup's fit (None: one eligible candidate), and tell
+        every block's proposer the baseline as evidence.
 
         After `resume`, the state the event log holds is restored instead; with no closed iteration (killed
         before the first ended) only the setup ran, so it runs again on cached trials.
@@ -517,12 +518,11 @@ class Optimizer:
         self._refit(scored=True)
         assert self._run is not None
         _, assessments = self._rank()
-        self._run.events.append(
-            "label",
-            iteration=0,
-            candidate_id=self._baseline.id,
-            label=label_candidate(scores, assessments.get(self._baseline.id), criteria=self._criteria),
-        )
+        assessment = assessments.get(self._baseline.id)
+        label = label_candidate(scores, assessment, criteria=self._criteria)
+        self._run.events.append("label", iteration=0, candidate_id=self._baseline.id, label=label)
+        for block, _ in self._blocks:
+            self._share(_block_name(block), self._baseline, label.outcome, assessment)
 
     def _init_state(self, baseline: Candidate) -> None:
         """The search's state before anything is scored."""
@@ -1579,7 +1579,7 @@ class Optimizer:
         self._proposer(block).observe(observation)
 
     def _share(self, block: str, candidate: Candidate, outcome: ObservationOutcome, a: Assessment | None) -> None:
-        """Tell another block's proposer about a scored candidate (`Proposer.evidence`)."""
+        """Tell a block's proposer about a scored candidate it didn't propose (`Proposer.evidence`)."""
         assert self._run is not None
         evidence = Evidence(
             candidate_id=candidate.id,

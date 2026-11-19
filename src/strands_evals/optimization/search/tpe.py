@@ -45,7 +45,7 @@ class TPE(Proposer):
 
     `TPESampler(multivariate=True, group=True, constant_liar=True)`: proposals not yet observed are running
     trials, so a step's n proposals keep apart before any is told, whether they come from one `propose` call
-    or several. `observe` (its own block) and `evidence` (other blocks) append each candidate told to TPE's
+    or several. `observe` (its own block) and `evidence` (baseline, other blocks) append each candidate told to TPE's
     own list (replayed on resume); invalid patches are left out. Before each ask the study for a context is
     rebuilt from that list, each trial valued at its candidate's current assessment in `request.candidates`
     (`ranking_objective`, `violations` as the trial's constraint values), so TPE's good and bad trials are
@@ -73,8 +73,10 @@ class TPE(Proposer):
 
         Args:
             seed: None uses the run seed.
-            n_startup_trials: Random trials before TPE models the results; the default structure block
-                uses 2.
+            n_startup_trials: Completed trials a context's study must hold before TPE models them; until
+                then its proposals are random. Every eligible candidate told in that context counts, the
+                block's own and those told as evidence (the baseline included), so the default structure
+                block's 2 is the baseline and one round.
 
         Raises:
             TypeError: `seed` is not an int or None, or `n_startup_trials` is not an int.
@@ -157,7 +159,8 @@ class TPE(Proposer):
         )
 
     def evidence(self, evidence: Evidence) -> None:
-        """Keep another block's candidate, re-valued at each ask, so it informs the study of its context.
+        """Keep a candidate this block didn't propose (the baseline or another block's), re-valued at each ask,
+        so it informs the study of its context.
 
         A candidate never measured (`objective=None`: ineligible) is no evidence and is left out.
         """
