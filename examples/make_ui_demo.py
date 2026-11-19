@@ -431,6 +431,9 @@ def optimizer_runs(out: Path) -> None:
     judge = [{"evaluator_type": "OutputEvaluator", "name": "Helpfulness", "rubric": "Score how helpful the reply is."}]
     events = [json.loads(line) for line in (finished / "events.jsonl").read_text().splitlines()]
 
+    # The experiment the runs split up, beside them: of several that hold its cases, the nearest is the one named.
+    write(out / "tuning" / "support-cases.experiment.json", experiment(cases, judge))
+
     # The cases the run was tuned on, run before and after: two reports of one experiment to compare.
     for folder, candidate in (("agent-before-tuning", "c0"), ("agent-after-tuning", "c10")):
         write(out / folder / "support-cases.experiment.json", experiment(cases, judge))
