@@ -228,11 +228,9 @@ function serve(tree) {
 
   const [p] = await openAt('/sessions');
   await p.openSession();
-  p.window.history.back();
-  await tick(6);
+  await p.travel(-1);
   eq(`${p.view()} ${p.window.location.pathname}`, 'v-sessions /sessions', 'Back from a session returns to the list');
-  p.window.history.forward();
-  await tick(6);
+  await p.travel(1);
   eq(`${p.view()} ${p.window.location.pathname}`, 'v-session /sessions/traces/a.json', 'and Forward opens it again');
 }
 

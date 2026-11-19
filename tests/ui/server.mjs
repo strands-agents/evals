@@ -232,10 +232,10 @@ try {
   await waitFor(() => picking.$('#v-opt-overview').classList.contains('on'), 'the picked run to open');
   ok(/older-run/.test(picking.text('#crumbs')) && picking.window.location.pathname === '/optimization/older-tuning/overview',
     'picking another opens it and names it in the address', picking.window.location.pathname);
-  picking.window.history.back();
+  await picking.travel(-1);
   await waitFor(() => picking.$('#v-opt-runs').classList.contains('on'), 'Back to return to the list');
   ok(picking.window.location.pathname === '/optimization', 'and Back returns to the list of runs', picking.window.location.pathname);
-  picking.window.history.forward();
+  await picking.travel(1);
   await waitFor(() => picking.$('#v-opt-overview').classList.contains('on'), 'Forward to reopen the run');
 
   const linked = await served('/optimization/older-tuning/overview');
@@ -247,7 +247,7 @@ try {
   await linked.click('.tab[data-view="opt-runs"]');
   await linked.click(linked.$$('#opt-runs-rows tr[data-opt-run]').find(r => /support-tuning/.test(r.textContent)));
   await waitFor(() => /support-tuning/.test(linked.text('#crumbs')), 'the other run to open');
-  linked.window.history.go(-2);
+  await linked.travel(-2);
   await waitFor(() => /older-run/.test(linked.text('#crumbs')), 'Back to reopen the run the address names');
   ok(linked.window.location.pathname === '/optimization/older-tuning/overview', 'Back to a run\'s address reopens that run',
     linked.window.location.pathname);
