@@ -24,11 +24,14 @@ from strands_evals.types.trace import (
     EvaluationLevel,
     Session,
     SpanInfo,
+    TextContent,
     ToolCall,
     ToolConfig,
     ToolExecutionSpan,
     ToolResult,
+    ToolResultContent,
     Trace,
+    UserMessage,
 )
 
 # Real captured trace fixtures, reused from the mappers test suite. Each is a
@@ -376,10 +379,8 @@ def test_reference_prompt_has_user_query_for_fixture(
     assert user_prompt, f"{fixture_id}: user query was blank"
     assert expected_query_substring in user_prompt
 
-    # The rendered judge prompt must carry the query, not an empty USER QUERY block.
-    prompt = evaluator._format_reference_prompt(parsed_input, case)
-    assert "USER QUERY:\n\n" not in prompt
-    assert f"USER QUERY:\n{user_prompt}" in prompt
+    # The rendered judge prompt must carry the query.
+    assert f"User: {user_prompt}" in evaluator._format_reference_prompt(parsed_input, case)
 
 
 def test_autogen_user_query_is_blank_because_telemetry_has_no_content():
@@ -398,3 +399,41 @@ def test_autogen_user_query_is_blank_because_telemetry_has_no_content():
 
     assert isinstance(parsed_input.session_history[-1], list)
     assert evaluator._extract_user_prompt(parsed_input) == ""
+
+
+def test_reference_prompt_includes_conversation_history(evaluation_data_with_reference):
+    """Multi-turn: the judge sees every earlier turn, then the final query, response, and reference."""
+    span_info = SpanInfo(session_id="test-session", start_time=datetime.now(), end_time=datetime.now())
+    follow_up = AgentInvocationSpan(
+        span_info=span_info, user_prompt="Now double it", agent_response="That's 8.", available_tools=[]
+    )
+    session = evaluation_data_with_reference.actual_trajectory
+    session.traces.append(Trace(spans=[follow_up], trace_id="trace2", session_id="test-session"))
+    evaluator = CorrectnessEvaluator()
+
+    prompt = evaluator._format_reference_prompt(
+        evaluator._get_last_turn(evaluation_data_with_reference), evaluation_data_with_reference
+    )
+
+    assert prompt == (
+        "# Conversation History:\nUser: What is 2 + 2?\nTool call: calculator({'expression': '2+2'})\n"
+        "Tool result: 4\nAssistant: The answer is 4.\nUser: Now double it\n\n"
+        "# Assistant's Response:\nThat's 8.\n\n"
+        "# Expected Response:\nThe agent should return the correct answer of 4."
+    )
+
+
+def test_reference_prompt_extracts_text_when_not_first_content_block(evaluation_data_with_reference):
+    """Reference prompts include text even when a tool result appears first."""
+    evaluator = CorrectnessEvaluator()
+    parsed_input = evaluator._get_last_turn(evaluation_data_with_reference)
+    parsed_input.session_history[0] = UserMessage(
+        content=[
+            ToolResultContent(content="4"),
+            TextContent(text="What is the capital of France?"),
+        ]
+    )
+
+    prompt = evaluator._format_reference_prompt(parsed_input, evaluation_data_with_reference)
+
+    assert "User: What is the capital of France?" in prompt
