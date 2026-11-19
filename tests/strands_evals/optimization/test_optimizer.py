@@ -522,10 +522,47 @@ async def test_trials_reading_the_workspace_at_once_make_one_copy(tmp_path, monk
     assert outputs == {"Be brief."}
 
 
-def test_setup_warns_when_a_step_runs_in_batches(tmp_path):
-    optimizer = _optimizer(base_dir=tmp_path)
-    with pytest.warns(UserWarning, match=r"4 candidates x 8 train cases x 1 runs = 32 trials, but max_workers is 4"):
+def test_setup_warns_when_a_step_far_outnumbers_max_workers_and_suggests_a_bounded_value(tmp_path):
+    optimizer = _optimizer(_experiment(n=114), base_dir=tmp_path)  # 46 train cases
+    with pytest.warns(UserWarning, match=r"4 candidates x 46 train cases x 1 runs = 184 trials") as caught:
         optimizer._setup()
+    [message] = [str(w.message) for w in caught if "184 trials" in str(w.message)]
+    assert "max_workers is 4, so they run 4 at a time" in message
+    assert "as far as your model provider's rate limits allow" in message
+    assert message.endswith("for example to 32")  # not the step's 184
+
+
+def test_setup_suggests_no_more_workers_than_a_step_has_trials(tmp_path):
+    optimizer = _optimizer(base_dir=tmp_path, proposals_per_iteration=2, max_workers=1)  # 16 trials
+    with pytest.warns(UserWarning, match=r"= 16 trials, .* for example to 16$"):
+        optimizer._setup()
+
+
+@pytest.mark.parametrize(
+    ("n", "proposals_per_iteration", "max_workers", "budget", "warns"),
+    [
+        (20, 4, 4, None, False),  # the defaults on 8 train cases: 32 trials, 8x max_workers
+        (20, 5, 4, None, False),  # 40 trials: exactly 10x
+        (20, 4, 3, None, True),  # 32 trials: over 10x
+        (114, 8, 31, Budget(max_rollouts=1000), True),  # 368 trials: over 10x
+        (114, 8, 32, Budget(max_rollouts=1000), False),  # over 10x, but max_workers is already the suggestion
+        (114, 1, 4, None, False),  # 46 trials: over 10x, but one candidate per step
+    ],
+)
+def test_setup_warns_only_past_ten_times_max_workers_and_below_the_suggestion(
+    tmp_path, n, proposals_per_iteration, max_workers, budget, warns
+):
+    optimizer = _optimizer(
+        _experiment(n=n),
+        base_dir=tmp_path,
+        proposals_per_iteration=proposals_per_iteration,
+        max_workers=max_workers,
+        budget=budget,
+    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        optimizer._setup()
+    assert any("trials, but max_workers is" in str(w.message) for w in caught) == warns
 
 
 # the search loop

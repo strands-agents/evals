@@ -81,6 +81,10 @@ from .setup.budget import Budget, BudgetTracker
 from .setup.splits import Split
 
 _DEFAULT_BASE_DIR = Path(".strands-evals/optimization/runs")
+# Setup warns when a full step has more than this many trials per worker.
+_SLOW_STEP_RATIO = 10
+# The warning suggests at most this many workers, and setup doesn't warn when `max_workers` is this or more.
+_SUGGESTED_MAX_WORKERS = 32
 
 
 class Optimizer:
@@ -166,7 +170,8 @@ class Optimizer:
             environment: Per-attempt resources passed to the factory by name.
             proposals_per_iteration: Candidates per step, its full width (a step's candidates merge one
                 patch of each of its blocks). The schedule may give a step fewer (`Step.n_candidates`).
-            max_workers: Parallel trials, shared by the candidates scored at once.
+            max_workers: Parallel trials, shared by the candidates scored at once; keep it within what your model
+                provider's rate limits allow.
             rerun_passes: Max re-run passes per scoring call: trials still `infrastructure_invalid` are re-run, and
                 evaluators that failed are re-judged on the saved output (0 rollouts).
             seed: Seeds the split (unless `Split(seed=)` is set), selection, TPE, and Thompson.
@@ -1616,11 +1621,17 @@ class Optimizer:
             name: role for role in SPLIT_NAMES for name in getattr(self._case_split, role)
         }
         need = self._proposals_per_iteration * len(self._case_split.train) * self._runs_per_candidate
-        if self._proposals_per_iteration > 1 and need > self._max_workers:
+        if (
+            self._proposals_per_iteration > 1
+            and self._max_workers < _SUGGESTED_MAX_WORKERS
+            and need > _SLOW_STEP_RATIO * self._max_workers
+        ):
             warnings.warn(
-                f"a step scores {self._proposals_per_iteration} candidates x {len(self._case_split.train)} train "
-                f"cases x {self._runs_per_candidate} runs = {need} trials, but max_workers is {self._max_workers}, "
-                f"so steps run in batches and take longer; give max_workers={need} to run them at once",
+                f"a full step scores {self._proposals_per_iteration} candidates x {len(self._case_split.train)} "
+                f"train cases x {self._runs_per_candidate} runs = {need} trials, but max_workers is "
+                f"{self._max_workers}, so they run {self._max_workers} at a time and steps take longer; raise "
+                f"max_workers as far as your model provider's rate limits allow, for example to "
+                f"{min(need, _SUGGESTED_MAX_WORKERS)}",
                 UserWarning,
                 stacklevel=3,
             )
