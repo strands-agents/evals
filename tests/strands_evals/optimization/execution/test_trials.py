@@ -12,7 +12,7 @@ import threading
 
 import opentelemetry.trace as trace_api
 import pytest
-from botocore.exceptions import CredentialRetrievalError, ProfileNotFound
+from botocore.exceptions import CredentialRetrievalError, EndpointConnectionError, ProfileNotFound
 from pydantic import BaseModel
 from strands import Agent
 from strands.types.exceptions import ModelThrottledException
@@ -23,7 +23,7 @@ from strands_evals.optimization import Budget, InfrastructureError, TextValue, t
 from strands_evals.optimization.declaration.tunable import _FactoryArgumentError
 from strands_evals.optimization.execution.rollout import default_rollout, make_task
 from strands_evals.optimization.execution.traces import TraceCapture
-from strands_evals.optimization.execution.trials import TrialRunner, _EvaluatorProxy, _TrialState
+from strands_evals.optimization.execution.trials import TrialRunner, _EvaluatorProxy, _rerun_wait, _TrialState
 from strands_evals.optimization.record.run_directory import RunDirectory
 from strands_evals.optimization.setup.budget import BudgetTracker
 from strands_evals.types import EvaluationOutput
@@ -36,6 +36,18 @@ from tests.strands_evals.optimization.scripted_model import ScriptedModel
 @pytest.fixture(autouse=True)
 def no_retry_delay(monkeypatch):
     monkeypatch.setattr("strands_evals.experiment._INITIAL_RETRY_DELAY", 0)
+
+
+@pytest.fixture(autouse=True)
+def waits(monkeypatch):
+    """The waits before re-run passes, recorded instead of slept."""
+    seconds = []
+
+    async def sleep(delay):
+        seconds.append(delay)
+
+    monkeypatch.setattr("strands_evals.optimization.execution.trials._sleep", sleep)
+    return seconds
 
 
 @pytest.fixture
@@ -574,7 +586,7 @@ async def test_one_evaluator_failing_leaves_the_trial_completed(traces):
     assert records[0].evaluator_errors == {"B": "ValueError"}
 
 
-async def test_a_judge_throttled_on_every_try_leaves_the_trial_completed(traces):
+async def test_a_judge_throttled_on_every_try_leaves_the_trial_completed(traces, waits):
     throttled = Fixed("Throttled", failures=99, error=ModelThrottledException("slow down"))
     runner = _runner(traces, MemoryCache(), _cases("a"), [Fixed("A"), throttled], rerun_passes=1)
 
@@ -583,6 +595,7 @@ async def test_a_judge_throttled_on_every_try_leaves_the_trial_completed(traces)
     assert records[0].status is TrialStatus.COMPLETED
     assert records[0].evaluator_errors == {"Throttled": "ModelThrottledException"}
     assert spent == 1  # the re-run pass re-judged it, for no rollout
+    assert len(waits) == 1  # after waiting, as throttling is infrastructure
     once = Fixed("Throttled", failures=99, error=ModelThrottledException("slow down"))
     await _runner(traces, MemoryCache(), _cases("a"), [Fixed("A"), once], rerun_passes=0).run(
         "cand", _plain, ["a"], runs=1, allowance=5
@@ -710,7 +723,7 @@ async def test_an_exhausted_allowance_leaves_the_trial_infrastructure_invalid(tr
     assert [r.status for r in records] == [TrialStatus.INFRASTRUCTURE_INVALID] * 2
 
 
-async def test_a_call_never_spends_more_than_the_budget_allows(traces):
+async def test_a_call_never_spends_more_than_the_budget_allows(traces, waits):
     budget = BudgetTracker(Budget(max_rollouts=2))
 
     async def task(case):
@@ -724,9 +737,10 @@ async def test_a_call_never_spends_more_than_the_budget_allows(traces):
 
     assert spent == 2  # the first pass used the whole allowance: no re-run
     assert budget.remaining == 0
+    assert waits == []  # and no wait for a pass that never runs
 
 
-async def test_a_re_run_after_resume_keeps_the_earlier_attempt(traces):
+async def test_a_re_run_after_resume_keeps_the_earlier_attempt(traces, waits):
     cache = MemoryCache()
 
     async def down(case):
@@ -741,6 +755,194 @@ async def test_a_re_run_after_resume_keeps_the_earlier_attempt(traces):
     assert spent == 1
     assert records[0].status is TrialStatus.COMPLETED
     assert [a.status for a in records[0].previous_attempts] == [TrialStatus.INFRASTRUCTURE_INVALID]
+    assert waits == []  # the first pass of a call never waits
+
+
+# the wait before a re-run pass
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """A fake clock that only the waits move; returns [now]."""
+    now = [0.0]
+
+    async def sleep(delay):
+        now[0] += delay
+
+    monkeypatch.setattr("strands_evals.optimization.execution.trials._sleep", sleep)
+    monkeypatch.setattr("strands_evals.optimization.execution.trials._clock", lambda: now[0])
+    return now
+
+
+async def test_a_short_outage_is_waited_out_before_the_re_run(traces, clock):
+    async def task(case):  # the endpoint is unreachable for the first second
+        if clock[0] < 1.0:
+            raise EndpointConnectionError(endpoint_url="https://bedrock-runtime.us-east-1.amazonaws.com")
+        return "ok"
+
+    records, spent = await _runner(traces, MemoryCache(), _cases("a", "b"), [Fixed()]).run(
+        "cand", task, ["a", "b"], runs=1, allowance=4
+    )
+
+    assert [r.status for r in records] == [TrialStatus.COMPLETED] * 2
+    assert spent == 4  # the first pass, then one re-run pass
+    assert 2.5 <= clock[0] <= 5.0
+
+
+async def test_each_re_run_pass_waits_about_twice_as_long_as_the_one_before(traces, waits, caplog):
+    async def down(case):
+        raise InfrastructureError("sandbox down")
+
+    with caplog.at_level(logging.WARNING):
+        records, spent = await _runner(traces, MemoryCache(), _cases("a"), [Fixed()], rerun_passes=3).run(
+            "cand", down, ["a"], runs=1, allowance=10
+        )
+
+    assert records[0].status is TrialStatus.INFRASTRUCTURE_INVALID
+    assert spent == 4
+    assert len(waits) == 3
+    for wait, (low, high) in zip(waits, [(2.5, 5.0), (5.0, 10.0), (10.0, 20.0)], strict=True):
+        assert low <= wait <= high
+    logged = [r.getMessage() for r in caplog.records if "waiting before re-running" in r.getMessage()]
+    assert len(logged) == 3
+    assert "pass=<1>, trials=<1>, error_type=<InfrastructureError>" in logged[0]
+
+
+@pytest.mark.parametrize("pass_index", [5, 6, 10_000])
+def test_the_wait_before_a_re_run_pass_is_capped(pass_index):
+    assert all(30.0 <= _rerun_wait(pass_index) <= 60.0 for _ in range(100))
+
+
+def test_the_wait_before_a_re_run_pass_is_jittered():
+    assert len({_rerun_wait(1) for _ in range(20)}) > 1
+
+
+async def test_a_judge_that_failed_on_infrastructure_waits_before_its_re_judge(traces, waits):
+    down = Fixed("Down", failures=1, error=EndpointConnectionError(endpoint_url="https://x"))
+
+    records, spent = await _runner(traces, MemoryCache(), _cases("a"), [down]).run(
+        "cand", _plain, ["a"], runs=1, allowance=0
+    )
+
+    assert records[0].status is TrialStatus.COMPLETED
+    assert records[0].evaluator_errors == {}
+    assert spent == 1  # a re-judge costs no rollout
+    assert len(waits) == 1 and 2.5 <= waits[0] <= 5.0
+
+
+async def test_a_re_judge_of_a_bad_verdict_starts_immediately(traces, waits):
+    records, _ = await _runner(traces, MemoryCache(), _cases("a"), [Fixed("Flaky", failures=1)]).run(
+        "cand", _plain, ["a"], runs=1, allowance=0
+    )
+
+    assert records[0].evaluator_errors == {}
+    assert waits == []
+
+
+class Raises(Evaluator):
+    """Raises the next of `errors` on each call; scores 1.0 once they run out."""
+
+    def __init__(self, *errors, name="Raises"):
+        super().__init__(name=name)
+        self.errors = list(errors)
+
+    async def evaluate_async(self, evaluation_case):
+        if self.errors:
+            raise self.errors.pop(0)
+        return [EvaluationOutput(score=1.0, test_pass=True, reason="ok")]
+
+
+@pytest.mark.parametrize(
+    ("errors", "expected_waits"),
+    [
+        # an outage, then a bad verdict: only the re-judge after the outage waits
+        ((EndpointConnectionError(endpoint_url="https://x"), ValueError("bad verdict")), 1),
+        # throttled, then (in Experiment's retry) a bad verdict: the last error decides, so no wait
+        ((ModelThrottledException("slow down"), ValueError("bad verdict")), 0),
+    ],
+)
+async def test_only_a_judges_last_error_decides_the_wait(traces, waits, errors, expected_waits):
+    records, _ = await _runner(traces, MemoryCache(), _cases("a"), [Raises(*errors)]).run(
+        "cand", _plain, ["a"], runs=1, allowance=0
+    )
+
+    assert records[0].evaluator_errors == {}
+    assert len(waits) == expected_waits
+
+
+async def test_a_judge_that_recovered_from_throttling_but_failed_to_aggregate_doesnt_wait(traces, waits):
+    evaluator = Raises(ModelThrottledException("slow down"))
+    evaluator.aggregator = lambda outputs: (math.nan, True, "")
+
+    records, _ = await _runner(traces, MemoryCache(), _cases("a"), [evaluator], rerun_passes=1).run(
+        "cand", _plain, ["a"], runs=1, allowance=0
+    )
+
+    assert records[0].evaluator_errors == {"Raises": "ValueError"}  # re-judged, and failed to aggregate again
+    assert waits == []
+
+
+async def test_no_wait_when_the_allowance_leaves_only_bad_verdicts_to_re_judge(traces, waits):
+    async def task(case):
+        if case.name == "a":
+            raise InfrastructureError("sandbox down")
+        return "ok"
+
+    records, spent = await _runner(traces, MemoryCache(), _cases("a", "b"), [Fixed(failures=1)]).run(
+        "cand", task, ["a", "b"], runs=1, allowance=2
+    )
+
+    assert spent == 2  # no rollout left to re-run "a"
+    assert [r.status for r in records] == [TrialStatus.INFRASTRUCTURE_INVALID, TrialStatus.COMPLETED]
+    assert records[1].evaluator_errors == {}
+    assert records[1].rollouts == 0  # "b" was re-judged
+    assert waits == []
+
+
+async def test_the_wait_counts_from_when_the_trial_failed(traces, clock):
+    started = []
+
+    async def task(case):
+        started.append((case.name, clock[0]))
+        if case.name == "a" and len(started) == 1:
+            raise InfrastructureError("sandbox down")
+        clock[0] += 10.0  # "b" takes longer than any first wait
+        return "ok"
+
+    records, _ = await _runner(traces, MemoryCache(), _cases("a", "b"), [Fixed()], max_workers=1).run(
+        "cand", task, ["a", "b"], runs=1, allowance=4
+    )
+
+    assert [r.status for r in records] == [TrialStatus.COMPLETED] * 2
+    assert started == [("a", 0.0), ("b", 0.0), ("a", 10.0)]  # "a" had already waited 10 s: no more wait
+
+
+async def test_a_wait_holds_no_slot_and_delays_no_other_trial(traces, monkeypatch):
+    rejudged = asyncio.Event()
+
+    async def sleep(delay):  # ends only once "b" has been re-judged
+        await asyncio.wait_for(rejudged.wait(), timeout=5)
+
+    monkeypatch.setattr("strands_evals.optimization.execution.trials._sleep", sleep)
+
+    class Flaky(Fixed):
+        async def evaluate_async(self, evaluation_case):
+            if self.calls >= 1:  # the first call, "b"'s in the first pass, fails
+                rejudged.set()
+            return await super().evaluate_async(evaluation_case)
+
+    async def task(case):
+        if case.name == "a" and not rejudged.is_set():
+            raise InfrastructureError("sandbox down")
+        return "ok"
+
+    records, spent = await _runner(traces, MemoryCache(), _cases("a", "b"), [Flaky(failures=1)], max_workers=1).run(
+        "cand", task, ["a", "b"], runs=1, allowance=4
+    )
+
+    assert [r.status for r in records] == [TrialStatus.COMPLETED] * 2
+    assert [r.evaluator_errors for r in records] == [{}, {}]
+    assert spent == 3  # "a" twice, "b" once and re-judged for no rollout
 
 
 async def test_a_failed_judge_is_re_judged_for_no_rollout(traces):
