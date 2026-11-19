@@ -324,6 +324,9 @@ function metaControl(key, v) {
     + `<button class="addchip" data-meta-add="${key}">+ key</button></div>`;
 }
 
+/* The address names the selected case, so it follows a new selection or a new name, in place. */
+const followCase = () => writeAddress(currentView(), true);
+
 /* ── review pass over drafts ── */
 const draftIdx = () => cases.map((c, i) => (isDraft(c) ? i : -1)).filter(i => i >= 0);
 
@@ -358,7 +361,7 @@ function reviewAct(act) {
   else { cases.splice(sel, 1); orig.splice(sel, 1); }
   sel = draftIdx()[0] ?? Math.max(0, Math.min(sel, cases.length - 1));
   /* `note('')` must precede the re-render: `renderReview` announces completion through `note`. */
-  note(''); renderForm(); refreshDirty();
+  note(''); renderForm(); refreshDirty(); followCase();
 }
 
 $('review-case').onclick = () => { review = true; renderReview(); };
@@ -385,7 +388,7 @@ $('case-list').onclick = e => {
   const li = e.target.closest('li[data-i]');
   if (!li) return;
   sel = +li.dataset.i;
-  renderForm(); writeAddress(currentView(), true);
+  renderForm(); followCase();
 };
 
 /* The dict is rebuilt from every row on each change; with no row left the key goes too. */
@@ -422,7 +425,7 @@ $('form').addEventListener('input', e => {
   } else {
     cases[sel][k] = raw;
   }
-  if (k === 'name') $('form-title').textContent = cases[sel].name || '(unnamed)';
+  if (k === 'name') { $('form-title').textContent = cases[sel].name || '(unnamed)'; followCase(); }
   note(''); refreshDirty();
 });
 
@@ -490,7 +493,7 @@ $('add-case').onclick = () => {
   cases.push({ name, session_id: uuid(), input: '' });
   orig.push(NEW_CASE);
   sel = cases.length - 1;
-  renderForm(); refreshDirty();
+  renderForm(); refreshDirty(); followCase();
   note(`added ${name}: fill in its input, then save`);
 };
 
@@ -498,12 +501,12 @@ $('del-case').onclick = () => {
   const c = cases[sel], at = sel, was = orig[at];
   cases.splice(at, 1); orig.splice(at, 1);
   sel = Math.max(0, Math.min(sel, cases.length - 1));
-  renderForm(); refreshDirty();
+  renderForm(); refreshDirty(); followCase();
   /* Nothing is written until Save, so a delete is undone rather than asked about first. */
   note(`Removed ${c.name || '(unnamed)'}. It leaves the file when you save.`, null, ['Undo', () => {
     cases.splice(at, 0, c); orig.splice(at, 0, was);
     sel = at;
-    renderForm(); refreshDirty(); note('');
+    renderForm(); refreshDirty(); followCase(); note('');
   }]);
 };
 
@@ -609,7 +612,7 @@ $('revert').onclick = () => {
   orig = savedCases.slice();
   evals = JSON.parse(origEvals);
   sel = Math.min(sel, Math.max(0, cases.length - 1));
-  renderEvaluators(); renderForm(); refreshDirty();
+  renderEvaluators(); renderForm(); refreshDirty(); followCase();
   note(`reverted ${plural(d, 'change')}`);
 };
 

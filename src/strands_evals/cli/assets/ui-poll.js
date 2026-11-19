@@ -34,6 +34,7 @@ async function refreshOpen() {
   loadExperimentFile(experiment, read);
   const again = cases.findIndex(c => c.name === at);
   if (again > 0) { sel = again; renderForm(); }
+  followCase();
 }
 
 /** Re-read the folder, then whatever is open from it. */
