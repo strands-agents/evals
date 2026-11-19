@@ -2,7 +2,6 @@
 
 const app = document.querySelector('.app');
 const $ = id => document.getElementById(id);
-const isObject = v => !!v && typeof v === 'object' && !Array.isArray(v);
 const arrayOf = v => Array.isArray(v) ? v : [];
 const mean = values => values.reduce((a, b) => a + b, 0) / values.length;
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
