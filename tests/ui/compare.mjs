@@ -197,6 +197,9 @@ ok(p.$('#cmp-with').hidden, 'and with every report compared there is nothing lef
   ok(q.text('#cmp-grid-cap').startsWith('3 of 5 rows changed verdict'), 'which is how many the grid above it says changed', q.text('#cmp-grid-cap'));
   same(q.tips('#cmp-ends g.bell'), ['judged · X · — to 1.00 · now passes', 'declined · X · — to 0.00 · now fails', 'lapsed · X · 1.00 to — · now not applicable'],
     'and each mark says which it was');
+  const counts = q.window.compareMarkdown().split('\n').filter(line => /^- (Now|Kept)/.test(line));
+  same(counts, ['- Now pass: 1', '- Now fail: 1', '- Kept their verdict: 2', '- Now not applicable: 1'],
+    'the copied Markdown counts the same four ways');
 }
 
 // ── two rows of one report that share a case name and an evaluator ──

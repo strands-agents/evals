@@ -762,6 +762,7 @@ Oldest first. Rows are matched by case and evaluator, so reports of different ex
 - Now pass: 0
 - Now fail: 1
 - Kept their verdict: 1
+- Now not applicable: 0
 - Only in #2: 0
 - Only in #1: 0
 

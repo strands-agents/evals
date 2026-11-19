@@ -366,9 +366,10 @@ function compareMarkdown() {
     'Oldest first. Rows are matched by case and evaluator, so reports of different experiments compare only where they hold the same rows.',
     reports, '## Evaluator means', names.length ? evaluators : 'No row has a score.',
     `## From ${no[0]} to ${no[last]}`,
-    [`- Now pass: ${c.fixed}`, `- Now fail: ${c.broke}`, `- Kept their verdict: ${c.same}`,
+    [`- Now pass: ${c.fixed}`, `- Now fail: ${c.broke}`, `- Kept their verdict: ${c.same}`, `- Now not applicable: ${c.lapsed}`,
       `- Only in ${no[last]}: ${c.added}`, `- Only in ${no[0]}: ${c.gone}`].join('\n'),
-    c.moved.length ? moved : c.fixed + c.broke + c.same ? 'Every row they share scored the same.' : 'The two share no case and evaluator.']);
+    c.moved.length ? moved : c.fixed + c.broke + c.same + c.lapsed ? 'Every row they share scored the same.'
+      : 'The two share no case and evaluator.']);
 }
 
 /* ── the buttons ── */
