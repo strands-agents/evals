@@ -56,6 +56,20 @@ from strands_evals.types.trace import InferenceSpan, Session, SpanInfo, Trace
 NOT_RECOGNISED = "not an experiment, a report, a session or a diagnosis"
 # More arrays inside one another than the JSON reader will follow.
 TOO_DEEP = "[" * 100_000
+
+
+def _reads_too_deep() -> bool:
+    """Whether this Python reads `TOO_DEEP` to its end, where it is a document cut short, instead of giving up."""
+    try:
+        json.loads(TOO_DEEP)
+    except RecursionError:
+        return False
+    except ValueError:
+        return True
+    return True
+
+
+READS_TOO_DEEP = _reads_too_deep()
 # Fewer than that, and more than a copy made level by level will follow.
 DEEP = "[" * 700 + "1" + "]" * 700
 MISSING_RUBRIC = {
@@ -238,7 +252,7 @@ def test_scan_names_the_files_it_could_not_use(tmp_path: Path):
     assert reasons == {
         "binary.json": "could not read: UnicodeDecodeError",
         "unrelated.json": NOT_RECOGNISED,
-        "deep.json": "nested too deeply to read",
+        "deep.json": "invalid JSON at line 1: Expecting value" if READS_TOO_DEEP else "nested too deeply to read",
     }
 
 
@@ -754,7 +768,15 @@ TESTED = {"event": "test", "report": {"champion_id": "c3", "baseline_id": "c0", 
         ),
         (
             f'{{"event": "config"}}\n{TOO_DEEP}\n',
-            EventLog(events=[{"event": "config"}], bad_lines=[{"line": 2, "why": "nested too deeply to read"}]),
+            EventLog(
+                events=[{"event": "config"}],
+                bad_lines=[
+                    {
+                        "line": 2,
+                        "why": "invalid JSON: Expecting value" if READS_TOO_DEEP else "nested too deeply to read",
+                    }
+                ],
+            ),
         ),
     ],
     ids=[
