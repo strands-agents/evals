@@ -104,6 +104,9 @@ write('code/weekly.report.json', JSON.stringify({ overall_score: 0.25, run_info:
 /* The older report says nothing of when it ran, so it is placed by its file's time. */
 fs.utimesSync(path.join(root, 'code/nightly.report.json'), Date.UTC(2026, 10, 1) / 1000, Date.UTC(2026, 10, 1) / 1000);
 write('empty/experiment.json', JSON.stringify({ cases: [], evaluators: [] }));
+/* Two experiments equally near a report whose case both hold: a tie, which is not guessed. */
+for (const side of ['left', 'right']) write(`tie/${side}/e.json`, JSON.stringify({ cases: [{ name: 't', input: 'q' }], evaluators: [{ evaluator_type: 'Equals' }] }));
+write('tie/shared.report.json', JSON.stringify({ overall_score: 1, cases: [{ name: 't', evaluator: 'Equals' }], scores: [1], test_passes: [true] }));
 write('sessions/refund.session.json', JSON.stringify(RECORDED));
 write('sessions/refund.diagnosis.json', JSON.stringify(DIAGNOSIS));
 write('sessions/lost.diagnosis.json', JSON.stringify(LOST));
@@ -431,8 +434,8 @@ try {
 - Rows: 5 (1 passed, 3 failed, 1 not applicable)
 - Cases: 4
 - Evaluators: Equals, tone of voice, (unnamed)
-- Experiment: support/support.experiment.json
-`, 'it opens with the figures and the experiment the report was made from');
+- Experiment: support/support.experiment.json (partial: 3 of 4 report case(s) are not in this experiment)
+`, 'it opens with the figures, the experiment the report was made from and how well the two fit');
   ok(copied.includes(`### refund|policy · Equals
 
 - Score: 0.00
@@ -583,10 +586,20 @@ Expected interactions:
   await p.openReport('nightly');
   await waitFor(() => p.$$('#rep-rows tr.case').length === 2, 'the second report');
   is(labels(p, '#actions'), 'Copy as Markdown | Copy path', 'a report with nothing failing offers no prompt');
-  ok((await p.copy('#actions [data-md="report"]')).includes('- Experiment: none found, so this report was run from code\n\n## Failing rows\n\nNone.\n'),
-    'its Markdown says it was run from code and that nothing fails', p.copied);
+  ok((await p.copy('#actions [data-md="report"]')).includes('- Experiment: none found in this folder; a report made in code has none\n\n## Failing rows\n\nNone.\n'),
+    'its Markdown says no experiment was found and that nothing fails', p.copied);
   await p.click(row(p, 0));
   is(labels(p, beside(p, 0)), 'Copy as Markdown | Copy link', 'and its row has no command to offer');
+
+  // ── a report left unpaired by a tie says so, the same on the page and from the server ──
+  await p.click('.tab[data-view="reports"]');
+  await p.openReport('shared');
+  await waitFor(() => p.$$('#rep-rows tr.case').length === 1, 'the tied report');
+  const tied = await p.copy('#actions [data-md="report"]');
+  ok(tied.includes('- Experiment: not paired: 2 experiments hold every case of this report and are equally near: tie/left/e.json, tie/right/e.json\n'),
+    'a report two experiments tie for says which, and is not called run from code', tied);
+  is(tied, await fromServer('/reports/tie/shared.report.json.md'), 'as the server writes it');
+  is(p.text('#facts'), '1.00 overall · 1 row · 0 failing · not paired', 'and its page header says not paired');
 
   // ── an experiment and one case of it ──
   await p.click('.tab[data-view="experiments"]');

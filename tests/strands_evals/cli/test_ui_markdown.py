@@ -78,6 +78,29 @@ def test_a_score_is_rounded_as_the_page_rounds_it(score, printed):
     assert f"- Overall score: {printed}\n" in text
 
 
+@pytest.mark.parametrize(
+    "experiment,link,printed",
+    [
+        (
+            "e.json",
+            {"status": "partial", "detail": "1 of 3 report case(s) are not in this experiment"},
+            "e.json (partial: 1 of 3 report case(s) are not in this experiment)",
+        ),
+        (
+            None,
+            {"status": "tie", "detail": "2 experiments hold every case of this report and are equally near: a, b"},
+            "not paired: 2 experiments hold every case of this report and are equally near: a, b",
+        ),
+        (None, None, "none found in this folder; a report made in code has none"),
+    ],
+    ids=["paired", "a tie", "none found"],
+)
+def test_a_report_says_how_well_its_experiment_fits_and_why_it_has_none(experiment, link, printed):
+    text = report_markdown("r.json", {"overall_score": 1, "cases": []}, experiment, link)
+
+    assert f"- Experiment: {printed}\n\n## Failing rows" in text
+
+
 def test_a_value_cannot_close_the_fence_it_is_written_in():
     report = {
         "cases": [{"name": "a", "evaluator": "E", "input": "see ```` four", "actual_output": {"code": "```"}}],
@@ -125,7 +148,7 @@ def test_a_row_is_not_applicable_only_when_every_output_declined_and_passed():
 
 def test_an_experiment_with_nothing_in_it_says_so():
     assert experiment_markdown("e.json", {"cases": [], "evaluators": []}, []) == (
-        "# Experiment: e.json\n\n- Cases: 0\n- Evaluators: 0\n- Reports: none, so it has not been run\n\n"
+        "# Experiment: e.json\n\n- Cases: 0\n- Evaluators: 0\n- Reports: none found in this folder\n\n"
         "## Evaluators\n\nNone.\n\n## Cases\n\nNone.\n"
     )
 

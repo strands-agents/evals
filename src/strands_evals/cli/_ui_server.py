@@ -510,7 +510,8 @@ class UIHandler(BaseHTTPRequestHandler):
             return next((entry for entry in entries if entry["path"] == path), {})
 
         if kind == REPORT:
-            text = report_markdown(path, obj, listed(found.reports).get("experiment"))
+            paired = listed(found.reports)
+            text = report_markdown(path, obj, paired.get("experiment"), paired.get("link"))
         elif kind == EXPERIMENT:
             text = experiment_markdown(path, obj, listed(found.experiments).get("reports") or [])
         elif kind == DIAGNOSIS:

@@ -223,8 +223,18 @@ def _document(parts: Iterable[str]) -> str:
     return "\n\n".join(parts) + "\n"
 
 
-def report_markdown(path: str, doc: dict, experiment: str | None) -> str:
-    """A report: its figures, each failing row in full, then every row in one table."""
+def _made_from(experiment: str | None, link: dict | None) -> str:
+    """The experiment a report was paired with and how well it fits, or why it has none, as the scan found it."""
+    if experiment:
+        return experiment + (f" ({link['status']}: {link['detail']})" if link else "")
+    return f"not paired: {link['detail']}" if link else "none found in this folder; a report made in code has none"
+
+
+def report_markdown(path: str, doc: dict, experiment: str | None, link: dict | None = None) -> str:
+    """A report: its figures, each failing row in full, then every row in one table.
+
+    `experiment` and `link` are the scan's pairing of it: the experiment's path, and the status of the fit.
+    """
     rows = _rows(doc)
     verdicts = [row["verdict"] for row in rows]
     facts = [
@@ -233,7 +243,7 @@ def report_markdown(path: str, doc: dict, experiment: str | None) -> str:
         f"{verdicts.count('not applicable')} not applicable)",
         f"- Cases: {len({row['name'] for row in rows})}",
         f"- Evaluators: {', '.join(dict.fromkeys(row['evaluator'] for row in rows)) or 'none'}",
-        f"- Experiment: {experiment or 'none found, so this report was run from code'}",
+        f"- Experiment: {_made_from(experiment, link)}",
     ]
     failing = [part for row in rows if row["verdict"] == "failed" for part in _row_parts(row, "###")]
     table = ["| Case | Evaluator | Score | Verdict |", "| --- | --- | --- | --- |"]
@@ -263,7 +273,7 @@ def experiment_markdown(path: str, doc: dict, reports: Sequence[str]) -> str:
     facts = [
         f"- Cases: {len(cases)}",
         f"- Evaluators: {len(evaluators)}",
-        f"- Reports: {', '.join(sorted(reports)) or 'none, so it has not been run'}",
+        f"- Reports: {', '.join(sorted(reports)) or 'none found in this folder'}",
     ]
     parts = [f"# Experiment: {path}", "\n".join(facts), "## Evaluators"]
     parts += [part for i, e in enumerate(evaluators) for part in _evaluator_parts(e, i)] or ["None."]

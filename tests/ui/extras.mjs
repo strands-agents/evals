@@ -307,8 +307,8 @@ const badges = p =>
     'so one experiment lists both of its reports and the other none', `${made('suite/checkout.json')} | ${made('suite/billing.json')}`);
   ok(from('solo/last-night.json') === 'solo/cases.json does not match',
     'the only report and the only experiment in a folder go together, and a mismatch is said', from('solo/last-night.json'));
-  ok(from('twins/shared.report.json') === 'run from code' && made('twins/left/e.json') + made('twins/right/e.json') === '',
-    'two experiments equally near that both hold the cases are a tie, which is not guessed', from('twins/shared.report.json'));
+  ok(from('twins/shared.report.json') === 'not paired' && made('twins/left/e.json') + made('twins/right/e.json') === '',
+    'two experiments equally near that both hold the cases are a tie, which is not guessed and is not called run from code', from('twins/shared.report.json'));
 
   await p.openReport('adhoc');
   ok(p.view() === 'v-report' && p.text('#crumbs') === 'Reports/code/adhoc.report.json' && p.text('#r-score') === '0.25',

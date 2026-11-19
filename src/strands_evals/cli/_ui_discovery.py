@@ -467,37 +467,49 @@ def _steps_apart(left: str, right: str) -> int:
     return len(a) + len(b) - 2 * shared
 
 
-def _nearest(candidates: Sequence[ScannedFile], directory: str) -> ScannedFile | None:
-    """The one of `candidates` fewest steps from `directory`. Two equally near are a tie, and a tie is not guessed."""
-    if not candidates:
-        return None
+def _nearest(candidates: Sequence[ScannedFile], directory: str) -> list[ScannedFile]:
+    """Those of `candidates` fewest steps from `directory`, by path. More than one is a tie, which is not guessed."""
     steps = [_steps_apart(candidate.directory, directory) for candidate in candidates]
     closest = [candidate for candidate, apart in zip(candidates, steps, strict=True) if apart == min(steps)]
-    return closest[0] if len(closest) == 1 else None
+    return sorted(closest, key=lambda candidate: candidate.path)
 
 
-def experiment_of(report: ScannedFile, experiments: Sequence[ScannedFile], alone: bool) -> ScannedFile | None:
-    """The experiment a report was made from, or `None` when that cannot be told.
+def experiment_of(
+    report: ScannedFile, experiments: Sequence[ScannedFile], alone: bool
+) -> tuple[ScannedFile | None, dict | None]:
+    """The experiment a report was made from, with how well the two fit, as `link_status` puts it.
 
-    The one beside it under the same name first, or the only pair in the directory when `alone`. Failing that,
-    the nearest experiment holding every case the report has.
+    The one beside it under the same name first. Failing that, the nearest experiment holding every case the
+    report has. Failing that, the only pair in the directory when `alone`, however well they fit.
+    With no experiment, the second value says why when the reason is a tie, and is `None` when none was found.
     """
-    beside = sorted((e for e in experiments if e.directory == report.directory), key=lambda e: e.path)
+    beside = [e for e in experiments if e.directory == report.directory]
     named = [e for e in beside if _stem(e.name) == _stem(report.name)]
     if len(named) == 1:
-        return named[0]
-    if alone and len(beside) == 1:
-        return beside[0]
+        return named[0], link_status(named[0].obj, report.obj)
 
     # The experiments `link_status` would call verified.
     wanted = _case_keys(report.obj)
-    return _nearest([e for e in experiments if wanted and wanted <= e.case_ids], report.directory)
+    holding = _nearest([e for e in experiments if wanted and wanted <= e.case_ids], report.directory)
+    if len(holding) == 1:
+        return holding[0], link_status(holding[0].obj, report.obj)
+    if holding:
+        paths = ", ".join(e.path for e in holding)
+        return None, {
+            "status": "tie",
+            "detail": f"{len(holding)} experiments hold every case of this report and are equally near: {paths}",
+        }
+
+    if alone and len(beside) == 1:
+        return beside[0], link_status(beside[0].obj, report.obj)
+    return None, None
 
 
 def session_of(diagnosis: ScannedFile, sessions: Sequence[ScannedFile]) -> ScannedFile | None:
     """The session a diagnosis is of: the nearest one with its `session_id`."""
     named = [s for s in sessions if s.obj["session_id"] == diagnosis.obj.get("session_id")]
-    return _nearest(named, diagnosis.directory)
+    nearest = _nearest(named, diagnosis.directory)
+    return nearest[0] if len(nearest) == 1 else None
 
 
 def _newest_first(scanned: ScannedFile) -> tuple[float, str]:
@@ -520,16 +532,10 @@ def discover(root: Path, depth: int = DEFAULT_DEPTH) -> Discovery:
     made_from: dict[str, list[str]] = {}
     reports_in = Counter(report.directory for report in of_kind[REPORT])
     for report in of_kind[REPORT]:
-        experiment = experiment_of(report, of_kind[EXPERIMENT], alone=reports_in[report.directory] == 1)
+        experiment, link = experiment_of(report, of_kind[EXPERIMENT], alone=reports_in[report.directory] == 1)
         if experiment is not None:
             made_from.setdefault(experiment.path, []).append(report.path)
-        reports.append(
-            _file_entry(
-                report,
-                experiment=experiment.path if experiment else None,
-                link=link_status(experiment.obj, report.obj) if experiment else None,
-            )
-        )
+        reports.append(_file_entry(report, experiment=experiment.path if experiment else None, link=link))
 
     diagnoses: list[dict] = []
     diagnosed: dict[str, list[str]] = {}

@@ -536,7 +536,10 @@ def main(out: Path) -> None:
     write(out / "edited-since" / "billing.experiment.json", experiment(cases[2:5], EVALUATORS[:1]))
     billing = report(dict(support[1:4]), JUDGED, traced=False)
     write(out / "edited-since" / "billing.report.json", billing.to_dict())
-    write(out / "report-only" / "nightly.report.json", report(dict(support[:2]), JUDGED, traced=False).to_dict())
+    # Made in code, so under names no experiment file holds: with the support names it would tie between two.
+    nightly = {f"nightly_{name}": row for name, row in support[:2]}
+    judged = {(label, f"nightly_{name}"): verdict for (label, name), verdict in JUDGED.items()}
+    write(out / "report-only" / "nightly.report.json", report(nightly, judged, traced=False).to_dict())
 
     lens_reports(out)
     task_results(out / "support" / "task-results", SUPPORT)

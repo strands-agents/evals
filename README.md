@@ -207,7 +207,9 @@ open them. For example: `curl -H "X-Evals-Token: $TOKEN" http://127.0.0.1:PORT/r
 A report is listed whether or not an experiment file sits beside it, so one made in code with
 `run_evaluations()` and saved with `to_file()` shows up too, marked as run from code. A report is matched to
 the experiment of the same name in its directory, or failing that to the nearest experiment that holds all
-of its cases. Two that are equally near are not guessed between, and one experiment can have many reports.
+of its cases, or failing that to the only experiment beside it when it is the only report there. Each match
+says how well the two fit. Two experiments that are equally near are not guessed between: the report is
+marked as not paired and says which ones tie. One experiment can have many reports.
 
 A session saved with `strands-evals fetch ... -o` is listed under Sessions and read one trace after another.
 A diagnosis written by `strands-evals diagnose -o` is shown on the page of the session with its `session_id`,

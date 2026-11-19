@@ -64,15 +64,20 @@ function mdRowParts(r, heading, more = []) {
     ...mdCaseBlocks(r.case, ['expected', 'actual'])];
 }
 
-/** A report: its figures, each failing row in full, then every row in one table. */
-function reportMarkdown(path, doc, experiment) {
+/* The experiment a report was paired with and how well it fits, or why it has none, as the scan found it. */
+const mdMadeFrom = (experiment, link) => (experiment ? experiment + (link ? ` (${link.status}: ${link.detail})` : '')
+  : link ? `not paired: ${link.detail}` : 'none found in this folder; a report made in code has none');
+
+/** A report: its figures, each failing row in full, then every row in one table. `experiment` and
+    `link` are the scan's pairing of it. */
+function reportMarkdown(path, doc, experiment, link) {
   const rows = reportRows(doc), n = verdictCounts(rows);
   const facts = [
     `- Overall score: ${mdScore(doc.overall_score)}`,
     `- Rows: ${rows.length} (${n.pass} passed, ${n.fail} failed, ${n.na} not applicable)`,
     `- Cases: ${new Set(rows.map(mdRowName)).size}`,
     `- Evaluators: ${[...new Set(rows.map(mdEvaluator))].join(', ') || 'none'}`,
-    `- Experiment: ${experiment || 'none found, so this report was run from code'}`,
+    `- Experiment: ${mdMadeFrom(experiment, link)}`,
   ];
   const failing = rows.filter(r => verdictOf(r) === 'fail').flatMap(r => mdRowParts(r, '###'));
   const table = ['| Case | Evaluator | Score | Verdict |', '| --- | --- | --- | --- |',
@@ -100,7 +105,7 @@ function experimentMarkdown(path, doc, reports) {
   const facts = [
     `- Cases: ${given.length}`,
     `- Evaluators: ${evaluators.length}`,
-    `- Reports: ${[...reports].sort().join(', ') || 'none, so it has not been run'}`,
+    `- Reports: ${[...reports].sort().join(', ') || 'none found in this folder'}`,
   ];
   const judged = evaluators.flatMap(mdEvaluatorParts);
   const entries = given.flatMap((c, i) => mdCaseParts(c, i, '###'));
@@ -381,7 +386,7 @@ const candidateOf = id => OPT && OPT.proposals.find(p => p.candidate_id === id);
 
 /* What each button copies, or nothing when what it names is no longer open. */
 const MD_COPY = {
-  report: () => REP && reportMarkdown(repMeta.path, REP, openExperimentOf()),
+  report: () => REP && reportMarkdown(repMeta.path, REP, openExperimentOf(), repCand ? null : listed(REPORTS, repMeta).link),
   failing: () => REP && failingPrompt(),
   path: rel => filePath(rel),
   row: i => ROWS[i] && rowMarkdown(ROWS[i]),

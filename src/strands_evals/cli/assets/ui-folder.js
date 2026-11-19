@@ -49,17 +49,23 @@ function stepsApart(left, right) {
   return a.length + b.length - 2 * shared;
 }
 
-/* The experiment a report was made from, or null when that cannot be told. Mirrors `experiment_of`
-   in `_ui_discovery.py`: the one beside it under the same name, else the nearest one holding all its cases. */
+/* The experiment a report was made from and how well the two fit, as `{ experiment, link }`. Mirrors
+   `experiment_of` in `_ui_discovery.py`: the one beside it under the same name, else the nearest one
+   holding all its cases, else the only pair in the directory. A tie says so. */
 function experimentOf(report, experiments, alone) {
-  const beside = experiments.filter(e => e.dir === report.dir).sort(byPath);
+  const fit = e => ({ experiment: e, link: linkStatus(e.meta.obj, report.meta.obj) });
+  const beside = experiments.filter(e => e.dir === report.dir);
   const named = beside.filter(e => stem(e.meta.name) === stem(report.meta.name));
-  if (named.length === 1) return named[0];
-  if (alone && beside.length === 1) return beside[0];
-  const holding = experiments.filter(e => linkStatus(e.meta.obj, report.meta.obj).status === 'verified');
+  if (named.length === 1) return fit(named[0]);
+  const holding = experiments.filter(e => fit(e).link.status === 'verified');
   const nearest = Math.min(...holding.map(e => stepsApart(e.dir, report.dir)));
-  const closest = holding.filter(e => stepsApart(e.dir, report.dir) === nearest);
-  return closest.length === 1 ? closest[0] : null;
+  const closest = holding.filter(e => stepsApart(e.dir, report.dir) === nearest).sort(byPath);
+  if (closest.length === 1) return fit(closest[0]);
+  if (closest.length) {
+    return { experiment: null, link: { status: 'tie',
+      detail: `${closest.length} experiments hold every case of this report and are equally near: ${closest.map(e => e.meta.path).join(', ')}` } };
+  }
+  return alone && beside.length === 1 ? fit(beside[0]) : { experiment: null, link: null };
 }
 
 /* Every identifier a case of an experiment can be referred to by: report rows prefer `session_id`,
@@ -291,11 +297,9 @@ async function ingest(all, rootDepth = 0) {
   const experiments = filesOf('experiment'), made = new Map();
   const reports = filesOf('report').map(r => {
     const alone = found.filter(f => f.kind === 'report' && f.dir === r.dir).length === 1;
-    const e = experimentOf(r, experiments, alone);
+    const { experiment: e, link } = experimentOf(r, experiments, alone);
     if (e) made.set(e.meta.path, (made.get(e.meta.path) || []).concat(r.meta.path));
-    return Object.assign(r.meta, {
-      dir: r.dir, experiment: e ? e.meta.path : null, link: e ? linkStatus(e.meta.obj, r.meta.obj) : null,
-    });
+    return Object.assign(r.meta, { dir: r.dir, experiment: e ? e.meta.path : null, link });
   });
   return {
     experiments: experiments.map(e => Object.assign(e.meta, { dir: e.dir, reports: made.get(e.meta.path) || [] })),

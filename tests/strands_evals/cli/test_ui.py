@@ -74,7 +74,7 @@ def _experiment(*names: str) -> dict:
 def _report(*names: str, failing: tuple[str, ...] = (), declined: tuple[str, ...] = ()) -> dict:
     cases, scores, passes, detailed = [], [], [], []
     for name in names:
-        cases.append({"name": name, "session_id": f"sid-{name}", "evaluator": "OutputEvaluator"})
+        cases.append({"name": name, "input": f"ask about {name}", "evaluator": "OutputEvaluator"})
         if name in declined:
             scores.append(0.0)
             passes.append(True)
@@ -525,6 +525,11 @@ def test_a_link_out_of_the_folder_is_not_counted_as_a_task_result(tmp_path: Path
                 ["latest.json"],
                 {("left/experiment.json", None), ("right/experiment.json", None), (None, "latest.json")},
             ),
+            "the one holding its cases, over the only one beside it": (
+                ["unrelated.json", "other/checkout.experiment.json"],
+                ["nightly.json"],
+                {("other/checkout.experiment.json", "nightly.json"), ("unrelated.json", None)},
+            ),
         }
     ),
 )
@@ -547,6 +552,39 @@ def test_discover_does_not_guess_between_two_experiments_of_a_reports_name(tmp_p
     _write(tmp_path / "nightly.exp.json", _experiment("a"))
 
     assert discover(tmp_path).reports[0]["experiment"] is None
+
+
+def test_discover_says_which_experiments_tie_for_a_report(tmp_path: Path):
+    _write(tmp_path / "left" / "experiment.json", _experiment("a"))
+    _write(tmp_path / "right" / "experiment.json", _experiment("a"))
+    _write(tmp_path / "latest.json", _report("a"))
+
+    report = discover(tmp_path).reports[0]
+
+    assert (report["experiment"], report["link"]) == (
+        None,
+        {
+            "status": "tie",
+            "detail": "2 experiments hold every case of this report and are equally near: "
+            "left/experiment.json, right/experiment.json",
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "cases,rows,status",
+    [(["a"], ["a", "b"], "partial"), ([None], [None], "unverified"), (["a"], ["z"], "mismatch")],
+    ids=["some of its cases", "cases with no names", "none of its cases"],
+)
+def test_discover_pairs_the_only_report_with_the_only_experiment_beside_it_and_says_how_they_fit(
+    tmp_path: Path, cases, rows, status
+):
+    _write(tmp_path / "cases.json", _experiment(*cases))
+    _write(tmp_path / "results.json", _report(*rows))
+
+    report = discover(tmp_path).reports[0]
+
+    assert (report["experiment"], report["link"]["status"]) == ("cases.json", status)
 
 
 def test_discover_leaves_a_report_unpaired_when_no_experiment_holds_all_of_its_cases(tmp_path: Path):
@@ -1595,7 +1633,7 @@ REPORT_MARKDOWN = """# Report: report.json
 - Rows: 2 (1 passed, 1 failed, 0 not applicable)
 - Cases: 2
 - Evaluators: OutputEvaluator
-- Experiment: experiment.json
+- Experiment: experiment.json (verified: all 2 report case(s) exist in this experiment)
 
 ## Failing rows
 
@@ -1604,6 +1642,12 @@ REPORT_MARKDOWN = """# Report: report.json
 - Score: 0.00
 - Verdict: failed
 - Label: no_match
+
+Input:
+
+```text
+ask about beta
+```
 
 ## All rows
 
@@ -1700,7 +1744,20 @@ def test_markdown_names_a_file_as_the_scan_does_however_it_was_asked_for(client:
 
     assert roundabout == Reply(HTTPStatus.OK, REPORT_MARKDOWN)
     assert unpaired.body.startswith("# Report: code/nightly.report.json\n")
-    assert "\n- Experiment: none found, so this report was run from code\n\n## Failing rows\n\nNone.\n" in unpaired.body
+    assert "\n- Experiment: none found in this folder; a report made in code has none\n\n## Failing rows\n\nNone.\n" in unpaired.body
+
+
+def test_markdown_says_why_a_report_was_left_unpaired(client: Client):
+    for side in ("left", "right"):
+        _write(client.root / "tie" / side / "e.json", _experiment("t"))
+    _write(client.root / "tie" / "shared.report.json", _report("t"))
+
+    reply = client.send("GET", "/reports/tie/shared.report.json.md")
+
+    assert (
+        "\n- Experiment: not paired: 2 experiments hold every case of this report and are equally near: "
+        "tie/left/e.json, tie/right/e.json\n"
+    ) in reply.body
 
 
 def test_markdown_survives_a_report_holding_nan(client: Client):
