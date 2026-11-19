@@ -26,7 +26,7 @@ from strands_evals.optimization import (
     component,
     tool_descriptions,
 )
-from strands_evals.optimization.search.blocks import ScheduleContext, Step
+from strands_evals.optimization.search.blocks import ScheduleContext, Step, _outermost_first
 from strands_evals.types.optimization import IterationRecord, ProposalOutcome
 
 
@@ -304,6 +304,56 @@ def test_a_block_under_another_blocks_choice_comes_after_it():
     _, schedule = Search(blocks).resolve(space)
 
     assert shape(schedule) == ("nested", "a", ("nested", "b", "alternate"))
+
+
+def test_the_default_schedule_rejects_structural_blocks_in_a_cycle():
+    blocks = [
+        Block(Fake(), "manager", "router.router.k", name="a"),
+        Block(Fake(), "router", "manager.Summary.ratio", name="b"),
+    ]
+    with pytest.raises(ValueError, match=r"depend on each other in a cycle: \{'a': \{'b'\}, 'b': \{'a'\}\}"):
+        Search(blocks).resolve(two_structures())
+
+
+def test_outermost_first_puts_a_block_after_the_choices_its_keys_exist_under():
+    # "a" holds a key under "b"'s choice, "b" one under "c"'s
+    space = two_structures(cache=choice(on=component(Window, size=Int(1, 100)), off=None))
+    blocks = [
+        Block(Fake(), "manager", "router.router.k", name="a"),
+        Block(Fake(), "router", "cache.on.size", name="b"),
+        Block(Fake(), "cache", name="c"),
+    ]
+    resolved, _ = Search(blocks).resolve(space)
+    a, b, c = resolved
+
+    def order(*given):
+        return [block.name for block in _outermost_first(given, space, strict=True)]
+
+    assert order(a, b, c) == ["c", "b", "a"]
+    assert order(c, b, a) == ["c", "b", "a"]
+    # "b" is not given, so its choice is ignored: "a" and "c" depend on nothing given and keep their order
+    assert order(a, c) == ["a", "c"]
+
+
+def test_outermost_first_without_strict_takes_the_first_block_left_when_none_is_ready():
+    # "a" and "b" each hold a key under the other's choice; "c" holds one under "a"'s
+    space = two_structures(cache=choice(on=component(Window, size=Int(1, 100)), off=None))
+    blocks = [
+        Block(Fake(), "manager", "router.router.k", name="a"),
+        Block(Fake(), "router", "manager.Summary.ratio", name="b"),
+        Block(Fake(), "cache", "manager.Window.size", name="c"),
+    ]
+    resolved, _ = Search(blocks, schedule=Joint()).resolve(space)  # a given schedule may hold a cycle
+    a, b, c = resolved
+
+    def order(*given):
+        return [block.name for block in _outermost_first(given, space, strict=False)]
+
+    assert order(a, b) == ["a", "b"] and order(b, a) == ["b", "a"]
+    # none is ready, so "b" comes first; then "a" (under "b") before "c" (under "a")
+    assert order(b, c, a) == ["b", "a", "c"]
+    # none is ready, so "c" comes first, though it is under the cycle rather than in it
+    assert order(c, a, b) == ["c", "a", "b"]
 
 
 def test_a_key_under_a_one_option_choice_depends_on_no_block():

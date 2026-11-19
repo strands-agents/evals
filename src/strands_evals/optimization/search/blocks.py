@@ -603,7 +603,7 @@ class Search:
         keys_of = {_name(block): keys for block, keys in resolved}
         if self.schedule is None:
             schedule = _default_schedule(
-                resolved, space, block_of, None if self.within is None else _with_names(self.within, names)
+                resolved, space, None if self.within is None else _with_names(self.within, names)
             )
         else:
             schedule = _with_names(self.schedule, names)
@@ -666,10 +666,37 @@ def _selectors(space: Space, key: str) -> list[str]:
     return out
 
 
+def _outermost_first(blocks: Sequence[tuple[Block, Sequence[str]]], space: Space, *, strict: bool) -> list[Block]:
+    """`blocks` (structural ones, with their keys) reordered so a block holding a key that exists only under
+    another one's choice comes after it; otherwise in the given order.
+
+    A choice held by a block not in `blocks` is ignored. When every block left holds a key under a choice
+    not yet placed (some of them form a cycle), a `strict` call raises; otherwise the first block left in
+    the given order comes next, which may be one under the cycle rather than in it. Either way, a block
+    comes before a choice its keys exist under only where the given order puts it there too.
+
+    Raises:
+        ValueError: `strict`, and the blocks' choices depend on each other in a cycle.
+    """
+    holder = {key: _name(block) for block, keys in blocks for key in keys}
+    after = {
+        _name(block): {holder[s] for key in keys for s in _selectors(space, key) if s in holder} - {_name(block)}
+        for block, keys in blocks
+    }
+    out: list[Block] = []
+    while len(out) < len(blocks):
+        placed = {_name(block) for block in out}
+        rest = [block for block, _ in blocks if _name(block) not in placed]
+        ready = [block for block in rest if after[_name(block)] <= placed]
+        if not ready and strict:
+            raise ValueError(f"the structural blocks' choices depend on each other in a cycle: {after}")
+        out.append((ready or rest)[0])
+    return out
+
+
 def _default_schedule(
     resolved: Sequence[tuple[Block, list[str]]],
     space: Space,
-    block_of: Mapping[str, str],
     within: Schedule | None,
 ) -> Schedule:
     """The schedule `Search.resolve` builds when none is given.
@@ -680,17 +707,7 @@ def _default_schedule(
     inner schedule's only block instead of a level. With no level left, `Joint()`.
     """
     structural = [(block, keys) for block, keys in resolved if any(_is_structural(space.param(key)) for key in keys)]
-    after = {
-        block.name: {block_of[s] for key in keys for s in _selectors(space, key) if s in block_of} - {block.name}
-        for block, keys in structural
-    }
-    levels: list[Block] = []
-    while len(levels) < len(structural):
-        placed = {block.name for block in levels}
-        ready = [block for block, _ in structural if block.name not in placed and after[block.name] <= placed]
-        if not ready:
-            raise ValueError(f"the structural blocks' choices depend on each other in a cycle: {after}")
-        levels.append(ready[0])
+    levels = _outermost_first(structural, space, strict=True)
     if len(structural) == len(resolved):
         levels = levels[:-1]
     schedule: Schedule = (within if within is not None else Alternate()) if levels else Joint()

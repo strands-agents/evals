@@ -73,7 +73,7 @@ from .score_model.protocols import Fit, FitData, ScoreModel
 from .score_model.ranking import Assessment, Mean, assess, label_candidate, pareto_front, rank, round_to_sd
 from .scoring.metrics import USAGE_METRICS, MetricRegistry
 from .scoring.objectives import Constraint, Criteria, Objective, Pareto, WeightedSum, measured_metrics, score
-from .search.blocks import Block, ScheduleContext, Search, Step
+from .search.blocks import Block, ScheduleContext, Search, Step, _outermost_first
 from .search.proposer import ProposalRequest, Proposer
 from .selection.base import Selection, SelectionContext
 from .selection.top_ranked import TopRanked
@@ -1257,25 +1257,32 @@ class Optimizer:
         """Up to `need` proposals on `parent`, each merging one patch of every block of the step.
 
         One block: its proposer asked once for `need` patches (a concurrent one: `need` calls at once). Several
-        blocks: each slot built in turn, structural blocks first (each later block asked for 1 patch on the
-        slot's values so far, so it sees the structure chosen for the slot), a block with no key active under
-        those values skipped; the slots drawn at once when any of the step's proposers is concurrent.
+        blocks: each slot built in turn, every block asked for 1 patch on the slot's values so far, so it sees
+        the structure chosen before it. The structural blocks are asked first, in `_outermost_first` order (a
+        block holding a key that exists only under another step block's choice is asked after that block,
+        unless they form a cycle), then the rest in step order. A block with no key active under the slot's
+        values is skipped. The slots are drawn at once when any of the step's proposers is concurrent.
         """
         fill = self._fill(ranking)
         if len(step.blocks) == 1:
             block = step.blocks[0]
             patches = await self._ask(block, parent, parent, need, redraw, summaries)
             return [self._merge(parent, {_block_name(block): p}, fill) for p in patches[:need]]
-        order = sorted(step.blocks, key=lambda b: not self._is_structural(b))
         keys = dict((_block_name(b), k) for b, k in self._blocks)
+        structural = [(b, keys[_block_name(b)]) for b in step.blocks if self._is_structural(b)]
+        order = [
+            *_outermost_first(structural, self._space, strict=False),
+            *(b for b in step.blocks if not self._is_structural(b)),
+        ]
 
         async def slot() -> _Draw | None:
             """One candidate of the step: each block's patch on the values the blocks before it chose.
 
-            Blocks are asked in `order` (structural first) for 1 patch each, so a later block proposes under the
-            structure this slot chose; a block with no key active under those values is skipped, as is one that
-            returns nothing. A structural patch is merged at once, so `current` carries it to the next block. An
-            invalid merge returns straight away, leaving the rest of the blocks unasked; no patch at all -> None.
+            Blocks are asked in `order` (structural first, outermost first) for 1 patch each, so a later block
+            proposes under the structure this slot chose; a block with no key active under those values is
+            skipped, as is one that returns nothing. A structural patch is merged at once, so `current` carries
+            it to the next block. An invalid merge returns straight away, leaving the rest of the blocks unasked;
+            no patch at all -> None.
             """
             current = parent
             patches: dict[str, Patch] = {}
