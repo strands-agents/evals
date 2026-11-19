@@ -2048,7 +2048,47 @@ async def test_two_optimizers_started_at_once_on_one_search_bind_it_to_one(tmp_p
     assert len(errors) == 1 and isinstance(errors[0], ValueError)
     assert "has already run in another Optimizer" in str(errors[0])
     assert len(results) == 1 and results[0].stop_reason == "iterations"
-    assert all(o._run is not None for o in optimizers)  # both passed the first check: the bind checks again
+    # The proposers are claimed before anything is written, so the second spent nothing and left no folder.
+    assert sum(o._run is not None for o in optimizers) == 1
+    assert len(list(tmp_path.iterdir())) == 1
+
+
+def test_two_threads_running_optimizers_on_one_search_bind_it_to_one(tmp_path):
+    search = _user_tpe_search()
+    optimizers = [_default_search(tmp_path / str(i), search=search, budget=Budget(max_iterations=1)) for i in range(2)]
+    barrier = threading.Barrier(2)
+    outcomes = []
+
+    def run(optimizer):
+        barrier.wait()
+        try:
+            outcomes.append(optimizer.run())
+        except ValueError as err:
+            outcomes.append(err)
+
+    threads = [threading.Thread(target=run, args=(o,)) for o in optimizers]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sum(isinstance(o, ValueError) for o in outcomes) == 1
+    assert sum(not isinstance(o, ValueError) for o in outcomes) == 1
+
+
+async def test_running_one_optimizer_twice_raises_and_points_to_resume(tmp_path):
+    def stop_after_two(record):
+        if record.iteration == 2:
+            raise RuntimeError("callback bug")
+
+    optimizer = _default_search(tmp_path, search=_user_tpe_search(), on_iteration=stop_after_two)
+    with pytest.raises(RuntimeError, match="callback bug"):
+        await optimizer.run_async()
+    log = (optimizer._run.root / "events.jsonl").read_text()
+    with pytest.raises(RuntimeError, match=r"already started a run .*Optimizer\.resume"):
+        await optimizer.run_async()
+    with pytest.raises(RuntimeError, match="already started a run"):
+        optimizer.run()
+    assert (optimizer._run.root / "events.jsonl").read_text() == log
 
 
 async def test_an_optimizer_that_stops_at_setup_leaves_its_proposers_free(tmp_path):

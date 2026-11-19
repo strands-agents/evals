@@ -189,7 +189,7 @@ class Optimizer:
                 a callback that awaits something bound to the caller's loop). An error it raises stops the run
                 there and reaches the caller, and `Optimizer.resume` continues from the next iteration (pass
                 it a new `Search` built the same way: this one's proposers are bound to this optimizer and may
-                hold the run's history).
+                hold the run's history). Calling `run_async()` again on this optimizer raises.
 
         Raises:
             TypeError: Conflicting arguments, e.g. `factory` and `build_task` together.
@@ -334,6 +334,7 @@ class Optimizer:
         self._base_dir = (self._workdir / (base_dir if base_dir is not None else _DEFAULT_BASE_DIR)).resolve()
         self._run: RunDirectory | None = None  # created by run_async; set by resume
         self._resumed: ResumeState | None = None  # set by resume: what the event log already holds
+        self._started = False  # set by run_async: an Optimizer runs once
         # Candidate id -> (case name, run index) -> its trial record, as scored this process.
         self._records: dict[str, dict[tuple[str, int], TrialRecord]] = {}
         self._rollouts: dict[tuple[str, SplitName], int] = {}  # a _score call's spend, until its event
@@ -491,12 +492,13 @@ class Optimizer:
                 counted run), no train trial of it completed (every one an `agent_failure`), or a goal
                 metric has no value on any train case. A `stop` event with
                 reason `"setup"` is written first, and the message names the unmeasured cases or the
-                metric, the trial status counts, and the first error.
+                metric, the trial status counts, and the first error. Also: this optimizer has already started a
+                run (an Optimizer runs once; continue its run with `Optimizer.resume` and a new `Search`).
             ProposerError: A proposer raised. The search stops before the end phase, with the
                 `proposer_error` event and no `stop` event, so `Optimizer.resume` continues it as it would a
                 killed run.
-            ValueError: Another optimizer has run with one of the search's proposers; checked before the run
-                directory is created or a `resume` event written, and again when binding them.
+            ValueError: Another optimizer holds one of the search's proposers; checked before the run directory is
+                created or a `resume` event written.
         """
         await self._start()
         resumed = self._resumed
@@ -513,32 +515,49 @@ class Optimizer:
 
         After `resume`, the state the event log holds is restored instead; with no closed iteration (killed
         before the first ended) only the setup ran, so it runs again on cached trials. The proposers are bound
-        to this optimizer once the baseline is scored (on resume, before the restore replays their history),
-        so a run that stops at setup leaves them free.
+        to this optimizer first, before the run directory is created or a `resume` event written, so of two
+        optimizers started at once on one `Search` the second raises before spending anything. If the setup
+        raises (e.g. the baseline isn't eligible) they are freed again, since nothing has been told to them.
 
         Raises:
-            ValueError: Another optimizer has run with one of the proposers; checked first, before the run
-                directory is created or a `resume` event written, and again when binding them.
+            RuntimeError: This optimizer has already started a run.
+            ValueError: Another optimizer holds one of the proposers.
         """
-        self._bind_proposers(claim=False)
-        self._setup()
-        self._propose_lock = asyncio.Lock()
-        if self._resumed is not None:
-            assert self._run is not None
-            budget = self._budget.budget
-            self._run.events.append(
-                "resume",
-                iteration=self._resumed.iteration,
-                spent=self._resumed.spent,
-                budget={"max_rollouts": budget.max_rollouts, "max_iterations": budget.max_iterations},
-                code=code_version(),
+        if self._started:
+            where = f"its run folder {self._run.root}" if self._run is not None else "no run folder yet"
+            raise RuntimeError(
+                f"this Optimizer has already started a run ({where}), and a second run would write into the same "
+                "event log with proposers that hold the first one's history; to continue it, use "
+                "Optimizer.resume(run_dir, ...) with a new Search built the same way, or build a new Optimizer to "
+                "start over"
             )
+        self._bind_proposers(claim=True)
+        self._started = True
+        try:
+            self._setup()
+            self._propose_lock = asyncio.Lock()
+            if self._resumed is not None:
+                assert self._run is not None
+                budget = self._budget.budget
+                self._run.events.append(
+                    "resume",
+                    iteration=self._resumed.iteration,
+                    spent=self._resumed.spent,
+                    budget={"max_rollouts": budget.max_rollouts, "max_iterations": budget.max_iterations},
+                    code=code_version(),
+                )
+            if not (self._resumed is not None and self._resumed.candidates):
+                scores = await self._score_baseline()
+        except BaseException:
+            # Nothing has been told to the proposers yet, so another optimizer may use them.
+            with _BINDING:
+                for block, _ in self._blocks:
+                    if block.proposer._bound_to is self._token:
+                        object.__setattr__(block.proposer, "_bound_to", None)
+            raise
         if self._resumed is not None and self._resumed.candidates:
-            self._bind_proposers(claim=True)
             self._restore(self._resumed)
             return
-        scores = await self._score_baseline()
-        self._bind_proposers(claim=True)
         self._init_state(self._baseline)
         if self._resumed is not None:  # killed in iteration 1: its proposers were already paid
             self._search_cost = self._resumed.search_cost
@@ -570,8 +589,9 @@ class Optimizer:
                     kind = type(block.proposer).__name__
                     raise ValueError(
                         f"{kind} (block {_block_name(block)!r}) has already run in another Optimizer and may hold "
-                        f"that run's history; give each Optimizer its own proposers, e.g. a new Search with a new "
-                        f"{kind}() in this block (Optimizer.resume replays the run's history into them)"
+                        f"that run's history; give each Optimizer its own proposers, e.g. a new Search built the "
+                        f"same way, with a new {kind} made with the same arguments in this block (Optimizer.resume "
+                        f"replays the run's history into them)"
                     )
             if claim:
                 for block, _ in self._blocks:
