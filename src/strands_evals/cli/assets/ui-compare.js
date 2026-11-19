@@ -13,21 +13,23 @@ const GRID_ROWS = 60;                     // the grid draws this many rows; its 
 const cmpKey = r => `${r.name}\u0000${evaluatorName(r)}`;
 const cmpNo = i => `#${i + 1}`;
 
-/** How the rows two reports share moved from `before` to `after`, matched by case and evaluator. */
+/** How the rows two reports share moved from `before` to `after`, matched by case and evaluator. A row
+    judged only in `after` counts by its verdict there; one judged only in `before` has `lapsed`. */
 function compareRows(before, after) {
   const passed = r => r.na ? null : !!r.pass;
   const was = new Map(before.map(r => [cmpKey(r), r]));
-  const out = { fixed: 0, broke: 0, same: 0, added: 0, gone: 0, moved: [] };
+  const out = { fixed: 0, broke: 0, same: 0, lapsed: 0, added: 0, gone: 0, moved: [] };
   const seen = new Set();
   for (const r of after) {
     const old = was.get(cmpKey(r));
     seen.add(cmpKey(r));
     if (!old) { out.added += 1; continue; }
-    const flip = passed(old) === false && passed(r) === true ? 'fixed'
-      : passed(old) === true && passed(r) === false ? 'broke' : null;
-    out[flip || 'same'] += 1;
+    const then = passed(old), now = passed(r);
+    const flip = now === then || now === null ? null : now ? 'fixed' : 'broke';
+    const lapsed = now === null && then !== null;
+    out[flip || (lapsed ? 'lapsed' : 'same')] += 1;
     const from = old.na ? null : old.score, to = r.na ? null : r.score;
-    if ((flip || from !== to) && (from != null || to != null)) out.moved.push({ row: r, from, to, flip });
+    if ((flip || from !== to) && (from != null || to != null)) out.moved.push({ row: r, from, to, flip, lapsed });
   }
   out.gone = before.filter(r => !seen.has(cmpKey(r))).length;
   return out;
@@ -140,7 +142,7 @@ function compareEnds() {
   const last = CMP.length - 1;
   const c = compareEndRows(), moved = c.moved;
   const several = new Set(CMP[last].rows.map(evaluatorName)).size > 1;
-  const shared = c.fixed + c.broke + c.same;
+  const shared = c.fixed + c.broke + c.same + c.lapsed;
   $('cmp-ends-head').textContent = `From ${cmpNo(0)} to ${cmpNo(last)}`;
   $('cmp-ends-cap').textContent = `${CMP[0].meta.path} against ${CMP[last].meta.path}. `
     + (!shared ? 'The two share no case and evaluator.'
@@ -152,13 +154,14 @@ function compareEnds() {
     sub: several ? evaluatorName(m.row) : '',
     from: m.from, to: m.to,
     tip: `${rowTitle(m.row)} · ${fmt(m.from)} to ${fmt(m.to)}`
-      + (m.flip ? ` · now ${m.flip === 'fixed' ? 'passes' : 'fails'}` : ''),
+      + (m.flip ? ` · now ${m.flip === 'fixed' ? 'passes' : 'fails'}` : m.lapsed ? ' · now not applicable' : ''),
     attrs: rowLink(m.row, true, CMP[last].meta.path),
   })), { axis: 'score' }) : '';
   $('cmp-ends-legend').innerHTML = [
     shared ? `<span><i class="up"></i>${c.fixed} now pass</span>` : '',
     shared ? `<span><i class="down"></i>${c.broke} now fail</span>` : '',
     shared ? `<span><i class="same"></i>${c.same} kept their verdict</span>` : '',
+    c.lapsed ? `<span>${c.lapsed} now not applicable</span>` : '',
     c.added ? `<span>${c.added} only in ${cmpNo(last)}</span>` : '',
     c.gone ? `<span>${c.gone} only in ${cmpNo(0)}</span>` : '',
   ].join('');

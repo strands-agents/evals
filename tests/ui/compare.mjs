@@ -185,6 +185,25 @@ ok(p.$('#cmp-with').hidden, 'and with every report compared there is nothing lef
     + 'compare only where they hold the same rows.', 'the page says how rows are matched', q.text('#cmp-sub'));
 }
 
+// ── a row that was not applicable in one report and judged in the other ──
+{
+  const q = await page();
+  await q.openFolder({
+    'old/report.json': report(0.5, [['declined', 'X', 1, 'na'], ['judged', 'X', 1, 'na'], ['lapsed', 'X', 1, 'pass'], ['idle', 'X', 1, 'na'], ['held', 'X', 1, 'pass']],
+      '2026-03-01T09:00:00Z'),
+    'new/report.json': report(0.5, [['declined', 'X', 0, 'fail'], ['judged', 'X', 1, 'pass'], ['lapsed', 'X', 1, 'na'], ['idle', 'X', 1, 'na'], ['held', 'X', 1, 'pass']],
+      '2026-03-02T09:00:00Z'),
+  });
+  await q.click(box(q, 'old/report.json'));
+  await q.click(box(q, 'new/report.json'));
+  await q.click('#cmp-go');
+  ok(q.text('#cmp-ends-legend') === '1 now pass1 now fail2 kept their verdict1 now not applicable',
+    'a row judged for the first time counts as passing or failing now, and one no longer judged is counted apart', q.text('#cmp-ends-legend'));
+  ok(q.text('#cmp-grid-cap').startsWith('3 of 5 rows changed verdict'), 'which is how many the grid above it says changed', q.text('#cmp-grid-cap'));
+  same(q.tips('#cmp-ends g.bell'), ['judged · X · — to 1.00 · now passes', 'declined · X · — to 0.00 · now fails', 'lapsed · X · 1.00 to — · now not applicable'],
+    'and each mark says which it was');
+}
+
 // ── reports that share no rows ──
 {
   const q = await page();
