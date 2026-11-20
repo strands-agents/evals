@@ -13,6 +13,7 @@ import pytest
 from strands_evals import Case, Experiment
 from strands_evals.cli.main import main
 from strands_evals.evaluators import Equals
+from strands_evals.experimental import CalibrationProfile
 from strands_evals.types.evaluation_report import EvaluationReport
 
 
@@ -39,6 +40,33 @@ def _write_report(
         detailed_results=[[] for _ in scores],
     )
     path.write_text(report.model_dump_json(), encoding="utf-8")
+
+
+def _write_calibration_profile(path: Path) -> CalibrationProfile:
+    profile = CalibrationProfile.create(
+        algorithm_id="calibrated_equal",
+        algorithm_version=1,
+        model_parameters={
+            "weights": {"quality": 1.0},
+            "intercept": 0.0,
+            "scale": 1.0,
+        },
+        target_definition={"name": "task_success", "version": "1"},
+        weights={"quality": 1.0},
+        status="calibrated",
+        step_sizes={"quality": 0.1},
+        variance_components={
+            "quality": {"case": 0.1, "agent": 0.01, "judge": 0.01},
+        },
+        repeatabilities={"quality": 0.9},
+        case_count=6,
+        agent_runs=2,
+        judge_replays=2,
+        calibration_context=None,
+        fit_structure_fingerprint="a" * 64,
+    )
+    profile.to_file(str(path))
+    return profile
 
 
 def test_importing_cli_does_not_load_comparison_dependencies():
@@ -82,6 +110,87 @@ def test_compare_json_output(tmp_path: Path, capsys):
     assert payload["verdict"] == "improved"
     assert payload["trial_count"] == 1
     assert payload["evaluator_summaries"][0]["evaluator"] == "correctness"
+
+
+def test_compare_applies_calibration_profile_to_both_sides(tmp_path: Path, capsys):
+    baseline = tmp_path / "baseline.json"
+    candidate = tmp_path / "candidate.json"
+    profile_path = tmp_path / "profile.json"
+    _write_report(baseline, 0.0, evaluator="quality")
+    _write_report(candidate, 0.1, evaluator="quality")
+    profile = _write_calibration_profile(profile_path)
+
+    exit_code = main(
+        [
+            "--json",
+            "compare",
+            "--baseline",
+            str(baseline),
+            "--candidate",
+            str(candidate),
+            "--calibration-profile",
+            str(profile_path),
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["verdict"] == "improved"
+    assert payload["profile_id"] == profile.profile_id
+    assert payload["target_definition"] == {"name": "task_success", "version": "1"}
+    assert payload["evaluator_summaries"][0]["evaluator"] == "target:task_success@1"
+
+
+def test_compare_calibration_rich_output_names_target(tmp_path: Path, capsys):
+    baseline = tmp_path / "baseline.json"
+    candidate = tmp_path / "candidate.json"
+    profile_path = tmp_path / "profile.json"
+    _write_report(baseline, 0.0, evaluator="quality")
+    _write_report(candidate, 0.1, evaluator="quality")
+    _write_calibration_profile(profile_path)
+
+    exit_code = main(
+        [
+            "--rich",
+            "compare",
+            "--baseline",
+            str(baseline),
+            "--candidate",
+            str(candidate),
+            "--calibration-profile",
+            str(profile_path),
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert "Target comparison (task_success@1): improved" in output
+
+
+def test_compare_calibration_rejects_lower_is_better(tmp_path: Path, capsys):
+    baseline = tmp_path / "baseline.json"
+    candidate = tmp_path / "candidate.json"
+    profile_path = tmp_path / "profile.json"
+    _write_report(baseline, 0.0, evaluator="quality")
+    _write_report(candidate, 0.1, evaluator="quality")
+    _write_calibration_profile(profile_path)
+
+    exit_code = main(
+        [
+            "compare",
+            "--baseline",
+            str(baseline),
+            "--candidate",
+            str(candidate),
+            "--calibration-profile",
+            str(profile_path),
+            "--lower-is-better",
+            "quality",
+        ]
+    )
+
+    assert exit_code == 2
+    assert "--lower-is-better cannot be used with --calibration-profile" in capsys.readouterr().err
 
 
 def test_compare_multiple_trials_and_exclusion(tmp_path: Path, capsys):

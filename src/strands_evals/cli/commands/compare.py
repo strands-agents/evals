@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
+from ...experimental.calibrator import CalibrationProfile
 from ...types.evaluation_report import EvaluationReport
 from .._common import EXIT_BAD_INPUT, EXIT_OK, emit_error, resolve_format
 from .._io import read_text_input, write_text_output
@@ -45,7 +46,13 @@ def _load_reports(paths: list[str], excluded_indices: set[int]) -> list[Evaluati
 def _render_result(result: PairedComparisonResult) -> None:
     console = Console()
     trial_label = "trial" if result.trial_count == 1 else "trials"
-    title = f"Comparison: {result.verdict.replace('_', ' ')} ({result.trial_count} {trial_label})"
+    target_definition = getattr(result, "target_definition", None)
+    prefix = (
+        "Comparison"
+        if target_definition is None
+        else f"Target comparison ({target_definition.name}@{target_definition.version})"
+    )
+    title = f"{prefix}: {result.verdict.replace('_', ' ')} ({result.trial_count} {trial_label})"
     if console.width < 100:
         console.print(Text(title, style="bold"))
         for summary in result.evaluator_summaries:
@@ -102,16 +109,32 @@ def _run(args: argparse.Namespace) -> int:
         corrupted = _validate_args(args)
 
         # optional extra: comparison
-        from ...experimental.comparison import compare_paired
+        from ...experimental.comparison import compare_calibrated, compare_paired
 
-        result = compare_paired(
-            baseline=_load_reports(args.baseline, corrupted),
-            candidate=_load_reports(args.candidate, corrupted),
-            corrupted_trial_indices=corrupted,
-            confidence_level=args.confidence_level,
-            minimum_effect=args.minimum_effect,
-            lower_is_better=args.lower_is_better,
-        )
+        baseline_reports = _load_reports(args.baseline, corrupted)
+        candidate_reports = _load_reports(args.candidate, corrupted)
+        if args.calibration_profile is None:
+            result = compare_paired(
+                baseline=baseline_reports,
+                candidate=candidate_reports,
+                corrupted_trial_indices=corrupted,
+                confidence_level=args.confidence_level,
+                minimum_effect=args.minimum_effect,
+                lower_is_better=args.lower_is_better,
+            )
+        else:
+            try:
+                profile = CalibrationProfile.from_file(args.calibration_profile)
+            except (OSError, ValueError) as error:
+                raise ValueError(f"invalid calibration profile at {args.calibration_profile}: {error}") from error
+            result = compare_calibrated(
+                profile=profile,
+                baseline=[[report] for report in baseline_reports],
+                candidate=[[report] for report in candidate_reports],
+                corrupted_trial_indices=corrupted,
+                confidence_level=args.confidence_level,
+                minimum_effect=args.minimum_effect,
+            )
     except (ImportError, ValueError) as error:
         message = str(error)
         if message.startswith("lower_is_better "):
@@ -137,6 +160,8 @@ def _validate_args(args: argparse.Namespace) -> set[int]:
         raise ValueError("--confidence-level must be greater than 0 and less than 1")
     if not math.isfinite(args.minimum_effect) or args.minimum_effect < 0.0:
         raise ValueError("--minimum-effect must be finite and greater than or equal to 0")
+    if args.calibration_profile is not None and args.lower_is_better:
+        raise ValueError("--lower-is-better cannot be used with --calibration-profile")
 
     trial_indices = set(range(len(args.baseline)))
     corrupted = set(args.corrupted_trial)
@@ -178,6 +203,15 @@ def add_subparser(
         required=True,
         metavar="REPORT",
         help="candidate EvaluationReport JSON file, or - for stdin; repeat once per trial",
+    )
+    parser.add_argument(
+        "--calibration-profile",
+        default=None,
+        metavar="PROFILE",
+        help=(
+            "apply one calibrated target-probability profile to both sides; "
+            "each baseline/candidate report is treated as one agent run"
+        ),
     )
     parser.add_argument(
         "--corrupted-trial",
