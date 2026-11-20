@@ -14,7 +14,7 @@ The optimizer is experimental and isn't on evals `main` yet; the bridge installs
 
 ## Steps
 
-Ask every question in plain chat, one step at a time, unless a step says to ask its questions together in one message. Give numbered options with the recommended one first and marked `(Recommended)`, and end every list with a short "Your own" option, so the free-form path is always visible; always accept a free-form answer (ex. "2 steps", "drop effort", "tokens at most 4000"). Check each answer against the rules of its step before moving on; when it breaks one, say which rule and ask again. If you can't wait for a reply (ex. a non-interactive run), take each recommended value, say so, and continue.
+Ask every question in plain chat, one step at a time, unless a step says to ask its questions together in one message. Give numbered options with the recommended one first and marked `(Recommended)`, and end every list except the first question's with a short "Your own" option, so the free-form path is always visible; always accept a free-form answer (ex. "2 steps", "drop effort", "tokens at most 4000"). Check each answer against the rules of its step before moving on; when it breaks one, say which rule and ask again. If you can't wait for a reply (ex. a non-interactive run), take each recommended value, say so, and continue.
 
 **What the user sees is plain language.** Options and their descriptions name what changes and what it costs (case counts, rollout estimates), never a flag, a knob key, or a file path. Flags appear only in each step's **Build** notes, which are for you, and in the final command of the review (step 8).
 
@@ -39,7 +39,6 @@ Then ask the first question:
 Describe the optimization you want, or answer "step by step".
 1. Step by step (Recommended): I walk you through the experiment, what may change, the goal, the cases, and the budget.
 2. Describe it: for example, "make the support agent shorter without losing helpfulness, about 100 rollouts".
-3. Your own: anything else, for example "just show me what can be tuned".
 ```
 
 Next, unless the request names one, ask which experiment to use, listing each by name with its cases and evaluators (ex. `capitals: 6 cases, scored by OutputEvaluator`), recommending the one with the most cases, and end with "Your own: the path to another experiment file". With none, tell the user to add an experiment under `strands-workspace/strands-dev/experiments/` and stop.
