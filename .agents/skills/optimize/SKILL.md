@@ -1,7 +1,7 @@
 ---
 name: optimize
 description: Use when the user wants to tune a strands-workspace agent (agent.py or agent.ts built with create_harness / createHarness) against one of its experiments, such as its instructions, model, effort, tools, or plugins, with `strands-evals optimize`. Sets up the run from a free-text request or step by step (experiment, knobs, objective, constraints, case split, budget, crashes and pick), confirms a review summary, runs the agent through the installed Strands CLI's evals bridge with progress, and saves a report.
-version: 0.4.0
+version: 0.5.0
 ---
 
 # optimize
@@ -14,7 +14,7 @@ The optimizer is experimental and isn't on evals `main` yet; the bridge installs
 
 ## Steps
 
-Ask every question in plain chat, one step at a time, unless a step says to ask its questions together in one message. Give numbered options with the recommended one first and marked `(Recommended)`, and always accept a free-form answer (ex. "2 steps", "drop effort", "tokens at most 4000"). Check each answer against the rules of its step before moving on; when it breaks one, say which rule and ask again. If you can't wait for a reply (ex. a non-interactive run), take each recommended value, say so, and continue.
+Ask every question in plain chat, one step at a time, unless a step says to ask its questions together in one message. Give numbered options with the recommended one first and marked `(Recommended)`, and end every list with a short "Your own" option, so the free-form path is always visible; always accept a free-form answer (ex. "2 steps", "drop effort", "tokens at most 4000"). Check each answer against the rules of its step before moving on; when it breaks one, say which rule and ask again. If you can't wait for a reply (ex. a non-interactive run), take each recommended value, say so, and continue.
 
 **What the user sees is plain language.** Options and their descriptions name what changes and what it costs (case counts, rollout estimates), never a flag, a knob key, or a file path. Flags appear only in each step's **Build** notes, which are for you, and in the final command of the review (step 8).
 
@@ -39,9 +39,10 @@ Then ask the first question:
 Describe the optimization you want, or answer "step by step".
 1. Step by step (Recommended): I walk you through the experiment, what may change, the goal, the cases, and the budget.
 2. Describe it: for example, "make the support agent shorter without losing helpfulness, about 100 rollouts".
+3. Your own: anything else, for example "just show me what can be tuned".
 ```
 
-Next, unless the request names one, ask which experiment to use, listing each by name with its cases and evaluators (ex. `capitals: 6 cases, scored by OutputEvaluator`), recommending the one with the most cases. With none, tell the user to add an experiment under `strands-workspace/strands-dev/experiments/` and stop.
+Next, unless the request names one, ask which experiment to use, listing each by name with its cases and evaluators (ex. `capitals: 6 cases, scored by OutputEvaluator`), recommending the one with the most cases, and end with "Your own: the path to another experiment file". With none, tell the user to add an experiment under `strands-workspace/strands-dev/experiments/` and stop.
 
 If the user describes it, decide every value of steps 2 to 7 from that text and the files alone, using each step's recommendation rule where the text says nothing, ask no setup question, and go to step 8. A value the text asks for that breaks a rule of its step is changed to the closest valid one and flagged in the review.
 
@@ -60,6 +61,7 @@ What may the optimizer change? Pick any (ex. "1, 3").
 7. context manager: auto, agentic, or off; now auto
 8. skills: on or off; now on
 9. built-in plugins: keep or drop each of todos, environment
+10. Your own: for example, "only the instructions and effort low or medium"
 ```
 
 The kinds behind the labels:
@@ -93,11 +95,12 @@ What should the optimizer improve?
 6. The evaluators and less time, weighed together
 7. The evaluators, fewer tokens, and less time, weighed together
 8. The best trade-offs between the evaluators and tokens, without weighing them
+9. Your own: for example, "fewer output tokens, OutputEvaluator counting twice as much"
 ```
 
 Offer option 2 once per evaluator, and only when there are several. Recommend option 1 unless the request is about length or cost (option 5, or option 5 with output tokens when it's about answer length) or speed (option 6). Offer "shorter answers" (output tokens) in place of tokens when the request is about answer length.
 
-Objective rules: every metric resolves to an evaluator of the experiment or a usage metric; a metric appears once; an experiment with no evaluator needs a usage goal (option 3 or 4); option 8 needs 2 goals or more; a metric name with `:` can't be used.
+A "Your own" goal uses the metrics of step 4. Objective rules: every metric resolves to an evaluator of the experiment or a usage metric; a metric appears once; an experiment with no evaluator needs a usage goal (option 3 or 4); option 8 needs 2 goals or more; a metric name with `:` can't be used.
 
 **Build.** Each goal is one `--objective {maximize,minimize}:METRIC[:weight=X][:scale=X]`; several goals form a weighted sum.
 
@@ -106,19 +109,31 @@ Objective rules: every metric resolves to an evaluator of the experiment or a us
 - Options 3 and 4: `--objective minimize:tokens` or `--objective minimize:seconds`.
 - Options 5 to 7: `--objective maximize:<Evaluator>` per evaluator plus `--objective minimize:tokens:scale=1000` and/or `--objective minimize:seconds:scale=10`.
 - Option 8: option 5 plus `--pareto`.
+- Option 9: one `--objective` per goal the user names, plus `--pareto` when they ask for trade-offs without weighing.
 
 A usage metric in a weighted sum or a Pareto front needs `scale=`, the size of a meaningful change: `scale=100` on `output_tokens` weighs 100 tokens like the whole 0-1 range of an evaluator. `weight=` and `scale=` count only when there are several goals.
 
 ### 4. Constraints: limits on top of the objective
 
-Ask which constraints to add on top of the objective from step 3. Only a candidate meeting every constraint on validation ships.
+Ask which constraints to add on top of the objective from step 3, with what can be constrained listed under the options. Name the experiment's own evaluators in the first line of that list. Only a candidate meeting every constraint on validation ships.
 
 ```text
 Which constraints should the winner also meet?
 1. None (Recommended)
 2. Every evaluator at least 0.8: OutputEvaluator at least 0.8
-3. Your own, for example "Correctness at least 0.8" or "tokens at most 4000"
+3. Your own, for example "OutputEvaluator at least 0.9" or "tokens at most 4000"
+
+A constraint is "at least" or "at most" a number, on the average per run of one case:
+- OutputEvaluator: its score, from 0 (worst) to 1 (best)
+- tokens: all tokens the agent's model used to answer one case (input plus output)
+- input tokens, output tokens: the tokens it read and the tokens it wrote
+- cache read tokens, cache write tokens: input tokens read from or written to the prompt cache
+- seconds: how long the agent took to answer one case
+- model calls: how many times the agent called its model for one case
+The judge's own calls don't count toward tokens, seconds, or model calls.
 ```
+
+An evaluator with its own score range shows that range instead of 0 to 1. A TypeScript agent reports tokens, seconds, and model calls too, but its experiment can't use evaluators that read the agent's steps (ex. Helpfulness, TrajectoryEvaluator, ToolCalled); with one of those, say the experiment needs a Python agent or answer-only evaluators.
 
 When the objective is usage only (step 3, option 3 or 4), recommend option 2 instead and say why: with nothing but tokens or time to improve, an agent that answers badly, or not at all, can look best, so a minimum score per evaluator keeps the answers good.
 
@@ -132,13 +147,14 @@ How sure must the optimizer be that each constraint holds?
 2. 80%
 3. 95%
 4. 99%
+5. Your own: another level above 0% and below 100%, ex. 85%
 ```
 
 **Build.** Each constraint is `--constraint 'METRIC>=X'` or `--constraint 'METRIC<=X'`; the confidence is `--feasibility-threshold X`, passed only when it isn't 0.9.
 
 ### 5. Cases: the split
 
-Train cases guide the search, validation picks the winner, and test checks it on cases nothing else saw. Offer the train share from 30%, 40%, 50%, 60%, 70%, and 80%, then how the rest divides: half test, a third test, or no test. Show each choice as case counts (ex. `3 train / 2 validation / 1 test`): each share times the case count, rounded down, with the cases left over going to the largest remainders. Recommend half train with half of the rest for test, the Strands CLI's default, or the nearest choice that leaves at least 2 validation cases and, with test cases, at least 2 test cases.
+Train cases guide the search, validation picks the winner, and test checks it on cases nothing else saw. Offer the train share from 30%, 40%, 50%, 60%, 70%, and 80%, then how the rest divides: half test, a third test, or no test; end each list with "Your own" (ex. "4 train, 1 validation, 1 test"). Show each choice as case counts (ex. `3 train / 2 validation / 1 test`): each share times the case count, rounded down, with the cases left over going to the largest remainders. Recommend half train with half of the rest for test, the Strands CLI's default, or the nearest choice that leaves at least 2 validation cases and, with test cases, at least 2 test cases.
 
 Rules: train and validation get a share above 0. The optimizer refuses a split with fewer than 1 train or 1 validation case. Fewer than 2 validation or test cases: warn that the scores can be luck, and say how many cases to add to reach 2 of each. Cases without a unique `name` are named in a copy of the experiment, so the user's file doesn't change.
 
@@ -151,15 +167,15 @@ Ask all five settings together in one message, each with one line on what it doe
 ```text
 Budget: answer any of these in one reply (ex. "2 steps, 2 runs"); the rest keep the recommended value.
 1. Steps: rounds of proposing and testing new versions of the agent.
-   0 (measure only the current agent), 1, 2, 4 (Recommended), 6, or 8
+   0 (measure only the current agent), 1, 2, 4 (Recommended), 6, 8, or your own
 2. Candidates per step: new versions tried in each round.
-   2, 4 (Recommended), 6, or 8
+   2, 4 (Recommended), 6, 8, or your own
 3. Runs of each case: how often each case is repeated per version, to average out noise.
-   1 (Recommended), 2, 3, or 5
+   1 (Recommended), 2, 3, 5, or your own
 4. Finalists: the best versions re-checked on the validation cases to pick the winner.
-   1, 2, 3 (Recommended), or 5
+   1, 2, 3 (Recommended), 5, or your own
 5. Trials at once: how many runs go in parallel; changes speed, not cost.
-   1, 2, 4 (Recommended), 8, or 16
+   1, 2, 4 (Recommended), 8, 16, or your own
 
 A rollout is one run of the agent on one case; each is judged once per evaluator.
 rollouts = runs × (current agent on train + steps × candidates × train
@@ -183,14 +199,15 @@ Two last choices: answer either or both in one reply (ex. "crashes 2, pick 1").
 Crashes: how should a run that crashes count?
 1. As the worst score of each evaluator (Recommended)
 2. As no data, left out of the scores
-3. As a score you give, ex. 0.5
+3. Your own: a score you give, ex. 0.5
 Pick: how should the winner be chosen from the 3 finalists on validation?
 1. The best average score (Recommended)
 2. Cautiously: by a low estimate of each score, 75% sure the score is at least that
 3. More cautiously: by a lower estimate, 90% sure the score is at least that
+4. Your own: another level above 50% and below 100%, ex. 80% sure
 ```
 
-**Build.** Crashes: option 1 passes nothing, option 2 `--agent-failure-score none`, option 3 `--agent-failure-score X`. Pick: option 1 passes nothing; options 2 and 3 add `--final-pick N:0.25` or `--final-pick N:0.1` to the setup command and replace `--n-finalists`.
+**Build.** Crashes: option 1 passes nothing, option 2 `--agent-failure-score none`, option 3 `--agent-failure-score X`. Pick: option 1 passes nothing; options 2 and 3 add `--final-pick N:0.25` or `--final-pick N:0.1` to the setup command and replace `--n-finalists`; a level of X% sure in option 4 is `--final-pick N:(1 - X)`, ex. 80% is `N:0.2`.
 
 ### 8. Review
 
