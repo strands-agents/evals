@@ -199,8 +199,11 @@ const RUN = {
 {
   const p = await served(SAMPLE, { route: '/reports/report.json' });
   await p.type('#rep-find', 'no row says this');
-  ok(p.text('#rep-rows') === 'No rows match' && !p.$('#rep-rows .frog'),
+  ok(p.text('#rep-rows') === 'No rows match Show every row' && !p.$('#rep-rows .frog'),
     'a search that matches nothing is not an empty report', p.text('#rep-rows'));
+  await p.click('#rep-rows [data-act="rep-all"]');
+  ok(p.$('#rep-find').value === '' && p.$$('#rep-rows tr.case').length > 0,
+    'and it offers the way back: the search is cleared and every row is there again', p.text('#rep-count'));
 }
 
 // ── a file that will not load, and one that turns up later ──

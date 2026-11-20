@@ -253,7 +253,9 @@ function renderReport() {
 
   redraw($('rep-rows'), visible.map((g, at) => groupHead(visible, at) + g.rows.map((r, k) =>
     rowLine(g, r, k === 0) + (openRows.has(r.i) ? rowDetail(g.case, r) : '')).join('')).join('')
-    || (ROWS.length ? '<tr><td colspan="4" class="empty">No rows match</td></tr>'
+    /* Nothing matching is always the filter, the search or one group: offer the way back out of all three. */
+    || (ROWS.length ? '<tr><td colspan="4" class="empty">No rows match'
+      + ' <button class="btn" data-act="rep-all">Show every row</button></td></tr>'
       : `<tr><td colspan="4">${emptyState('Not a ripple in this report',
         'The file holds no rows: the run that wrote it had no case to evaluate.')}</td></tr>`));
 }
@@ -291,6 +293,12 @@ app.addEventListener('click', async e => {
 });
 
 $('rep-rows').onclick = e => {
+  if (e.target.closest('[data-act="rep-all"]')) {
+    showEveryRow();
+    renderLenses();
+    renderReport();
+    return;
+  }
   const tr = e.target.closest('tr.case');
   if (!tr) return;
   const i = +tr.dataset.i;
