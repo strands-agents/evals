@@ -76,13 +76,25 @@ class CalibrationResult(BaseModel):
     calibration_context: dict[str, Any] | None
 
 
+class CalibrationCaseRunResult(BaseModel):
+    """One fitted-profile prediction for a case and agent run."""
+
+    case_name: str
+    agent_run: int
+    raw_evaluator_scores: dict[str, float]
+    raw_equal_score: float
+    selected_score: float
+    calibrated_probability: float | None = None
+
+
 class CalibrationApplicationResult(BaseModel):
     """Point-in-time application of a profile to existing reports.
 
-    The raw reports are deep copies of the supplied evidence. The selected
-    score is stored separately so applying a profile does not overwrite the
-    originally reported result. `calibrated_probability` is populated when
-    the selected model is a target-calibrated probability mapping.
+    The raw reports are deep copies of the supplied evidence. Suite-level and
+    case-run scores are stored separately so applying a profile does not
+    overwrite the originally reported result. `calibrated_probability` is
+    populated when the selected model is a target-calibrated probability
+    mapping.
     """
 
     reports_by_run: list[list[EvaluationReport]]
@@ -96,6 +108,8 @@ class CalibrationApplicationResult(BaseModel):
     status: CalibrationStatus
     profile_id: str
     profile_schema_version: int
+    case_run_results: list[CalibrationCaseRunResult]
+    target_definition: CalibrationTargetDefinition | None = None
     calibrated_probability: float | None = None
 
 
@@ -166,6 +180,7 @@ class Calibrator:
         }
         self._bootstrap_result: BootstrapResult | None = None
         self._profile: CalibrationProfile | None = None
+        self._target_definition: CalibrationTargetDefinition | None = None
 
     @classmethod
     def from_profile(
@@ -224,6 +239,7 @@ class Calibrator:
             None if validated_profile.bootstrap is None else BootstrapResult(**validated_profile.bootstrap.model_dump())
         )
         calibrator._profile = validated_profile.model_copy(deep=True)
+        calibrator._target_definition = validated_profile.target_definition
         return calibrator
 
     @property
@@ -250,6 +266,11 @@ class Calibrator:
     def profile(self) -> CalibrationProfile | None:
         """Return a copy of the fitted calibration profile, if available."""
         return None if self._profile is None else self._profile.model_copy(deep=True)
+
+    @property
+    def target_definition(self) -> CalibrationTargetDefinition | None:
+        """Return the external target identity used to fit the profile."""
+        return self._target_definition
 
     @property
     def calibration_design(self) -> dict[str, int] | None:
@@ -556,12 +577,14 @@ class Calibrator:
             fitted_model,
             self._step_sizes,
             bootstrap_result,
+            validated_target_definition,
         )
         self._state = fitted_state
         self._model = fitted_model
         self._candidate_weights = candidate_weights
         self._bootstrap_result = bootstrap_result
         self._profile = fitted_profile
+        self._target_definition = validated_target_definition
         return self
 
     def score(self, reports_by_run: list[list[EvaluationReport]]) -> float:
@@ -631,7 +654,8 @@ class Calibrator:
         )
         raw_evaluator_scores = dataset.evaluator_scores()
         profile = self._profile.model_copy(deep=True)
-        selected_score = _score_dataset(self._model, dataset)
+        case_run_results = _case_run_results(self._model, dataset)
+        selected_score = sum(result.selected_score for result in case_run_results) / len(case_run_results)
         return CalibrationApplicationResult(
             reports_by_run=[
                 [report.model_copy(deep=True) for report in replay_reports] for replay_reports in reports_by_run
@@ -649,6 +673,8 @@ class Calibrator:
             calibrated_probability=(
                 selected_score if self.algorithm_id == CalibratedEqualAlgorithm.algorithm_id else None
             ),
+            case_run_results=case_run_results,
+            target_definition=profile.target_definition,
         )
 
     def score_candidates(
@@ -681,6 +707,7 @@ def _profile_from_state(
     model: FittedCalibrationModel,
     step_sizes: dict[str, float],
     bootstrap_result: BootstrapResult | None,
+    target_definition: CalibrationTargetDefinition | None,
 ) -> CalibrationProfile:
     """Convert fitted runtime state and model parameters into a profile."""
     if state.calibration_design is None or state.case_count is None:
@@ -690,6 +717,7 @@ def _profile_from_state(
         algorithm_id=model.algorithm_id,
         algorithm_version=model.algorithm_version,
         model_parameters=_normalized_model_parameters(model),
+        target_definition=target_definition,
         weights=None if model.weights is None else dict(model.weights),
         status=state.status,
         step_sizes=dict(step_sizes),
@@ -852,3 +880,27 @@ def _score_dataset(
     """Average model predictions across case-run examples."""
     predictions = [_predict_model(model, dict(example.evaluator_scores)) for example in dataset.examples()]
     return sum(predictions) / len(predictions)
+
+
+def _case_run_results(
+    model: FittedCalibrationModel,
+    dataset: _CalibrationDataset,
+) -> list[CalibrationCaseRunResult]:
+    """Predict every replay-aggregated case-run in deterministic order."""
+    results: list[CalibrationCaseRunResult] = []
+    for example in dataset.examples():
+        raw_evaluator_scores = dict(example.evaluator_scores)
+        selected_score = _predict_model(model, raw_evaluator_scores)
+        results.append(
+            CalibrationCaseRunResult(
+                case_name=example.case_name,
+                agent_run=example.agent_run,
+                raw_evaluator_scores=raw_evaluator_scores,
+                raw_equal_score=sum(raw_evaluator_scores.values()) / len(raw_evaluator_scores),
+                selected_score=selected_score,
+                calibrated_probability=(
+                    selected_score if model.algorithm_id == CalibratedEqualAlgorithm.algorithm_id else None
+                ),
+            )
+        )
+    return results

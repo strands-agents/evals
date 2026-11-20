@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing_extensions import Self
 
 from ._calibration import CalibrationStatus
-from .algorithm import WeightingMethod
+from .algorithm import CalibrationTargetDefinition, WeightingMethod
 
 PROFILE_SCHEMA_VERSION = 1
 _CALIBRATION_CONTEXT_VERSION = "1"
@@ -56,6 +56,7 @@ class CalibrationProfile(BaseModel):
     algorithm_id: str = Field(min_length=1)
     algorithm_version: int = Field(ge=1)
     model_parameters: dict[str, Any]
+    target_definition: CalibrationTargetDefinition | None = None
     weights: dict[str, float] | None = None
     status: CalibrationStatus
     step_sizes: dict[str, float]
@@ -121,9 +122,7 @@ class CalibrationProfile(BaseModel):
         elif self.calibration_context["version"] != _CALIBRATION_CONTEXT_VERSION:
             raise ValueError("calibration_context has an unsupported version")
 
-        expected_id = self.calculate_profile_id(
-            self.model_dump(mode="json", exclude={"profile_id"}),
-        )
+        expected_id = self.calculate_profile_id(_profile_id_payload(self))
         if self.profile_id != expected_id:
             raise ValueError("calibration profile ID does not match its contents")
         return self
@@ -140,9 +139,12 @@ class CalibrationProfile(BaseModel):
         bootstrap = profile_data.get("bootstrap")
         if isinstance(bootstrap, dict):
             profile_data["bootstrap"] = BootstrapDiagnostics.model_validate(bootstrap)
+        target_definition = profile_data.get("target_definition")
+        if isinstance(target_definition, dict):
+            profile_data["target_definition"] = CalibrationTargetDefinition(**target_definition)
 
         draft = cls.model_construct(profile_id="", **profile_data)
-        payload = draft.model_dump(mode="json", exclude={"profile_id"})
+        payload = _profile_id_payload(draft)
         return cls(profile_id=cls.calculate_profile_id(payload), **payload)
 
     @staticmethod
@@ -234,6 +236,14 @@ def _canonical_json(value: Any) -> str:
         ensure_ascii=False,
         allow_nan=False,
     )
+
+
+def _profile_id_payload(profile: CalibrationProfile) -> dict[str, Any]:
+    """Return profile contents included in the deterministic identifier."""
+    payload = profile.model_dump(mode="json", exclude={"profile_id"})
+    if payload["target_definition"] is None:
+        del payload["target_definition"]
+    return payload
 
 
 def _json_path(path: str, *, require_extension: bool) -> Path:

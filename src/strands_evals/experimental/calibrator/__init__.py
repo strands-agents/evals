@@ -14,13 +14,14 @@ from .algorithm import (
     RestorableCalibrationAlgorithm,
     WeightingMethod,
 )
-from .calibration import CalibrationApplicationResult, CalibrationResult, Calibrator
+from .calibration import CalibrationApplicationResult, CalibrationCaseRunResult, CalibrationResult, Calibrator
 from .calibration_profile import CalibrationProfile, ProfileCompatibility
 
 __all__ = [
     "CalibratedEqualAlgorithm",
     "CalibrationAlgorithm",
     "CalibrationApplicationResult",
+    "CalibrationCaseRunResult",
     "CalibrationData",
     "CalibrationExample",
     "CalibrationObservation",

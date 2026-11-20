@@ -102,6 +102,23 @@ def test_profile_is_deterministic_and_round_trips_through_json(tmp_path) -> None
     assert serialized["bootstrap"]["replicates"] == 100
 
 
+def test_profile_without_target_preserves_legacy_content_id() -> None:
+    profile = _profile()
+    payload = profile.model_dump(mode="json", exclude={"profile_id", "target_definition"})
+
+    assert profile.profile_id == CalibrationProfile.calculate_profile_id(payload)
+
+
+def test_profile_id_includes_target_definition() -> None:
+    data = _profile().to_dict()
+    data.pop("profile_id")
+    data["target_definition"] = {"name": "task_success", "version": "1"}
+
+    targeted_profile = CalibrationProfile.create(**data)
+
+    assert targeted_profile.profile_id != _profile().profile_id
+
+
 def test_profile_rejects_content_that_does_not_match_id() -> None:
     data = _profile().to_dict()
     data["case_count"] = 5

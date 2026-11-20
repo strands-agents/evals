@@ -131,7 +131,7 @@ def test_context_free_profile_restores_equal_model_and_diagnostics() -> None:
     assert restored.repeatability_intervals == calibrator.repeatability_intervals
 
 
-def test_context_free_profile_restores_calibrated_equal_model() -> None:
+def test_context_free_profile_restores_calibrated_equal_model(tmp_path) -> None:
     calibrator = Calibrator(
         step_sizes={"first": 0.5, "second": 0.5},
         algorithm=CalibratedEqualAlgorithm(),
@@ -141,16 +141,21 @@ def test_context_free_profile_restores_calibrated_equal_model() -> None:
         for agent_run in range(2)
         for case_name, target in (("case-a", 0.0), ("case-b", 1.0))
     ]
+    target_definition = CalibrationTargetDefinition(name="task_success", version="1")
     calibrator.fit(
         _reports(),
         targets=targets,
-        target_definition=CalibrationTargetDefinition(name="task_success", version="1"),
+        target_definition=target_definition,
     )
     profile = calibrator.profile
 
     assert profile is not None
-    restored = Calibrator.from_profile(profile)
+    profile_path = tmp_path / "calibrated-profile.json"
+    profile.to_file(str(profile_path))
+    restored = Calibrator.from_profile(CalibrationProfile.from_file(str(profile_path)))
 
+    assert profile.target_definition == target_definition
+    assert restored.target_definition == target_definition
     assert restored.algorithm_id == "calibrated_equal"
     assert restored.weights == {"first": 0.5, "second": 0.5}
     assert restored.model_parameters == calibrator.model_parameters
@@ -158,6 +163,26 @@ def test_context_free_profile_restores_calibrated_equal_model() -> None:
     application = restored.apply_profile(_reports())
     assert application.selected_method == "calibrated_equal"
     assert application.calibrated_probability == pytest.approx(application.selected_score)
+    assert application.target_definition == target_definition
+    assert [(result.case_name, result.agent_run) for result in application.case_run_results] == [
+        ("case-a", 0),
+        ("case-b", 0),
+        ("case-a", 1),
+        ("case-b", 1),
+    ]
+    assert application.case_run_results[0].raw_evaluator_scores == {
+        "first": 0.0,
+        "second": 0.5,
+    }
+    assert application.case_run_results[0].raw_equal_score == pytest.approx(0.25)
+    assert application.case_run_results[1].raw_equal_score == pytest.approx(0.75)
+    assert all(
+        result.calibrated_probability == pytest.approx(result.selected_score) for result in application.case_run_results
+    )
+    assert application.case_run_results[0].selected_score < application.case_run_results[1].selected_score
+    assert application.selected_score == pytest.approx(
+        sum(result.selected_score for result in application.case_run_results) / len(application.case_run_results)
+    )
     assert application.status == "uncalibrated"
 
 
@@ -283,6 +308,17 @@ def test_profile_application_preserves_historical_reports_and_provenance(tmp_pat
     assert historical.selected_score == pytest.approx(current.selected_score)
     assert historical.selected_score == pytest.approx(0.625)
     assert historical.calibrated_probability is None
+    assert historical.target_definition is None
+    assert len(historical.case_run_results) == 1
+    assert historical.case_run_results[0].case_name == "new-case"
+    assert historical.case_run_results[0].agent_run == 0
+    assert historical.case_run_results[0].raw_evaluator_scores == {
+        "first": 0.25,
+        "second": 1.0,
+    }
+    assert historical.case_run_results[0].raw_equal_score == pytest.approx(0.625)
+    assert historical.case_run_results[0].selected_score == pytest.approx(0.625)
+    assert historical.case_run_results[0].calibrated_probability is None
     assert historical.selected_method == "equal_weighting"
     assert historical.algorithm_version == 1
     assert historical.weights == {
