@@ -694,9 +694,10 @@ async def test_rows_experiment_replaced_after_its_evaluators_ran_are_not_scores(
     assert record.judge_usage["J"].tokens == 30  # the judge's spend is still counted
 
 
-async def test_rows_experiment_replaced_in_a_re_judge_are_not_scores(traces, monkeypatch, caplog):
+@pytest.mark.parametrize("failures", [1, 2], ids=["judged-ok", "raised-again"])
+async def test_rows_experiment_replaced_in_a_re_judge_are_not_scores(traces, monkeypatch, caplog, failures):
     cache = MemoryCache()
-    ok, broken = Fixed("Ok"), Fixed("Broken", score=0.3, failures=1)
+    ok, broken = Fixed("Ok"), Fixed("Broken", score=0.3, failures=failures)  # 2: raises in the re-judge too
     await _runner(traces, cache, _cases("a"), [ok, broken], rerun_passes=0).run(
         "cand", _plain, ["a"], runs=1, allowance=0
     )
@@ -713,7 +714,7 @@ async def test_rows_experiment_replaced_in_a_re_judge_are_not_scores(traces, mon
     record = records[0]
     assert (spent, broken.calls) == (0, 2)  # judged again once, in the first re-judge; not in the re-run passes
     assert "Broken" not in record.evaluations  # not the placeholder's 0
-    assert record.evaluator_errors == {}  # nothing left to judge again
+    assert record.evaluator_errors == {}  # nothing left to judge again, even when it raised again
     assert (record.error_type, record.error) == ("RuntimeError", "can't dump")
     assert record.evaluations["Ok"].score == 1.0  # the first pass's score is kept
     assert record.status is TrialStatus.COMPLETED
@@ -724,6 +725,20 @@ async def test_rows_experiment_replaced_in_a_re_judge_are_not_scores(traces, mon
         "cand", _plain, ["a"], runs=1, allowance=0, rejudge=True
     )
     assert broken.calls == 2  # a later re-judge leaves it alone too
+
+
+async def test_a_task_that_raised_isnt_read_as_a_case_failure(traces, caplog):
+    async def crashes(case):
+        raise ValueError("agent bug")  # recorded on the case span too, as every task exception is
+
+    with caplog.at_level(logging.WARNING):
+        records, _ = await _runner(traces, MemoryCache(), _cases("a"), [Fixed("A")]).run(
+            "cand", crashes, ["a"], runs=1, allowance=0
+        )
+
+    assert records[0].status is TrialStatus.AGENT_FAILURE
+    assert (records[0].error_type, records[0].error) == ("ValueError", "agent bug")
+    assert "case failed after the task returned" not in caplog.text
 
 
 async def test_a_session_that_cant_be_built_after_the_rollout_returned_is_unmeasured(traces, monkeypatch):

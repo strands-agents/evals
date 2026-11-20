@@ -403,7 +403,8 @@ class Search:
         within: The default schedule's inner schedule; None means `Alternate()`. Unused when the default
             has nothing to nest (no structural block, or one structural block and nothing else): then it is
             `Joint()`.
-        redraws: Caps re-asks per block per iteration after a duplicate (of an eligible candidate), an
+        redraws: Caps re-asks per block per iteration after a duplicate (of an eligible candidate, or an
+            ineligible one a re-score can't change), an
             invalid patch, a patch touching keys outside its block, or no patches at all. A round's opener
             is never re-asked on a duplicate: the round opens on that candidate.
     """

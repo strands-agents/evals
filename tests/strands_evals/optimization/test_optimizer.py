@@ -2406,6 +2406,65 @@ async def test_an_ineligible_candidate_a_re_score_cant_change_is_a_duplicate(tmp
     assert [o.outcome for o in proposer.observed] == ["ineligible", "duplicate", "feasible"]
 
 
+class _FailsOnHalf(Evaluator):
+    """Scores the temperature, but raises on temperature 0.5's output the first `failures` times."""
+
+    def __init__(self, failures):
+        super().__init__(name="Temperature")
+        self.failures, self.raised = failures, 0
+
+    async def evaluate_async(self, evaluation_case):
+        if evaluation_case.actual_output == "0.5" and self.raised < self.failures:
+            self.raised += 1
+            raise ValueError("bad judge output")
+        return [EvaluationOutput(score=float(evaluation_case.actual_output), test_pass=True, reason="t")]
+
+
+def _repeating_half(tmp_path, evaluator, max_iterations):
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        return str(temperature)
+
+    proposer = Scripted({"temperature": 0.5}, {"temperature": 0.5})
+    optimizer = _optimizer(
+        _experiment(evaluators=[evaluator]),
+        rollout_fn=rollout,
+        search=Search([Block(proposer, "temperature"), Block(Scripted(), "manager")], schedule=Joint()),
+        max_workers=64,
+        proposals_per_iteration=1,
+        rerun_passes=0,
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=max_iterations),
+    )
+    return optimizer, proposer
+
+
+async def test_an_ineligible_repeat_with_a_failed_evaluator_is_judged_again(tmp_path):
+    optimizer, _ = _repeating_half(tmp_path, _FailsOnHalf(failures=8), max_iterations=2)  # every 0.5 trial once
+    result = await optimizer.run_async()
+
+    first, second = result.iterations[0].proposals, result.iterations[1].proposals
+    assert [p.outcome for p in first] == ["ineligible"]
+    assert [p.outcome for p in second] == ["feasible"]  # re-judged on the saved outputs, now measured
+    assert second[0].candidate_id == first[0].candidate_id
+    assert any(e["event"] == "propose" and e["rescore"] for e in _events(optimizer))
+    assert result.iterations[1].rollouts_spent == 0  # judges only
+
+
+async def test_a_re_judge_that_leaves_the_candidate_unmeasured_saves_nothing(tmp_path):
+    evaluator = _FailsOnHalf(failures=10**6)  # fails on 0.5's output every time
+    optimizer, proposer = _repeating_half(tmp_path, evaluator, max_iterations=5)
+    result = await optimizer.run_async()
+
+    first, second = result.iterations[0].proposals, result.iterations[1].proposals
+    assert [p.outcome for p in first] == ["ineligible"]
+    assert [p.outcome for p in second] == ["duplicate"]  # judged again, still unmeasured: nothing saved
+    assert "still unmeasured after its re-judge" in proposer.observed[-1].reason
+    assert any(e["event"] == "propose" and e["rescore"] for e in _events(optimizer))
+    assert len(result.iterations) == 2 and result.stop_reason == "exhausted"  # the step saved nothing
+    assert evaluator.raised == 16  # 8 train trials, judged twice
+
+
 async def test_max_iterations_counts_candidate_slots_not_steps(tmp_path):
     # temperature has 3 options: once each is measured, every numbers step is all duplicates and costs no slot.
     proposer = Scripted({"temperature": 0.5}, {"temperature": 0.0}, {"temperature": 1.0}, *[{"temperature": 0.5}] * 30)

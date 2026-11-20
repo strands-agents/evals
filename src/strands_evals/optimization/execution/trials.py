@@ -569,7 +569,7 @@ class TrialRunner:
             if case_error_type is not None:
                 # `Experiment` failed on the case after the task returned, so every row is a case-level
                 # placeholder. No evaluator is left in `errors`: a re-judge would replay the same output
-                # through the same failure and take its placeholder rows as scores.
+                # through the same failure and only spend judge calls.
                 error_type, error = case_error_type, case_error
                 evaluations, details, errors = {}, {}, {}
                 logger.warning(
