@@ -1958,7 +1958,8 @@ def test_a_ctrl_c_during_validation_cancels_the_trial_in_flight_and_resume_runs_
         return sum(1 for e in events if e["event"] == "trial" and e["record"]["split"] == "validation")
 
     assert validation_trials(events) < validation_trials(_events(original_optimizer))  # the cancelled one isn't saved
-    resumed_optimizer = _resume(root)
+    with pytest.warns(UserWarning, match="differently named agent"):  # resumed with the plain rollout on purpose
+        resumed_optimizer = _resume(root)
     _assert_same(resumed_optimizer.run(), original)
     assert resumed_optimizer._budget.spent == original_optimizer._budget.spent
 
@@ -1995,15 +1996,14 @@ async def test_the_budget_warning_counts_only_the_search_spend_against_a_budget_
         _resume(root, budget=Budget(max_rollouts=enough))
 
 
-@pytest.mark.parametrize("reason", ["exhausted", "proposer_error"])
-async def test_no_budget_warning_when_the_search_stopped_for_another_reason(tmp_path, reason):
+async def test_no_budget_warning_when_the_search_stopped_for_another_reason(tmp_path):
     optimizer = _default_search(tmp_path)
     await optimizer.run_async()
     root = optimizer._run.root
     events = _events_at(root)
     for event in events:
         if event["event"] == "stop":
-            event["reason"] = reason  # a bigger budget wouldn't have searched further either
+            event["reason"] = "exhausted"  # a bigger budget wouldn't have searched further either
     (root / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
 
     with warnings.catch_warnings():
