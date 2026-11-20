@@ -6,6 +6,7 @@ from .exceptions import (
     TraceProviderError,
 )
 from .trace_provider import (
+    SessionFilter,
     TraceProvider,
 )
 
@@ -14,6 +15,7 @@ __all__ = [
     "LangfuseProvider",
     "OpenSearchProvider",
     "ProviderError",
+    "SessionFilter",
     "SessionNotFoundError",
     "TraceProvider",
     "TraceProviderError",
