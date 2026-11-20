@@ -46,6 +46,26 @@ def _make_tool_result_message(tool_use_id, result_text):
 
 
 class TestSpanConversion:
+    @pytest.mark.parametrize(
+        "reasoning",
+        [
+            {"reasoningContent": {"reasoningText": {"text": "internal reasoning", "signature": "sig"}}},
+            {"type": "reasoning", "text": "internal reasoning"},
+        ],
+        ids=["legacy", "typed"],
+    )
+    def test_reasoning_is_excluded_from_assistant_output(self, mapper, reasoning) -> None:
+        record = make_log_record(
+            input_messages=[make_user_message("What is 17 times 23?")],
+            output_messages=[{"role": "assistant", "content": {"message": json.dumps([reasoning, {"text": "391"}])}}],
+        )
+        spans = mapper.map_to_session([record], "sess-1").traces[0].spans
+        inference = next(span for span in spans if isinstance(span, InferenceSpan))
+        agent = next(span for span in spans if isinstance(span, AgentInvocationSpan))
+
+        assert [part.text for part in inference.messages[-1].content] == ["391"]
+        assert agent.agent_response == "391"
+
     def test_single_record_produces_inference_span(self, mapper):
         """One log record produces an InferenceSpan with input/output messages."""
         record = make_log_record(
