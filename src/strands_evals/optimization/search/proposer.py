@@ -70,9 +70,10 @@ class Proposer(ABC):
 
     An ABC because users subclass it.
 
-    An instance serves one `Optimizer`, since it may keep what it is told. An optimizer binds it once its
-    baseline is scored (on resume, before the run's history is replayed into it), and any other optimizer
-    given it raises `ValueError`. Give each optimizer its own instances, `Optimizer.resume` included.
+    An instance serves one `Optimizer`, since it may keep what it is told. An optimizer binds it when its run
+    starts, before anything is written, and frees it only if setup fails (nothing was told to it); any other
+    optimizer given a bound instance raises `ValueError`. Give each optimizer its own instances,
+    `Optimizer.resume` included.
 
     Attributes:
         kinds: The variable types it can propose.
