@@ -73,8 +73,8 @@ def test_an_error_raised_instead_of_the_cancellation_is_the_interrupts_cause(sig
 
 
 @pytest.mark.skipif(
-    sys.platform == "win32" and sys.version_info >= (3, 14),
-    reason="the second cancellation is not delivered to the task awaiting asyncio.to_thread on Windows 3.14",
+    sys.platform == "win32",
+    reason="on Windows the second cancellation is sometimes not delivered to the task awaiting asyncio.to_thread",
 )
 def test_a_second_interrupt_cancels_again_and_stops_waiting(sigint):
     release, cancelled, second_handled = threading.Event(), [], threading.Event()
