@@ -237,7 +237,7 @@ async function describe({ attr, paths }) {
       }
       return jsonSafe(value) ? { value: value ?? null } : { missing: `its value is a ${value?.constructor?.name}` }
     })
-    return { index, values }
+    return { index, values, written: Object.keys(written) }
   } finally {
     await built.cleanup()
   }

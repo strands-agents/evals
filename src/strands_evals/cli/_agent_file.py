@@ -17,12 +17,13 @@ import inspect
 import itertools
 import json
 import logging
+import re
 import shutil
 import sys
 import tempfile
 import threading
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -130,8 +131,8 @@ def load(spec: str, tune: list[str], *, tune_instructions: bool = True) -> Tunab
             f"built by a create_harness call in {path.name}"
         )
     kwargs = capture.calls[index][0]
-    markers, tuned = _declare(lambda p, t: _current(kwargs, p, t), tune, tune_instructions=tune_instructions)
-    return tunable(_AgentFile(path, attr, index, tuned).build, inject=markers)
+    markers, tuning = _declare(lambda p, t: _current(kwargs, p, t), tune, tune_instructions=tune_instructions)
+    return tunable(_AgentFile(path, attr, index, tuning.leaving_out(kwargs)).build, inject=markers)
 
 
 @dataclass(frozen=True)
@@ -141,15 +142,10 @@ class _AgentFile:
     path: Path
     attr: str
     index: int
-    tuned: list[Tuned]
+    tuning: _Tuning
 
     def build(self, **values: Any) -> Any:
-        by_name = {item.name: item for item in self.tuned}
-        overrides = {
-            by_name[name].path: str(value) if by_name[name].kind == "skills" else value
-            for name, value in values.items()
-            if name in by_name
-        }
+        overrides = dict(self.tuning.overrides(values))
         module, capture = _run_file(self.path, _Capture(target=self.index, values=overrides))
         agent = getattr(module, self.attr, None)
         if len(capture.calls) <= self.index or capture.calls[self.index][1] is not agent:
@@ -161,6 +157,46 @@ class _AgentFile:
 
 
 _MISSING = object()
+
+
+@dataclass(frozen=True)
+class _Tuning:
+    """How each tuned value reaches the agent's call.
+
+    Attributes:
+        tuned: Each declared name's path and kind.
+        listed: Names of a `skills` the call gave as a list of one folder (as `/export` writes it), passed as one.
+        baselines: Each name's value in the call (or the default it was left at).
+        left_out: Names whose argument the call leaves out: passed only when changed, so the baseline builds the call
+            as written (an unset `caching` and `caching=True` aren't the same to the harness).
+    """
+
+    tuned: list[Tuned]
+    listed: frozenset[str]
+    baselines: dict[str, Any]
+    left_out: frozenset[str] = frozenset()
+
+    def leaving_out(self, written: Iterable[str]) -> _Tuning:
+        """This tuning, with the names whose top-level argument isn't in `written` left out at their baseline."""
+        given = set(written)
+        left_out = frozenset(item.name for item in self.tuned if item.path[0] not in given)
+        return _Tuning(self.tuned, self.listed, self.baselines, left_out)
+
+    def overrides(self, values: Mapping[str, Any]) -> list[tuple[tuple[str | int, ...], Any]]:
+        """`(path, value)` for the candidate's values, as the call takes them: a skill folder (the candidate's copy)
+        as text or a list of one; a left-out argument still at its baseline is skipped."""
+        found = []
+        for item in self.tuned:
+            if item.name not in values:
+                continue
+            value = values[item.name]
+            baseline = self.baselines.get(item.name)
+            if item.name in self.left_out and type(value) is type(baseline) and value == baseline:
+                continue
+            if item.kind == "skills":
+                value = [str(value)] if item.name in self.listed else str(value)
+            found.append((item.path, value))
+        return found
 
 
 def _file_and_attr(spec: str) -> tuple[Path, str] | None:
@@ -204,7 +240,7 @@ def _run_file(path: Path, capture: _Capture) -> tuple[ModuleType, _Capture]:
 
 def _declare(
     current: Callable[[tuple[str | int, ...], str], Any], tune: list[str], *, tune_instructions: bool
-) -> tuple[dict[str, Marker], list[Tuned]]:
+) -> tuple[dict[str, Marker], _Tuning]:
     """The space over the agent's `create_harness` arguments, as `_harness.declare` over a config; `current(path,
     text)` gives the agent's value at a path, or raises `ValueError` naming the `--tune` `text`."""
     specs = [_split(spec) for spec in tune]
@@ -214,13 +250,15 @@ def _declare(
         raise ValueError("--no-tune-instructions with no --tune: nothing is left to tune")
     markers: dict[str, Marker] = {}
     tuned: list[Tuned] = []
+    listed: set[str] = set()
+    baselines: dict[str, Any] = {}
     kind: Literal["text", "skills", "choice", "number"]
     for text, options in specs:
         path = _path(text)
         name = text.replace(".", "_")
         if name in markers:
             raise ValueError(f"--tune {text}: another --tune path is also named {name!r}")
-        value = current(path, text)
+        value = baselines[name] = current(path, text)
         if isinstance(options, _Range):
             markers[name], kind = _number(text, options, value), "number"
         elif options is not None:
@@ -228,8 +266,11 @@ def _declare(
                 raise ValueError(f"--tune {text}: the agent's value {value!r} must be one of the options")
             markers[name], kind = OneOf(*options, default=value), "choice"
         elif path == ("skills",):
+            if isinstance(value, list) and len(value) == 1:  # /export writes skills=[project_path(...)]
+                listed.add(name)
+                value = value[0]
             if not isinstance(value, str) or value.startswith(("http://", "https://")):
-                raise ValueError("--tune skills: the agent's skills must be one local folder path")
+                raise ValueError("--tune skills: the agent's skills must be one local folder path (or a list of one)")
             markers[name], kind = SkillLibrary(Path(value).expanduser().resolve()), "skills"
         elif not isinstance(value, str):
             hint = 'add instructions="" (it may be empty) to tune it' if path == (DEFAULT_TUNED,) else ""
@@ -240,16 +281,20 @@ def _declare(
         else:
             markers[name], kind = TextValue(default=value), "text"
         tuned.append(Tuned(name, path, kind))
-    return markers, tuned
+    return markers, _Tuning(tuned, frozenset(listed), baselines)
 
 
 def _current(kwargs: dict[str, Any], path: tuple[str | int, ...], text: str) -> Any:
-    """The value at `path` in the call, a top-level argument left out at `create_harness`'s default."""
+    """The value at `path` in the call; a top-level argument left out is at `create_harness`'s default, or the
+    harness's default config's when that default isn't a plain value (`caching`), as `/export` leaves defaults out."""
     head, rest = path[0], path[1:]
     if head in kwargs:
         value = kwargs[head]
     elif isinstance(head, str) and head in _SIGNATURE.parameters and head != "agent_kwargs":
         value = _SIGNATURE.parameters[head].default
+        if not isinstance(value, (str, int, float, bool, type(None))):  # e.g. caching's "not given" sentinel
+            config_key = re.sub(r"_([a-z])", lambda match: match.group(1).upper(), head)
+            value = strands_harness.DEFAULT_HARNESS_AGENT_CONFIG.get(config_key, inspect.Parameter.empty)
         if value is inspect.Parameter.empty or not isinstance(value, (str, int, float, bool, type(None))):
             raise ValueError(
                 f"--tune {text}: write {head}= in the create_harness call (its value there is the baseline)"
@@ -329,8 +374,9 @@ def _load_node(path: Path, attr: str, tune: list[str], *, tune_instructions: boo
             raise ValueError(f"--tune {text}: {entry['missing']}; write it in the createHarness call to tune it")
         return entry["value"]
 
-    markers, tuned = _declare(current, tune, tune_instructions=tune_instructions)
-    return tunable(_NodeAgentFile(runner, attr, int(described["index"]), tuned).build, inject=markers)
+    markers, tuning = _declare(current, tune, tune_instructions=tune_instructions)
+    tuning = tuning.leaving_out(described.get("written", []))
+    return tunable(_NodeAgentFile(runner, attr, int(described["index"]), tuning).build, inject=markers)
 
 
 @dataclass(frozen=True)
@@ -340,16 +386,11 @@ class _NodeAgentFile:
     runner: node.NodeRunner
     attr: str
     index: int
-    tuned: list[Tuned]
+    tuning: _Tuning
     _built: set[str] = field(default_factory=set)
 
     def build(self, **values: Any) -> node.NodeAgent:
-        by_name = {item.name: item for item in self.tuned}
-        overrides = [
-            (list(by_name[name].path), str(value) if by_name[name].kind == "skills" else value)
-            for name, value in values.items()
-            if name in by_name
-        ]
+        overrides = [(list(path), value) for path, value in self.tuning.overrides(values)]
         key = json.dumps(overrides, sort_keys=True)
         if key not in self._built:  # once per candidate: a value the agent can't be built with fails here
             reply = self.runner.call({"type": "probe", "attr": self.attr, "index": self.index, "values": overrides})

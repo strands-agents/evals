@@ -224,3 +224,61 @@ def test_a_run_file_takes_an_agent_file_and_its_tune(experiment_path, tmp_path, 
     # --agent on the command line naming an agent file keeps the file's tune
     assert main(["--json", "optimize", "run", str(run_file), "--agent", str(tmp_path / "agent.py")]) == 0
     capsys.readouterr()
+
+
+EXPORTED = """
+from pathlib import Path
+
+from strands_harness import create_harness
+
+from tests.strands_evals.cli.fixtures.optimize_agents import World
+
+project_root = Path(__file__).parent
+
+def project_path(path: str) -> str:
+    return str(project_root / path)
+
+agent = create_harness(
+    name="support",
+    model=World(0.25, None),
+    instructions="You answer questions.",
+    builtin_tools={"*": False},
+    builtin_plugins=[],
+    skills=[project_path("./skills")],
+    session={"dir": "./.agent/sessions"},
+    memory={"dir": "./.agent/memory"},
+)
+"""
+
+
+@pytest.fixture
+def exported(tmp_path):
+    """An agent file shaped as strands-cli's /export writes it: skills as a list of one, defaults left out."""
+    skill = tmp_path / "skills" / "refunds"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: refunds\ndescription: Refund rules.\n---\nRefunds take 5 days.\n")
+    path = tmp_path / "agent.py"
+    path.write_text(EXPORTED)
+    return path
+
+
+def test_an_exported_file_tunes_its_skills_list_and_left_out_defaults(exported, monkeypatch):
+    calls = []
+    real = _agent_file._REAL_CREATE_HARNESS
+    monkeypatch.setattr(_agent_file, "_REAL_CREATE_HARNESS", lambda **kwargs: calls.append(kwargs) or real(**kwargs))
+    factory = _agent_file.load(str(exported), ["skills", "caching=[true,false]", 'effort=["auto","low"]'])
+    assert factory.space.param("caching").default is True  # left out: the harness's default config
+    assert factory.space.param("effort").default == "auto"
+    assert factory.space.param("skills/refunds/SKILL.md").kind == "text"
+
+    calls.clear()
+    factory()
+    (baseline,) = calls
+    assert "caching" not in baseline and "effort" not in baseline  # left out as the file leaves them out
+    assert isinstance(baseline["skills"], list) and len(baseline["skills"]) == 1  # passed back as a list of one
+
+    calls.clear()
+    values = {key: factory.space.param(key).default for key in ("instructions", "skills/refunds/SKILL.md")}
+    factory.bind({**values, "caching": False, "effort": "auto"})()
+    (candidate,) = calls
+    assert candidate["caching"] is False and "effort" not in candidate  # only what changed
