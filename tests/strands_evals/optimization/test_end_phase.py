@@ -345,6 +345,47 @@ def test_choose_finalists_expects_the_train_measurement_rate_on_validation():
     assert _choose(train, FLOOR, 2, n_validation_cases=30)[0] == ["a", "b"]
 
 
+def test_choose_finalists_judges_the_margin_on_the_adjusted_mean_without_a_fit():
+    # "b" leaves the evaluator nothing to judge on the hard cases t3-t5, where the others drop 0.2. On its judged cases
+    # alone (mean 0.95) it would clear the floor with margin and go first; with those cases filled in it is judged at
+    # 0.85, as "a" is, and neither has margin, so the ranking's order (the cheaper "a" first) stands.
+    criteria = Criteria(Minimize(TOKENS), [AtLeast(HELP, 0.82)], REGISTRY, feasibility_threshold=0.9)
+    train = {
+        "0": _train_scores("0", {f"t{i}": {HELP: 0.4 if i < 3 else 0.2, TOKENS: 50.0} for i in range(6)}, criteria),
+        "a": _train_scores("a", {f"t{i}": {HELP: 0.95 if i < 3 else 0.75, TOKENS: 100.0} for i in range(6)}, criteria),
+        "b": _train_scores(
+            "b",
+            {
+                f"t{i}": {HELP: h, TOKENS: 200.0} if h is not None else {TOKENS: 200.0}
+                for i, h in enumerate([0.9, 1.0, 0.95, None, None, None])
+            },
+            criteria,
+        ),
+    }
+    finalists, ranking, _ = _choose(train, criteria, 1)
+    assert ranking == ["a", "b", "0"]
+    assert finalists == ["a"]
+
+
+def test_choose_finalists_judges_the_margin_spread_over_the_filled_cases_too():
+    # "c" equals the others on the easy cases and is N/A on "hard". On its judged cases alone it shows no spread, so
+    # it would hold the floor with margin and take the one slot from "b", ranked first and judged everywhere. With
+    # "hard" filled in (0.625) it spreads as "b" does, neither has margin, and the ranking's order stands.
+    criteria = Criteria(Maximize(HELP), [AtLeast(HELP, 0.72)], REGISTRY, feasibility_threshold=0.9)
+    cases = {
+        "0": {"e1": 1.0, "e2": 1.0, "hard": 0.6},
+        "b": {"e1": 1.0, "e2": 1.0, "hard": 0.65},
+        "c": {"e1": 1.0, "e2": 1.0, "hard": None},
+    }
+    train = {
+        c: _train_scores(c, {k: {HELP: v} if v is not None else {} for k, v in by_case.items()}, criteria)
+        for c, by_case in cases.items()
+    }
+    finalists, ranking, _ = _choose(train, criteria, 1)
+    assert ranking == ["b", "c", "0"]
+    assert finalists == ["b"]
+
+
 def test_choose_finalists_with_one_train_case_keeps_the_ranking_order():
     train = {
         c: _train_scores(c, {"t0": {HELP: helps[0], TOKENS: FLOOR_TOKENS[c]}}, FLOOR) for c, helps in FLOOR_HELP.items()
@@ -448,6 +489,46 @@ def test_pick_ships_the_baseline_when_no_finalist_meets_the_constraint():
     assert "baseline" in report.reason
 
 
+class _PredictingFit:
+    """A validation fit predicting every metric at `estimate` for every candidate."""
+
+    flagged: list[str] = []
+    diagnostics: dict = {}
+
+    def __init__(self, ids, metrics, estimate):
+        self.candidates = frozenset(ids)
+        self.metrics = dict.fromkeys(metrics)
+        self._estimate = estimate
+
+    def estimates(self, values, candidate=None):
+        return dict.fromkeys(self.metrics, self._estimate)
+
+
+def test_pick_rejects_a_finalist_whose_constraint_was_never_measured_on_validation():
+    grounded = "Grounded"
+    criteria = Criteria(
+        Maximize(HELP), [AtLeast(grounded, 0.5)], MetricRegistry({HELP: (0.0, 1.0), grounded: (0.0, 1.0)})
+    )
+    baseline = _val_scores("0", 0.5)
+    baseline = baseline.model_copy(
+        update={"metrics_by_case": {c: {**m, grounded: 1.0} for c, m in baseline.metrics_by_case.items()}}
+    )
+    validation = {"0": baseline, "a": _val_scores("a", 0.9)}  # Grounded N/A on every case of "a"
+    report = pick(
+        baseline_id="0",
+        finalist_ids=["a"],
+        validation=validation,
+        fit=_PredictingFit(validation, [HELP, grounded], Estimate(mean=0.9, sd=0.01)),
+        values={"0": {}, "a": {}},
+        trial_counts={"0": 2, "a": 2},
+        completed={"0": 2, "a": 2},
+        criteria=criteria,
+        rule=Mean(),
+    )
+    assert report.champion_id == "0"
+    assert report.infeasible == {"a": "Grounded >= 0.5: never measured"}
+
+
 def test_pick_reports_fewer_than_two_eligible_through_problem():
     criteria = Criteria(Maximize(HELP), [], REGISTRY)
     validation = {"0": _val_scores("0", 0.5), "a": _val_scores("a", 0.0, eligible=False)}
@@ -506,6 +587,152 @@ def test_pick_tie_without_trial_counts_goes_to_the_baseline():
         rule=Mean(),
     )
     assert report.champion_id == "0"
+
+
+@pytest.mark.parametrize("twins", [0, 1, 2])
+def test_pick_by_measured_means_fills_a_finalist_s_n_a_case_and_the_baseline_wins_the_tie(twins):
+    # Finalist "a" matches the baseline on v1 and leaves the evaluator nothing to judge on v2, where the baseline
+    # (and each twin, a finalist equal to it) scored 0.1; on plain means "a" would ship (0.7 against 0.4). Filled
+    # in, it ties the baseline exactly, whatever the number of twins on the case.
+    criteria = Criteria(Maximize(HELP), [], REGISTRY)
+
+    def scores(candidate_id, help_by_case):
+        judged = {c: v for c, v in help_by_case.items() if v is not None}
+        return CandidateScores(
+            candidate_id=candidate_id,
+            objective_by_case=judged,
+            metrics_by_case={c: {HELP: v} for c, v in judged.items()},
+            unavailable={},
+            objective_by_run={c: [v] for c, v in help_by_case.items()},
+            metrics_by_run={c: {HELP: [v]} for c, v in help_by_case.items()},
+            objective=sum(judged.values()) / len(judged),
+            is_eligible=True,
+            failures=0,
+        )
+
+    validation = {
+        "0": scores("0", {"v1": 0.7, "v2": 0.1}),
+        "a": scores("a", {"v1": 0.7, "v2": None}),
+        **{f"t{i}": scores(f"t{i}", {"v1": 0.7, "v2": 0.1}) for i in range(twins)},
+    }
+    report = pick(
+        baseline_id="0",
+        finalist_ids=[c for c in validation if c != "0"],
+        validation=validation,
+        fit=None,
+        values={c: {} for c in validation},
+        trial_counts={c: 2 for c in validation},
+        completed={c: 2 for c in validation},
+        criteria=criteria,
+        rule=Mean(),
+    )
+    assert report.objectives["a"] == report.objectives["0"]
+    assert report.champion_id == "0"
+    assert report.adjusted_means["a"] == {HELP: report.objectives["0"]} == report.adjusted_means["0"]
+
+
+def test_pick_by_measured_means_ships_the_baseline_over_a_finalist_below_it_that_shares_a_gap():
+    # "worse" is below the baseline on "hard", the only case both were judged on, and "weak" shares its gap on
+    # "easy": "weak" must not raise "worse"'s fill there.
+    criteria = Criteria(Maximize(HELP), [], REGISTRY)
+
+    def scores(candidate_id, help_by_case):
+        return _train_scores(candidate_id, {c: {HELP: v} for c, v in help_by_case.items()}, criteria)
+
+    validation = {
+        "0": scores("0", {"easy": 0.7, "hard": 0.5}),
+        "worse": scores("worse", {"hard": 0.45}),
+        "weak": scores("weak", {"hard": 0.1}),
+    }
+    report = pick(
+        baseline_id="0",
+        finalist_ids=["worse", "weak"],
+        validation=validation,
+        fit=None,
+        values={c: {} for c in validation},
+        trial_counts={c: 2 for c in validation},
+        completed={c: 2 for c in validation},
+        criteria=criteria,
+        rule=Mean(),
+    )
+    assert report.champion_id == "0"
+    assert report.objectives["worse"] == pytest.approx(0.55) and report.objectives["0"] == pytest.approx(0.6)
+
+
+def _pick_measured(criteria, pool, tokens=None):
+    """`pick(fit=None)` on validation scores `pool` (candidate -> case -> HELP, N/A left out), "0" the baseline."""
+    cases = list(dict.fromkeys(k for by in pool.values() for k in by))
+    validation = {
+        c: _train_scores(
+            c,
+            {k: ({HELP: by[k]} if k in by else {}) | ({TOKENS: tokens[c]} if tokens else {}) for k in cases},
+            criteria,
+        )
+        for c, by in pool.items()
+    }
+    return pick(
+        baseline_id="0",
+        finalist_ids=[c for c in pool if c != "0"],
+        validation=validation,
+        fit=None,
+        values={c: {} for c in pool},
+        trial_counts={c: 1 for c in pool},
+        completed={c: 1 for c in pool},
+        criteria=criteria,
+        rule=Mean(),
+    )
+
+
+def test_pick_weighs_each_fill_by_the_cases_its_difference_rests_on():
+    # "w" equals the baseline on a, is below it on c, and is N/A on b. "x", weak and judged on b, shares only a with
+    # "w"; counted as much as the baseline, it filled b at 0.625, above both scores measured there, and "w" shipped.
+    report = _pick_measured(
+        Criteria(Maximize(HELP), [], REGISTRY),
+        {"0": {"a": 0.7, "b": 0.5, "c": 0.5}, "w": {"a": 0.7, "c": 0.4}, "x": {"a": 0.1, "b": 0.2}},
+    )
+    assert report.champion_id == "0"
+
+
+def test_pick_fills_unshifted_only_when_no_candidate_shares_a_case():
+    # "d" is judged only on "w"'s gap (and is over the token cap, so it can't ship). The baseline shares "hard" with
+    # "w", so it alone fills "easy"; "d"'s unshifted 1.0 used to go in beside it, and "w" shipped.
+    report = _pick_measured(
+        Criteria(Maximize(HELP), [AtMost(TOKENS, 1000.0)], REGISTRY),
+        {"0": {"easy": 0.7, "hard": 0.5}, "w": {"hard": 0.42}, "d": {"easy": 1.0}},
+        tokens={"0": 500.0, "w": 500.0, "d": 2000.0},
+    )
+    assert report.champion_id == "0"
+
+
+def test_pick_float_noise_in_a_fill_below_the_floor_does_not_beat_a_tie():
+    # Under Minimize at a floor of 0, "w" matches the baseline where judged; its fill on c averages 0.0 with
+    # 0.3 + (-0.30000000000000004), a hair below 0. Nothing measured on c is below 0, so it is clipped and the
+    # baseline wins the tie.
+    report = _pick_measured(
+        Criteria(Minimize(HELP), [], REGISTRY),
+        {"0": {"a": 0.0, "b": 0.0, "c": 0.0}, "w": {"a": 0.0, "b": 0.0}, "x": {"a": 0.4, "b": 0.2, "c": 0.3}},
+    )
+    assert report.champion_id == "0"
+    assert report.adjusted_means["w"] == {HELP: 0.0}
+
+
+def test_pick_reports_adjusted_means_for_every_assessed_candidate():
+    criteria = Criteria(Maximize(HELP), [], REGISTRY)
+    validation = {"0": _val_scores("0", 0.6), "a": _val_scores("a", 0.9), "b": _val_scores("b", 0.7)}
+    fit = _FixedFit({"0": {HELP: Estimate(mean=0.6, sd=0.01)}, "a": {HELP: Estimate(mean=0.9, sd=0.01)}})
+    report = pick(
+        baseline_id="0",
+        finalist_ids=["a", "b"],
+        validation=validation,
+        fit=fit,
+        values={c: {} for c in validation},
+        trial_counts={c: 2 for c in validation},
+        completed={c: 2 for c in validation},
+        criteria=criteria,
+        rule=Mean(),
+    )
+    # "b" isn't in the fit, so it is assessed by measured means; the others from the fit.
+    assert report.adjusted_means == {"0": {}, "a": {}, "b": {HELP: 0.7}}
 
 
 def test_pick_under_pareto_a_gain_tie_with_another_trade_off_ships_the_baseline():
@@ -672,3 +899,106 @@ def test_pick_under_pareto_leaves_a_finalist_with_no_completed_validation_trial_
     assert pick(**kwargs, completed={c: 2 for c in validation}).champion_id == "a"  # what the check prevents
     report = pick(**kwargs, completed={"0": 2, "a": 0, "b": 2})
     assert report.champion_id == "b" and "a" not in report.front and "a" in report.infeasible
+
+
+class _TokensFlagged:
+    """A validation fit that predicts 500 tokens for everyone, flagged on tokens."""
+
+    flagged = [TOKENS]
+    diagnostics: dict = {}
+    metrics: dict = {}
+
+    def __init__(self, helpfulness):
+        self.helpfulness = helpfulness
+        self.candidates = frozenset(helpfulness)
+
+    def estimates(self, values, candidate=None):
+        return {HELP: Estimate(mean=self.helpfulness[candidate], sd=0.01), TOKENS: Estimate(mean=500.0, sd=1.0)}
+
+
+def test_pick_judges_a_flagged_metric_by_its_measured_mean_and_the_others_by_the_fit():
+    criteria = Criteria(Maximize(HELP), [AtMost(TOKENS, 1000)], REGISTRY)
+
+    def scores(candidate_id, help_value, tokens):
+        cases = ("v1", "v2")
+        return CandidateScores(
+            candidate_id=candidate_id,
+            objective_by_case={c: help_value for c in cases},
+            metrics_by_case={c: {HELP: help_value, TOKENS: tokens} for c in cases},
+            unavailable={},
+            objective_by_run={c: [help_value] for c in cases},
+            metrics_by_run={c: {HELP: [help_value], TOKENS: [tokens]} for c in cases},
+            objective=help_value,
+            is_eligible=True,
+            failures=0,
+        )
+
+    validation = {"0": scores("0", 0.9, 800.0), "a": scores("a", 0.5, 1200.0), "b": scores("b", 0.6, 900.0)}
+    report = pick(
+        baseline_id="0",
+        finalist_ids=["a", "b"],
+        validation=validation,
+        fit=_TokensFlagged({"0": 0.6, "a": 0.8, "b": 0.7}),
+        values={c: {} for c in validation},
+        trial_counts={c: 2 for c in validation},
+        completed={c: 2 for c in validation},
+        criteria=criteria,
+        rule=Mean(),
+    )
+    # Helpfulness from the fit ("b" beats the baseline); tokens measured, so "a" misses the limit the fit says it meets.
+    assert report.champion_id == "b" and report.objectives == {"0": 0.6, "a": 0.8, "b": 0.7}
+    assert report.infeasible == {"a": "tokens <= 1000: mean 1200 violates by 200"}
+    assert report.estimates["a"] == {HELP: Estimate(mean=0.8, sd=0.01)}
+    # Tokens, judged by its adjusted mean, is reported for every candidate, though each is assessed from the fit.
+    assert report.adjusted_means == {"0": {TOKENS: 800.0}, "a": {TOKENS: 1200.0}, "b": {TOKENS: 900.0}}
+
+
+def test_choose_finalists_judges_a_flagged_constraint_metric_by_its_adjusted_mean():
+    # The fit (flagged on tokens) ranks "a" first, but its tokens sit at the limit with a spread, so only "b"
+    # (always 600) holds with margin. Judging "a" by the fit's 500 tokens would have let it hold too.
+    criteria = Criteria(Maximize(HELP), [AtMost(TOKENS, 1000)], REGISTRY, feasibility_threshold=0.9)
+    tokens = {"0": [600.0] * 6, "a": [900.0, 1100.0, 900.0, 1100.0, 1000.0, 1000.0], "b": [600.0] * 6}
+    train = {
+        c: _train_scores(c, {f"t{i}": {HELP: 0.5, TOKENS: t} for i, t in enumerate(ts)}, criteria)
+        for c, ts in tokens.items()
+    }
+    fit = _TokensFlagged({"0": 0.5, "a": 0.8, "b": 0.7})
+    finalists, ranking, _ = _choose(train, criteria, 1, fit=fit)
+    assert ranking[:2] == ["a", "b"] and finalists == ["b"]
+
+
+class _HelpFlagged:
+    """A train fit that predicts tokens per candidate, flagged on HELP."""
+
+    flagged = [HELP]
+    diagnostics: dict = {}
+    metrics: dict = {}
+
+    def __init__(self, tokens):
+        self.tokens = tokens
+        self.candidates = frozenset(tokens)
+
+    def estimates(self, values, candidate=None):
+        return {HELP: Estimate(mean=0.9, sd=0.01), TOKENS: Estimate(mean=self.tokens[candidate], sd=1.0)}
+
+
+def test_choose_finalists_widens_a_flagged_metric_s_spread_over_its_filled_cases():
+    # HELP is flagged, so its floor is judged by the adjusted mean while the fit ranks by tokens. The cheapest, "c",
+    # equals the others on the easy cases and is N/A on "hard": on its judged cases alone it shows no spread and
+    # would take the one slot. With "hard" filled in it spreads, and "b", steady everywhere, holds with margin.
+    criteria = Criteria(Minimize(TOKENS), [AtLeast(HELP, 0.85)], REGISTRY, feasibility_threshold=0.9)
+    helps = {
+        "0": {"e1": 1.0, "e2": 1.0, "hard": 0.6},
+        "b": {"e1": 1.0, "e2": 1.0, "hard": 1.0},
+        "c": {"e1": 1.0, "e2": 1.0, "hard": None},
+    }
+    tokens = {"0": 300.0, "b": 200.0, "c": 100.0}
+    train = {
+        c: _train_scores(
+            c, {k: ({HELP: v} if v is not None else {}) | {TOKENS: tokens[c]} for k, v in by_case.items()}, criteria
+        )
+        for c, by_case in helps.items()
+    }
+    finalists, ranking, _ = _choose(train, criteria, 1, fit=_HelpFlagged(tokens))
+    assert ranking == ["c", "b", "0"]
+    assert finalists == ["b"]

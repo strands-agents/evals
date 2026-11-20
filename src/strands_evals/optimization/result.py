@@ -138,9 +138,11 @@ class OptimizationResult(BaseModel):
         test: The champion against the baseline on test, report only: a negative `mean_diff` is possible
             and never changes what ships. When the baseline ships it is compared with itself. None without
             test cases, when it couldn't be afforded, or when every test trial of the champion or the baseline
-            failed (`test_reason` says which).
-        test_reason: Why `test` is None (the `test` event's reason), or under `Pareto` which front members
-            the test report couldn't afford or measured nothing for; None when everything ran.
+            failed (`test_reason` says which). When it couldn't be afforded, or each of the champion and the
+            baseline with no completed test trial has one left `infrastructure_invalid`, the `test` event isn't
+            written, so `Optimizer.resume` on the run runs the test again (with a `Budget` that affords it).
+        test_reason: Why `test` is None, or under `Pareto` which front members the test report couldn't
+            afford or measured nothing for; None when everything ran.
         front_test: Under a `Pareto` objective, each tested front member against the baseline on test
             (`front_test[best.id]` is `test` when the champion is on the validated front; members not afforded
             or with every test trial failed are absent); `{}` otherwise or when the test report was skipped.
@@ -152,14 +154,18 @@ class OptimizationResult(BaseModel):
         iterations: Every search step, in order.
         rollouts_spent: Rollouts counted against the budget, the end phase's included.
         stop_reason: Why the search stopped: `budget` (what's left after the end-phase reserves can't score
-            one more candidate), `iterations` (the cap), `exhausted` (the schedule had nothing left), or
-            `proposer_error` (a proposer raised). The end phase runs after any of them. Never `setup`: a setup
-            stop raises instead of returning.
+            one more candidate), `iterations` (the cap), or `exhausted` (the schedule had nothing left). The end
+            phase runs after any of them. Never `setup`: a setup stop raises instead of returning, and so does a
+            proposer that raises (`ProposerError`, before the end phase).
         agent_cost: The agent's own usage per split (each trial's last attempt): train = the search,
             validation and test = the end phase.
         search_cost: Total proposer usage.
         judge_cost: Judge usage per trial's last attempt, as `agent_cost` counts the agent's.
         retry_cost: Agent and judge usage in earlier attempts (`TrialRecord.previous_attempts`).
+        benchmark_cost: Usage of the other agents in the rollouts (`TrialRecord.benchmark_usage`: a
+            simulated user, an agent the environment built), in every attempt; never counted in
+            `agent_cost` or `retry_cost`. Zero when the agents can't be told apart (the `build_task` path, a
+            factory that returned something else).
         reports: Candidate id -> split -> the `EvaluationReport` `Experiment` would have returned for those
             trials (every run's rows, each tagged with `run_index`; failed trials as `Experiment`'s score-0
             rows), for every candidate and split it has trials on. Display only: nothing in the run reads it.
@@ -185,6 +191,7 @@ class OptimizationResult(BaseModel):
     search_cost: Usage
     judge_cost: Usage
     retry_cost: Usage
+    benchmark_cost: Usage = Field(default_factory=Usage.zero)
     # Left out of the repr: every trial's rows and evaluation data, hundreds of kilobytes on a real run.
     reports: dict[str, dict[SplitName, EvaluationReport]] = Field(repr=False)
     rows: dict[Grain, list[dict[str, Any]]] = Field(repr=False)
@@ -217,8 +224,10 @@ class OptimizationResult(BaseModel):
 
     def summary(self) -> str:
         """The run in a few lines: why the search stopped, what ships and why, every finalist on validation
-        (the validation fit's estimate next to the measured mean), under `Pareto` the validated front, the
-        test report, what changed, and the costs."""
+        (the validation fit's estimate next to the measured mean; without the fit, the adjusted mean the pick
+        used, marked `adjusted`, next to the measured mean when they differ), under `Pareto` the validated front, the
+        test report, what changed, the costs, and why there are no effects or which metrics the held-out
+        check flagged."""
         goals = list(dict.fromkeys(goal["metric"] for goal in self.effects.get("goals", [])))
         v = self.validation
         steps = len(self.iterations)
@@ -290,10 +299,22 @@ class OptimizationResult(BaseModel):
             "",
             f"Agent tokens: {cost['train'].tokens} train (the search), {cost['validation'].tokens} validation, "
             f"{cost['test'].tokens} test. Proposers {self.search_cost.tokens}, judges {self.judge_cost.tokens}, "
-            f"earlier attempts {self.retry_cost.tokens}.",
+            f"earlier attempts {self.retry_cost.tokens}, other agents in the rollouts {self.benchmark_cost.tokens}.",
         ]
+        metrics = self.effects.get("metrics", {})
+        flagged = [m for m, d in metrics.items() if d.get("diagnostics", {}).get("flagged")]
         if self.effects.get("reason"):
             lines.append(f"Effects: none ({self.effects['reason']}).")
+        elif flagged and len(flagged) == len(metrics):
+            lines.append(
+                f"Effects: the held-out check flagged {', '.join(flagged)}; "
+                "from then on the search ranked by measured means, not the fit."
+            )
+        elif flagged:
+            lines.append(
+                f"Effects: the held-out check flagged {', '.join(flagged)}; from then on the search ranked "
+                f"{'it' if len(flagged) == 1 else 'them'} by measured means and the other metrics by the fit."
+            )
         return "\n".join(lines)
 
     def _name(self, candidate_id: str) -> str:
@@ -303,13 +324,19 @@ class OptimizationResult(BaseModel):
         return f"candidate {self.candidates[candidate_id].number} ({candidate_id})"
 
     def _metric_cell(self, candidate_id: str, metric: str) -> str:
-        """A validation cell: the fit's estimate with its sd and the measured mean, or the measured mean alone."""
+        """A validation cell: the fit's estimate with its sd and the measured mean; without the fit, the adjusted mean
+        the pick used and the measured mean when they differ, else the measured mean alone."""
         estimate = self.validation.estimates.get(candidate_id, {}).get(metric)
         measured = self.validation.measured.get(candidate_id, {}).get(metric)
         if estimate is not None:
             text = f"{estimate.mean:.3g} ± {estimate.sd:.2g}"
             return text + (f" (measured {measured.mean:.3g})" if measured is not None else "")
-        return "-" if measured is None else f"{measured.mean:.3g} (measured)"
+        if measured is None:
+            return "-"
+        adjusted = self.validation.adjusted_means.get(candidate_id, {}).get(metric)
+        if adjusted is not None and f"{adjusted:.3g}" != f"{measured.mean:.3g}":
+            return f"{adjusted:.3g} adjusted (measured {measured.mean:.3g})"
+        return f"{measured.mean:.3g} (measured)"
 
     def to_rows(self, grain: Grain = "proposal") -> list[dict[str, Any]]:
         """The run as flat rows, built from the event log, so a resumed run's rows cover the whole run.
@@ -463,6 +490,7 @@ def _proposal_rows(
             estimate = label.estimates.get(m) if label is not None else None
             out[f"estimate.{m}"] = None if estimate is None else estimate.mean
             out[f"estimate_sd.{m}"] = None if estimate is None else estimate.sd
+            out[f"adjusted.{m}"] = label.adjusted_means.get(m) if label is not None else None
         for m in metrics:
             measured = label.measured.get(m) if label is not None else None
             out[f"train.{m}"] = None if measured is None else measured.mean
@@ -671,8 +699,10 @@ def _reports(
 
     Rows in evaluator order, then the split's case order, then run index. A trial whose task raised
     (`agent_failure`, `infrastructure_invalid`) gets a score-0 row per evaluator with `Experiment`'s reason
-    ("An error occurred: <error>") and the case itself as the row; an evaluator in `evaluator_errors` gets a
-    score-0 row with "Evaluator error: <exception type>" (the record keeps only the type). Each row is tagged
+    ("An error occurred: <error>") and the case itself as the row, as does each evaluator without a score in
+    any other trial with `error` set (`Experiment` failed on its case after the task returned, or in a
+    re-judge, which keeps the first pass's scores); an evaluator in `evaluator_errors` gets a score-0 row
+    with "Evaluator error: <exception type>" (the record keeps only the type). Each row is tagged
     `evaluator`, `evaluator_type`, and `run_index`. So `overall_score` is what a plain eval run of the same
     trials reports.
 
@@ -703,7 +733,8 @@ def _reports(
                 for record in ordered:
                     case = by_name[record.case_name]
                     tag = {"evaluator": name, "evaluator_type": type_name, "run_index": record.run_index}
-                    if record.status in (TrialStatus.AGENT_FAILURE, TrialStatus.INFRASTRUCTURE_INVALID):
+                    raised = record.status in (TrialStatus.AGENT_FAILURE, TrialStatus.INFRASTRUCTURE_INVALID)
+                    if raised or (record.error is not None and name not in record.evaluations):
                         rows.append({**case.model_dump(), **tag})
                         scores.append(0.0)
                         passes.append(False)

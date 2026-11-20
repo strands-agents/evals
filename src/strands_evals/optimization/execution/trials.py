@@ -6,6 +6,8 @@ import asyncio
 import json
 import logging
 import math
+import random
+import time
 from collections import Counter
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -23,11 +25,27 @@ from ...types.evaluation import EvaluationData, EvaluationOutput
 from ...types.optimization import AttemptRecord, SplitName, TrialRecord, TrialStatus, Usage, near
 from ...types.trace import Session
 from .rollout import _THREAD_POOL, TaskFn, TrialLog, TrialLogEntry, instrument
+from .status import classify
 from .traces import EvaluatorView, TraceCapture
 
 logger = logging.getLogger(__name__)
 
 _Key = tuple[str, int]  # (case name, run index)
+
+# The wait before re-running a trial that failed on infrastructure, in seconds, counted from when it failed: drawn
+# from [2.5, 5] for the first re-run pass, and each later pass's range doubles, up to [30, 60].
+_RERUN_WAIT = 5.0
+_MAX_RERUN_WAIT = 60.0
+_JITTER = random.SystemRandom()  # OS entropy: neither `random.seed()` nor a fork puts separate runs in step
+_sleep = asyncio.sleep  # tests replace it and `_clock` to record the waits
+_clock = time.monotonic
+
+
+def _rerun_wait(pass_index: int) -> float:
+    """Seconds to wait before re-run pass `pass_index` (1-based): uniform in [cap / 2, cap], where cap is
+    `_RERUN_WAIT * 2 ** (pass_index - 1)`, at most `_MAX_RERUN_WAIT`."""
+    cap = min(_MAX_RERUN_WAIT, _RERUN_WAIT * 2.0 ** min(pass_index - 1, 32))  # a large exponent would overflow
+    return _JITTER.uniform(cap / 2, cap)
 
 
 @dataclass
@@ -37,6 +55,7 @@ class _TrialState:
     trace_id: str | None = None
     trace_ids: set[str] = field(default_factory=set)
     errors: dict[str, str] = field(default_factory=dict)  # evaluator name -> exception type
+    infrastructure: set[str] = field(default_factory=set)  # evaluators whose error is `infrastructure_invalid`
     released: bool = False  # the trial's traces were released: a judge still running must not register again
 
 
@@ -50,6 +69,9 @@ class _EvaluatorProxy:
     row's score outside the evaluator's range (its `score_range`, else (0, 1); N/A rows aside), which scoring
     would otherwise take out with no repair. Not a
     subclass: `get_type_name` is a classmethod and would name the proxy.
+
+    It also records whether `classify` classifies the exception as `infrastructure_invalid`, so the re-run
+    pass waits before re-judging that evaluator.
     """
 
     def __init__(self, evaluator: Evaluator, traces: TraceCapture, state: _TrialState) -> None:
@@ -96,8 +118,13 @@ class _EvaluatorProxy:
                     raise ValueError(f"evaluator {name} returned {score!r}, outside its range [{low}, {high}]")
         except Exception as error:
             self._state.errors[name] = type(error).__name__
+            if classify(error) is TrialStatus.INFRASTRUCTURE_INVALID:
+                self._state.infrastructure.add(name)
+            else:
+                self._state.infrastructure.discard(name)
             raise
         self._state.errors.pop(name, None)  # Experiment retried a throttled call and it succeeded
+        self._state.infrastructure.discard(name)
         return outputs
 
     def aggregator(self, outputs: list[EvaluationOutput]) -> tuple[float, bool, str]:
@@ -160,6 +187,11 @@ class TrialRunner:
     `rerun_passes` caps the re-run passes per call (infrastructure re-runs and failed-evaluator re-judges);
     this runner never retries inside a trial. `Experiment` keeps its own throttling retries inside one trial's
     task span; each retry is an attempt (`TrialRecord.previous_attempts`).
+
+    A transient model error is best retried inside the call by the model client, which the agent factory
+    configures (`Optimizer`'s `rerun_passes` says how for Bedrock). The re-run passes are for what still
+    fails, and a trial whose agent or evaluator failed on infrastructure is re-run only after a wait from
+    when it failed (`run`).
     """
 
     def __init__(
@@ -194,6 +226,13 @@ class TrialRunner:
         way. A failed judge, on infrastructure or not, never changes the trial's status: the trial stays
         `completed` with that evaluator in `evaluator_errors` (every evaluator failed is
         `evaluator_invalid`), and only the agent side makes a trial `infrastructure_invalid`.
+
+        When `Experiment` fails on the case after the task returned (it can't serialize the output for
+        its span, say), it writes a case-level placeholder row (score 0) for every evaluator, and none is
+        taken as a score. With at least one evaluator the trial is `evaluator_invalid`, else `completed`;
+        its `error_type` and `error` are the exception `Experiment` caught, and no evaluator is in
+        `evaluator_errors`, so it is never re-judged: judging again is expected to fail the same way, or,
+        when `Experiment` failed before saving the output, would judge an output of None.
 
         Args:
             cases: Every case of the run.
@@ -283,6 +322,10 @@ class TrialRunner:
         `task` is not yet instrumented (`make_task(...)` or the `build_task` path's task); each trial (one
         case, one run) wraps it with `instrument(task, TrialLog(), traces)`. After every run's first pass, up
         to `rerun_passes` re-run passes each retry the trials still `infrastructure_invalid` or with a failed evaluator.
+        A trial whose agent failed on infrastructure, or whose evaluator failed with an error `classify` classifies
+        as `infrastructure_invalid`, is re-run only once a jittered 2.5-5 s has passed since it failed; each later
+        pass's range doubles, up to 30-60 s. The wait holds no slot of the cap, and the pass's other trials (a
+        re-judge of a bad verdict, say) start at once.
         `allowance` caps the rollouts of the whole call, first pass included: the caller checks
         `can_afford(pending(...))` first, so the first pass always fits, and the re-runs get what is left of
         it (`BudgetTracker.allowance(phase=...)` read before the call, so `max_rollouts` and the later
@@ -367,7 +410,19 @@ class TrialRunner:
                         jobs.append((key, True))
                 if not jobs:
                     break
-                spent += await self._pass(call, jobs, pass_index=pass_index)
+                failed = [call.infrastructure[key] for key, _ in jobs if key in call.infrastructure]
+                wait = _rerun_wait(pass_index) if failed else 0.0
+                if failed:
+                    logger.warning(
+                        "candidate_id=<%s>, pass=<%d>, trials=<%d>, error_type=<%s>, wait_seconds=<%.1f> | "
+                        "waiting before re-running trials that failed on infrastructure",
+                        candidate_id,
+                        pass_index,
+                        len(failed),
+                        failed[0][0],
+                        wait,
+                    )
+                spent += await self._pass(call, jobs, pass_index=pass_index, wait=wait)
         except Exception:
             pool.shutdown(wait=False)  # `_pass` raises only after every trial it started has returned
             raise
@@ -378,8 +433,11 @@ class TrialRunner:
             _THREAD_POOL.reset(token)
         return [call.records[key] for key in keys], spent
 
-    async def _pass(self, call: _Call, jobs: list[tuple[_Key, bool]], *, pass_index: int) -> int:
+    async def _pass(self, call: _Call, jobs: list[tuple[_Key, bool]], *, pass_index: int, wait: float = 0.0) -> int:
         """Run one pass's trials at once under the call's cap; returns the rollouts it spent.
+
+        A trial that last failed on infrastructure (`call.infrastructure`) starts only once `wait` seconds
+        have passed since it failed, waiting outside the cap.
 
         On a setup error or a failed save, trials not yet started are skipped, the running ones finish
         and are saved, then the first error is raised.
@@ -389,6 +447,10 @@ class TrialRunner:
 
         async def one(key: _Key, judge_only: bool) -> None:
             nonlocal ran
+            if key in call.infrastructure:
+                remaining = wait - (_clock() - call.infrastructure[key][1])
+                if remaining > 0:
+                    await _sleep(remaining)
             async with call.semaphore:
                 if failures:
                     return
@@ -444,7 +506,9 @@ class TrialRunner:
             view = self._traces.evaluator_view(trace_id)
             if judge_only:
                 assert previous is not None
-                record = self._rejudged(previous, report, evaluators, state, view, pass_index=call.passes.get(key, 0))
+                record = self._rejudged(
+                    call, previous, trace_id, report, evaluators, state, view, pass_index=call.passes.get(key, 0)
+                )
             else:
                 assert entry is not None
                 record = self._ran(call, key, entry, store.data, report, state, view, pass_index=pass_index)
@@ -455,6 +519,13 @@ class TrialRunner:
             self._traces.release(log.trace_ids | state.trace_ids)
         if store.data is not None and record.status is not TrialStatus.INFRASTRUCTURE_INVALID:
             call.live[key] = store.data
+        judges = [name for name in record.evaluator_errors if name in state.infrastructure]
+        if record.status is TrialStatus.INFRASTRUCTURE_INVALID:
+            call.infrastructure[key] = (record.error_type or "", _clock())
+        elif judges:
+            call.infrastructure[key] = (record.evaluator_errors[judges[0]], _clock())
+        else:
+            call.infrastructure.pop(key, None)
         return record
 
     def _ran(
@@ -484,6 +555,7 @@ class TrialRunner:
                 judge_usage=Usage.zero(),
                 pass_index=pass_index,
                 rollouts=0,  # Experiment's throttling retries aren't counted against the budget
+                benchmark_usage=self._traces.benchmark_usage(entry.trace_id, span_id),
             )
             for span_id, status, error_type, error in entry.previous_attempts
         ]
@@ -491,6 +563,24 @@ class TrialRunner:
         evaluations, details, errors, judge_usage = (
             self._judged({}, {}, {}, self._evaluators, report, state, view) if completed else ({}, {}, {}, {})
         )
+        error_type, error = entry.error_type, entry.error
+        if completed:
+            case_error_type, case_error = self._traces.case_error(entry.trace_id)
+            if case_error_type is not None:
+                # `Experiment` failed on the case after the task returned, so every row is a case-level
+                # placeholder. No evaluator is left in `errors`: a re-judge would replay the same output
+                # through the same failure and only spend judge calls.
+                error_type, error = case_error_type, case_error
+                evaluations, details, errors = {}, {}, {}
+                logger.warning(
+                    "candidate_id=<%s>, case_name=<%s>, run_index=<%s>, error_type=<%s>, error=<%s> | case failed "
+                    "after the task returned | no evaluator score recorded",
+                    call.candidate_id,
+                    case_name,
+                    run_index,
+                    error_type,
+                    error,
+                )
         status = entry.status
         if completed and self._evaluators and not evaluations:
             status = TrialStatus.EVALUATOR_INVALID
@@ -509,8 +599,8 @@ class TrialRunner:
             run_index=run_index,
             split=self._split_of[case_name],
             status=status,
-            error_type=entry.error_type,
-            error=entry.error,
+            error_type=error_type,
+            error=error,
             attempts=len(earlier) + 1,
             previous_attempts=earlier,
             output=_storable(kept.actual_output, call, "output") if kept is not None else None,
@@ -523,11 +613,14 @@ class TrialRunner:
             usage=self._traces.usage(entry.trace_id, entry.attempt_span_id),
             judge_usage=judge_usage,
             rollouts=1,
+            benchmark_usage=self._traces.benchmark_usage(entry.trace_id, entry.attempt_span_id),
         )
 
     def _rejudged(
         self,
+        call: _Call,
         previous: TrialRecord,
+        trace_id: str,
         report: Any,
         evaluators: Sequence[Evaluator],
         state: _TrialState,
@@ -539,17 +632,41 @@ class TrialRunner:
 
         `pass_index` is the pass `previous` ran in (0 for a record from an earlier call).
 
-        Each cost stays with what it bought: the new record keeps the output's usage and each kept
-        score's judge spend; the replaced attempt keeps its rollout, no usage, and only its failed
-        judges' spend.
+        Each cost stays with what it bought: the new record keeps the output's usage (its benchmark
+        usage too) and each kept score's judge spend; the replaced attempt keeps its rollout, no usage,
+        and only its failed judges' spend.
+
+        When `Experiment` failed on the case after the evaluators ran, its rows are case-level placeholders,
+        as in `_ran`: none is taken as a score, no re-judged evaluator is left in `evaluator_errors` (judging
+        again is expected to fail the same way), and `error_type` and `error` name the exception. The first
+        pass's scores are kept.
         """
         kept = {name: previous.judge_usage[name] for name in previous.evaluations if name in previous.judge_usage}
         evaluations, details, errors, judge_usage = self._judged(
             dict(previous.evaluations), dict(previous.details), {}, evaluators, report, state, view
         )
+        error_type, error = previous.error_type, previous.error
+        case_error_type, case_error = self._traces.case_error(trace_id)
+        if case_error_type is not None:
+            error_type, error = case_error_type, case_error
+            for evaluator in evaluators:
+                name = evaluator.get_name()
+                evaluations.pop(name, None)
+                details.pop(name, None)
+                errors.pop(name, None)
+            logger.warning(
+                "candidate_id=<%s>, case_name=<%s>, run_index=<%s>, error_type=<%s>, error=<%s> | case failed "
+                "after the evaluators were judged again | no evaluator score recorded",
+                call.candidate_id,
+                previous.case_name,
+                previous.run_index,
+                case_error_type,
+                case_error,
+            )
         replaced = _replaced(previous, pass_index=pass_index).model_copy(
             update={
                 "usage": Usage.zero(),
+                "benchmark_usage": Usage.zero(),
                 "judge_usage": sum(
                     (u for name, u in previous.judge_usage.items() if name in previous.evaluator_errors),
                     Usage.zero(),
@@ -560,6 +677,8 @@ class TrialRunner:
         return previous.model_copy(
             update={
                 "status": TrialStatus.EVALUATOR_INVALID if not evaluations else TrialStatus.COMPLETED,
+                "error_type": error_type,
+                "error": error,
                 "attempts": len(earlier) + 1,
                 "previous_attempts": earlier,
                 "evaluations": evaluations,
@@ -582,8 +701,9 @@ class TrialRunner:
     ) -> tuple[dict[str, EvaluationOutput], dict[str, list[EvaluationOutput]], dict[str, str], dict[str, Usage]]:
         """Fold this attempt's evaluator results into `evaluations` / `details` / `errors`.
 
-        `Experiment`'s report holds one row per evaluator it ran; a failed evaluator's row is a score-0
-        placeholder, dropped here. Experiment's own no-evaluator placeholder is never in `evaluators`.
+        `Experiment`'s report holds one row per evaluator; a failed evaluator's row is a score-0
+        placeholder, dropped here. Case-level placeholder rows (`Experiment` failed on the case itself) are
+        dropped by `_ran` and `_rejudged`. Experiment's own no-evaluator placeholder is never in `evaluators`.
         """
         rows = {row["evaluator"]: i for i, row in enumerate(report.cases)} if evaluators else {}
         judge_usage: dict[str, Usage] = {}
@@ -617,6 +737,8 @@ class _Call:
     records: dict[_Key, TrialRecord] = field(default_factory=dict)
     live: dict[_Key, EvaluationData] = field(default_factory=dict)  # each trial's output as the task returned it
     passes: dict[_Key, int] = field(default_factory=dict)  # the pass each record of this call ran in
+    # trials whose last attempt failed on infrastructure (the agent, else an evaluator) -> (error type, when)
+    infrastructure: dict[_Key, tuple[str, float]] = field(default_factory=dict)
     warned: set[str] = field(default_factory=set)  # the fields `_storable` has warned about
 
 
@@ -643,6 +765,7 @@ def _replaced(record: TrialRecord, *, pass_index: int) -> AttemptRecord:
         judge_usage=sum(record.judge_usage.values(), Usage.zero()),
         pass_index=pass_index,
         rollouts=record.rollouts,
+        benchmark_usage=record.benchmark_usage,
     )
 
 

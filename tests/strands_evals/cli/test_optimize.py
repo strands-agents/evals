@@ -146,6 +146,28 @@ def test_resume_finishes_a_killed_run_from_its_folder_alone(experiment_path, tmp
     assert resumed.rollouts_spent == original.rollouts_spent
 
 
+def test_resume_runs_the_test_of_a_run_whose_test_was_not_saved_as_done(experiment_path, tmp_path, capsys):
+    # A run with result.json but no `test` event is what a test report skipped for the budget or for
+    # infrastructure failures leaves behind: resume must run the test, not print the saved result.
+    assert main(_run_args(experiment_path, tmp_path)) == 0
+    original = OptimizationResult.from_file(_only_run(tmp_path) / "result.json")
+    root = original.run_dir
+    lines = (root / "events.jsonl").read_text().splitlines()
+    skipped = tmp_path / "skipped" / root.name
+    shutil.copytree(root, skipped)
+    kept = [line for line in lines if json.loads(line)["event"] != "test"]
+    (skipped / "events.jsonl").write_text("\n".join(kept) + "\n")
+    capsys.readouterr()
+
+    assert main(["--json", "optimize", "resume", str(skipped)]) == 0
+    out, err = capsys.readouterr()
+    assert "the run has finished" not in err
+    resumed = OptimizationResult.from_dict(json.loads(out))
+    assert resumed.test is not None and resumed.best.id == original.best.id
+    events = [json.loads(line)["event"] for line in (skipped / "events.jsonl").read_text().splitlines()]
+    assert events.count("test") == 1  # the resume ran the test and saved it as done
+
+
 def test_resume_needs_cli_json(tmp_path, capsys):
     (tmp_path / "run").mkdir()
     (tmp_path / "run" / "run.json").write_text("{}")
@@ -813,8 +835,9 @@ def test_a_search_stopped_by_a_proposer_error_exits_3(experiment_path, tmp_path,
     monkeypatch.chdir(tmp_path)
     assert main(_config_args(experiment_path, config, tmp_path)) == 3
     out, err = capsys.readouterr()
-    assert json.loads(out)["stop_reason"] == "proposer_error"  # the end phase still ran and the result printed
+    assert out == ""  # the search stopped before the end phase, so there is no result to print
     assert "raised RuntimeError: no model access" in err
+    assert "optimize resume" in err  # how to continue the search with the CLI
 
 
 def test_debug_prints_the_traceback_of_a_bad_hook(experiment_path, tmp_path, capsys):

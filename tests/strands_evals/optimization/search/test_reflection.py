@@ -1,7 +1,9 @@
 """Tests for `Reflection`'s tools (the confined shell, the submit tool, the output cap) and its case-name screen."""
 
+import json
 import os
 import select
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -94,10 +96,35 @@ def test_shell_runs_in_the_work_folder(folders):
 
 
 @posix_only
-def test_shell_keeps_the_process_environment(folders, monkeypatch):
-    monkeypatch.setenv("REFLECTION_TEST_VAR", "kept")
+def test_shell_gets_only_path_and_the_locale_from_the_process_environment(folders, monkeypatch):
+    locale = ["LANG", "LC_ALL", "LC_COLLATE", "LC_CTYPE", "LC_MESSAGES", "LC_MONETARY", "LC_NUMERIC", "LC_TIME"]
+    for name in locale:
+        monkeypatch.setenv(name, "C")
+    for name in ("AWS_SECRET_ACCESS_KEY", "REFLECTION_TEST_VAR", "LC_SMUGGLED"):
+        monkeypatch.setenv(name, "fake-secret")
+    monkeypatch.setenv("OLDPWD", folders.other)
     shell = _confined_shell(folders.work, folders.roots, [])
-    assert shell(command="echo $REFLECTION_TEST_VAR").startswith("kept\n")
+    out = shell(command="env | cut -d= -f1")
+    names = set(out.removesuffix("\n[exit code 0]").split()) - {"PWD", "SHLVL", "_"}  # set by bash itself
+    assert names == {"PATH", "HOME", "TMPDIR", *locale}
+
+
+@posix_only
+def test_shell_runs_grep_cat_and_python_with_that_environment(folders, monkeypatch):
+    monkeypatch.setenv("PATH", os.pathsep.join([os.path.dirname(sys.executable), os.environ.get("PATH", os.defpath)]))
+    shell = _confined_shell(folders.work, folders.roots, [])
+    python = os.path.basename(sys.executable)
+    out = shell(command=f"printf 'a\\nb\\n' > f.txt; grep b f.txt; cat f.txt | wc -l; {python} -c 'print(\"ok\")'")
+    assert out.split() == ["b", "2", "ok", "[exit", "code", "0]"]
+
+
+@posix_only
+def test_shell_env_adds_and_replaces_variables_but_never_home_tmpdir_or_oldpwd(folders, monkeypatch):
+    monkeypatch.setenv("LANG", "C")
+    given = {"GIVEN": "given", "LANG": "en_US.UTF-8", "HOME": "/x", "TMPDIR": "/x", "OLDPWD": folders.other}
+    shell = _confined_shell(folders.work, folders.roots, [], shell_env=given)
+    out = shell(command='echo "$GIVEN $LANG $HOME $TMPDIR ${OLDPWD-unset}"')
+    assert out.startswith(f"given en_US.UTF-8 {folders.work} {folders.work} unset\n")
 
 
 @posix_only
@@ -306,6 +333,50 @@ def test_success_threshold_must_be_a_number_or_none(threshold):
 def test_success_threshold_must_be_in_0_1(threshold):
     with pytest.raises(ValueError, match="success_threshold"):
         Reflection(success_threshold=threshold)
+
+
+@pytest.mark.parametrize(
+    "shell_env",
+    [["TOKEN=fake-secret"], {"TOKEN": b"fake-secret"}, {b"TOKEN=fake-secret": "x"}, {"TOKEN=fake-secret": b"x"}],
+)
+def test_shell_env_must_map_strings_to_strings(shell_env):
+    with pytest.raises(TypeError, match="shell_env") as error:
+        Reflection(shell_env=shell_env)
+    assert "fake-secret" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "shell_env",
+    [
+        {"TOKEN=fake-secret": ""},
+        {"TOKEN\0fake-secret": ""},
+        {"TOKEN=X": "fake-secret"},
+        {"TOKEN\0": "fake-secret"},
+        {"T": "fake-secret\0"},
+    ],
+)
+def test_shell_env_must_be_an_environment_a_process_can_take(shell_env):
+    with pytest.raises(ValueError, match="shell_env") as error:
+        Reflection(shell_env=shell_env)
+    assert "fake-secret" not in str(error.value)
+
+
+def test_shell_env_path_must_have_bash_on_it(tmp_path):
+    with pytest.raises(ValueError, match="no bash"):
+        Reflection(shell_env={"PATH": str(tmp_path)})
+
+
+def test_shell_env_is_copied_and_left_out_of_config():
+    given = {"TOKEN": "fake-secret"}
+    proposer = Reflection(shell_env=given)
+    given["TOKEN"] = "changed"
+    assert proposer._shell_env == {"TOKEN": "fake-secret"}
+    assert "TOKEN" not in json.dumps(proposer.config()) and "fake-secret" not in json.dumps(proposer.config())
+
+
+@posix_only
+def test_shell_env_takes_the_whole_process_environment():
+    assert Reflection(shell_env=os.environ)._shell_env == dict(os.environ)
 
 
 def test_observe_keeps_nothing():

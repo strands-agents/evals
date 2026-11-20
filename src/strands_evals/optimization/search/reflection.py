@@ -11,25 +11,37 @@ import math
 import os
 import re
 import select
+import shutil
 import signal
 import subprocess
 import tempfile
 import time
 import warnings
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, ClassVar, cast
 
 from botocore.config import Config as BotocoreConfig
-from strands import Agent, tool
+from strands import Agent, ModelRetryStrategy, tool
+from strands.agent.agent_result import AgentResult
 from strands.experimental.context_manager import ContextState, Offload
 from strands.hooks.events import AfterToolCallEvent
 from strands.models.bedrock import BedrockModel
 from strands.models.model import CacheConfig, Model
 from strands.types.content import Message
+from strands.types.exceptions import MaxTokensReachedException
 from strands.types.tools import AgentTool
 
-from ...types.optimization import CandidateSummary, Observation, Patch, TrialRecord, TrialStatus, Usage, Value
+from ...types.optimization import (
+    CANDIDATE_SPAN_KEY,
+    CandidateSummary,
+    Observation,
+    Patch,
+    TrialRecord,
+    TrialStatus,
+    Usage,
+    Value,
+)
 from ...types.trace import (
     AgentInvocationSpan,
     InferenceSpan,
@@ -39,7 +51,9 @@ from ...types.trace import (
     _to_aware_utc,
 )
 from ..declaration.space import ParamKind
+from ..execution.status import classify, is_credential_error
 from ..prompt_templates.reflection.reflection_v0 import (
+    CUT_OFF,
     REFUSED,
     SUBMIT_INSTRUCTIONS,
     TextVariable,
@@ -57,6 +71,20 @@ _DEFAULT_MODEL_ID = "global.anthropic.claude-sonnet-5-5"  # run at temperature 1
 
 # A tool result longer than this is cut, with a note telling the agent to read less at once.
 _MAX_TOOL_OUTPUT = 100_000
+
+# What the shell takes from this process's environment: what bash, coreutils, grep and python need to find programs
+# and read text in the user's locale. The model is called from this process, so the shell needs no credentials.
+_INHERITED_ENV = (
+    "PATH",
+    "LANG",
+    "LC_ALL",
+    "LC_COLLATE",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "LC_MONETARY",
+    "LC_NUMERIC",
+    "LC_TIME",
+)
 
 # On a context window overflow, a tool result keeps this many characters at each end (`_ShortenToolResultsOnOverflow`).
 _OVERFLOW_KEPT_CHARS = 200
@@ -85,7 +113,12 @@ _VERSION_HEADER = re.compile(r"^# Version \d+(?: \(the baseline\))?[ \t]*\r?\n(?
 _DIGEST_CHARS = 20_000
 _DIGEST_FILE = "DIGEST.md"
 
-_ATTEMPTS = 4  # the agent's first try, then 3 retries
+# A model call failing with a transient error is tried up to this many times in all, Strands waiting 4 s before the
+# first retry and twice as long before each next one, at most 240 s: about 8 minutes of waiting between the tries.
+_MODEL_ATTEMPTS = 8
+_RETRY_DELAY = 4
+_MAX_RETRY_DELAY = 240
+_CUT_OFF_RETRIES = 2  # replies cut at the output limit sent back per conversation; the next one is raised
 _RATIONALE_CHARS = 2_000
 _FALLBACK_RATIONALE = "rewritten by Reflection"  # when the agent's first call ends with no text
 _VERBATIM_CHARS = 40  # a run this long copied from a shown trial is a leak
@@ -98,9 +131,12 @@ class Reflection(Proposer):
     `DIGEST.md`; of each case only its input, no expected field or metadata) and every measured version
     (`request.candidates`: a versions folder plus a ranked table, re-ranked by the latest refit on every
     request), then rewrites the block's texts in full. The versions table is its only history; it keeps no
-    record of its own attempts. Its tools are a shell confined by a path check to its own folders (not a
-    sandbox: it runs with this process's environment and network) and a submit tool; tool output is cut at
-    100,000 characters.
+    record of its own attempts. Its tools are a shell confined by a path check to its own folders and a submit
+    tool; tool output is cut at 100,000 characters. The shell's environment holds only `PATH`, the locale
+    variables (`LANG`, `LC_ALL` and the six POSIX `LC_` categories) and `shell_env`, with `HOME` and `TMPDIR`
+    set to its working folder. It is not a sandbox: it has this machine's network, it can read every file and
+    process this user can (another process's environment included), and a path built at run time
+    (`$(dirname "$HOME")`) passes the path check.
 
     Which of the parent's train trials went well: each trial gets a reward in [0, 1] from the goal's
     bounded metrics (an `agent_failure` gets 0), and a trial succeeds when reward >= `success_threshold`;
@@ -110,11 +146,15 @@ class Reflection(Proposer):
     the objectives' mid-ranks in [0, 1], weighted, compared against `success_threshold` (a median split only at
     0.5).
 
-    Each `propose` call (n=1) runs one agent (`concurrent = True`). The agent is retried 3 times, each
-    failure logged as `proposer_retry`, then the last error is raised; nothing submitted, or every value
-    dropped, returns `[]`. A returned patch's `usage` holds its call's model spend, every attempt and send-back
-    included; a call that returns nothing after its agent ran, or whose agent fails on every attempt, logs that
-    spend as `proposer_usage`
+    Each `propose` call (n=1) runs one agent conversation (`concurrent = True`). A model call that fails with an
+    error a trial would be re-run for (throttling from any model; with Bedrock, also the service's own errors and a
+    lost connection) is tried again in the same conversation with Strands' exponential backoff, up to 8 tries
+    (about 8 minutes of waiting between them), each such failure logged as `proposer_retry`. A reply cut at the
+    model's output limit is sent back in the same conversation to continue, up to 2 times. Any other error (no
+    access to the model, missing credentials, an invalid model id, a rejected request), or one that outlasts those
+    retries, is raised at once. Nothing submitted, or every value dropped, returns `[]`. A returned patch's `usage`
+    holds its call's model spend, every retry and send-back included; a call that returns nothing after its agent
+    ran, or whose agent raised, logs that spend as `proposer_usage`
     instead (nothing when cancelled). Guardrails run in code after the agent returns,
     including the leakage screen (drop a value that adds a shown case's identifier-like name, or a
     verbatim run of >= 40 characters from a shown trial's input, output, or conversation, that the
@@ -139,6 +179,7 @@ class Reflection(Proposer):
         system_prompt: str | None = None,
         success_threshold: float | None = 0.5,
         over_limit_retries: int = 2,
+        shell_env: Mapping[str, str] | None = None,
     ):
         """Configure the proposer agent.
 
@@ -154,11 +195,18 @@ class Reflection(Proposer):
             success_threshold: Reward a trial needs to count as a success; None splits by rank.
             over_limit_retries: How many times a submission with a value over its `size_cap` is sent back to be
                 shortened; 0 drops it at once.
+            shell_env: Variables added to the shell's environment, which otherwise holds only `PATH` and the
+                locale variables from this process's environment; it may replace those. `HOME` and `TMPDIR` are
+                always the working folder, and `OLDPWD` is never set. Copied here: `shell_env=os.environ` gives
+                the shell this process's environment as it is now, credentials included. To pass a few through:
+                `{k: os.environ[k] for k in ("LD_LIBRARY_PATH",) if k in os.environ}`.
 
         Raises:
             TypeError: `model` is not a `Model`, a model id, or None, `system_prompt` is not a string,
-                `success_threshold` is not a number or None, or `over_limit_retries` is not an integer.
-            ValueError: `success_threshold` is outside [0, 1], or `over_limit_retries` is below 0.
+                `success_threshold` is not a number or None, `over_limit_retries` is not an integer, or
+                `shell_env` is not a mapping of strings to strings.
+            ValueError: `success_threshold` is outside [0, 1], `over_limit_retries` is below 0, a `shell_env` name
+                holds `=` or NUL or a value holds NUL, or the `PATH` in `shell_env` has no `bash` on it.
         """
         if model is not None and not isinstance(model, (Model, str)):
             raise TypeError(f"Reflection(model=...) takes a Model, a model id, or None, not {model!r}")
@@ -175,11 +223,32 @@ class Reflection(Proposer):
             raise TypeError(f"Reflection(over_limit_retries=...) must be an integer, not {over_limit_retries!r}")
         if over_limit_retries < 0:
             raise ValueError(f"Reflection(over_limit_retries=...) must be 0 or more, not {over_limit_retries!r}")
+        # Error messages name a variable, never print a value: values may be secrets.
+        if shell_env is not None and not isinstance(shell_env, Mapping):
+            raise TypeError(f"Reflection(shell_env=...) must be a mapping or None, not a {type(shell_env).__name__}")
+        env = dict(shell_env or {})
+        for name, value in env.items():
+            if not isinstance(name, str):
+                raise TypeError(f"Reflection(shell_env=...) takes string names, not a {type(name).__name__}")
+            shown = name.partition("=")[0].partition("\0")[0]  # of a `NAME=value` key, the name only
+            if not isinstance(value, str):
+                raise TypeError(
+                    f"Reflection(shell_env=...) takes string values; {shown!r} maps to a {type(value).__name__}"
+                )
+            if "=" in name or "\0" in name or "\0" in value:
+                raise ValueError(
+                    f"Reflection(shell_env=...): {shown!r} can't be passed (a name holds no `=` or NUL, a value no NUL)"
+                )
+        if "PATH" in env and shutil.which("bash", path=env["PATH"]) is None:
+            raise ValueError(
+                "Reflection(shell_env=...) has a PATH with no bash on it: the shell runs each command in bash"
+            )
         self.model = model
         self.system_prompt = system_prompt
         self.success_threshold = success_threshold
         self.over_limit_retries = over_limit_retries
         self.refused: list[dict[str, Any]] = []
+        self._shell_env = env
         self._warned = False
 
     async def propose(self, request: ProposalRequest) -> list[Patch]:
@@ -188,8 +257,10 @@ class Reflection(Proposer):
 
         Raises:
             RuntimeError: Running on Windows: the agent's shell needs Linux or macOS.
-            Exception: The agent failed `_ATTEMPTS` times in a row: the last error, whatever it is (a wrong model id
-                or no access to the model fails every attempt, and proposing nothing would hide it).
+            Exception: The agent's error, whatever it is: one not worth retrying (a wrong model id or no access to
+                the model, which proposing nothing would hide), a transient one still failing after 8 tries, or
+                `MaxTokensReachedException` after 2 send-backs. Strands wraps an error after the conversation's
+                first tool call in `EventLoopException` (the error is its `original_exception`).
         """
         if os.name == "nt":
             raise RuntimeError(
@@ -200,10 +271,12 @@ class Reflection(Proposer):
         if not self._warned:
             self._warned = True
             warnings.warn(
-                "Reflection runs model-written shell commands on this machine, with this process's environment "
-                "(credentials included) and network. Its path check guards a cooperative model's mistakes and is "
-                "not a sandbox, and trace text can carry prompt injection. Run the optimizer in a container or VM "
-                "without credentials it doesn't need.",
+                "Reflection runs model-written shell commands on this machine. Their environment holds only PATH, "
+                "the locale variables and Reflection(shell_env=...), but they have this machine's network (a cloud "
+                "host's metadata service included) and can read every file and process this user can (credential "
+                "files and other processes' environments included). Reflection's path check guards a cooperative "
+                "model's mistakes and is not a sandbox, and trace text can carry prompt injection. Run the optimizer "
+                "in a container or VM without credentials it doesn't need.",
                 UserWarning,
                 stacklevel=1,  # here: `propose` is a coroutine, so the frame above it is the event loop's
             )
@@ -269,50 +342,45 @@ class Reflection(Proposer):
                 work_folder=work,
             )
             caps = {k: request.space.param(k).size_cap for k in keys}
-            usage = Usage.zero()
             refused: list[dict[str, Any]] = []
             rejected: list[dict[str, str]] = []
-            for attempt in range(_ATTEMPTS):
-                submitted: dict[str, str] = {}
-                agent = Agent(
-                    model=self._model(),
-                    system_prompt=prompt + SUBMIT_INSTRUCTIONS,
-                    tools=[
-                        _confined_shell(work, [traces, versions, work], refused, root, running),
-                        _submit_tool(work, submitted, parent, rejected, caps),
+            submitted: dict[str, str] = {}
+            agent = Agent(
+                model=self._model(),
+                system_prompt=prompt + SUBMIT_INSTRUCTIONS,
+                tools=[
+                    _confined_shell(work, [traces, versions, work], refused, root, running, shell_env=self._shell_env),
+                    _submit_tool(work, submitted, parent, rejected, caps),
+                ],
+                # At 85% of the model's context window the oldest messages but the last 4 are elided; the first
+                # message, the task, is never removed, nor is a pinned send-back (except by the SDK's last-resort
+                # truncation, when even the last messages don't fit). Tool outputs stay whole unless the provider
+                # rejects a request as too large, nothing calls a model (so `usage` is the whole spend), and with no
+                # stash there is no retrieval tool: the agent rereads a file through its shell.
+                context_manager={
+                    "strategies": [
+                        Offload.truncate("*").when(utilization=0.85, preserve_recent=4),
+                        _ShortenToolResultsOnOverflow(),
                     ],
-                    # At 85% of the model's context window the oldest messages but the last 4 are elided; the
-                    # first message, the task, is never removed, nor is a pinned send-back (except by the SDK's
-                    # last-resort truncation, when even the last messages don't fit). Tool outputs stay whole
-                    # unless the provider rejects a request as too large, nothing calls a model (so `usage` is the
-                    # whole spend), and with no stash there is no retrieval tool: the agent rereads a file through
-                    # its shell.
-                    context_manager={
-                        "strategies": [
-                            Offload.truncate("*").when(utilization=0.85, preserve_recent=4),
-                            _ShortenToolResultsOnOverflow(),
-                        ],
-                        "stash": False,
-                    },
-                    callback_handler=None,
-                )
-                agent.add_hook(_cap_tool_output, AfterToolCallEvent)
-                started = time.monotonic()
-                failure: Exception | None = None
-                try:
-                    params, rationale, revised = await self._converse(agent, message, submitted, caps, rejected)
-                except Exception as error:  # noqa: BLE001 - any failure of the agent is retried, then raised
-                    failure = error
-                finally:  # a cancellation (not an `Exception`) propagates from here, with no event
-                    usage = usage + _agent_usage(agent, time.monotonic() - started, self._model_id())
-                if failure is None:
-                    break
-                if attempt == _ATTEMPTS - 1:
-                    self.refused.extend(refused)
-                    # The agent ran (`usage` is never zero here), and no patch will carry its spend.
-                    request.log("proposer_usage", usage=usage)
-                    raise failure
-                request.log("proposer_retry", error_type=type(failure).__name__, error=str(failure)[:2000])
+                    "stash": False,
+                },
+                retry_strategy=_TransientRetry(
+                    lambda error: request.log(
+                        "proposer_retry", error_type=type(error).__name__, error=str(error)[:2000]
+                    )
+                ),
+                callback_handler=None,
+            )
+            agent.add_hook(_cap_tool_output, AfterToolCallEvent)
+            started = time.monotonic()
+            try:
+                params, rationale, revised = await self._converse(agent, message, submitted, caps, rejected)
+            except Exception:  # a cancellation (not an `Exception`) propagates with no event
+                self.refused.extend(refused)
+                # The agent ran, and no patch will carry its spend.
+                request.log("proposer_usage", usage=_agent_usage(agent, time.monotonic() - started, self._model_id()))
+                raise
+            usage = _agent_usage(agent, time.monotonic() - started, self._model_id())
             self.refused.extend(refused)
             updates, dropped, screened = await asyncio.to_thread(_guard, request, params or {}, keys, parent)
             for key in screened:
@@ -347,12 +415,42 @@ class Reflection(Proposer):
         submission with values over their `size_cap` (`over_limit_message`) or a turn that ended with nothing
         accepted on a refused submission (`REFUSED`); each new submission replaces the values it gives.
 
+        A reply cut at the model's output limit is answered with `CUT_OFF` in the same conversation (Strands has
+        already added the reply, its tool calls replaced by notes), up to `_CUT_OFF_RETRIES` times in all.
+
         Returns:
-            What was submitted (None for nothing), the rationale (the first call's final text, capped at
-            `_RATIONALE_CHARS`; `_FALLBACK_RATIONALE` when it has none), and the lengths sent back to be shortened.
+            What was submitted (None for nothing), the rationale (the first call's final text, after any cut-off
+            send-backs, capped at `_RATIONALE_CHARS`; `_FALLBACK_RATIONALE` when it has none), and the lengths sent
+            back to be shortened.
+
+        Raises:
+            MaxTokensReachedException: A reply was cut at the output limit after `_CUT_OFF_RETRIES` send-backs.
         """
+        cut_offs = 0
+
+        async def send(text: str, *, pin: bool = True) -> AgentResult:
+            nonlocal cut_offs
+            while True:
+                # A send-back is pinned, so elision keeps it while the agent is still answering it (the SDK strips
+                # the metadata before the model call); the task message, the first, is never removed anyway.
+                pinned: Message = {
+                    "role": "user",
+                    "content": [{"text": text}],
+                    "metadata": {"custom": {"pinned": True}},
+                }
+                try:
+                    return await agent.invoke_async([pinned] if pin else text)
+                except MaxTokensReachedException as error:
+                    if cut_offs == _CUT_OFF_RETRIES:
+                        raise MaxTokensReachedException(
+                            f"the agent's reply was cut at the model's output limit {cut_offs + 1} times in one "
+                            "conversation; give Reflection a Model built with a higher max_tokens"
+                        ) from error
+                    cut_offs += 1
+                    text, pin = CUT_OFF, True
+
         before = len(rejected)
-        result = await agent.invoke_async(message)
+        result = await send(message, pin=False)
         rationale = (str(result).strip() or _FALLBACK_RATIONALE)[:_RATIONALE_CHARS]
         params: dict[str, str] | None = dict(submitted) or None
         submitted.clear()
@@ -370,10 +468,7 @@ class Reflection(Proposer):
             else:
                 break
             before = len(rejected)
-            # Pinned, so the send-back isn't elided while the agent is still answering it (the SDK strips the
-            # metadata before the model call).
-            send_back: Message = {"role": "user", "content": [{"text": text}], "metadata": {"custom": {"pinned": True}}}
-            await agent.invoke_async([send_back])
+            await send(text)
             if submitted:
                 params = {**(params or {}), **submitted}
                 submitted.clear()
@@ -403,7 +498,8 @@ class Reflection(Proposer):
 
     def config(self) -> dict[str, Any]:
         """Model id, the sha256 of the system prompt (None for the default prompt), `success_threshold`, and
-        `over_limit_retries`."""
+        `over_limit_retries`. `shell_env` is left out (its values may be secrets), so a run may resume with a
+        different one."""
         if isinstance(self.model, str):
             model_id: str | None = self.model
         elif self.model is None:
@@ -477,16 +573,24 @@ def _confined_shell(
     refused: list[dict[str, Any]],
     home: str | None = None,
     running: set[subprocess.Popen[bytes]] | None = None,
+    *,
+    shell_env: Mapping[str, str] | None = None,
 ) -> AgentTool:
-    """A shell tool that runs each command with `bash -c` in `work` (also `HOME` and `TMPDIR`), with this process's
-    environment otherwise and no standard input, and refuses a command naming a path outside `roots` and `home`
-    (`_outside`), appending it to `refused`.
+    """A shell tool that runs each command with `bash -c` in `work` (also `HOME` and `TMPDIR`) and no standard input,
+    and refuses a command naming a path outside `roots` and `home` (`_outside`), appending it to `refused`. Its
+    environment, read when the tool is built, is `_INHERITED_ENV` from this process's environment, then
+    `shell_env`, then `HOME` and `TMPDIR`, with no `OLDPWD`: `_outside` reads `~` as `work` and resolves `~-` from
+    it, while bash expands them to `HOME` and to an inherited `OLDPWD`.
 
     Each command runs in its own process group, killed when `bash` exits or its timeout passes, so a process it left
     in the background neither holds the call open until the timeout nor outlives it; `bash` is reaped only after, so
     its process id (the group's) can't be reused first. While it runs it is in `running`, for the caller to kill when
     the call ends early (cancelled). Output that isn't valid UTF-8 (a `head -c` cutting a character) is decoded with
     replacement characters."""
+    env = {name: os.environ[name] for name in _INHERITED_ENV if name in os.environ}
+    env.update(shell_env or {})
+    env.pop("OLDPWD", None)
+    env.update(HOME=work, TMPDIR=work)
 
     @tool
     def shell(command: str, timeout: int = 300) -> str:
@@ -511,7 +615,6 @@ def _confined_shell(
                 f"folders and write only in your working folder, {work}.{shared}"
             )
         timeout = min(max(timeout, 1), 3600)
-        env = {**os.environ, "HOME": work, "TMPDIR": work}
         # Files, not pipes: a background process holding a pipe open would keep the call waiting until it exits.
         with tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
             process = subprocess.Popen(
@@ -935,7 +1038,10 @@ def _write_traces(
 def _messages(trajectory: Any) -> list[Any]:
     """The trial's conversation as Strands messages (`{"role", "content": [{"text"} | {"toolUse"} | {"toolResult"}]}`):
     for each agent invocation in the trial, in the order they started, the messages of its last model call (what it
-    sent, then what it answered). A trajectory that isn't a `Session` (a rollout's own list) is kept as is.
+    sent, then what it answered). A trajectory that isn't a `Session` (a rollout's own list) is kept as is. Spans
+    marked as not the candidate's (`CANDIDATE_SPAN_KEY` False: a simulated user, an agent the benchmark built) are
+    left out. A `Session` with no marks (a `build_task` task, a factory that built something it couldn't tag, a
+    record saved before the marks) is read whole.
 
     A model call belongs to the agent invocation its parent spans lead to; when they lead to none, to the innermost
     invocation whose time contains it; model calls under no invocation form one conversation, placed first. An
@@ -949,14 +1055,15 @@ def _messages(trajectory: Any) -> list[Any]:
         return list(trajectory) if isinstance(trajectory, list) else []
     conversations: list[list[dict[str, Any]]] = []
     for trace in trajectory.traces:
+        spans = [s for s in trace.spans if (s.metadata or {}).get(CANDIDATE_SPAN_KEY) is not False]
         agents = sorted(
-            (s for s in trace.spans if isinstance(s, AgentInvocationSpan)),
+            (s for s in spans if isinstance(s, AgentInvocationSpan)),
             key=lambda s: _to_aware_utc(s.span_info.start_time),
         )
         index = {id(a): i for i, a in enumerate(agents)}
-        by_id = {s.span_info.span_id: s for s in trace.spans if s.span_info.span_id}
+        by_id = {s.span_info.span_id: s for s in spans if s.span_info.span_id}
         last: dict[int, InferenceSpan] = {}  # agent's index -> its last model call
-        for span in trace.spans:
+        for span in spans:
             if not isinstance(span, InferenceSpan):
                 continue
             owner, current, seen = None, cast(Any, span), set()
@@ -1158,14 +1265,18 @@ def _cell(x: float | None) -> str:
 
 
 def _shown(c: CandidateSummary, metric: str) -> str:
-    """A metric as the versions table shows it: the fit's estimate the ranking used, then the measured mean over the
-    version's train cases (`0.84 (measured 0.9)`); the measured mean alone when there is no estimate (no usable fit, a
-    flagged metric, an ineligible version)."""
+    """A metric as the versions table shows it: the value the ranking used, then the measured mean over the version's
+    train cases. The value used is the fit's estimate (`0.84 (measured 0.9)`), or without one the adjusted mean (its
+    N/A cases filled in from the other versions), marked so the two can't be confused (`0.65 adjusted (measured
+    0.9)`) and shown only when it differs from the measured mean; the measured mean alone otherwise (no N/A case
+    filled in, an ineligible version)."""
     measured = c.measured[metric].mean if metric in c.measured else None
-    if metric not in c.estimates:
-        return _cell(measured)
-    estimate = _cell(c.estimates[metric].mean)
-    return estimate if measured is None else f"{estimate} (measured {_cell(measured)})"
+    if metric in c.estimates:
+        estimate = _cell(c.estimates[metric].mean)
+        return estimate if measured is None else f"{estimate} (measured {_cell(measured)})"
+    shown = _cell(measured)
+    adjusted = _cell(c.adjusted_means[metric]) if metric in c.adjusted_means else shown
+    return shown if adjusted == shown else f"{adjusted} adjusted (measured {shown})"
 
 
 def _text_files(names: Sequence[str]) -> dict[str, str]:
@@ -1276,6 +1387,27 @@ def _leak(value: str, held: Any, names: Sequence[str], sources: Sequence[str]) -
                 if text[i : i + n] in runs:
                     return f"copies {n} characters from a shown trial verbatim: {text[i : i + n]!r}"
     return None
+
+
+class _TransientRetry(ModelRetryStrategy):
+    """Strands' retry of a failed model call, with its exponential backoff (`_MODEL_ATTEMPTS` tries in all), extended
+    from throttling to the other errors a trial is re-run for (`classify`) except credential errors: the model
+    service's own errors, also inside a streamed response, and a lost connection. Each failure with one of these goes
+    to `on_retry`. Anything else is raised at once: no access to the model, an invalid model id, or credentials that
+    are missing or expired (`is_credential_error`), which waiting can't fix."""
+
+    def __init__(self, on_retry: Callable[[Exception], None]) -> None:
+        super().__init__(max_attempts=_MODEL_ATTEMPTS, initial_delay=_RETRY_DELAY, max_delay=_MAX_RETRY_DELAY)
+        self._on_retry = on_retry
+
+    def is_retryable(self, exception: Exception) -> bool:
+        """Whether the failed model call is tried again after a wait, while tries remain."""
+        retryable = super().is_retryable(exception) or (
+            classify(exception) is TrialStatus.INFRASTRUCTURE_INVALID and not is_credential_error(exception)
+        )
+        if retryable:
+            self._on_retry(exception)
+        return retryable
 
 
 def _agent_usage(agent: Agent, seconds: float, model_id: str | None) -> Usage:

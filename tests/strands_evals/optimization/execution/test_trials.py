@@ -2,6 +2,7 @@ import asyncio
 import copy
 import datetime
 import enum
+import errno
 import gc
 import json
 import logging
@@ -11,6 +12,7 @@ import threading
 
 import opentelemetry.trace as trace_api
 import pytest
+from botocore.exceptions import CredentialRetrievalError, EndpointConnectionError, ProfileNotFound
 from pydantic import BaseModel
 from strands import Agent
 from strands.types.exceptions import ModelThrottledException
@@ -19,13 +21,13 @@ from strands_evals import Case
 from strands_evals.evaluators import Evaluator
 from strands_evals.optimization import Budget, InfrastructureError, TextValue, tunable
 from strands_evals.optimization.declaration.tunable import _FactoryArgumentError
-from strands_evals.optimization.execution.rollout import make_task
+from strands_evals.optimization.execution.rollout import default_rollout, make_task
 from strands_evals.optimization.execution.traces import TraceCapture
-from strands_evals.optimization.execution.trials import TrialRunner, _EvaluatorProxy, _TrialState
+from strands_evals.optimization.execution.trials import TrialRunner, _EvaluatorProxy, _rerun_wait, _TrialState
 from strands_evals.optimization.record.run_directory import RunDirectory
 from strands_evals.optimization.setup.budget import BudgetTracker
 from strands_evals.types import EvaluationOutput
-from strands_evals.types.evaluation import NOT_APPLICABLE, EnvironmentState
+from strands_evals.types.evaluation import NOT_APPLICABLE, EnvironmentState, EvaluationData
 from strands_evals.types.optimization import TrialRecord, TrialStatus
 from strands_evals.types.trace import Session
 from tests.strands_evals.optimization.scripted_model import ScriptedModel
@@ -34,6 +36,18 @@ from tests.strands_evals.optimization.scripted_model import ScriptedModel
 @pytest.fixture(autouse=True)
 def no_retry_delay(monkeypatch):
     monkeypatch.setattr("strands_evals.experiment._INITIAL_RETRY_DELAY", 0)
+
+
+@pytest.fixture(autouse=True)
+def waits(monkeypatch):
+    """The waits before re-run passes, recorded instead of slept."""
+    seconds = []
+
+    async def sleep(delay):
+        seconds.append(delay)
+
+    monkeypatch.setattr("strands_evals.optimization.execution.trials._sleep", sleep)
+    return seconds
 
 
 @pytest.fixture
@@ -572,7 +586,7 @@ async def test_one_evaluator_failing_leaves_the_trial_completed(traces):
     assert records[0].evaluator_errors == {"B": "ValueError"}
 
 
-async def test_a_judge_throttled_on_every_try_leaves_the_trial_completed(traces):
+async def test_a_judge_throttled_on_every_try_leaves_the_trial_completed(traces, waits):
     throttled = Fixed("Throttled", failures=99, error=ModelThrottledException("slow down"))
     runner = _runner(traces, MemoryCache(), _cases("a"), [Fixed("A"), throttled], rerun_passes=1)
 
@@ -581,6 +595,7 @@ async def test_a_judge_throttled_on_every_try_leaves_the_trial_completed(traces)
     assert records[0].status is TrialStatus.COMPLETED
     assert records[0].evaluator_errors == {"Throttled": "ModelThrottledException"}
     assert spent == 1  # the re-run pass re-judged it, for no rollout
+    assert len(waits) == 1  # after waiting, as throttling is infrastructure
     once = Fixed("Throttled", failures=99, error=ModelThrottledException("slow down"))
     await _runner(traces, MemoryCache(), _cases("a"), [Fixed("A"), once], rerun_passes=0).run(
         "cand", _plain, ["a"], runs=1, allowance=5
@@ -595,6 +610,151 @@ async def test_no_evaluators_means_completed(traces):
     assert records[0].evaluations == {}
     assert records[0].evaluator_errors == {}
     assert records[0].judge_usage == {}
+
+
+# placeholder rows
+
+
+async def _unserializable(case):
+    """Returns an output `Experiment` can't serialize for its span, so it fails after the task returned."""
+    return {"output": {(0, 1): "x"}}
+
+
+def _unserializable_error():
+    with pytest.raises(TypeError) as error:
+        json.dumps({(0, 1): "x"})
+    return str(error.value)
+
+
+async def test_a_case_experiment_fails_after_the_task_returned_is_unmeasured_and_never_judged(traces, caplog):
+    judge = Fixed("A")
+
+    with caplog.at_level(logging.WARNING):
+        records, spent = await _runner(traces, MemoryCache(), _cases("a"), [judge]).run(
+            "cand", _unserializable, ["a"], runs=1, allowance=5
+        )
+
+    record = records[0]
+    assert record.status is TrialStatus.EVALUATOR_INVALID
+    assert record.evaluations == {}  # not the placeholder's 0
+    assert record.evaluator_errors == {}  # nothing to re-judge: no output was saved
+    assert (record.error_type, record.error) == ("TypeError", _unserializable_error())
+    assert record.output is None
+    assert judge.calls == 0  # neither in the first pass nor in a re-run pass
+    assert (spent, record.attempts) == (1, 1)
+    assert "case failed after the task returned" in caplog.text
+
+
+async def test_a_case_experiment_failed_stays_unjudged_after_a_resume_with_rejudge(traces, tmp_path):
+    run = RunDirectory.create(tmp_path, {"cases": []})
+    judge = Fixed("A")
+    first, _ = await _runner(traces, run, _cases("a"), [judge], rerun_passes=0).run(
+        "cand", _unserializable, ["a"], runs=1, allowance=1
+    )
+    runner = _runner(traces, RunDirectory.open(run.root), _cases("a"), [judge])
+
+    assert runner.pending("cand", ["a"], runs=1) == 0
+    records, spent = await runner.run("cand", _unserializable, ["a"], runs=1, allowance=1, rejudge=True)
+
+    assert (spent, judge.calls) == (0, 0)
+    assert records[0].status is TrialStatus.EVALUATOR_INVALID
+    assert records == first
+
+
+async def test_with_no_evaluators_a_case_experiment_failed_is_completed_with_its_error(traces):
+    records, _ = await _runner(traces, MemoryCache(), _cases("a"), []).run(
+        "cand", _unserializable, ["a"], runs=1, allowance=0
+    )
+
+    assert records[0].status is TrialStatus.COMPLETED  # a usage-only objective still counts the trial
+    assert records[0].error_type == "TypeError"
+
+
+async def test_rows_experiment_replaced_after_its_evaluators_ran_are_not_scores(traces, monkeypatch):
+    dumps = []
+
+    def broken(self, *args, **kwargs):
+        dumps.append(self.name)
+        raise RuntimeError("can't dump")
+
+    monkeypatch.setattr(EvaluationData, "model_dump", broken)  # Experiment dumps the case after judging it
+    flaky, judge = Fixed("Flaky", failures=1), Judge("J", tokens=30)
+
+    records, _ = await _runner(traces, MemoryCache(), _cases("a"), [flaky, judge]).run(
+        "cand", _plain, ["a"], runs=1, allowance=0
+    )
+
+    record = records[0]
+    assert dumps == ["a"]  # hit once, in the first pass: the evaluator that raised isn't re-judged either
+    assert (flaky.calls, judge.calls) == (1, 1)
+    assert record.status is TrialStatus.EVALUATOR_INVALID
+    assert (record.evaluations, record.evaluator_errors) == ({}, {})
+    assert (record.error_type, record.error) == ("RuntimeError", "can't dump")
+    assert record.output == "answer to a"  # saved before the evaluators ran
+    assert record.judge_usage["J"].tokens == 30  # the judge's spend is still counted
+
+
+@pytest.mark.parametrize("failures", [1, 2], ids=["judged-ok", "raised-again"])
+async def test_rows_experiment_replaced_in_a_re_judge_are_not_scores(traces, monkeypatch, caplog, failures):
+    cache = MemoryCache()
+    ok, broken = Fixed("Ok"), Fixed("Broken", score=0.3, failures=failures)  # 2: raises in the re-judge too
+    await _runner(traces, cache, _cases("a"), [ok, broken], rerun_passes=0).run(
+        "cand", _plain, ["a"], runs=1, allowance=0
+    )
+
+    def failing_dump(self, *args, **kwargs):
+        raise RuntimeError("can't dump")
+
+    monkeypatch.setattr(EvaluationData, "model_dump", failing_dump)  # Experiment dumps the case after judging it
+    with caplog.at_level(logging.WARNING):
+        records, spent = await _runner(traces, cache, _cases("a"), [ok, broken]).run(
+            "cand", _plain, ["a"], runs=1, allowance=0, rejudge=True
+        )
+
+    record = records[0]
+    assert (spent, broken.calls) == (0, 2)  # judged again once, in the first re-judge; not in the re-run passes
+    assert "Broken" not in record.evaluations  # not the placeholder's 0
+    assert record.evaluator_errors == {}  # nothing left to judge again, even when it raised again
+    assert (record.error_type, record.error) == ("RuntimeError", "can't dump")
+    assert record.evaluations["Ok"].score == 1.0  # the first pass's score is kept
+    assert record.status is TrialStatus.COMPLETED
+    assert "case failed after the evaluators were judged again" in caplog.text
+
+    monkeypatch.undo()
+    await _runner(traces, cache, _cases("a"), [ok, broken]).run(
+        "cand", _plain, ["a"], runs=1, allowance=0, rejudge=True
+    )
+    assert broken.calls == 2  # a later re-judge leaves it alone too
+
+
+async def test_a_task_that_raised_isnt_read_as_a_case_failure(traces, caplog):
+    async def crashes(case):
+        raise ValueError("agent bug")  # recorded on the case span too, as every task exception is
+
+    with caplog.at_level(logging.WARNING):
+        records, _ = await _runner(traces, MemoryCache(), _cases("a"), [Fixed("A")]).run(
+            "cand", crashes, ["a"], runs=1, allowance=0
+        )
+
+    assert records[0].status is TrialStatus.AGENT_FAILURE
+    assert (records[0].error_type, records[0].error) == ("ValueError", "agent bug")
+    assert "case failed after the task returned" not in caplog.text
+
+
+async def test_a_session_that_cant_be_built_after_the_rollout_returned_is_unmeasured(traces, monkeypatch):
+    def broken(*args, **kwargs):
+        raise RuntimeError("can't map spans")
+
+    monkeypatch.setattr(traces, "session", broken)
+    judge = Fixed("A")
+
+    records, spent = await _runner(traces, MemoryCache(), _cases("a"), [judge]).run(
+        "cand", _plain, ["a"], runs=1, allowance=5
+    )
+
+    assert records[0].status is TrialStatus.EVALUATOR_INVALID
+    assert (records[0].error_type, records[0].error) == ("RuntimeError", "can't map spans")
+    assert (spent, judge.calls) == (1, 0)
 
 
 async def test_an_agent_failure_is_recorded_without_evaluations(traces):
@@ -666,6 +826,36 @@ async def test_an_infrastructure_failure_is_re_run_within_the_allowance(traces):
     assert record.rollouts + sum(a.rollouts for a in record.previous_attempts) == spent
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        OSError(errno.EMFILE, "Too many open files"),
+        ProfileNotFound(profile="bedrock"),
+        CredentialRetrievalError(provider="assume-role", error_msg="metadata service timed out"),
+    ],
+    ids=["OSError-EMFILE", "ProfileNotFound", "CredentialRetrievalError"],
+)
+async def test_a_factory_that_runs_out_of_files_or_credentials_is_re_run(traces, error):
+    built = []
+
+    def factory():
+        built.append(error)
+        if len(built) == 1:
+            raise error
+        return Agent(model=ScriptedModel(["answer"]), callback_handler=None)
+
+    records, spent = await _runner(traces, MemoryCache(), _cases("a"), [Fixed()]).run(
+        "cand", make_task(factory, default_rollout), ["a"], runs=1, allowance=2
+    )
+
+    record = records[0]
+    assert record.status is TrialStatus.COMPLETED
+    assert spent == 2
+    assert [(a.status, a.error_type) for a in record.previous_attempts] == [
+        (TrialStatus.INFRASTRUCTURE_INVALID, type(error).__name__)
+    ]
+
+
 async def test_an_exhausted_allowance_leaves_the_trial_infrastructure_invalid(traces):
     async def task(case):
         raise InfrastructureError("sandbox down")
@@ -678,7 +868,7 @@ async def test_an_exhausted_allowance_leaves_the_trial_infrastructure_invalid(tr
     assert [r.status for r in records] == [TrialStatus.INFRASTRUCTURE_INVALID] * 2
 
 
-async def test_a_call_never_spends_more_than_the_budget_allows(traces):
+async def test_a_call_never_spends_more_than_the_budget_allows(traces, waits):
     budget = BudgetTracker(Budget(max_rollouts=2))
 
     async def task(case):
@@ -692,9 +882,10 @@ async def test_a_call_never_spends_more_than_the_budget_allows(traces):
 
     assert spent == 2  # the first pass used the whole allowance: no re-run
     assert budget.remaining == 0
+    assert waits == []  # and no wait for a pass that never runs
 
 
-async def test_a_re_run_after_resume_keeps_the_earlier_attempt(traces):
+async def test_a_re_run_after_resume_keeps_the_earlier_attempt(traces, waits):
     cache = MemoryCache()
 
     async def down(case):
@@ -709,6 +900,194 @@ async def test_a_re_run_after_resume_keeps_the_earlier_attempt(traces):
     assert spent == 1
     assert records[0].status is TrialStatus.COMPLETED
     assert [a.status for a in records[0].previous_attempts] == [TrialStatus.INFRASTRUCTURE_INVALID]
+    assert waits == []  # the first pass of a call never waits
+
+
+# the wait before a re-run pass
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """A fake clock that only the waits move; returns [now]."""
+    now = [0.0]
+
+    async def sleep(delay):
+        now[0] += delay
+
+    monkeypatch.setattr("strands_evals.optimization.execution.trials._sleep", sleep)
+    monkeypatch.setattr("strands_evals.optimization.execution.trials._clock", lambda: now[0])
+    return now
+
+
+async def test_a_short_outage_is_waited_out_before_the_re_run(traces, clock):
+    async def task(case):  # the endpoint is unreachable for the first second
+        if clock[0] < 1.0:
+            raise EndpointConnectionError(endpoint_url="https://bedrock-runtime.us-east-1.amazonaws.com")
+        return "ok"
+
+    records, spent = await _runner(traces, MemoryCache(), _cases("a", "b"), [Fixed()]).run(
+        "cand", task, ["a", "b"], runs=1, allowance=4
+    )
+
+    assert [r.status for r in records] == [TrialStatus.COMPLETED] * 2
+    assert spent == 4  # the first pass, then one re-run pass
+    assert 2.5 <= clock[0] <= 5.0
+
+
+async def test_each_re_run_pass_waits_about_twice_as_long_as_the_one_before(traces, waits, caplog):
+    async def down(case):
+        raise InfrastructureError("sandbox down")
+
+    with caplog.at_level(logging.WARNING):
+        records, spent = await _runner(traces, MemoryCache(), _cases("a"), [Fixed()], rerun_passes=3).run(
+            "cand", down, ["a"], runs=1, allowance=10
+        )
+
+    assert records[0].status is TrialStatus.INFRASTRUCTURE_INVALID
+    assert spent == 4
+    assert len(waits) == 3
+    for wait, (low, high) in zip(waits, [(2.5, 5.0), (5.0, 10.0), (10.0, 20.0)], strict=True):
+        assert low <= wait <= high
+    logged = [r.getMessage() for r in caplog.records if "waiting before re-running" in r.getMessage()]
+    assert len(logged) == 3
+    assert "pass=<1>, trials=<1>, error_type=<InfrastructureError>" in logged[0]
+
+
+@pytest.mark.parametrize("pass_index", [5, 6, 10_000])
+def test_the_wait_before_a_re_run_pass_is_capped(pass_index):
+    assert all(30.0 <= _rerun_wait(pass_index) <= 60.0 for _ in range(100))
+
+
+def test_the_wait_before_a_re_run_pass_is_jittered():
+    assert len({_rerun_wait(1) for _ in range(20)}) > 1
+
+
+async def test_a_judge_that_failed_on_infrastructure_waits_before_its_re_judge(traces, waits):
+    down = Fixed("Down", failures=1, error=EndpointConnectionError(endpoint_url="https://x"))
+
+    records, spent = await _runner(traces, MemoryCache(), _cases("a"), [down]).run(
+        "cand", _plain, ["a"], runs=1, allowance=0
+    )
+
+    assert records[0].status is TrialStatus.COMPLETED
+    assert records[0].evaluator_errors == {}
+    assert spent == 1  # a re-judge costs no rollout
+    assert len(waits) == 1 and 2.5 <= waits[0] <= 5.0
+
+
+async def test_a_re_judge_of_a_bad_verdict_starts_immediately(traces, waits):
+    records, _ = await _runner(traces, MemoryCache(), _cases("a"), [Fixed("Flaky", failures=1)]).run(
+        "cand", _plain, ["a"], runs=1, allowance=0
+    )
+
+    assert records[0].evaluator_errors == {}
+    assert waits == []
+
+
+class Raises(Evaluator):
+    """Raises the next of `errors` on each call; scores 1.0 once they run out."""
+
+    def __init__(self, *errors, name="Raises"):
+        super().__init__(name=name)
+        self.errors = list(errors)
+
+    async def evaluate_async(self, evaluation_case):
+        if self.errors:
+            raise self.errors.pop(0)
+        return [EvaluationOutput(score=1.0, test_pass=True, reason="ok")]
+
+
+@pytest.mark.parametrize(
+    ("errors", "expected_waits"),
+    [
+        # an outage, then a bad verdict: only the re-judge after the outage waits
+        ((EndpointConnectionError(endpoint_url="https://x"), ValueError("bad verdict")), 1),
+        # throttled, then (in Experiment's retry) a bad verdict: the last error decides, so no wait
+        ((ModelThrottledException("slow down"), ValueError("bad verdict")), 0),
+    ],
+)
+async def test_only_a_judges_last_error_decides_the_wait(traces, waits, errors, expected_waits):
+    records, _ = await _runner(traces, MemoryCache(), _cases("a"), [Raises(*errors)]).run(
+        "cand", _plain, ["a"], runs=1, allowance=0
+    )
+
+    assert records[0].evaluator_errors == {}
+    assert len(waits) == expected_waits
+
+
+async def test_a_judge_that_recovered_from_throttling_but_failed_to_aggregate_doesnt_wait(traces, waits):
+    evaluator = Raises(ModelThrottledException("slow down"))
+    evaluator.aggregator = lambda outputs: (math.nan, True, "")
+
+    records, _ = await _runner(traces, MemoryCache(), _cases("a"), [evaluator], rerun_passes=1).run(
+        "cand", _plain, ["a"], runs=1, allowance=0
+    )
+
+    assert records[0].evaluator_errors == {"Raises": "ValueError"}  # re-judged, and failed to aggregate again
+    assert waits == []
+
+
+async def test_no_wait_when_the_allowance_leaves_only_bad_verdicts_to_re_judge(traces, waits):
+    async def task(case):
+        if case.name == "a":
+            raise InfrastructureError("sandbox down")
+        return "ok"
+
+    records, spent = await _runner(traces, MemoryCache(), _cases("a", "b"), [Fixed(failures=1)]).run(
+        "cand", task, ["a", "b"], runs=1, allowance=2
+    )
+
+    assert spent == 2  # no rollout left to re-run "a"
+    assert [r.status for r in records] == [TrialStatus.INFRASTRUCTURE_INVALID, TrialStatus.COMPLETED]
+    assert records[1].evaluator_errors == {}
+    assert records[1].rollouts == 0  # "b" was re-judged
+    assert waits == []
+
+
+async def test_the_wait_counts_from_when_the_trial_failed(traces, clock):
+    started = []
+
+    async def task(case):
+        started.append((case.name, clock[0]))
+        if case.name == "a" and len(started) == 1:
+            raise InfrastructureError("sandbox down")
+        clock[0] += 10.0  # "b" takes longer than any first wait
+        return "ok"
+
+    records, _ = await _runner(traces, MemoryCache(), _cases("a", "b"), [Fixed()], max_workers=1).run(
+        "cand", task, ["a", "b"], runs=1, allowance=4
+    )
+
+    assert [r.status for r in records] == [TrialStatus.COMPLETED] * 2
+    assert started == [("a", 0.0), ("b", 0.0), ("a", 10.0)]  # "a" had already waited 10 s: no more wait
+
+
+async def test_a_wait_holds_no_slot_and_delays_no_other_trial(traces, monkeypatch):
+    rejudged = asyncio.Event()
+
+    async def sleep(delay):  # ends only once "b" has been re-judged
+        await asyncio.wait_for(rejudged.wait(), timeout=5)
+
+    monkeypatch.setattr("strands_evals.optimization.execution.trials._sleep", sleep)
+
+    class Flaky(Fixed):
+        async def evaluate_async(self, evaluation_case):
+            if self.calls >= 1:  # the first call, "b"'s in the first pass, fails
+                rejudged.set()
+            return await super().evaluate_async(evaluation_case)
+
+    async def task(case):
+        if case.name == "a" and not rejudged.is_set():
+            raise InfrastructureError("sandbox down")
+        return "ok"
+
+    records, spent = await _runner(traces, MemoryCache(), _cases("a", "b"), [Flaky(failures=1)], max_workers=1).run(
+        "cand", task, ["a", "b"], runs=1, allowance=4
+    )
+
+    assert [r.status for r in records] == [TrialStatus.COMPLETED] * 2
+    assert [r.evaluator_errors for r in records] == [{}, {}]
+    assert spent == 3  # "a" twice, "b" once and re-judged for no rollout
 
 
 async def test_a_failed_judge_is_re_judged_for_no_rollout(traces):
@@ -744,6 +1123,61 @@ async def test_a_re_judge_keeps_each_cost_with_what_it_bought(traces):
     assert record.judge_usage["Flaky"].tokens == 400  # the re-judge's own spend
     assert record.previous_attempts[-1].judge_usage.tokens == 400  # only the failed judge's spend: retry cost
     assert record.usage.tokens == 15
+
+
+def _conversation_task(fail_first=None):
+    """`make_task` on a factory agent answering a simulated user built in the rollout: on attempt n, the agent
+    spends 15·n tokens and the user 1,000·n; the first attempt raises `fail_first` after both have spoken."""
+    tries = []
+
+    def factory():
+        n = len(tries)
+        agent_usage = {"inputTokens": 10 * n, "outputTokens": 5 * n, "totalTokens": 15 * n}
+        return Agent(model=ScriptedModel(["answer"], usage=agent_usage), callback_handler=None)
+
+    async def rollout(agent_factory, case):
+        tries.append(case.name)
+        n = len(tries)
+        usage = {"inputTokens": 980 * n, "outputTokens": 20 * n, "totalTokens": 1000 * n}
+        user = Agent(model=ScriptedModel(["thanks"], usage=usage), callback_handler=None)
+        reply = await user.invoke_async(str(await agent_factory().invoke_async(case.input)))
+        if fail_first is not None and len(tries) == 1:
+            raise fail_first
+        return {"output": str(reply)}
+
+    return make_task(factory, rollout)
+
+
+async def test_the_benchmarks_agents_are_recorded_apart_from_the_candidates(traces):
+    records, _ = await _runner(traces, MemoryCache(), _cases("a"), [Fixed()]).run(
+        "cand", _conversation_task(), ["a"], runs=1, allowance=0
+    )
+
+    assert (records[0].usage.tokens, records[0].benchmark_usage.tokens) == (15, 1000)
+
+
+@pytest.mark.parametrize(
+    "error, allowance",
+    [(ModelThrottledException("slow down"), 0), (InfrastructureError("sandbox down"), 2)],
+    ids=["retried-by-experiment", "re-run-pass"],
+)
+async def test_an_earlier_attempt_keeps_its_benchmark_usage(traces, error, allowance):
+    records, _ = await _runner(traces, MemoryCache(), _cases("a"), [Fixed()]).run(
+        "cand", _conversation_task(fail_first=error), ["a"], runs=1, allowance=allowance
+    )
+
+    (earlier,) = records[0].previous_attempts
+    assert (earlier.usage.tokens, earlier.benchmark_usage.tokens) == (15, 1000)
+    assert (records[0].usage.tokens, records[0].benchmark_usage.tokens) == (30, 2000)
+
+
+async def test_a_re_judge_keeps_the_benchmark_usage_with_the_output(traces):
+    records, _ = await _runner(traces, MemoryCache(), _cases("a"), [Fixed("Flaky", failures=1)]).run(
+        "cand", _conversation_task(), ["a"], runs=1, allowance=0
+    )
+
+    assert records[0].benchmark_usage.tokens == 1000
+    assert records[0].previous_attempts[-1].benchmark_usage.tokens == 0
 
 
 # rejudge

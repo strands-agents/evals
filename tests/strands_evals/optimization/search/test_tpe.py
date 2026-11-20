@@ -1,4 +1,5 @@
 import asyncio
+import math
 import random
 import statistics
 
@@ -138,6 +139,7 @@ def summary(cid, objective, *, violations=(), term_values=None, is_eligible=True
         term_values=term_values if is_eligible else None,
         rank=1 if is_eligible else None,
         estimates={},
+        adjusted_means={},
         violations=list(violations) if is_eligible else None,
         is_feasible=all(v <= 0 for v in violations) if is_eligible else None,
         is_eligible=is_eligible,
@@ -265,6 +267,20 @@ def test_each_trial_is_valued_at_its_candidates_current_assessment():
         ("FAIL", None, {}),
         ("COMPLETE", [0.6], {"0": -0.3}),  # e isn't listed: as told
     ]
+
+
+def test_an_infinite_violation_is_kept_as_the_trials_constraint_and_tpe_still_proposes():
+    space = numbers_space()
+    criteria = Criteria(Maximize("Score"), [AtMost("Cost", 0.5)], REGISTRY)
+    tpe = TPE(n_startup_trials=2)
+    a, b, c = propose(tpe, request(space, ["x"], n=3, criteria=criteria))
+    tpe.observe(told(a, space.complete(a.updates), 0.3, outcome="feasible", violations=[-0.1], cid="a"))
+    tpe.observe(told(b, space.complete(b.updates), 0.9, outcome="infeasible", violations=[math.inf], cid="b"))
+    tpe.observe(told(c, space.complete(c.updates), 0.5, outcome="feasible", violations=[-0.2], cid="c"))
+    study = tpe._study_for(a.state["context"], space, ["x"], request(space, ["x"], criteria=criteria), 0)
+    assert [t.constraints for t in study.trials] == [{"0": -0.1}, {"0": math.inf}, {"0": -0.2}]
+    (patch,) = propose(tpe, request(space, ["x"], iteration=2, criteria=criteria))  # past the startup trials
+    assert set(patch.updates) == {"x"}
 
 
 def test_a_round_opener_is_valued_at_its_rounds_best_by_the_latest_ranking():

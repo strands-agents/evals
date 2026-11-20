@@ -97,6 +97,7 @@ def summary(cid, values, *, is_eligible=True):
         term_values=None,
         rank=None,
         estimates={},
+        adjusted_means={},
         violations=None,
         is_feasible=None,
         is_eligible=is_eligible,
@@ -361,3 +362,60 @@ def test_config_is_its_constructor_arguments(seed, random_weights):
 def test_bad_arguments_raise(kwargs):
     with pytest.raises(TypeError):
         Thompson(**kwargs)
+
+
+class _Flagging:
+    """`fit` with its held-out check failed on `flagged`."""
+
+    def __init__(self, fit, flagged):
+        self._fit = fit
+        self.flagged = list(flagged)
+
+    def __getattr__(self, name):
+        return getattr(self._fit, name)
+
+
+def test_a_flagged_constraint_is_left_out_of_the_draw():
+    # As `test_it_prefers_a_combination_that_meets_the_drawn_constraints`, with B flagged: q, best on A, is no
+    # longer held back by the limit on B (the ranking still judges it on measured means).
+    truths = grid(
+        {"p": {"A": 0.40, "B": 0.20}, "q": {"A": 0.80, "B": 0.90}, "r": {"A": 0.60, "B": 0.20}},
+        also=[({"option": "p", "other": "y"}, {"A": 0.42, "B": 0.22})],
+    )
+    fit, summaries = world(SPACE, truths)
+    criteria = Criteria(Maximize("A"), [AtMost("B", 0.5)], REGISTRY)
+    flagged = _Flagging(fit, ["B"])
+    counts = picks(
+        Thompson(),
+        lambda i: request(SPACE, KEYS, fit=flagged, candidates=summaries, criteria=criteria, iteration=i),
+        20,
+    )
+    assert counts[("q", "y")] >= 16
+
+
+@pytest.mark.parametrize("random_weights", [True, False])
+def test_a_flagged_objective_term_doesnt_move_the_pick(random_weights):
+    # q is best on A, r on B; by the declared weights r wins. With B flagged, only A counts.
+    truths = grid(
+        {"p": {"A": 0.40, "B": 0.50}, "q": {"A": 0.80, "B": 0.10}, "r": {"A": 0.40, "B": 0.90}},
+        also=[({"option": "p", "other": "y"}, {"A": 0.42, "B": 0.52})],
+    )
+    fit, summaries = world(SPACE, truths)
+    criteria = Criteria(WeightedSum(Maximize("A"), Maximize("B")), [], REGISTRY)
+
+    def counts(fit_given):
+        return picks(
+            Thompson(random_weights=random_weights),
+            lambda i: request(SPACE, KEYS, fit=fit_given, candidates=summaries, criteria=criteria, iteration=i),
+            20,
+        )
+
+    if not random_weights:
+        assert counts(fit)[("r", "y")] >= 16
+    assert counts(_Flagging(fit, ["B"]))[("q", "y")] >= 16
+
+
+def test_a_flagged_name_that_isnt_a_goal_metric_leaves_no_usable_fit():
+    fit, summaries = world(SPACE, AT_X)
+    patches = propose(Thompson(), request(SPACE, KEYS, fit=_Flagging(fit, ["Z"]), candidates=summaries))
+    assert patches[0].rationale.startswith("Thompson: a combination at random")
