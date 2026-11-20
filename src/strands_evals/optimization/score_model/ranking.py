@@ -421,7 +421,7 @@ def label_candidate(
     treated the candidate; a constraint whose metric was never measured reads "never measured" either way. A
     snapshot: later refits can change how the ranking sees it. An infeasible candidate stays a possible parent,
     ranked after the feasible ones; an ineligible one is out of the fit and the parents until it is scored again
-    and its unmeasured trials succeed.
+    and its unmeasured trials succeed (one with no trial left to re-run and no failed evaluator never is).
 
     Args:
         candidate: Its train scores (`SplitScores.train`).

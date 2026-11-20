@@ -27,7 +27,7 @@ from strands_evals.optimization.execution.trials import TrialRunner, _EvaluatorP
 from strands_evals.optimization.record.run_directory import RunDirectory
 from strands_evals.optimization.setup.budget import BudgetTracker
 from strands_evals.types import EvaluationOutput
-from strands_evals.types.evaluation import NOT_APPLICABLE, EnvironmentState
+from strands_evals.types.evaluation import NOT_APPLICABLE, EnvironmentState, EvaluationData
 from strands_evals.types.optimization import TrialRecord, TrialStatus
 from strands_evals.types.trace import Session
 from tests.strands_evals.optimization.scripted_model import ScriptedModel
@@ -610,6 +610,151 @@ async def test_no_evaluators_means_completed(traces):
     assert records[0].evaluations == {}
     assert records[0].evaluator_errors == {}
     assert records[0].judge_usage == {}
+
+
+# placeholder rows
+
+
+async def _unserializable(case):
+    """Returns an output `Experiment` can't serialize for its span, so it fails after the task returned."""
+    return {"output": {(0, 1): "x"}}
+
+
+def _unserializable_error():
+    with pytest.raises(TypeError) as error:
+        json.dumps({(0, 1): "x"})
+    return str(error.value)
+
+
+async def test_a_case_experiment_fails_after_the_task_returned_is_unmeasured_and_never_judged(traces, caplog):
+    judge = Fixed("A")
+
+    with caplog.at_level(logging.WARNING):
+        records, spent = await _runner(traces, MemoryCache(), _cases("a"), [judge]).run(
+            "cand", _unserializable, ["a"], runs=1, allowance=5
+        )
+
+    record = records[0]
+    assert record.status is TrialStatus.EVALUATOR_INVALID
+    assert record.evaluations == {}  # not the placeholder's 0
+    assert record.evaluator_errors == {}  # nothing to re-judge: no output was saved
+    assert (record.error_type, record.error) == ("TypeError", _unserializable_error())
+    assert record.output is None
+    assert judge.calls == 0  # neither in the first pass nor in a re-run pass
+    assert (spent, record.attempts) == (1, 1)
+    assert "case failed after the task returned" in caplog.text
+
+
+async def test_a_case_experiment_failed_stays_unjudged_after_a_resume_with_rejudge(traces, tmp_path):
+    run = RunDirectory.create(tmp_path, {"cases": []})
+    judge = Fixed("A")
+    first, _ = await _runner(traces, run, _cases("a"), [judge], rerun_passes=0).run(
+        "cand", _unserializable, ["a"], runs=1, allowance=1
+    )
+    runner = _runner(traces, RunDirectory.open(run.root), _cases("a"), [judge])
+
+    assert runner.pending("cand", ["a"], runs=1) == 0
+    records, spent = await runner.run("cand", _unserializable, ["a"], runs=1, allowance=1, rejudge=True)
+
+    assert (spent, judge.calls) == (0, 0)
+    assert records[0].status is TrialStatus.EVALUATOR_INVALID
+    assert records == first
+
+
+async def test_with_no_evaluators_a_case_experiment_failed_is_completed_with_its_error(traces):
+    records, _ = await _runner(traces, MemoryCache(), _cases("a"), []).run(
+        "cand", _unserializable, ["a"], runs=1, allowance=0
+    )
+
+    assert records[0].status is TrialStatus.COMPLETED  # a usage-only objective still counts the trial
+    assert records[0].error_type == "TypeError"
+
+
+async def test_rows_experiment_replaced_after_its_evaluators_ran_are_not_scores(traces, monkeypatch):
+    dumps = []
+
+    def broken(self, *args, **kwargs):
+        dumps.append(self.name)
+        raise RuntimeError("can't dump")
+
+    monkeypatch.setattr(EvaluationData, "model_dump", broken)  # Experiment dumps the case after judging it
+    flaky, judge = Fixed("Flaky", failures=1), Judge("J", tokens=30)
+
+    records, _ = await _runner(traces, MemoryCache(), _cases("a"), [flaky, judge]).run(
+        "cand", _plain, ["a"], runs=1, allowance=0
+    )
+
+    record = records[0]
+    assert dumps == ["a"]  # hit once, in the first pass: the evaluator that raised isn't re-judged either
+    assert (flaky.calls, judge.calls) == (1, 1)
+    assert record.status is TrialStatus.EVALUATOR_INVALID
+    assert (record.evaluations, record.evaluator_errors) == ({}, {})
+    assert (record.error_type, record.error) == ("RuntimeError", "can't dump")
+    assert record.output == "answer to a"  # saved before the evaluators ran
+    assert record.judge_usage["J"].tokens == 30  # the judge's spend is still counted
+
+
+@pytest.mark.parametrize("failures", [1, 2], ids=["judged-ok", "raised-again"])
+async def test_rows_experiment_replaced_in_a_re_judge_are_not_scores(traces, monkeypatch, caplog, failures):
+    cache = MemoryCache()
+    ok, broken = Fixed("Ok"), Fixed("Broken", score=0.3, failures=failures)  # 2: raises in the re-judge too
+    await _runner(traces, cache, _cases("a"), [ok, broken], rerun_passes=0).run(
+        "cand", _plain, ["a"], runs=1, allowance=0
+    )
+
+    def failing_dump(self, *args, **kwargs):
+        raise RuntimeError("can't dump")
+
+    monkeypatch.setattr(EvaluationData, "model_dump", failing_dump)  # Experiment dumps the case after judging it
+    with caplog.at_level(logging.WARNING):
+        records, spent = await _runner(traces, cache, _cases("a"), [ok, broken]).run(
+            "cand", _plain, ["a"], runs=1, allowance=0, rejudge=True
+        )
+
+    record = records[0]
+    assert (spent, broken.calls) == (0, 2)  # judged again once, in the first re-judge; not in the re-run passes
+    assert "Broken" not in record.evaluations  # not the placeholder's 0
+    assert record.evaluator_errors == {}  # nothing left to judge again, even when it raised again
+    assert (record.error_type, record.error) == ("RuntimeError", "can't dump")
+    assert record.evaluations["Ok"].score == 1.0  # the first pass's score is kept
+    assert record.status is TrialStatus.COMPLETED
+    assert "case failed after the evaluators were judged again" in caplog.text
+
+    monkeypatch.undo()
+    await _runner(traces, cache, _cases("a"), [ok, broken]).run(
+        "cand", _plain, ["a"], runs=1, allowance=0, rejudge=True
+    )
+    assert broken.calls == 2  # a later re-judge leaves it alone too
+
+
+async def test_a_task_that_raised_isnt_read_as_a_case_failure(traces, caplog):
+    async def crashes(case):
+        raise ValueError("agent bug")  # recorded on the case span too, as every task exception is
+
+    with caplog.at_level(logging.WARNING):
+        records, _ = await _runner(traces, MemoryCache(), _cases("a"), [Fixed("A")]).run(
+            "cand", crashes, ["a"], runs=1, allowance=0
+        )
+
+    assert records[0].status is TrialStatus.AGENT_FAILURE
+    assert (records[0].error_type, records[0].error) == ("ValueError", "agent bug")
+    assert "case failed after the task returned" not in caplog.text
+
+
+async def test_a_session_that_cant_be_built_after_the_rollout_returned_is_unmeasured(traces, monkeypatch):
+    def broken(*args, **kwargs):
+        raise RuntimeError("can't map spans")
+
+    monkeypatch.setattr(traces, "session", broken)
+    judge = Fixed("A")
+
+    records, spent = await _runner(traces, MemoryCache(), _cases("a"), [judge]).run(
+        "cand", _plain, ["a"], runs=1, allowance=5
+    )
+
+    assert records[0].status is TrialStatus.EVALUATOR_INVALID
+    assert (records[0].error_type, records[0].error) == ("RuntimeError", "can't map spans")
+    assert (spent, judge.calls) == (1, 0)
 
 
 async def test_an_agent_failure_is_recorded_without_evaluations(traces):

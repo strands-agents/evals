@@ -141,8 +141,9 @@ def classify(error: BaseException) -> TrialStatus:
 
     Only these two come from an exception: `make_task` raises an environment setup error as
     `InfrastructureError` (rule 2) whatever its type, and `TrialRunner` sets `EVALUATOR_INVALID` when every
-    evaluator is in `evaluator_errors`. Under `agent_failure_score="worst"` an infrastructure failure misread as
-    `AGENT_FAILURE` would score the worst end instead of being re-run.
+    evaluator is in `evaluator_errors` or `Experiment` failed on the case after the task returned. Under
+    `agent_failure_score="worst"` an infrastructure failure misread as `AGENT_FAILURE` would score the worst
+    end instead of being re-run.
 
     Rules 5 and 6 also cover what models that each build their own `boto3.Session` raise when many trials run at
     once (see `Optimizer`): the trials share one process and one credential source, so running out of file

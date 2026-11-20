@@ -200,6 +200,32 @@ class TraceCapture:
         judge_usage = {name: _usage(spans_by_evaluator[name], seconds[name]) for name in seconds}
         return EvaluatorView(judge_usage=judge_usage, errors=errors, labels=labels)
 
+    def case_error(self, trace_id: str) -> tuple[str | None, str | None]:
+        """The exception `Experiment` caught for the trial's case, read from its `execute_case` span.
+
+        That span is the trial's root. `Experiment` records an exception on it whenever it gives up on the
+        case and writes a placeholder row for every evaluator instead of its result. That includes a task
+        that raised: its own exception is recorded there too, so the result means `Experiment` failed after
+        the task returned only for a trial whose task completed.
+
+        The message is the span event's `exception.message`, so an OTel attribute length limit
+        (`OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT`) can cut it shorter than the reason `Experiment` reported.
+
+        Args:
+            trace_id: The trial's trace.
+
+        Returns:
+            The exception's type name (without its module) and message, or (None, None) if none was recorded.
+        """
+        for span in self._filter.spans(trace_id):
+            if span.parent is not None or not span.name.startswith("execute_case "):
+                continue
+            for event in span.events:
+                if event.name == "exception" and event.attributes:
+                    error_type = str(event.attributes.get("exception.type", "Exception")).rsplit(".", 1)[-1]
+                    return error_type, str(event.attributes.get("exception.message", ""))
+        return None, None
+
     def release(self, trace_ids: Iterable[str]) -> None:
         """Drop only these trials' spans."""
         self._filter.release(trace_ids)

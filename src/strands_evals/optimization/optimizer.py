@@ -1254,7 +1254,14 @@ class Optimizer:
                     outcomes.append(_outcome(draw, None, None, parent.id, "invalid", None))
                     continue
                 existing = self._train.get(candidate.id)
-                if existing is not None and existing.is_eligible:
+                # An ineligible candidate is scored again only if a re-score can change it: a train trial still
+                # to run (missing or `infrastructure_invalid`) or with a failed evaluator to judge again. One
+                # with neither is a duplicate too, else re-proposing it would save a candidate for 0 rollouts.
+                trials = [r for r in self._records.get(candidate.id, {}).values() if r.split == "train"]
+                settled = len(trials) == len(self._case_split.train) * self._runs_per_candidate and not any(
+                    r.status is TrialStatus.INFRASTRUCTURE_INVALID or r.evaluator_errors for r in trials
+                )
+                if existing is not None and (existing.is_eligible or settled):
                     a = assessments.get(candidate.id)
                     if step.role == "opener" and deferred & set(draw.patches):
                         for block, patch in draw.patches.items():
@@ -1334,6 +1341,10 @@ class Optimizer:
             )
             self._run.events.append("label", iteration=iteration, candidate_id=candidate.id, label=labels[candidate.id])
         listening = {r.block for r in self._open_rounds}  # told only their round's best, at its end
+        # A re-score that ran no agent (only failed evaluators judged again) and left the candidate ineligible
+        # changed nothing, so it saves nothing: else an evaluator that always fails on this output would be
+        # re-judged on every repeat and the schedule's stop on a step that saved nothing would never fire.
+        judged_only = {c.id for c, rescore, pending in to_score if rescore and pending == 0}
         told: set[str] = set()
         for draw in accepted:
             candidate = draw.candidate
@@ -1343,6 +1354,9 @@ class Optimizer:
             outcome: ObservationOutcome
             if twin:
                 outcome, reason = "duplicate", "repeats a candidate of the same step"
+            elif candidate.id in judged_only and labels[candidate.id].outcome == "ineligible":
+                outcome = "duplicate"
+                reason = f"repeats candidate {self._run.number(candidate.id)}, still unmeasured after its re-judge"
             else:
                 outcome, reason = labels[candidate.id].outcome, labels[candidate.id].reason
             for block, patch in draw.patches.items():
