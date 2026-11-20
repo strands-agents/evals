@@ -24,10 +24,11 @@ from typing import Any, ClassVar, cast
 from botocore.config import Config as BotocoreConfig
 from strands import Agent, ModelRetryStrategy, tool
 from strands.agent.agent_result import AgentResult
-from strands.agent.conversation_manager import SlidingWindowConversationManager
+from strands.experimental.context_manager import ContextState, Offload
 from strands.hooks.events import AfterToolCallEvent
 from strands.models.bedrock import BedrockModel
 from strands.models.model import CacheConfig, Model
+from strands.types.content import Message
 from strands.types.exceptions import MaxTokensReachedException
 from strands.types.tools import AgentTool
 
@@ -84,6 +85,9 @@ _INHERITED_ENV = (
     "LC_NUMERIC",
     "LC_TIME",
 )
+
+# On a context window overflow, a tool result keeps this many characters at each end (`_ShortenToolResultsOnOverflow`).
+_OVERFLOW_KEPT_CHARS = 200
 
 # Directories where other work on the machine keeps its files: a command that names a path in one of them, outside
 # the agent's own folders, is refused.
@@ -181,7 +185,11 @@ class Reflection(Proposer):
 
         Args:
             model: The proposer's model; None means Claude Sonnet 5.5 on Bedrock
-                (`global.anthropic.claude-sonnet-5-5`) at temperature 1.0.
+                (`global.anthropic.claude-sonnet-5-5`) at temperature 1.0. For an id Strands has no context window
+                for (an inference-profile or provisioned-model ARN, a model newer than the installed Strands), pass
+                a `Model` with `context_window_limit` set: else Strands assumes 200,000 tokens and warns on almost
+                every model call (its warning is meant to fire once, but each shell command's `subprocess` call
+                resets Python's record of warnings already shown).
             system_prompt: Replaces the default prompt; each literal `{work_folder}` in it becomes the agent's
                 working folder (the only folder it may write in). The submit instructions are appended either way.
             success_threshold: Reward a trial needs to count as a success; None splits by rank.
@@ -344,9 +352,18 @@ class Reflection(Proposer):
                     _confined_shell(work, [traces, versions, work], refused, root, running, shell_env=self._shell_env),
                     _submit_tool(work, submitted, parent, rejected, caps),
                 ],
-                # Strands' 40-message window, trimmed at the end of each call and on overflow, with the task
-                # message pinned: a send-back after a long first turn would otherwise go without it.
-                conversation_manager=SlidingWindowConversationManager(pin_first=1),
+                # At 85% of the model's context window the oldest messages but the last 4 are elided; the first
+                # message, the task, is never removed, nor is a pinned send-back (except by the SDK's last-resort
+                # truncation, when even the last messages don't fit). Tool outputs stay whole unless the provider
+                # rejects a request as too large, nothing calls a model (so `usage` is the whole spend), and with no
+                # stash there is no retrieval tool: the agent rereads a file through its shell.
+                context_manager={
+                    "strategies": [
+                        Offload.truncate("*").when(utilization=0.85, preserve_recent=4),
+                        _ShortenToolResultsOnOverflow(),
+                    ],
+                    "stash": False,
+                },
                 retry_strategy=_TransientRetry(
                     lambda error: request.log(
                         "proposer_retry", error_type=type(error).__name__, error=str(error)[:2000]
@@ -411,11 +428,18 @@ class Reflection(Proposer):
         """
         cut_offs = 0
 
-        async def send(text: str) -> AgentResult:
+        async def send(text: str, *, pin: bool = True) -> AgentResult:
             nonlocal cut_offs
             while True:
+                # A send-back is pinned, so elision keeps it while the agent is still answering it (the SDK strips
+                # the metadata before the model call); the task message, the first, is never removed anyway.
+                pinned: Message = {
+                    "role": "user",
+                    "content": [{"text": text}],
+                    "metadata": {"custom": {"pinned": True}},
+                }
                 try:
-                    return await agent.invoke_async(text)
+                    return await agent.invoke_async([pinned] if pin else text)
                 except MaxTokensReachedException as error:
                     if cut_offs == _CUT_OFF_RETRIES:
                         raise MaxTokensReachedException(
@@ -423,10 +447,10 @@ class Reflection(Proposer):
                             "conversation; give Reflection a Model built with a higher max_tokens"
                         ) from error
                     cut_offs += 1
-                    text = CUT_OFF
+                    text, pin = CUT_OFF, True
 
         before = len(rejected)
-        result = await send(message)
+        result = await send(message, pin=False)
         rationale = (str(result).strip() or _FALLBACK_RATIONALE)[:_RATIONALE_CHARS]
         params: dict[str, str] | None = dict(submitted) or None
         submitted.clear()
@@ -739,6 +763,42 @@ def _cap_tool_output(event: AfterToolCallEvent) -> None:
                 f"characters. Use targeted commands (grep, head, tail) to extract specific content.]"
             )
             logger.warning("original=<%d>, limit=<%d> | truncated tool output", len(text), _MAX_TOOL_OUTPUT)
+
+
+class _ShortenToolResultsOnOverflow:
+    """Only when the provider rejects a request as too large: cut the tool results of the oldest message with any
+    over `4 * _OVERFLOW_KEPT_CHARS` characters to their first and last `_OVERFLOW_KEPT_CHARS`, one message per retry.
+    A cut result is shorter than that threshold, so it is never cut again.
+
+    The context manager's own strategies remove whole messages and always keep the newest, so a turn whose tool
+    results alone overflow the window (several large reads at once) could never be sent. This runs after the
+    elision, in the same pass, so a rejected request also costs the oldest kept result even when the elision alone
+    would have made it fit. A request is rejected when the newest messages alone exceed the window, when Strands'
+    estimate of its size undercounts, or when the model's real window is smaller than Strands believes.
+    """
+
+    name = "reflection:shorten-tool-results-on-overflow"
+
+    async def apply(self, context: ContextState) -> bool:
+        if not context.overflow:
+            return False
+        for message in context.messages:
+            cut = False
+            # Text items only: both of Reflection's tools return strings.
+            for block in message["content"]:
+                for item in block.get("toolResult", {}).get("content", []):
+                    text = item.get("text")
+                    if text and len(text) > 4 * _OVERFLOW_KEPT_CHARS:
+                        removed = len(text) - 2 * _OVERFLOW_KEPT_CHARS
+                        item["text"] = (
+                            f"{text[:_OVERFLOW_KEPT_CHARS]}\n\n... [cut: {removed} characters removed because the "
+                            f"context window was full; re-read the part you need with grep, head or tail] ...\n\n"
+                            f"{text[-_OVERFLOW_KEPT_CHARS:]}"
+                        )
+                        cut = True
+            if cut:
+                return True
+        return False
 
 
 @dataclass(frozen=True)
