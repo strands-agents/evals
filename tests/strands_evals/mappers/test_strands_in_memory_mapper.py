@@ -55,6 +55,34 @@ def test_inference_span(provider):
     assert inference.messages[1].content[0].text == "hi"
 
 
+@pytest.mark.parametrize(
+    ("event_name", "attribute"),
+    [("gen_ai.assistant.message", "content"), ("gen_ai.choice", "message")],
+)
+def test_inference_excludes_reasoning_from_assistant_text(provider, event_name, attribute) -> None:
+    blocks = [
+        {"reasoningContent": {"reasoningText": {"text": "legacy reasoning", "signature": "sig"}}},
+        {"type": "reasoning", "text": "typed reasoning"},
+        {"text": "391"},
+        {"toolUse": {"name": "calculator", "input": {"expression": "17*23"}, "toolUseId": "call-1"}},
+    ]
+    span = make_span(
+        provider,
+        0xAAA,
+        0xBBB,
+        0xCCC,
+        "chat",
+        {"gen_ai.operation.name": "chat"},
+        lambda s: s.add_event(event_name, {attribute: json.dumps(blocks)}),
+    )
+    inference = StrandsInMemorySessionMapper().map_to_session([span], "sid").traces[0].spans[0]
+
+    assert isinstance(inference, InferenceSpan)
+    text, tool_call = inference.messages[0].content
+    assert text.text == "391"
+    assert tool_call.tool_call_id == "call-1"
+
+
 def test_agent_span(provider):
     span = make_span(
         provider,

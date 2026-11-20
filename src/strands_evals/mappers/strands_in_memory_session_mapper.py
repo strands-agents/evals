@@ -238,6 +238,8 @@ class StrandsInMemorySessionMapper(SessionMapper):
     def _process_assistant_content(self, content_list: list[dict[str, Any]]) -> list[TextContent | ToolCallContent]:
         result: list[TextContent | ToolCallContent] = []
         for item in content_list:
+            if item.get("type") == "reasoning":
+                continue
             if "text" in item:
                 result.append(TextContent(text=item["text"]))
             elif "toolUse" in item:

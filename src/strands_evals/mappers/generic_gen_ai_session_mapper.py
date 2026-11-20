@@ -614,6 +614,8 @@ class GenericGenAISessionMapper(SessionMapper):
         """Process assistant message content blocks."""
         result: list[TextContent | ToolCallContent] = []
         for item in content_list:
+            if item.get("type") == "reasoning":
+                continue
             if "text" in item:
                 result.append(TextContent(text=item["text"]))
             elif "toolUse" in item:

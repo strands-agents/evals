@@ -243,7 +243,11 @@ class CloudWatchSessionMapper(SessionMapper):
 
         parsed = self._parse_message_content(raw)
         if parsed:
-            texts = [item["text"] for item in parsed if isinstance(item, dict) and "text" in item]
+            texts = [
+                item["text"]
+                for item in parsed
+                if isinstance(item, dict) and item.get("type") != "reasoning" and "text" in item
+            ]
             return " ".join(texts) if texts else None
 
         return raw if isinstance(raw, str) else None
@@ -369,6 +373,8 @@ class CloudWatchSessionMapper(SessionMapper):
     def _process_assistant_content(content_list: list[dict[str, Any]]) -> list[TextContent | ToolCallContent]:
         result: list[TextContent | ToolCallContent] = []
         for item in content_list:
+            if item.get("type") == "reasoning":
+                continue
             if "text" in item:
                 result.append(TextContent(text=item["text"]))
             elif "toolUse" in item:

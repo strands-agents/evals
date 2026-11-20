@@ -315,6 +315,23 @@ class TestInferenceSpan:
     def setup_method(self):
         self.mapper = GenericGenAISessionMapper()
 
+    def test_legacy_event_excludes_typed_reasoning(self) -> None:
+        blocks = [{"type": "reasoning", "text": "internal reasoning"}, {"text": "391"}]
+        span = make_span(
+            operation_name="chat",
+            span_events=[
+                {
+                    "event_name": "gen_ai.choice",
+                    "timestamp": 0,
+                    "attributes": {"message": json.dumps(blocks)},
+                }
+            ],
+        )
+        inference = self.mapper.map_to_session([span], "sess-1").traces[0].spans[0]
+
+        assert isinstance(inference, InferenceSpan)
+        assert [part.text for part in inference.messages[0].content] == ["391"]
+
     def test_inference_span_with_events(self):
         """Inference span extracts messages from events."""
         span = make_span(
