@@ -26,6 +26,7 @@ from strands_evals.optimization import (
     IterationRecord,
     LowerBound,
     Maximize,
+    OneOf,
     Search,
     Split,
     TopRanked,
@@ -106,6 +107,30 @@ def plain_agent():
 
 world = World(0.25, None)
 """A scripted model instance for portable configs, referenced as `modelModule`."""
+
+
+# `harness_agent.py` (an agent file) as a tunable factory, for the parity test of the two routes.
+
+INSTRUCTIONS = ["You answer questions.", f"You answer questions. {EXACT}"]
+BUILT: list[str] = []
+
+
+@tunable(instructions=OneOf(*INSTRUCTIONS), effort=OneOf("auto", "low"))
+def harness_factory(instructions, effort):
+    """The agent of `harness_agent.py`, its instructions and effort tunable."""
+    from strands_harness import create_harness
+
+    return create_harness(
+        model=World(0.25, None),
+        instructions=instructions,
+        effort=effort,
+        builtin_tools=[],
+        builtin_plugins=[],
+        skills=False,
+        session=False,
+        memory=False,
+        callback_handler=None,
+    )
 
 
 # Objects for the `MODULE:ATTR` flags.
