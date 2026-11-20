@@ -121,9 +121,11 @@ const report = (score, ...cases) => ({
   ok(p.d.activeElement === row('only-exp/experiment.json'), 'and puts the keyboard back on the row that asked', p.d.activeElement.tagName);
   await p.click(row('only-exp/experiment.json'));
   await p.click('.ask [data-answer="yes"]');
-  ok(on() === 'v-experiment' && p.text('#facts code') === 'strands-evals run experiment.json --agent module:attr -o report.json'
+  ok(on() === 'v-experiment'
+    && p.text('#facts code') === `strands-evals run ${p.root}/only-exp/experiment.json --agent module:attr -o ${p.root}/only-exp/report.json`
     && /· Not run yet\. To run it: /.test(p.text('#facts')),
-  'Discard and open opens it, and an experiment with no report says how to run it', p.text('#facts'));
+  'Discard and open opens it, and an experiment with no report says how to run it, by its own path and beside itself',
+  p.text('#facts'));
 }
 
 // ── the report an unrun experiment is told to write is one the scan would pair with it by name ──
@@ -135,7 +137,7 @@ const report = (score, ...cases) => ({
     await p.openExperiment(file);
     told.push(p.text('#facts code').split(' -o ')[1]);
   }
-  ok(told.join() === 'nightly.report.json,smoke.report.json,myexperiment.report.json',
+  ok(told.join() === [`${p.root}/nightly.report.json`, `${p.root}/smoke.report.json`, `${p.root}/myexperiment.report.json`].join(),
     'it takes the experiment’s name, less a trailing experiment that stands apart', told.join());
 }
 

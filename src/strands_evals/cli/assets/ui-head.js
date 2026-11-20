@@ -21,14 +21,17 @@ function reportHead() {
 function experimentHead() {
   const e = listed(EXPERIMENTS, expMeta);
   const made = reportsOf(e);
-  /* A report of the same name, less `.json` and a trailing `experiment`, is one the scan pairs with it. */
-  const stem = e.name.replace(/\.json$/i, '').replace(/(^|[._-])(experiment|exp)$/i, '');
-  const out = stem ? `${stem}.report.json` : 'report.json';
+  /* A report of the same name, less `.json` and a trailing `experiment`, is one the scan pairs with it.
+     Both paths are the file's own, so the command runs from anywhere and writes beside the experiment. */
+  const base = e.path.replace(/^.*\//, '');
+  const stem = base.replace(/\.json$/i, '').replace(/(^|[._-])(experiment|exp)$/i, '');
+  const beside = e.path.slice(0, e.path.length - base.length);
+  const out = shellQuote(filePath(beside + (stem ? `${stem}.report.json` : 'report.json')));
   return [[['Experiments', 'experiments'], [e.path]],
     `${experimentSize(e)} · `
       + (made.length
         ? `${made.length === 1 ? 'Report' : 'Reports'}: ${made.map(r => `${openLink('report', r.path)} ${fmt(r.overall_score)}`).join(', ')}`
-        : `<span class="empty">Not run yet.</span> To run it: <code>strands-evals run ${esc(e.name)} --agent module:attr -o ${esc(out)}</code>`
+        : `<span class="empty">Not run yet.</span> To run it: <code>strands-evals run ${esc(shellQuote(filePath(e.path)))} --agent module:attr -o ${esc(out)}</code>`
           + `, then Rescan. ${docLink('cli/run/#experiment-file-run', 'unrun-experiment', 'How to run an experiment')}`)];
 }
 

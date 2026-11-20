@@ -999,25 +999,27 @@ const picked = report => ({ event: 'picked', iteration: 1, report: { champion_id
 const openResult = (report, { objective = 'Maximize(H)', extra, ...config } = {}) =>
   openLog({ objective, ...config }, resultLog(report, extra));
 
-for (const [name, objective, verdict, bar, listed] of [
+for (const [name, objective, verdict, bar, listed, read] of [
   ['straddles zero', interval(0.1, -0.04, 0.24),
     /\+0\.1, 95% interval \[-0\.04, 0\.24\]: includes zero, so this run has not shown an improvement/,
-    'H ↑ / flat / across zero', '+0.1 held out · includes zero (flat)'],
+    'H ↑ / flat / across zero', '+0.1 held out · includes zero (flat)', 'not shown'],
   ['is below zero', interval(-0.08, -0.19, -0.02),
     /Objective -0\.08, .* below zero, so shipping the champion would be a regression/,
-    'H ↑ / bad / left of zero', '-0.08 held out · below zero (down)'],
+    'H ↑ / bad / left of zero', '-0.08 held out · below zero (down)', 'a regression'],
   ['is narrowly clear', interval(0.1071, 0.004, 0.2103), /\[0\.004, 0\.2103\]: clear of zero/,
-    'H ↑ / good / right of zero', '+0.1071 held out · clear of zero (up)'],
+    'H ↑ / good / right of zero', '+0.1071 held out · clear of zero (up)', 'clear of zero'],
   ['is absent', { mean_diff: 0.1, n_cases: 6 }, /\+0\.1 against the baseline, with no interval in the report/,
-    null, '+0.1 held out · no interval (flat)'],
+    null, '+0.1 held out · no interval (flat)', 'no interval'],
   ['has no width', interval(0.7, 0.7, 0.7),
     /\+0\.7 against the baseline, the same on every one of 6 test cases, so its 95% interval has no width/,
-    null, '+0.7 held out · no width (flat)'],
+    null, '+0.7 held out · no width (flat)', 'no width'],
 ]) {
   const q = await openResult(testReport(objective));
   has(said(q), verdict, `an interval that ${name}: the verdict`);
   eq(q.$('#opt-result .rstrip') ? strip(q) : null, bar && [bar], `an interval that ${name}: the picture`);
   eq(runResult(q), listed, `an interval that ${name}: the run list`);
+  /* An interval of no width is not an absent one: the card reads it as the run list and the verdict do. */
+  eq(texts(q, '#opt-hero .champ-read').join(), read, `an interval that ${name}: the card`);
 }
 
 // ── Overview: a run with only a validation report ──
