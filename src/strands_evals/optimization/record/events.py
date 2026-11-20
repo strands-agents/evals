@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -91,7 +92,8 @@ class EventLog:
     """
 
     def __init__(self, path: Path):
-        """Open the log at `path`, cutting off a truncated last line so the next append starts a new line.
+        """Open the log at `path` without writing to it; the first append cuts off a truncated last line, so
+        it starts a new line.
 
         Raises:
             ValueError: A line other than the last isn't a JSON object (the log is corrupt, not truncated).
@@ -101,13 +103,14 @@ class EventLog:
         self._iteration = 0
         # The events as parsed at open, reused by read() until the next append, so opening a run parses it once.
         self._events: list[dict[str, Any]] | None = None
+        self._size = 0  # the log's size in bytes when this object last parsed or appended to it
+        self._cut: int | None = None  # where a truncated last line starts, until the first append cuts it off
         if not path.exists():
             return
-        events, end = self._parse()
-        if end < path.stat().st_size:
-            logger.warning("%s: dropping a truncated last line (the run was killed while writing it)", path)
-            with path.open("r+b") as file:
-                file.truncate(end)
+        events, end, self._size = self._parse()
+        if end < self._size:
+            logger.warning("path=<%s> | ignoring a truncated last line | the next append cuts it off", path)
+            self._cut = end
         self._events = events
         if events:
             self._iteration = events[-1].get("iteration", 0)
@@ -125,6 +128,8 @@ class EventLog:
         Raises:
             TypeError: A field isn't JSON-serializable.
             ValueError: A field holds NaN or infinity (not JSON), or is named `time` (the log's own field).
+            RuntimeError: The log has a truncated last line to cut off, but changed since it was read (another
+                writer may still be writing that line); nothing is written.
         """
         if "time" in fields:
             raise ValueError("an event field can't be named 'time': the log writes it")
@@ -141,9 +146,19 @@ class EventLog:
                 ensure_ascii=False,
                 allow_nan=False,
             )
+            if self._cut is not None:
+                with self.path.open("r+b") as file:
+                    if os.fstat(file.fileno()).st_size != self._size:
+                        raise RuntimeError(
+                            f"{self.path} changed since it was read, so its truncated last line may be another "
+                            "writer's line in progress; open the log again"
+                        )
+                    file.truncate(self._cut)
+                self._cut = None
             with self.path.open("a", encoding="utf-8") as file:
                 file.write(line + "\n")
                 file.flush()
+                self._size = os.fstat(file.fileno()).st_size
             self._iteration = iteration
             self._events = None
 
@@ -154,10 +169,16 @@ class EventLog:
                 self._events = self._parse()[0]
             return self._events
 
-    def _parse(self) -> tuple[list[dict[str, Any]], int]:
-        """The events and the byte offset where the last complete one ends."""
+    def changed(self) -> bool:
+        """Whether the log's size differs from when this object last parsed or appended to it: another writer
+        wrote to it since."""
+        size = self.path.stat().st_size if self.path.exists() else 0
+        return size != self._size
+
+    def _parse(self) -> tuple[list[dict[str, Any]], int, int]:
+        """The events, the byte offset where the last complete one ends, and the bytes read."""
         if not self.path.exists():
-            return [], 0
+            return [], 0, 0
         data = self.path.read_bytes()
         events: list[dict[str, Any]] = []
         end = 0
@@ -175,7 +196,7 @@ class EventLog:
                 raise ValueError(f"{self.path}: line {number} is not a JSON event; the log is corrupt")
             events.append(event)
             end += len(raw) + 1
-        return events, end
+        return events, end, len(data)
 
 
 _OUTSIDE_ITERATIONS = frozenset({"config", "trial", "resume", "stop", "finalists", "picked", "test"})

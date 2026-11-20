@@ -53,7 +53,7 @@ from strands_evals.optimization import (
     tunable,
 )
 from strands_evals.optimization.declaration.space import Space
-from strands_evals.optimization.optimizer import _slots_used
+from strands_evals.optimization.optimizer import _same_name, _slots_used
 from strands_evals.optimization.record.resume import load_state
 from strands_evals.optimization.record.run_directory import RunDirectory
 from strands_evals.optimization.search.blocks import _saved
@@ -1729,7 +1729,8 @@ async def test_resuming_a_finished_run_returns_its_result_and_spends_nothing(tmp
     root = original_optimizer._run.root
     trials = sum(1 for e in _events_at(root) if e["event"] == "trial")
 
-    resumed = _resume(root, budget=Budget(max_rollouts=2000, max_iterations=50))
+    with pytest.warns(UserWarning, match=r"search already stopped \(iterations\).*returns the finished result"):
+        resumed = _resume(root, budget=Budget(max_rollouts=2000, max_iterations=50))
     assert [e["event"] for e in _events_at(root)][-1] != "resume"  # resume() itself writes nothing
     again = await resumed.run_async()
 
@@ -1746,7 +1747,10 @@ async def test_a_smaller_budget_after_the_pick_skips_the_test_report(tmp_path):
     spent = sum(1 for e in _events_at(copy) if e["event"] == "trial")  # one rollout each, no re-runs here
     with pytest.raises(ValueError, match="already spent"):
         _resume(copy, budget=Budget(max_rollouts=spent - 1))
-    result = await _resume(copy, budget=Budget(max_rollouts=spent)).run_async()
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="budget= would let")  # a cap that allows no more search
+        resumed = _resume(copy, budget=Budget(max_rollouts=spent))
+    result = await resumed.run_async()
     assert result.test is None
     assert result.test_reason == (
         f"the test report needs 12 rollouts, 0 are left; resume with max_rollouts >= {spent + 12} to run it"
@@ -1954,9 +1958,86 @@ def test_a_ctrl_c_during_validation_cancels_the_trial_in_flight_and_resume_runs_
         return sum(1 for e in events if e["event"] == "trial" and e["record"]["split"] == "validation")
 
     assert validation_trials(events) < validation_trials(_events(original_optimizer))  # the cancelled one isn't saved
-    resumed_optimizer = _resume(root)
+    with pytest.warns(UserWarning, match="differently named agent"):  # resumed with the plain rollout on purpose
+        resumed_optimizer = _resume(root)
     _assert_same(resumed_optimizer.run(), original)
     assert resumed_optimizer._budget.spent == original_optimizer._budget.spent
+
+
+async def test_a_budget_that_would_search_further_after_the_search_stopped_warns(tmp_path):
+    original_optimizer = _default_search(tmp_path / "runs")
+    original = await original_optimizer.run_async()
+    root = original_optimizer._run.root
+    copy = _killed(root, tmp_path, lambda events: _index(events, "picked"))
+    with pytest.warns(UserWarning, match=r"search already stopped \(iterations\).*only finishes the end phase"):
+        _resume(copy, budget=Budget(max_iterations=7))
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="budget= would let")
+        _resume(root)  # no budget given
+        _resume(root, budget=Budget(max_iterations=6))  # the cap it stopped under: it would stop where it did
+        tiny = _resume(root, budget=Budget(max_rollouts=1))  # finished: no cover check, nothing left to spend
+    _assert_same(await tiny.run_async(), original)
+
+
+async def test_the_budget_warning_counts_only_the_search_spend_against_a_budget_stop(tmp_path):
+    original_optimizer = _default_search(tmp_path / "runs", budget=Budget(max_rollouts=92))
+    original = await original_optimizer.run_async()
+    assert original.stop_reason == "budget"
+    tracker = original_optimizer._budget
+    searched = sum(1 for e in _events(original_optimizer) if e["event"] == "trial" and e["record"]["split"] == "train")
+    enough = searched + tracker.validation_reserve + tracker.test_reserve + 8  # one more candidate's 8 train cases
+    root = original_optimizer._run.root
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="budget= would let")
+        _resume(root, budget=Budget(max_rollouts=enough - 1))
+    with pytest.warns(UserWarning, match=r"search already stopped \(budget\)"):
+        _resume(root, budget=Budget(max_rollouts=enough))
+
+
+async def test_no_budget_warning_when_the_search_stopped_for_another_reason(tmp_path):
+    optimizer = _default_search(tmp_path)
+    await optimizer.run_async()
+    root = optimizer._run.root
+    events = _events_at(root)
+    for event in events:
+        if event["event"] == "stop":
+            event["reason"] = "exhausted"  # a bigger budget wouldn't have searched further either
+    (root / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="budget= would let")
+        _resume(root, budget=Budget(max_rollouts=5000, max_iterations=50))
+
+
+async def test_a_run_another_optimizer_is_writing_cannot_be_run_again(tmp_path):
+    writer = _default_search(tmp_path)
+    await writer._start()  # scored the baseline; still writing
+    root = writer._run.root
+    resumed = _resume(root)  # resume only reads
+    before = _events_at(root)
+
+    with pytest.raises(RuntimeError, match="is open for writing in another process"):
+        await resumed.run_async()
+    assert _events_at(root) == before  # refused before writing anything
+
+    writer._run.events.append("label", candidate_id="x", label={})  # the writer goes on, then stops
+    writer._run.unlock()
+    with pytest.raises(RuntimeError, match="events.jsonl changed after it was read"):
+        await resumed.run_async()  # what resume read is stale
+
+
+async def test_a_run_whose_on_iteration_raised_resumes_in_the_same_process(tmp_path):
+    def broken(record):
+        raise RuntimeError("callback bug")
+
+    optimizer = _default_search(tmp_path, on_iteration=broken)
+    with pytest.raises(RuntimeError, match="callback bug"):
+        await optimizer.run_async()
+
+    result = await _resume(optimizer._run.root).run_async()  # the failed run released its lock
+    assert result.stop_reason == "iterations"
 
 
 def test_resume_checks_the_cases_and_the_config(tmp_path):
@@ -1980,6 +2061,51 @@ async def test_a_run_stopped_at_setup_cannot_resume(tmp_path):
         await optimizer.run_async()
     with pytest.raises(RuntimeError, match="stopped at setup"):
         Optimizer.resume(optimizer._run.root, experiment=_experiment(), factory=create_agent, rollout_fn=_rollout())
+
+
+@tunable(
+    manager=choice(component(Window, size=Int(1, 100)), component(Summary)),
+    temperature=OneOf(0.0, 0.5, 1.0),
+)
+def renamed_agent(manager, temperature):
+    return (manager, temperature)
+
+
+async def _renamed_rollout(agent_factory, case):
+    return await _temperature_rollout(agent_factory, case)
+
+
+def test_resume_warns_when_the_agent_is_named_differently(tmp_path):
+    optimizer = _default_search(tmp_path)
+    optimizer._setup()
+    root = optimizer._run.root
+    experiment = _experiment(evaluators=[Temperature()])
+
+    with pytest.warns(UserWarning, match=r"factory '[\w.]+:create_agent' -> '[\w.]+:renamed_agent'"):
+        Optimizer.resume(root, experiment=experiment, factory=renamed_agent, rollout_fn=_temperature_rollout)
+    with pytest.warns(UserWarning, match=r"\(rollout_fn '[\w.]+:_temperature_rollout' -> '[\w.]+:_renamed_rollout'\)"):
+        Optimizer.resume(root, experiment=experiment, factory=create_agent, rollout_fn=_renamed_rollout)
+
+    # The script that started the run, run as __main__, may be imported under its name to resume it.
+    log = root / "events.jsonl"
+    events = _events_at(root)
+    agent = events[0]["config"]["agent"]
+    agent.update({k: "__main__:" + v.partition(":")[2] for k, v in agent.items() if v is not None})
+    log.write_text("".join(json.dumps(e) + "\n" for e in events))
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="resuming run .* differently named agent")
+        _resume(root)
+
+
+def test_same_name_compares_module_and_qualname_but_lets_main_match_any_module():
+    assert _same_name("agents:create_agent", "agents:create_agent")
+    assert not _same_name("agents:create_agent", "agents:create_agent_v2")
+    assert not _same_name("agents:create_agent", "other:create_agent")
+    assert _same_name("__main__:create_agent", "optimize:create_agent")
+    assert _same_name("optimize:create_agent", "__main__:create_agent")
+    assert not _same_name("__main__:create_agent", "optimize:other_agent")
+    assert _same_name(None, None)
+    assert not _same_name(None, "agents:rollout") and not _same_name("agents:rollout", None)
 
 
 def test_resume_warns_when_numpy_or_optuna_changed(tmp_path):
