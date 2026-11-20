@@ -70,6 +70,11 @@ class Proposer(ABC):
 
     An ABC because users subclass it.
 
+    An instance serves one `Optimizer`, since it may keep what it is told. An optimizer binds it when its run
+    starts, before anything is written, and frees it only if setup fails (nothing was told to it); any other
+    optimizer given a bound instance raises `ValueError`. Give each optimizer its own instances,
+    `Optimizer.resume` included.
+
     Attributes:
         kinds: The variable types it can propose.
         concurrent: True when it keeps no state between proposals (Reflection): the optimizer makes a
@@ -80,6 +85,9 @@ class Proposer(ABC):
 
     kinds: ClassVar[frozenset[ParamKind]]
     concurrent: ClassVar[bool] = False
+    # The token of the optimizer this instance serves, set on the instance (not a ClassVar) when that optimizer
+    # binds it; None until then.
+    _bound_to: object | None = None
 
     @abstractmethod
     async def propose(self, request: ProposalRequest) -> list[Patch]:
