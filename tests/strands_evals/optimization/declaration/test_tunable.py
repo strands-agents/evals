@@ -3,7 +3,7 @@ import inspect
 
 import pytest
 from strands import Agent
-from strands.experimental.context_manager import ContextManager, Offload
+from strands.agent.conversation_manager import SlidingWindowConversationManager, SummarizingConversationManager
 from strands.hooks import BeforeModelCallEvent
 from strands.models.model import Model
 
@@ -27,45 +27,45 @@ class StubModel(Model):
         raise NotImplementedError
 
 
-class Truncate:
-    def __init__(self, keep_recent: int = 40):
-        self.keep_recent = keep_recent
+class Window:
+    def __init__(self, size: int = 40):
+        self.size = size
 
 
-class Summarize:
-    def __init__(self, utilization: float = 0.3):
-        self.utilization = utilization
+class Summary:
+    def __init__(self, ratio: float = 0.3):
+        self.ratio = ratio
 
 
-CM = choice(component(Truncate, keep_recent=Int(1, 100)), component(Summarize, utilization=Float(0.1, 0.9)))
+MANAGER = choice(component(Window, size=Int(1, 100)), component(Summary, ratio=Float(0.1, 0.9)))
 
 
-@tunable(cm=CM, prompt=TextValue(), temperature=Float(0.0, 1.0), effort=OneOf("low", "high"))
-def make_agent(cm=None, prompt="You help.", temperature=0.7, effort="high", sandbox=None):
+@tunable(manager=MANAGER, prompt=TextValue(), temperature=Float(0.0, 1.0), effort=OneOf("low", "high"))
+def make_agent(manager=None, prompt="You help.", temperature=0.7, effort="high", sandbox=None):
     """Build the test agent."""
-    return {"cm": cm, "prompt": prompt, "temperature": temperature, "effort": effort, "sandbox": sandbox}
+    return {"manager": manager, "prompt": prompt, "temperature": temperature, "effort": effort, "sandbox": sandbox}
 
 
 # --- the two mounts ---
 
 
 def test_both_mounts_return_the_same_factory():
-    def build(cm=None, prompt="You help."):
-        return cm, prompt
+    def build(manager=None, prompt="You help."):
+        return manager, prompt
 
-    decorated = tunable(cm=CM, prompt=TextValue())(build)
-    injected = tunable(build, inject={"cm": CM, "prompt": TextValue()})
+    decorated = tunable(manager=MANAGER, prompt=TextValue())(build)
+    injected = tunable(build, inject={"manager": MANAGER, "prompt": TextValue()})
     assert isinstance(decorated, TunableFactory) and isinstance(injected, TunableFactory)
     assert decorated.space.params() == injected.space.params()
-    candidate = {"cm": "Summarize", "cm.Summarize.utilization": 0.5, "prompt": "Be brief."}
+    candidate = {"manager": "Summary", "manager.Summary.ratio": 0.5, "prompt": "Be brief."}
     for build_with in (lambda factory: factory(), lambda factory: factory.bind(candidate)()):
-        (decorated_cm, decorated_prompt), (injected_cm, injected_prompt) = (
+        (decorated_manager, decorated_prompt), (injected_manager, injected_prompt) = (
             build_with(decorated),
             build_with(injected),
         )
         assert decorated_prompt == injected_prompt
-        assert type(decorated_cm) is type(injected_cm)
-        assert vars(decorated_cm) == vars(injected_cm)
+        assert type(decorated_manager) is type(injected_manager)
+        assert vars(decorated_manager) == vars(injected_manager)
 
 
 def test_the_factory_looks_like_the_wrapped_function():
@@ -101,7 +101,7 @@ def test_filling_the_parameters_default_keeps_log_and_edit_instructions():
 
 def test_the_plain_call_builds_the_baseline_without_an_optimizer():
     built = make_agent()
-    assert isinstance(built["cm"], Truncate) and built["cm"].keep_recent == 40
+    assert isinstance(built["manager"], Window) and built["manager"].size == 40
     assert (built["prompt"], built["temperature"], built["effort"]) == ("You help.", 0.7, "high")
 
 
@@ -110,8 +110,8 @@ def test_the_plain_call_lets_explicit_arguments_win():
 
 
 def test_the_plain_call_lets_positional_arguments_win():
-    built = make_agent(Summarize(), "Override.")
-    assert isinstance(built["cm"], Summarize) and built["prompt"] == "Override."
+    built = make_agent(Summary(), "Override.")
+    assert isinstance(built["manager"], Summary) and built["prompt"] == "Override."
 
 
 def test_the_plain_call_lets_a_name_caught_by_kwargs_win():
@@ -200,10 +200,10 @@ def test_bind_canonicalizes_values_like_complete():
 
 
 def test_bind_builds_fresh_components_on_every_call():
-    bound = make_agent.bind({"cm": "Summarize", "cm.Summarize.utilization": 0.5})
+    bound = make_agent.bind({"manager": "Summary", "manager.Summary.ratio": 0.5})
     first, second = bound(), bound()
-    assert isinstance(first["cm"], Summarize) and first["cm"].utilization == 0.5
-    assert first["cm"] is not second["cm"]
+    assert isinstance(first["manager"], Summary) and first["manager"].ratio == 0.5
+    assert first["manager"] is not second["manager"]
 
 
 def test_a_bad_proposal_dies_at_validation_before_any_agent_is_built():
@@ -223,7 +223,7 @@ def test_a_bad_proposal_dies_at_validation_before_any_agent_is_built():
 
 def test_bind_rejects_a_key_inactive_under_the_chosen_alternative():
     with pytest.raises(ValueError, match="inactive"):
-        make_agent.bind({"cm.Summarize.utilization": 0.5})
+        make_agent.bind({"manager.Summary.ratio": 0.5})
 
 
 # --- arguments to the bound factory: call kwargs and resources ---
@@ -318,47 +318,46 @@ def test_a_factory_without_a_name_takes_arguments():
 # --- a real component swap ---
 
 
-def summarizing(utilization: float = 0.85) -> ContextManager:
-    return ContextManager(strategies=[Offload.summarize("*").when(utilization=utilization, preserve_recent=4)])
-
-
 @tunable(
-    context_manager=choice(
-        summarize=component(summarizing, utilization=Float(0.5, 0.95)),
-        plain=component(ContextManager, stash=OneOf(None, False)),
+    conversation_manager=choice(
+        component(SummarizingConversationManager, summary_ratio=Float(0.1, 0.8)),
+        component(SlidingWindowConversationManager, window_size=Int(4, 200)),
     )
 )
-def make_strands_agent(context_manager=None):
-    return Agent(model=StubModel(), context_manager=context_manager, callback_handler=None)
+def make_strands_agent(conversation_manager=None):
+    return Agent(model=StubModel(), conversation_manager=conversation_manager, callback_handler=None)
 
 
 def test_a_real_component_swap_builds_through_the_constructor_with_its_hooks_registered():
-    bound = make_strands_agent.bind({"context_manager": "plain", "context_manager.plain.stash": False})
+    bound = make_strands_agent.bind(
+        {
+            "conversation_manager": "SlidingWindowConversationManager",
+            "conversation_manager.SlidingWindowConversationManager.window_size": 10,
+        }
+    )
     agent, other = bound(), bound()
-    cm = agent.context_manager
-    assert isinstance(cm, ContextManager)
-    assert cm.stash is None  # stash=False reached the constructor
-    assert cm is not other.context_manager
+    manager = agent.conversation_manager
+    assert isinstance(manager, SlidingWindowConversationManager)
+    assert manager.window_size == 10
+    assert manager is not other.conversation_manager
     callbacks = agent.hooks.get_callbacks_for(BeforeModelCallEvent(agent=agent, invocation_state={}))
-    # The plugin's hooks are closures over the context manager, registered by the agent on the fresh instance.
-    assert any(cm in [cell.cell_contents for cell in callback.__closure__ or ()] for callback in callbacks)
+    assert any(getattr(callback, "__self__", None) is manager for callback in callbacks)
 
 
-@tunable(context_manager=choice(on=component(ContextManager, stash=OneOf(None, False)), off=False))
-def make_optional_agent(context_manager=None):
-    return {"context_manager": context_manager}
+@tunable(conversation_manager=choice(on=component(SlidingWindowConversationManager, window_size=Int(4, 200)), off=None))
+def make_optional_agent(conversation_manager=None):
+    return {"conversation_manager": conversation_manager}
 
 
-def test_an_optional_component_builds_fresh_when_on_and_passes_a_fixed_value_when_off():
+def test_an_optional_component_builds_fresh_when_on_and_passes_none_when_off():
     on = make_optional_agent.bind({})
-    first, second = on()["context_manager"], on()["context_manager"]
-    assert isinstance(first, ContextManager) and first is not second
-    assert make_optional_agent.bind({"context_manager": "off"})()["context_manager"] is False
+    first, second = on()["conversation_manager"], on()["conversation_manager"]
+    assert isinstance(first, SlidingWindowConversationManager) and first is not second
+    assert make_optional_agent.bind({"conversation_manager": "off"})()["conversation_manager"] is None
 
 
 def test_the_plain_call_builds_the_baseline_component():
-    agent = make_strands_agent()
-    assert isinstance(agent.context_manager, ContextManager) and agent.context_manager.stash is not None
+    assert isinstance(make_strands_agent().conversation_manager, SummarizingConversationManager)
 
 
 class Configured:
@@ -368,16 +367,16 @@ class Configured:
 
 
 SETTINGS = {"threshold": 0.6, "seen": []}
-FIXED = Configured(size=20, settings={"seen": []})
+WINDOW = SlidingWindowConversationManager(window_size=20)
 
 
-@tunable(cm=choice(tuned=component(Configured, size=Int(1, 50), settings=SETTINGS), fixed=FIXED))
-def make_configured(cm=None):
-    return cm
+@tunable(manager=choice(tuned=component(Configured, size=Int(1, 50), settings=SETTINGS), fixed=WINDOW))
+def make_configured(manager=None):
+    return manager
 
 
 def test_the_plain_call_and_every_bound_build_get_their_own_copy_of_a_fixed_kwarg():
-    bound = make_configured.bind({"cm.tuned.size": 7})
+    bound = make_configured.bind({"manager.tuned.size": 7})
     builds = [make_configured(), make_configured(), bound(), bound()]
     assert all(build.settings == SETTINGS for build in builds)
     assert len({id(build.settings) for build in builds} | {id(SETTINGS)}) == 5
@@ -386,12 +385,12 @@ def test_the_plain_call_and_every_bound_build_get_their_own_copy_of_a_fixed_kwar
 
 
 def test_every_bound_build_gets_its_own_copy_of_a_fixed_alternative():
-    bound = make_configured.bind({"cm": "fixed"})
+    bound = make_configured.bind({"manager": "fixed"})
     first, second = bound(), bound()
-    assert isinstance(first, Configured) and first.size == 20
-    assert first is not second and first is not FIXED
-    first.settings["seen"].append("first trial")
-    assert second.settings["seen"] == [] and FIXED.settings["seen"] == []
+    assert isinstance(first, SlidingWindowConversationManager) and first.window_size == 20
+    assert first is not second and first is not WINDOW
+    first.removed_message_count = 3
+    assert second.removed_message_count == 0 and WINDOW.removed_message_count == 0
 
 
 def test_a_build_context_can_be_built_by_hand(tmp_path):

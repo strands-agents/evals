@@ -30,14 +30,14 @@ from strands_evals.optimization.search.blocks import ScheduleContext, Step
 from strands_evals.types.optimization import IterationRecord, ProposalOutcome
 
 
-class Truncate:
-    def __init__(self, keep_recent: int = 40):
-        self.keep_recent = keep_recent
+class Window:
+    def __init__(self, size: int = 40):
+        self.size = size
 
 
-class Summarize:
-    def __init__(self, utilization: float = 0.3):
-        self.utilization = utilization
+class Summary:
+    def __init__(self, ratio: float = 0.3):
+        self.ratio = ratio
 
 
 class Router:
@@ -61,14 +61,14 @@ class Fake(Proposer):
         pass
 
 
-def context_choice():
-    return choice(component(Truncate, keep_recent=Int(1, 100)), component(Summarize, utilization=Float(0.1, 0.9)))
+def manager():
+    return choice(component(Window, size=Int(1, 100)), component(Summary, ratio=Float(0.1, 0.9)))
 
 
 def full_space():
     return Space(
         {
-            "cm": context_choice(),
+            "manager": manager(),
             "temperature": Float(0.0, 1.0, default=0.7),
             "effort": OneOf("low", "high"),
             "prompt": TextValue(default="You help.", size_cap=50),
@@ -90,7 +90,7 @@ def shape(schedule):
 
 
 def test_an_unnamed_block_is_named_after_its_kind_made_unique():
-    a, b, mixed = Block(TPE(), "temperature"), Block(TPE(), "effort"), Block(Fake(), "cm")
+    a, b, mixed = Block(TPE(), "temperature"), Block(TPE(), "effort"), Block(Fake(), "manager")
     assert a.name is None
 
     resolved, _ = Search([a, b, mixed]).resolve(full_space())
@@ -146,8 +146,8 @@ def test_default_search_assigns_every_key_by_kind():
     resolved, schedule = Search().resolve(full_space())
 
     assert names(resolved) == [
-        ("structure", "TPE", ["cm"]),
-        ("numbers", "TPE", ["cm.Truncate.keep_recent", "cm.Summarize.utilization", "temperature", "effort"]),
+        ("structure", "TPE", ["manager"]),
+        ("numbers", "TPE", ["manager.Window.size", "manager.Summary.ratio", "temperature", "effort"]),
         ("text", "Reflection", ["prompt"]),
     ]
     assert resolved[0][0].proposer.n_startup_trials == 2
@@ -156,38 +156,35 @@ def test_default_search_assigns_every_key_by_kind():
 
 
 def test_a_bare_component_goes_to_no_block():
-    space = Space({"cm": component(Truncate, keep_recent=Int(1, 100)), "temperature": Float(0.0, 1.0, default=0.5)})
+    space = Space({"manager": component(Window, size=Int(1, 100)), "temperature": Float(0.0, 1.0, default=0.5)})
 
     resolved, schedule = Search().resolve(space)
 
-    assert names(resolved) == [("numbers", "TPE", ["cm.Truncate.keep_recent", "temperature"])]
+    assert names(resolved) == [("numbers", "TPE", ["manager.Window.size", "temperature"])]
     assert shape(schedule) == "joint"
 
 
 def test_a_declared_name_expands_to_every_key_under_it():
-    resolved, _ = Search([Block(Fake(), "cm", name="mine")]).resolve(full_space())
+    resolved, _ = Search([Block(Fake(), "manager", name="mine")]).resolve(full_space())
 
-    assert resolved[0][1] == ["cm", "cm.Truncate.keep_recent", "cm.Summarize.utilization"]
+    assert resolved[0][1] == ["manager", "manager.Window.size", "manager.Summary.ratio"]
     assert [b.name for b, _ in resolved] == ["mine", "numbers", "text"]
 
 
 def test_a_flat_key_is_one_variable_and_keeps_declaration_order():
-    resolved, _ = Search([Block(Fake(), "temperature", "cm.Summarize.utilization", name="mine")]).resolve(full_space())
+    resolved, _ = Search([Block(Fake(), "temperature", "manager.Summary.ratio", name="mine")]).resolve(full_space())
 
-    assert resolved[0][1] == ["cm.Summarize.utilization", "temperature"]
-    assert ("numbers", "TPE", ["cm.Truncate.keep_recent", "effort"]) in names(resolved)
+    assert resolved[0][1] == ["manager.Summary.ratio", "temperature"]
+    assert ("numbers", "TPE", ["manager.Window.size", "effort"]) in names(resolved)
 
 
 @pytest.mark.parametrize(
     ("blocks", "message"),
     [
         ([Block(Fake(), "temperature", name="a"), Block(Fake(), "temperature", name="b")], "in blocks 'a' and 'b'"),
-        ([Block(Fake(), "cm", name="a"), Block(Fake(), "cm", name="b")], "in blocks 'a' and 'b'"),
+        ([Block(Fake(), "manager", name="a"), Block(Fake(), "manager", name="b")], "in blocks 'a' and 'b'"),
         (
-            [
-                Block(Fake(), "cm.Truncate.keep_recent", name="a"),
-                Block(Fake(), "cm", "cm.Truncate.keep_recent", name="b"),
-            ],
+            [Block(Fake(), "manager.Window.size", name="a"), Block(Fake(), "manager", "manager.Window.size", name="b")],
             "in blocks 'a' and 'b'",
         ),
         ([Block(Fake(), "nope", name="a")], "neither a declared name nor a key"),
@@ -234,7 +231,7 @@ def test_proposer_configs():
 def two_structures(**extra):
     return Space(
         {
-            "cm": context_choice(),
+            "manager": manager(),
             "router": choice(router=component(Router, k=Int(1, 5)), off=None),
             **extra,
         }
@@ -245,7 +242,7 @@ def two_structures(**extra):
     ("space", "expected"),
     [
         (Space({"temperature": Float(0.0, 1.0, default=0.5)}), "joint"),
-        (Space({"cm": context_choice()}), ("nested", "structure", "alternate")),
+        (Space({"manager": manager()}), ("nested", "structure", "alternate")),
         (
             two_structures(temperature=Float(0.0, 1.0, default=0.5)),
             ("nested", "a", ("nested", "b", "alternate")),
@@ -256,43 +253,43 @@ def two_structures(**extra):
 def test_default_schedule_nests_the_structural_blocks(space, expected):
     blocks = []
     if "router" in {p.name for p in space.params()}:
-        blocks = [Block(TPE(), "cm", name="a"), Block(TPE(), "router", name="b")]
+        blocks = [Block(TPE(), "manager", name="a"), Block(TPE(), "router", name="b")]
     _, schedule = Search(blocks).resolve(space)
 
     assert shape(schedule) == expected
 
 
 def test_only_structural_blocks_and_one_of_them_is_joint():
-    space = Space({"cm": choice(component(Truncate), component(Summarize))})
+    space = Space({"manager": choice(component(Window), component(Summary))})
 
     resolved, schedule = Search().resolve(space)
 
-    assert names(resolved) == [("structure", "TPE", ["cm"])]
+    assert names(resolved) == [("structure", "TPE", ["manager"])]
     assert shape(schedule) == "joint"
 
 
 def test_a_declared_name_takes_only_the_keys_its_proposer_can_propose():
-    resolved, _ = Search([Block(Thompson(), "cm")]).resolve(full_space())
+    resolved, _ = Search([Block(Thompson(), "manager")]).resolve(full_space())
 
     assert names(resolved) == [
-        ("structure", "Thompson", ["cm"]),
-        ("numbers", "TPE", ["cm.Truncate.keep_recent", "cm.Summarize.utilization", "temperature", "effort"]),
+        ("structure", "Thompson", ["manager"]),
+        ("numbers", "TPE", ["manager.Window.size", "manager.Summary.ratio", "temperature", "effort"]),
         ("text", "Reflection", ["prompt"]),
     ]
     with pytest.raises(ValueError, match=r"'b' holds no variable TPE can propose \(tools.lookup \(text\)\)"):
         Search([Block(TPE(), "tools", name="b")]).resolve(Space({"tools": tool_descriptions(lookup)}))
-    with pytest.raises(ValueError, match=r"cm.Truncate.keep_recent \(int\), which Thompson can't propose"):
-        Search([Block(Thompson(), "cm", "cm.Truncate.keep_recent")]).resolve(full_space())
+    with pytest.raises(ValueError, match=r"manager.Window.size \(int\), which Thompson can't propose"):
+        Search([Block(Thompson(), "manager", "manager.Window.size")]).resolve(full_space())
 
 
 def test_a_key_named_directly_wins_over_a_declared_name():
-    blocks = [Block(Fake(), "cm", name="structure"), Block(TPE(), "cm.Truncate.keep_recent", name="truncate")]
+    blocks = [Block(Fake(), "manager", name="structure"), Block(TPE(), "manager.Window.size", name="window")]
 
     resolved, _ = Search(blocks).resolve(full_space())
 
     assert names(resolved)[:2] == [
-        ("structure", "Fake", ["cm", "cm.Summarize.utilization"]),
-        ("truncate", "TPE", ["cm.Truncate.keep_recent"]),
+        ("structure", "Fake", ["manager", "manager.Summary.ratio"]),
+        ("window", "TPE", ["manager.Window.size"]),
     ]
     with pytest.raises(ValueError, match="'all' holds no variable of its own"):
         Search([Block(Fake(), "tools", name="all"), Block(Fake(), "tools.lookup", name="one")]).resolve(
@@ -302,7 +299,7 @@ def test_a_key_named_directly_wins_over_a_declared_name():
 
 def test_a_block_under_another_blocks_choice_comes_after_it():
     space = two_structures(temperature=Float(0.0, 1.0, default=0.5))
-    blocks = [Block(TPE(), "router", "cm.Summarize.utilization", name="b"), Block(TPE(), "cm", name="a")]
+    blocks = [Block(TPE(), "router", "manager.Summary.ratio", name="b"), Block(TPE(), "manager", name="a")]
 
     _, schedule = Search(blocks).resolve(space)
 
@@ -312,8 +309,8 @@ def test_a_block_under_another_blocks_choice_comes_after_it():
 def test_a_key_under_a_one_option_choice_depends_on_no_block():
     # "router" is a bare component (one option), claimed by a non-structural block; the structural block holding
     # its k is neither ordered after that block nor rejected as nested around it
-    space = Space({"cm": context_choice(), "router": component(Router, k=Int(1, 5))})
-    blocks = [Block(TPE(), "router", name="r"), Block(TPE(), "cm", "router.Router.k", name="a")]
+    space = Space({"manager": manager(), "router": component(Router, k=Int(1, 5))})
+    blocks = [Block(TPE(), "router", name="r"), Block(TPE(), "manager", "router.Router.k", name="a")]
 
     _, schedule = Search(blocks).resolve(space)
     assert shape(schedule) == ("nested", "a", "alternate")
@@ -328,9 +325,9 @@ def test_a_given_schedule_is_checked_and_returned():
 
     with pytest.raises(ValueError, match="no such block in its scope"):
         Search(schedule=Nested("nope")).resolve(space)
-    with pytest.raises(ValueError, match="exists only for some values of cm"):
+    with pytest.raises(ValueError, match="exists only for some values of manager"):
         Search(
-            [Block(Fake(), "cm", name="s"), Block(Fake(), "cm.Truncate.keep_recent", name="w")],
+            [Block(Fake(), "manager", name="s"), Block(Fake(), "manager.Window.size", name="w")],
             schedule=Nested("w"),
         ).resolve(space)
 
@@ -362,7 +359,7 @@ def test_a_wrong_type_is_a_type_error_and_a_bad_value_a_value_error():
 
 
 def test_nested_takes_an_unnamed_block_named_by_resolve():
-    structure = Block(TPE(n_startup_trials=2), "cm")
+    structure = Block(TPE(n_startup_trials=2), "manager")
     nested = Nested(structure, Alternate())
 
     resolved, schedule = Search([structure], schedule=nested).resolve(full_space())
@@ -371,7 +368,7 @@ def test_nested_takes_an_unnamed_block_named_by_resolve():
 
 
 def test_resolve_leaves_the_users_blocks_and_schedule_unchanged():
-    structure = Block(TPE(n_startup_trials=2), "cm")
+    structure = Block(TPE(n_startup_trials=2), "manager")
     numbers = Block(TPE(), "temperature")
     nested = Nested(structure, Alternate())
     search = Search([structure, numbers], schedule=nested)
@@ -388,11 +385,11 @@ def test_resolve_leaves_the_users_blocks_and_schedule_unchanged():
 
 def test_a_nested_on_an_unnamed_block_outside_the_search_raises():
     with pytest.raises(ValueError, match="not in this Search"):
-        Search(schedule=Nested(Block(TPE(), "cm"))).resolve(full_space())
+        Search(schedule=Nested(Block(TPE(), "manager"))).resolve(full_space())
 
 
 def test_nested_config():
-    assert Nested(Block(TPE(), "cm", name="s"), Alternate(), inner_iterations=2).config() == {
+    assert Nested(Block(TPE(), "manager", name="s"), Alternate(), inner_iterations=2).config() == {
         "outer": "s",
         "inner": {"name": "alternate", "config": {}},
         "inner_iterations": 2,
@@ -405,15 +402,15 @@ def test_nested_config():
 
 # ---- schedules over a scripted history ---------------------------------------------------------------------------
 
-BASE = {"cm": "Truncate", "cm.Truncate.keep_recent": 40, "temperature": 0.7}
-SUMMARIZE = {"cm": "Summarize", "cm.Summarize.utilization": 0.3, "temperature": 0.7}
+BASE = {"manager": "Window", "manager.Window.size": 40, "temperature": 0.7}
+SUMMARY = {"manager": "Summary", "manager.Summary.ratio": 0.3, "temperature": 0.7}
 
 
 class History:
     """A scripted run: plans with the schedule, records what each step saved, and keeps every context."""
 
     def __init__(self, schedule, blocks, space=None, *, n=4, redraws=3):
-        self.space = space or Space({"cm": context_choice(), "temperature": Float(0.0, 1.0, default=0.7)})
+        self.space = space or Space({"manager": manager(), "temperature": Float(0.0, 1.0, default=0.7)})
         resolved, self.schedule = Search(blocks, schedule=schedule, redraws=redraws).resolve(self.space)
         self.blocks = [block for block, _ in resolved]
         self.keys = {block.name: keys for block, keys in resolved}
@@ -513,15 +510,15 @@ def view(step):
 
 def blocks4():
     return [
-        Block(Fake(), "cm", name="structure"),
-        Block(Fake(), "cm.Truncate.keep_recent", name="truncate"),
-        Block(Fake(), "cm.Summarize.utilization", name="summarize"),
+        Block(Fake(), "manager", name="structure"),
+        Block(Fake(), "manager.Window.size", name="window"),
+        Block(Fake(), "manager.Summary.ratio", name="summary"),
         Block(Fake(), "temperature", name="temp"),
     ]
 
 
 def test_joint_proposes_every_block_until_a_step_saves_nothing():
-    history = History(Joint(), [Block(Fake(), "temperature", name="t"), Block(Fake(), "cm", name="m")])
+    history = History(Joint(), [Block(Fake(), "temperature", name="t"), Block(Fake(), "manager", name="m")])
 
     steps = history.run(lambda step, i: ["feasible"] if i < 2 else [("duplicate", "base")])
 
@@ -530,7 +527,7 @@ def test_joint_proposes_every_block_until_a_step_saves_nothing():
 
 
 def test_alternate_rotates_and_ends_after_a_cycle_of_misses():
-    history = History(Alternate(), [Block(Fake(), "temperature", name="t"), Block(Fake(), "cm", name="m")])
+    history = History(Alternate(), [Block(Fake(), "temperature", name="t"), Block(Fake(), "manager", name="m")])
     script = {0: ["feasible"], 1: ["invalid"], 2: ["feasible"], 3: ["invalid"], 4: [("duplicate", "base")]}
 
     steps = history.run(lambda step, i: script[i])
@@ -548,11 +545,11 @@ def test_nested_opens_from_the_incumbent_then_runs_inner_steps_on_the_rounds_can
 
     opener = history.plan()
     assert view(opener) == (["structure"], 1, ("base",), (0,), "opener", ("structure",))
-    history.save(opener, ("feasible", SUMMARIZE))  # c1 chooses Summarize
+    history.save(opener, ("feasible", SUMMARY))  # c1 chooses Summary
 
     first = history.plan()
-    # truncate is narrowed out under Summarize; the parents are the round's own eligible candidates
-    assert view(first) == (["summarize"], 4, ("c1",), (0,), "inner", ())
+    # window is narrowed out under Summary; the parents are the round's own eligible candidates
+    assert view(first) == (["summary"], 4, ("c1",), (0,), "inner", ())
     history.save(first, "feasible", "ineligible")  # c2 eligible, c3 not
 
     second = history.plan()
@@ -560,7 +557,7 @@ def test_nested_opens_from_the_incumbent_then_runs_inner_steps_on_the_rounds_can
     history.save(second, "invalid")  # saves nothing: doesn't use up the round
 
     third = history.plan()
-    assert view(third) == (["summarize"], 4, ("c2", "c1"), (0,), "inner", ())
+    assert view(third) == (["summary"], 4, ("c2", "c1"), (0,), "inner", ())
     history.save(third, "feasible")
 
     # two inner steps saved candidates: the round is over, the next opens from the global incumbent
@@ -577,7 +574,7 @@ def test_an_ineligible_opener_skips_the_inner_steps():
 
 def test_a_repeated_opener_opens_the_round_on_the_measured_candidate():
     history = nested_history()
-    history.save(history.plan(), "feasible")  # c1, under Truncate
+    history.save(history.plan(), "feasible")  # c1, under Window
     history.save(history.plan(), "feasible")
     history.save(history.plan(), "feasible")  # round 0 done
     opener = history.plan()
@@ -585,7 +582,7 @@ def test_a_repeated_opener_opens_the_round_on_the_measured_candidate():
 
     step = history.plan()
 
-    assert view(step) == (["truncate"], 4, ("c1",), (1,), "inner", ())
+    assert view(step) == (["window"], 4, ("c1",), (1,), "inner", ())
 
 
 def test_an_opener_that_saved_nothing_ends_only_its_round():
@@ -621,29 +618,29 @@ def test_inner_iterations_zero_is_openers_only():
 
 
 def test_an_outer_block_narrowed_out_runs_the_inner_schedule_alone():
-    # "summarize" exists only under Summarize; with the incumbent under Truncate, the inner Nested skips its rounds
+    # "summary" exists only under Summary; with the incumbent under Window, the inner Nested skips its rounds
     blocks = blocks4()
-    schedule = Nested("structure", Nested("summarize", Joint()), inner_iterations=1)
+    schedule = Nested("structure", Nested("summary", Joint()), inner_iterations=1)
     history = History(schedule, blocks)
-    history.save(history.plan(), "feasible")  # c1 keeps Truncate
+    history.save(history.plan(), "feasible")  # c1 keeps Window
 
     step = history.plan()
 
-    assert view(step) == (["truncate", "temp"], 4, ("c1",), (0,), "inner", ())
+    assert view(step) == (["window", "temp"], 4, ("c1",), (0,), "inner", ())
 
 
 def test_two_levels_place_the_inner_rounds_inside_the_outer_round():
     space = two_structures(temperature=Float(0.0, 1.0, default=0.5))
     blocks = [
-        Block(Fake(), "cm", name="a"),
+        Block(Fake(), "manager", name="a"),
         Block(Fake(), "router", name="b"),
         Block(Fake(), "temperature", name="t"),
     ]
     schedule = Nested("a", Nested("b", Alternate(), inner_iterations=2), inner_iterations=3)
     history = History(schedule, blocks, space)
     history.values["base"] = {
-        "cm": "Truncate",
-        "cm.Truncate.keep_recent": 40,
+        "manager": "Window",
+        "manager.Window.size": 40,
         "router": "router",
         "router.router.k": 2,
         "temperature": 0.5,
@@ -672,7 +669,7 @@ def test_inner_openers_use_up_the_outer_round():
     # every inner opener saves and every inner step repeats: the outer round still ends
     space = two_structures(temperature=Float(0.0, 1.0, default=0.5))
     blocks = [
-        Block(Fake(), "cm", name="a"),
+        Block(Fake(), "manager", name="a"),
         Block(Fake(), "router", name="b"),
         Block(Fake(), "temperature", name="t"),
     ]
@@ -691,7 +688,7 @@ def test_inner_openers_use_up_the_outer_round():
 def test_at_width_one_a_round_holds_its_steps_and_the_inner_openers():
     space = two_structures(temperature=Float(0.0, 1.0, default=0.5))
     blocks = [
-        Block(Fake(), "cm", name="a"),
+        Block(Fake(), "manager", name="a"),
         Block(Fake(), "router", name="b"),
         Block(Fake(), "temperature", name="t"),
     ]
@@ -709,7 +706,7 @@ def test_an_outer_round_is_charged_the_n_a_deeper_round_gave():
     # and the outer round is charged 3, not 4, so it still holds 1 + 2 * 4 = 9 candidates
     space = two_structures(temperature=Float(0.0, 1.0, default=0.5), top_p=Float(0.0, 1.0, default=0.9))
     blocks = [
-        Block(Fake(), "cm", name="a"),
+        Block(Fake(), "manager", name="a"),
         Block(Fake(), "router", name="b"),
         Block(Fake(), "temperature", name="c"),
         Block(Fake(), "top_p", name="p"),
@@ -743,7 +740,7 @@ def test_an_inner_round_ranks_an_opener_repeating_a_candidate_from_an_earlier_ro
     # holds it; the inner round still builds on it, and keeps it ahead of a worse candidate the round makes
     space = two_structures(temperature=Float(0.0, 1.0, default=0.5))
     blocks = [
-        Block(Fake(), "cm", name="a"),
+        Block(Fake(), "manager", name="a"),
         Block(Fake(), "router", name="b"),
         Block(Fake(), "temperature", name="t"),
     ]
@@ -787,8 +784,8 @@ def test_a_joint_step_that_saved_nothing_ends_its_round_early():
 
 
 TWO_BASE = {
-    "cm": "Truncate",
-    "cm.Truncate.keep_recent": 40,
+    "manager": "Window",
+    "manager.Window.size": 40,
     "router": "router",
     "router.router.k": 2,
     "temperature": 0.5,
@@ -803,7 +800,7 @@ def shapes():
 
     def three():
         return [
-            Block(Fake(), "cm", name="a"),
+            Block(Fake(), "manager", name="a"),
             Block(Fake(), "router", name="b"),
             Block(Fake(), "temperature", name="t"),
         ]
@@ -840,7 +837,7 @@ def test_random_histories_keep_every_round_rule(shape, seed):
             if outcome == "duplicate":
                 return ("duplicate", rng.choice(sorted(history.eligible)))
             if outcome == "feasible" and make_space is None and rng.random() < 0.5:
-                return ("feasible", SUMMARIZE)
+                return ("feasible", SUMMARY)
             return outcome
 
         return [one() for _ in range(step.n_candidates)]
@@ -885,7 +882,7 @@ def test_random_histories_keep_every_round_rule(shape, seed):
 def test_a_repeated_inner_opener_costs_only_its_own_round():
     space = two_structures(temperature=Float(0.0, 1.0, default=0.5))
     blocks = [
-        Block(Fake(), "cm", name="a"),
+        Block(Fake(), "manager", name="a"),
         Block(Fake(), "router", name="b"),
         Block(Fake(), "temperature", name="t"),
     ]

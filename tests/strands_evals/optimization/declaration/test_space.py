@@ -8,14 +8,14 @@ from strands.tools.tools import PythonAgentTool
 from strands_evals.optimization import Float, Int, OneOf, Space, TextValue, choice, component, tool_descriptions
 
 
-class Truncate:
-    def __init__(self, keep_recent: int = 40):
-        self.keep_recent = keep_recent
+class Window:
+    def __init__(self, size: int = 40):
+        self.size = size
 
 
-class Summarize:
-    def __init__(self, utilization: float = 0.3, keep: int = 10):
-        self.utilization = utilization
+class Summary:
+    def __init__(self, ratio: float = 0.3, keep: int = 10):
+        self.ratio = ratio
         self.keep = keep
 
 
@@ -28,9 +28,7 @@ def lookup(query: str) -> str:
 def make_space(**extra):
     return Space(
         {
-            "cm": choice(
-                component(Truncate, keep_recent=Int(1, 100)), component(Summarize, utilization=Float(0.1, 0.9))
-            ),
+            "manager": choice(component(Window, size=Int(1, 100)), component(Summary, ratio=Float(0.1, 0.9))),
             "temperature": Float(0.0, 1.0, default=0.7),
             "effort": OneOf("low", "high"),
             "prompt": TextValue(default="You help.", size_cap=50),
@@ -40,8 +38,8 @@ def make_space(**extra):
 
 
 BASELINE = {
-    "cm": "Truncate",
-    "cm.Truncate.keep_recent": 40,
+    "manager": "Window",
+    "manager.Window.size": 40,
     "temperature": 0.7,
     "effort": "low",
     "prompt": "You help.",
@@ -54,9 +52,9 @@ BASELINE = {
 def test_params_flatten_in_declaration_order_with_a_choice_before_its_sub_keys():
     space = make_space()
     assert [p.key for p in space.params()] == [
-        "cm",
-        "cm.Truncate.keep_recent",
-        "cm.Summarize.utilization",
+        "manager",
+        "manager.Window.size",
+        "manager.Summary.ratio",
         "temperature",
         "effort",
         "prompt",
@@ -65,17 +63,17 @@ def test_params_flatten_in_declaration_order_with_a_choice_before_its_sub_keys()
 
 def test_param_infos_carry_type_bounds_and_activation():
     space = make_space()
-    cm = space.param("cm")
-    assert (cm.kind, cm.default, cm.options) == ("choice", "Truncate", ("Truncate", "Summarize"))
-    utilization = space.param("cm.Summarize.utilization")
-    assert (utilization.kind, utilization.name, utilization.default, utilization.min_value, utilization.max_value) == (
+    manager = space.param("manager")
+    assert (manager.kind, manager.default, manager.options) == ("choice", "Window", ("Window", "Summary"))
+    ratio = space.param("manager.Summary.ratio")
+    assert (ratio.kind, ratio.name, ratio.default, ratio.min_value, ratio.max_value) == (
         "float",
-        "cm",
+        "manager",
         0.3,
         0.1,
         0.9,
     )
-    assert utilization.active_when == ("cm", "Summarize")
+    assert ratio.active_when == ("manager", "Summary")
     assert space.param("effort").options == ("low", "high")
     assert space.param("prompt").size_cap == 50
     assert space.param("prompt").source is None
@@ -86,12 +84,12 @@ def test_param_infos_carry_log_and_edit_instructions():
         {
             "steps": Int(1, 100, default=10, log=True),
             "rate": Float(0.001, 1.0, default=0.01, log=True),
-            "cm": component(Truncate, keep_recent=Int(1, 100, log=True)),
+            "manager": component(Window, size=Int(1, 100, log=True)),
             "prompt": TextValue(default="You help.", edit_instructions="be brief"),
             "tools": tool_descriptions(lookup, edit_instructions="keep it short"),
         }
     )
-    assert space.param("steps").log and space.param("rate").log and space.param("cm.Truncate.keep_recent").log
+    assert space.param("steps").log and space.param("rate").log and space.param("manager.Window.size").log
     assert not make_space().param("temperature").log
     assert space.param("prompt").edit_instructions == "be brief"
     assert space.param("tools.lookup").edit_instructions == "keep it short"
@@ -103,9 +101,9 @@ def test_text_without_size_cap_gets_the_derived_cap():
 
 
 def test_a_bare_component_is_a_choice_with_one_alternative():
-    space = Space({"cm": component(Truncate, keep_recent=Int(1, 100))})
-    assert space.param("cm").options == ("Truncate",)
-    assert space.complete({}) == {"cm": "Truncate", "cm.Truncate.keep_recent": 40}
+    space = Space({"manager": component(Window, size=Int(1, 100))})
+    assert space.param("manager").options == ("Window",)
+    assert space.complete({}) == {"manager": "Window", "manager.Window.size": 40}
 
 
 def test_tool_descriptions_flatten_to_one_text_key_per_tool():
@@ -138,7 +136,7 @@ def test_param_names_the_known_keys_on_a_typo():
         ({"a/b": Int(1, 2, default=1)}, "without '.' or '/'"),
         ({"": Int(1, 2, default=1)}, "without '.' or '/'"),
         ({"x": 3}, "int is not a marker"),
-        ({"x": Truncate()}, "Truncate is not a marker"),
+        ({"x": Window()}, "Window is not a marker"),
     ],
 )
 def test_bad_declarations_fail_at_construction(markers, match):
@@ -166,10 +164,10 @@ def test_a_default_longer_than_its_size_cap_fails_at_declaration():
 
 def test_sub_keys_are_active_only_under_their_alternative():
     space = make_space()
-    assert space.is_active("cm.Truncate.keep_recent", {})
-    assert not space.is_active("cm.Summarize.utilization", {})
-    assert space.is_active("cm.Summarize.utilization", {"cm": "Summarize"})
-    assert not space.is_active("cm.Truncate.keep_recent", {"cm": "Summarize"})
+    assert space.is_active("manager.Window.size", {})
+    assert not space.is_active("manager.Summary.ratio", {})
+    assert space.is_active("manager.Summary.ratio", {"manager": "Summary"})
+    assert not space.is_active("manager.Window.size", {"manager": "Summary"})
 
 
 def test_complete_fills_defaults_for_the_baseline():
@@ -177,9 +175,9 @@ def test_complete_fills_defaults_for_the_baseline():
 
 
 def test_complete_follows_a_changed_choice():
-    completed = make_space().complete({**BASELINE, "cm": "Summarize"})
-    assert "cm.Truncate.keep_recent" not in completed
-    assert completed["cm.Summarize.utilization"] == 0.3
+    completed = make_space().complete({**BASELINE, "manager": "Summary"})
+    assert "manager.Window.size" not in completed
+    assert completed["manager.Summary.ratio"] == 0.3
 
 
 def test_complete_fills_missing_active_keys_from_fill():
@@ -187,11 +185,11 @@ def test_complete_fills_missing_active_keys_from_fill():
 
     def fill(key):
         asked.append(key)
-        return (0.5, "abc123") if key == "cm.Summarize.utilization" else None
+        return (0.5, "abc123") if key == "manager.Summary.ratio" else None
 
-    completed = make_space().complete({**BASELINE, "cm": "Summarize"}, fill=fill)
-    assert completed["cm.Summarize.utilization"] == 0.5
-    assert asked == ["cm.Summarize.utilization"]  # never asked for a given key or an inactive one
+    completed = make_space().complete({**BASELINE, "manager": "Summary"}, fill=fill)
+    assert completed["manager.Summary.ratio"] == 0.5
+    assert asked == ["manager.Summary.ratio"]  # never asked for a given key or an inactive one
 
 
 def test_complete_falls_back_to_the_default_when_fill_returns_none():
@@ -205,12 +203,12 @@ def test_complete_keeps_a_filled_none():
 
 def test_a_filled_choice_decides_which_sub_keys_are_active():
     def fill(key):
-        return ("Summarize", "abc123") if key == "cm" else None
+        return ("Summary", "abc123") if key == "manager" else None
 
     completed = make_space().complete({}, fill=fill)
-    assert completed["cm"] == "Summarize"
-    assert "cm.Truncate.keep_recent" not in completed
-    assert completed["cm.Summarize.utilization"] == 0.3
+    assert completed["manager"] == "Summary"
+    assert "manager.Window.size" not in completed
+    assert completed["manager.Summary.ratio"] == 0.3
 
 
 def test_complete_turns_a_negative_zero_float_into_zero():
@@ -240,15 +238,15 @@ def test_the_baseline_is_valid():
     [
         ({"temperature": 1.5}, "outside"),
         ({"temperature": 1}, "expected float"),
-        ({"cm.Truncate.keep_recent": 40.0}, "expected int"),
-        ({"cm.Truncate.keep_recent": True}, "expected int"),
-        ({"cm.Truncate.keep_recent": 0}, "outside"),
+        ({"manager.Window.size": 40.0}, "expected int"),
+        ({"manager.Window.size": True}, "expected int"),
+        ({"manager.Window.size": 0}, "outside"),
         ({"effort": "medium"}, "not one of"),
-        ({"cm": "Missing"}, "not one of"),
+        ({"manager": "Missing"}, "not one of"),
         ({"prompt": "x" * 51}, "over the size_cap"),
         ({"prompt": 3}, "expected str"),
         ({"typo": 1}, "not keys of this space"),
-        ({"cm.Summarize.utilization": 0.5}, "inactive"),
+        ({"manager.Summary.ratio": 0.5}, "inactive"),
     ],
 )
 def test_invalid_values_fail_validation(change, message):
@@ -257,8 +255,8 @@ def test_invalid_values_fail_validation(change, message):
 
 
 def test_a_missing_active_key_fails_validation():
-    values = {key: value for key, value in BASELINE.items() if key != "cm.Truncate.keep_recent"}
-    with pytest.raises(ValueError, match=r"missing: \['cm.Truncate.keep_recent'\]"):
+    values = {key: value for key, value in BASELINE.items() if key != "manager.Window.size"}
+    with pytest.raises(ValueError, match=r"missing: \['manager.Window.size'\]"):
         make_space().validate(values)
 
 
@@ -281,19 +279,19 @@ def test_one_of_validation_compares_types():
 
 def test_resolve_builds_a_fresh_component_every_call():
     space = make_space()
-    values = {**BASELINE, "cm": "Summarize", "cm.Summarize.utilization": 0.5}
-    first = space.resolve("cm", values, None)
-    second = space.resolve("cm", values, None)
-    assert isinstance(first, Summarize) and first.utilization == 0.5
+    values = {**BASELINE, "manager": "Summary", "manager.Summary.ratio": 0.5}
+    first = space.resolve("manager", values, None)
+    second = space.resolve("manager", values, None)
+    assert isinstance(first, Summary) and first.ratio == 0.5
     assert first is not second
 
 
 def test_resolve_gives_every_build_its_own_copy_of_a_components_fixed_arguments():
     history = [["declared"]]
-    space = Space({"cm": component(Summarize, utilization=Float(0.1, 0.9), keep=history)})
+    space = Space({"manager": component(Summary, ratio=Float(0.1, 0.9), keep=history)})
     baseline = space.complete({})
-    first = space.resolve("cm", baseline, None)
-    second = space.resolve("cm", baseline, None)
+    first = space.resolve("manager", baseline, None)
+    second = space.resolve("manager", baseline, None)
     assert first.keep == second.keep == [["declared"]]
     assert first.keep is not second.keep and first.keep is not history
     assert first.keep[0] is not history[0]  # deep: nested objects are copied too
@@ -305,7 +303,7 @@ def test_resolve_passes_plain_values_through():
     space = make_space()
     assert space.resolve("temperature", {**BASELINE, "temperature": 0.2}, None) == 0.2
     assert space.resolve("effort", BASELINE, None) == "low"
-    assert space.resolve("cm", BASELINE, None).keep_recent == 40
+    assert space.resolve("manager", BASELINE, None).size == 40
 
 
 def test_resolve_returns_tool_copies_with_the_candidates_descriptions():
@@ -316,18 +314,18 @@ def test_resolve_returns_tool_copies_with_the_candidates_descriptions():
 
 
 def test_a_choice_with_a_fixed_value_flattens_only_the_components_keys():
-    space = Space({"plugin": choice(on=component(Truncate, keep_recent=Int(1, 100)), off=None)})
-    assert [p.key for p in space.params()] == ["plugin", "plugin.on.keep_recent"]
+    space = Space({"plugin": choice(on=component(Window, size=Int(1, 100)), off=None)})
+    assert [p.key for p in space.params()] == ["plugin", "plugin.on.size"]
     assert space.param("plugin").options == ("on", "off")
     assert space.complete({"plugin": "off"}) == {"plugin": "off"}
 
 
 def test_resolve_builds_a_fresh_component_or_copies_the_fixed_value():
     marker = {"mode": "dense", "seen": []}
-    space = Space({"plugin": choice(on=component(Truncate, keep_recent=Int(1, 100)), off=None, preset=marker)})
+    space = Space({"plugin": choice(on=component(Window, size=Int(1, 100)), off=None, preset=marker)})
     on = space.complete({})
     first, second = space.resolve("plugin", on, None), space.resolve("plugin", on, None)
-    assert isinstance(first, Truncate) and first is not second
+    assert isinstance(first, Window) and first is not second
     assert space.resolve("plugin", {"plugin": "off"}, None) is None
     chosen = {"plugin": "preset"}
     preset, other = space.resolve("plugin", chosen, None), space.resolve("plugin", chosen, None)
@@ -359,24 +357,24 @@ def test_resolve_shares_an_object_the_components_factory_refers_to():
     assert space.resolve("guard", {"guard": "shared"}, None) is lock
 
 
-class Previewed:
-    def __init__(self, size: int = 6, preview: int = 0):
+class Pinned:
+    def __init__(self, size: int = 6, pin_first: int = 0):
         self.size = size
-        self.preview = preview
+        self.pin_first = pin_first
 
 
 def test_a_components_one_of_kwarg_is_a_one_of_key_under_its_alternative():
-    space = Space({"cm": choice(truncate=component(Previewed, size=Int(4, 40), preview=OneOf(0, 1)), off=None)})
-    info = space.param("cm.truncate.preview")
-    assert (info.kind, info.options, info.default, info.active_when) == ("one_of", (0, 1), 0, ("cm", "truncate"))
-    assert space.complete({}) == {"cm": "truncate", "cm.truncate.size": 6, "cm.truncate.preview": 0}
-    assert space.complete({"cm": "off"}) == {"cm": "off"}
+    space = Space({"manager": choice(window=component(Pinned, size=Int(4, 40), pin_first=OneOf(0, 1)), off=None)})
+    info = space.param("manager.window.pin_first")
+    assert (info.kind, info.options, info.default, info.active_when) == ("one_of", (0, 1), 0, ("manager", "window"))
+    assert space.complete({}) == {"manager": "window", "manager.window.size": 6, "manager.window.pin_first": 0}
+    assert space.complete({"manager": "off"}) == {"manager": "off"}
     with pytest.raises(ValueError, match="not one of"):
-        space.validate({**space.complete({}), "cm.truncate.preview": True})  # True is not the option 1
-    built = space.resolve("cm", {**space.complete({}), "cm.truncate.preview": 1}, None)
-    assert isinstance(built, Previewed) and built.preview == 1
+        space.validate({**space.complete({}), "manager.window.pin_first": True})  # True is not the option 1
+    built = space.resolve("manager", {**space.complete({}), "manager.window.pin_first": 1}, None)
+    assert isinstance(built, Pinned) and built.pin_first == 1
 
 
 def test_resolve_takes_declared_names_not_flat_keys():
     with pytest.raises(KeyError):
-        make_space().resolve("cm.Truncate.keep_recent", BASELINE, None)
+        make_space().resolve("manager.Window.size", BASELINE, None)

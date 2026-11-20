@@ -50,8 +50,8 @@ class MetricModel(Protocol):
     """One metric's posterior.
 
     `values` (and `reference`) in every method is one configuration: the flat mapping from each declared key
-    to its typed value, as a candidate's values are, e.g. `{"model": "large", "cm": "truncate",
-    "cm.truncate.keep_recent": 20, "prompt": "Answer in one line."}`. It holds the keys active under its choices and
+    to its typed value, as a candidate's values are, e.g. `{"model": "large", "cm": "window",
+    "cm.window.size": 20, "prompt": "Answer in one line."}`. It holds the keys active under its choices and
     need not be a candidate that was measured: the model predicts any configuration of the space.
     """
 

@@ -18,10 +18,11 @@ import time
 import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import Any, ClassVar, cast
 
 from botocore.config import Config as BotocoreConfig
 from strands import Agent, tool
+from strands.experimental.context_manager import ContextState, Offload
 from strands.hooks.events import AfterToolCallEvent
 from strands.models.bedrock import BedrockModel
 from strands.models.model import CacheConfig, Model
@@ -49,9 +50,6 @@ from ..prompt_templates.reflection.reflection_v0 import (
 )
 from ..scoring.objectives import AtLeast, AtMost, Maximize, Pareto, WeightedSum
 from .proposer import ProposalRequest, Proposer
-
-if TYPE_CHECKING:
-    from strands.experimental.context_manager import ContextState
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +147,8 @@ class Reflection(Proposer):
                 (`global.anthropic.claude-sonnet-5-5`) at temperature 1.0. For an id Strands has no context window
                 for (an inference-profile or provisioned-model ARN, a model newer than the installed Strands), pass
                 a `Model` with `context_window_limit` set: else Strands assumes 200,000 tokens and warns on almost
-                every model call.
+                every model call (its warning is meant to fire once, but each shell command's `subprocess` call
+                resets Python's record of warnings already shown).
             system_prompt: Replaces the default prompt; each literal `{work_folder}` in it becomes the agent's
                 working folder (the only folder it may write in). The submit instructions are appended either way.
             success_threshold: Reward a trial needs to count as a success; None splits by rank.
@@ -273,10 +272,6 @@ class Reflection(Proposer):
             usage = Usage.zero()
             refused: list[dict[str, Any]] = []
             rejected: list[dict[str, str]] = []
-            # Imported here, not at the top: the API is experimental, so a change upstream breaks only Reflection,
-            # not `import strands_evals.optimization`.
-            from strands.experimental.context_manager import Offload
-
             for attempt in range(_ATTEMPTS):
                 submitted: dict[str, str] = {}
                 agent = Agent(
@@ -675,7 +670,8 @@ class _ShortenToolResultsOnOverflow:
     The context manager's own strategies remove whole messages and always keep the newest, so a turn whose tool
     results alone overflow the window (several large reads at once) could never be sent. This runs after the
     elision, in the same pass, so a rejected request also costs the oldest kept result even when the elision alone
-    would have made it fit; only a model whose real window is smaller than Strands believes is rejected at all.
+    would have made it fit. A request is rejected when the newest messages alone exceed the window, when Strands'
+    estimate of its size undercounts, or when the model's real window is smaller than Strands believes.
     """
 
     name = "reflection:shorten-tool-results-on-overflow"
@@ -685,6 +681,7 @@ class _ShortenToolResultsOnOverflow:
             return False
         for message in context.messages:
             cut = False
+            # Text items only: both of Reflection's tools return strings.
             for block in message["content"]:
                 for item in block.get("toolResult", {}).get("content", []):
                     text = item.get("text")
@@ -692,7 +689,8 @@ class _ShortenToolResultsOnOverflow:
                         removed = len(text) - 2 * _OVERFLOW_KEPT_CHARS
                         item["text"] = (
                             f"{text[:_OVERFLOW_KEPT_CHARS]}\n\n... [cut: {removed} characters removed because the "
-                            f"context window was full] ...\n\n{text[-_OVERFLOW_KEPT_CHARS:]}"
+                            f"context window was full; re-read the part you need with grep, head or tail] ...\n\n"
+                            f"{text[-_OVERFLOW_KEPT_CHARS:]}"
                         )
                         cut = True
             if cut:

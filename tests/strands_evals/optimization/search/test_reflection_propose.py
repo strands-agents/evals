@@ -275,9 +275,10 @@ class Recording(ScriptedModel):
     def __init__(self, turns, *, believed=None):
         super().__init__(turns)
         self.config["context_window_limit"] = believed or self.window
-        self.seen, self.tools, self.rejected = [], set(), 0
+        self.seen, self.tools, self.rejected, self.metadata = [], set(), 0, []
 
     async def stream(self, messages, tool_specs=None, *args, **kwargs):
+        self.metadata += [m["metadata"] for m in messages if "metadata" in m]
         request = [json.dumps(m["content"]) for m in messages]
         tokens = sum(map(len, request)) // 4
         if tokens > self.window:
@@ -325,6 +326,7 @@ async def test_a_send_back_is_pinned_so_elision_keeps_it():
     after = model.seen[start:]
     assert any("elided" in m for messages in after for m in messages)  # elided during the send-back's turn
     assert all(any("its limit 60" in m for m in messages) for messages in after)
+    assert model.metadata == []  # the pin never reaches the model
 
 
 async def test_tool_results_too_large_for_the_window_are_cut_and_the_call_goes_on():
@@ -361,6 +363,53 @@ async def test_a_rejected_request_is_elided_first_then_a_kept_result_is_cut():
     after = next(messages for messages in model.seen if "elided" in "".join(messages[1:2]))
     assert len(after) == 5  # the task + the last 4: two reads (call, result), the older result cut
     assert "[cut:" in after[2] and "d" * 200 in after[2] and "e" * 2000 in after[4]
+
+
+async def test_an_unknown_window_is_taken_as_200000_tokens_and_a_rejected_request_still_recovers():
+    """With no `context_window_limit`, Strands assumes 200,000 tokens and warns; the provider's rejection is
+    handled as for a window Strands believes too large."""
+    reads = [ToolUse("shell", {"command": f"printf '{c}%.0s' $(seq 2000)"}) for c in "abcdef"]
+    turns = [*reads, write("p.txt", "Ask for the number."), submit(prompt="p.txt"), "Done."]
+    model = Recording(turns)
+    del model.config["context_window_limit"]
+    reflection = Reflection(model)
+    reflection._warned = True
+    with pytest.warns(UserWarning, match="context_window_limit is not set"):
+        (patch,) = await reflection.propose(request())
+    assert patch.updates == {"prompt": "Ask for the number.\n"}
+    assert model.rejected == 1
+    assert any("[cut:" in m for messages in model.seen for m in messages)
+
+
+async def test_a_request_no_strategy_can_shrink_fails_every_attempt_and_raises():
+    """The task message alone is over the window: no strategy acts, so the SDK gives up on the first rejection,
+    and Reflection raises after its last attempt."""
+    model = Recording(["unused"])
+    model.window = 50
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    with pytest.raises(ContextWindowOverflowException):
+        await reflection.propose(request(events=events))
+    assert model.rejected == 4 and model.seen == []  # one rejection per attempt, no retry within one
+    assert [e for e, _ in events].count("proposer_retry") == 3
+
+
+async def test_every_large_tool_result_of_the_oldest_message_is_cut_at_once():
+    shorten = _ShortenToolResultsOnOverflow()
+    small = "s" * 800
+    message = {
+        "role": "user",
+        "content": [
+            {"toolResult": {"toolUseId": "t1", "content": [{"text": "o" * 1000}]}},
+            {"toolResult": {"toolUseId": "t2", "content": [{"text": small}, {"text": "p" * 3000}]}},
+        ],
+    }
+    assert await shorten.apply(SimpleNamespace(overflow=True, messages=[message]))
+    texts = [item["text"] for block in message["content"] for item in block["toolResult"]["content"]]
+    assert "[cut: 600 characters removed" in texts[0] and texts[1] == small
+    assert "[cut: 2600 characters removed" in texts[2]
+    assert not await shorten.apply(SimpleNamespace(overflow=True, messages=[message]))
 
 
 async def test_tool_results_are_cut_only_on_overflow_oldest_message_first():

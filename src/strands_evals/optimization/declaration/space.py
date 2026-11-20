@@ -51,11 +51,11 @@ class ParamInfo:
     """One flat key of the space.
 
     `active_when` is `(choice key, label)` when the key exists only under one alternative of a
-    `choice()`, else None. E.g. `cm=choice(truncate=component(truncating, keep_recent=Int(2, 20)),
-    summarize=component(...))` gives `cm` (always active) and `cm.truncate.keep_recent` with
-    `active_when=("cm", "truncate")`. When a proposal switches `cm` to
-    `summarize`, `Space.complete` drops `cm.truncate.keep_recent` (if it were kept, it would change the
-    candidate id without changing the agent) and fills the keys `summarize` brings in. Validation,
+    `choice()`, else None. E.g. `cm=choice(window=component(SlidingWindowConversationManager,
+    window_size=Int(4, 40)), summary=component(...))` gives `cm` (always active) and
+    `cm.window.window_size` with `active_when=("cm", "window")`. When a proposal switches `cm` to
+    `summary`, `Space.complete` drops `cm.window.window_size` (if it were kept, it would change the
+    candidate id without changing the agent) and fills the keys `summary` brings in. Validation,
     TPE, the score model's design, and `Nested` read it too. Conditions are one level deep, since
     `component()` takes no nested markers. Text keys can't sit under a `choice()`, so theirs is
     always None.
@@ -82,7 +82,7 @@ class Space:
     """Flattens markers into dotted keys and knows which keys are active under which values.
 
     `values` is a candidate's values: flat key -> typed value, e.g.
-    `{"cm": "Truncate", "cm.Truncate.keep_recent": 40}`.
+    `{"manager": "Window", "manager.Window.size": 40}`.
     """
 
     def __init__(self, markers: Mapping[str, Marker]):
@@ -229,7 +229,7 @@ class Space:
     def resolve(self, name: str, values: Values, workspace: Path | None) -> Any:
         """What the factory receives for one declared name: a fresh component, a value, or a path.
 
-        - A choice: a new instance of the chosen component, e.g. `Summarize(utilization=0.5)`, or a deep
+        - A choice: a new instance of the chosen component, e.g. `Summary(ratio=0.5)`, or a deep
           copy of the chosen fixed value.
         - `tool_descriptions`: new copies of the tools with the candidate's descriptions.
         - `FileText(as_path=True)`: the path of the file inside `workspace`, or the original path
@@ -243,7 +243,7 @@ class Space:
         on its own, so an object two declared names both hold becomes one copy per name.
 
         Args:
-            name: A declared name (`"cm"`), not a flat key (`"cm.Summarize.utilization"`).
+            name: A declared name (`"manager"`), not a flat key (`"manager.Summary.ratio"`).
             values: The candidate's values.
             workspace: The candidate's copy, or None when no value reaches the agent as a path.
         """

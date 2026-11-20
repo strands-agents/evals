@@ -27,14 +27,14 @@ REGISTRY = MetricRegistry({"Score": (0.0, 1.0), "Cost": (0.0, 1.0)})
 CRITERIA = Criteria(Maximize("Score"), [], REGISTRY)
 
 
-class Truncate:
-    def __init__(self, keep_recent: int = 10):
-        self.keep_recent = keep_recent
+class Window:
+    def __init__(self, size: int = 10):
+        self.size = size
 
 
-class Summarize:
-    def __init__(self, utilization: float = 0.5):
-        self.utilization = utilization
+class Summary:
+    def __init__(self, ratio: float = 0.5):
+        self.ratio = ratio
 
 
 def numbers_space():
@@ -44,7 +44,7 @@ def numbers_space():
 def structured_space():
     return Space(
         {
-            "cm": choice(truncate=component(Truncate, keep_recent=Int(2, 40)), summarize=component(Summarize)),
+            "manager": choice(window=component(Window, size=Int(2, 40)), summary=component(Summary)),
             "temperature": Float(0.0, 1.0, default=0.5),
         }
     )
@@ -173,18 +173,18 @@ def test_proposals_are_typed_values_inside_the_block():
 
 def test_a_choice_is_drawn_before_its_sub_keys():
     space = structured_space()
-    keys = ["cm", "cm.truncate.keep_recent"]
+    keys = ["manager", "manager.window.size"]
     patches = propose(TPE(), request(space, keys, n=12))
-    cms = {p.updates["cm"] for p in patches}
-    assert cms == {"truncate", "summarize"}
+    managers = {p.updates["manager"] for p in patches}
+    assert managers == {"window", "summary"}
     for patch in patches:
-        assert ("cm.truncate.keep_recent" in patch.updates) == (patch.updates["cm"] == "truncate")
+        assert ("manager.window.size" in patch.updates) == (patch.updates["manager"] == "window")
 
 
 def test_a_key_inactive_under_the_parents_choices_is_not_proposed():
     space = structured_space()
-    parent = Candidate(space.complete({"cm": "summarize"}), None, ("baseline",), "")
-    assert propose(TPE(), request(space, ["cm.truncate.keep_recent"], parent=parent)) == []
+    parent = Candidate(space.complete({"manager": "summary"}), None, ("baseline",), "")
+    assert propose(TPE(), request(space, ["manager.window.size"], parent=parent)) == []
 
 
 def test_options_python_compares_equal_stay_apart():
@@ -307,11 +307,11 @@ def test_a_duplicate_is_valued_at_the_existing_candidate():
 def test_numbers_under_a_choice_are_learned_per_structure():
     space = structured_space()
     tpe = TPE()
-    truncate = Candidate(space.complete({"cm": "truncate"}), None, ("baseline",), "")
-    summarize = Candidate(space.complete({"cm": "summarize"}), None, ("baseline",), "")
-    tpe.evidence(evidence({**truncate.values, "temperature": 0.1}, 0.9))
-    tpe.evidence(evidence({**summarize.values, "temperature": 0.9}, 0.2))
-    (patch,) = propose(tpe, request(space, ["temperature"], parent=truncate))
+    window = Candidate(space.complete({"manager": "window"}), None, ("baseline",), "")
+    summary = Candidate(space.complete({"manager": "summary"}), None, ("baseline",), "")
+    tpe.evidence(evidence({**window.values, "temperature": 0.1}, 0.9))
+    tpe.evidence(evidence({**summary.values, "temperature": 0.9}, 0.2))
+    (patch,) = propose(tpe, request(space, ["temperature"], parent=window))
     study = tpe._study_for(patch.state["context"], space, ["temperature"], request(space, ["temperature"]), 0)
     assert [t.params["temperature"] for t in study.trials if t.state.name == "COMPLETE"] == [0.1]
 
@@ -319,15 +319,15 @@ def test_numbers_under_a_choice_are_learned_per_structure():
 def test_a_structure_block_has_one_study_whatever_the_other_choices():
     space = Space(
         {
-            "cm": choice(truncate=component(Truncate), summarize=component(Summarize)),
-            "router": choice(fast=component(Truncate), slow=component(Summarize)),
+            "manager": choice(window=component(Window), summary=component(Summary)),
+            "router": choice(fast=component(Window), slow=component(Summary)),
         }
     )
     tpe = TPE()
     tpe.evidence(evidence(space.complete({"router": "fast"}), 0.4))
     tpe.evidence(evidence(space.complete({"router": "slow"}), 0.6))
-    (patch,) = propose(tpe, request(space, ["cm"]))
-    study = tpe._study_for(patch.state["context"], space, ["cm"], request(space, ["cm"]), 0)
+    (patch,) = propose(tpe, request(space, ["manager"]))
+    study = tpe._study_for(patch.state["context"], space, ["manager"], request(space, ["manager"]), 0)
     assert len([t for t in study.trials if t.state.name == "COMPLETE"]) == 2
 
 
@@ -356,8 +356,8 @@ def test_each_told_trials_context_is_computed_once(monkeypatch):
 
     space = structured_space()
     tpe = TPE()
-    tpe.evidence(evidence(space.complete({"cm": "truncate"}), 0.9))
-    tpe.evidence(evidence(space.complete({"cm": "summarize"}), 0.2))
+    tpe.evidence(evidence(space.complete({"manager": "window"}), 0.9))
+    tpe.evidence(evidence(space.complete({"manager": "summary"}), 0.2))
     calls = []
     context_of = tpe_module._context_of
     monkeypatch.setattr(tpe_module, "_context_of", lambda *args: calls.append(args[2]) or context_of(*args))

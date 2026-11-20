@@ -68,22 +68,22 @@ class Other(TopRanked):
     name = "other"
 
 
-class Truncate:
-    def __init__(self, keep_recent=10):
-        self.keep_recent = keep_recent
+class Window:
+    def __init__(self, size=10):
+        self.size = size
 
 
-class Summarize:
-    def __init__(self, utilization=0.5):
-        self.utilization = utilization
+class Summary:
+    def __init__(self, ratio=0.5):
+        self.ratio = ratio
 
 
 @tunable(
-    cm=choice(component(Truncate, keep_recent=Int(1, 100)), component(Summarize)),
+    manager=choice(component(Window, size=Int(1, 100)), component(Summary)),
     temperature=OneOf(0.0, 0.5, 1.0),
 )
-def create_agent(cm, temperature):
-    return (cm, temperature)
+def create_agent(manager, temperature):
+    return (manager, temperature)
 
 
 def _experiment(n=20, evaluators=None):
@@ -570,10 +570,10 @@ async def _temperature_rollout(agent_factory, case):
 
 
 def _searching(*blocks, schedule=None, **kwargs):
-    """Every key in a scripted block (the default TPE block can't propose yet): pass `cm` for the rest."""
+    """Every key in a scripted block (the default TPE block can't propose yet): pass `manager` for the rest."""
     kwargs.setdefault("budget", Budget(max_iterations=3))
     named = {v for b in blocks for v in b.variables}
-    blocks = [*blocks, *([Block(Scripted(), "cm")] if not named & {"cm"} else [])]
+    blocks = [*blocks, *([Block(Scripted(), "manager")] if not named & {"manager"} else [])]
     if "temperature" not in named:
         blocks.append(Block(Scripted(), "temperature"))
     kwargs.setdefault("max_workers", 64)
@@ -669,7 +669,7 @@ async def test_a_step_is_cut_to_what_the_budget_can_score(tmp_path):
 
 
 async def test_a_duplicate_or_invalid_patch_is_told_and_redrawn(tmp_path):
-    proposer = Scripted({"temperature": 0.0}, {"temperature": 0.7}, {"cm": "Summarize"}, {"temperature": 1.0})
+    proposer = Scripted({"temperature": 0.0}, {"temperature": 0.7}, {"manager": "Summary"}, {"temperature": 1.0})
     optimizer = _searching(
         Block(proposer, "temperature"),
         schedule=Joint(),
@@ -686,20 +686,20 @@ async def test_a_duplicate_or_invalid_patch_is_told_and_redrawn(tmp_path):
 
 async def test_a_candidate_whose_agent_cant_be_built_is_invalid_and_costs_nothing(tmp_path):
     @tunable(
-        cm=choice(component(Truncate, keep_recent=Int(1, 100)), component(Summarize)),
+        manager=choice(component(Window, size=Int(1, 100)), component(Summary)),
         temperature=OneOf(0.0, 0.5, 1.0),
     )
-    def picky(cm, temperature):
+    def picky(manager, temperature):
         if temperature == 1.0:
             raise ValueError("temperature 1.0 is not supported")
-        return (cm, temperature)
+        return (manager, temperature)
 
     proposer = Scripted({"temperature": 1.0}, {"temperature": 0.5})
     optimizer = Optimizer(
         _experiment(evaluators=[Temperature()]),
         picky,
         rollout_fn=_temperature_rollout,
-        search=Search([Block(proposer, "temperature"), Block(Scripted(), "cm")], schedule=Joint()),
+        search=Search([Block(proposer, "temperature"), Block(Scripted(), "manager")], schedule=Joint()),
         budget=Budget(max_iterations=1),
         proposals_per_iteration=1,
         max_workers=64,
@@ -760,11 +760,11 @@ async def test_a_proposer_returning_more_patches_than_asked_stops_the_run(tmp_pa
 
 
 async def test_joint_merges_one_patch_of_every_block_per_candidate(tmp_path):
-    structure = Scripted({"cm": "Summarize"}, {"cm": "Truncate"})
+    structure = Scripted({"manager": "Summary"}, {"manager": "Window"})
     numbers = Scripted({"temperature": 1.0}, {"temperature": 0.5})
     optimizer = _searching(
-        Block(structure, "cm"),
-        Block(numbers, "temperature", "cm.Truncate.keep_recent"),
+        Block(structure, "manager"),
+        Block(numbers, "temperature", "manager.Window.size"),
         schedule=Joint(),
         base_dir=tmp_path,
         budget=Budget(max_iterations=1),
@@ -775,16 +775,16 @@ async def test_joint_merges_one_patch_of_every_block_per_candidate(tmp_path):
     assert [p.origin for p in proposals] == [["structure", "numbers"]] * 2
     # The numbers block is asked once per slot, on the slot's structure.
     assert [r.n for r in numbers.requests] == [1, 1]
-    assert [r.parent.values["cm"] for r in numbers.requests] == ["Summarize", "Truncate"]
+    assert [r.parent.values["manager"] for r in numbers.requests] == ["Summary", "Window"]
     assert [o.outcome for o in structure.observed] == ["feasible", "feasible"]
     assert numbers.evidenced == [] and structure.evidenced == []
 
 
 async def test_a_round_opener_is_told_the_rounds_best_at_its_end(tmp_path):
-    outer = Scripted({"cm": "Summarize"}, {"cm": "Truncate"})
+    outer = Scripted({"manager": "Summary"}, {"manager": "Window"})
     inner = Scripted({"temperature": 0.5}, {"temperature": 1.0})
     optimizer = _searching(
-        Block(outer, "cm", name="structure"),
+        Block(outer, "manager", name="structure"),
         Block(inner, "temperature"),
         schedule=Nested("structure", inner_iterations=2),
         base_dir=tmp_path,
@@ -794,9 +794,9 @@ async def test_a_round_opener_is_told_the_rounds_best_at_its_end(tmp_path):
     await _search(optimizer)
     roles = [(r.round, r.role) for r in optimizer._iterations]
     assert roles == [((0,), "opener"), ((0,), "inner"), ((0,), "inner"), ((1,), "opener")]
-    # Round 0's opener (cm=Summarize) is told at the round's end, with the round's best (temperature 1.0).
+    # Round 0's opener (manager=Summary) is told at the round's end, with the round's best (temperature 1.0).
     first = outer.observed[0]
-    assert first.values["cm"] == "Summarize" and first.objective == 1.0 and first.source_id is not None
+    assert first.values["manager"] == "Summary" and first.objective == 1.0 and first.source_id is not None
     # The round's candidates, opener first, then proposal order: TPE re-values the opener's trial by them.
     round_zero = [p.candidate_id for r in optimizer._iterations[:3] for p in r.proposals]
     assert first.round_candidate_ids == round_zero and first.candidate_id == round_zero[0]
@@ -822,7 +822,7 @@ async def test_every_proposer_calls_spend_counts_on_resume(tmp_path):
             return [p.model_copy(update={"usage": spend}) for p in patches]
 
     optimizer = _searching(
-        Block(Spending({"cm": "Summarize"}, {"cm": "Truncate"}), "cm", name="structure"),
+        Block(Spending({"manager": "Summary"}, {"manager": "Window"}), "manager", name="structure"),
         Block(Spending({"temperature": 0.5}, {"temperature": 1.0}), "temperature"),
         schedule=Nested("structure", inner_iterations=2),
         base_dir=tmp_path,
@@ -872,7 +872,7 @@ async def test_a_run_killed_in_its_first_iteration_keeps_that_proposer_spend(tmp
     await original.run_async()
     # Killed just after iteration 1's proposal was paid for; the resumed proposer proposes nothing (no spend).
     copy = _killed(original._run.root, tmp_path, lambda events: _index(events, "proposer_usage"))
-    search = Search([Block(Spending(), "temperature"), Block(Scripted(), "cm")], schedule=Alternate())
+    search = Search([Block(Spending(), "temperature"), Block(Scripted(), "manager")], schedule=Alternate())
     result = await _resume(copy, search=search, budget=Budget(max_iterations=1)).run_async()
     assert result.search_cost.tokens == 10
     assert OptimizationResult.from_file(copy / "result.json").search_cost.tokens == 10
@@ -1021,7 +1021,7 @@ async def test_the_budget_stops_the_search_before_the_end_phases_reserve(tmp_pat
         proposals_per_iteration=1,
     )
     reason, _ = await _search(optimizer)
-    # Iterations: temperature 0.5, the empty cm block, temperature 1.0; then the reserve is all that's left.
+    # Iterations: temperature 0.5, the empty manager block, temperature 1.0; then the reserve is all that's left.
     assert reason == "budget" and optimizer._budget.spent == 24 and len(optimizer._iterations) == 3
 
 
@@ -1173,7 +1173,7 @@ async def test_a_finalist_failing_a_constraint_on_validation_cannot_ship(tmp_pat
             bad = evaluation_case.actual_output == "1.0" and evaluation_case.name in validation
             return [EvaluationOutput(score=0.0 if bad else 1.0, test_pass=not bad, reason="g")]
 
-    blocks = [Block(Scripted({"temperature": 0.5}, {"temperature": 1.0}), "temperature"), Block(Scripted(), "cm")]
+    blocks = [Block(Scripted({"temperature": 0.5}, {"temperature": 1.0}), "temperature"), Block(Scripted(), "manager")]
     optimizer = _optimizer(
         Experiment(cases=experiment.cases, evaluators=[Temperature(), Grounded(name="Grounded")]),
         rollout_fn=_temperature_rollout,
@@ -1207,7 +1207,7 @@ async def test_the_finalists_are_the_candidates_meeting_a_constraint_with_margin
             met = output == "1.0" or (output == "0.5" and evaluation_case.name in met_at_half)
             return [EvaluationOutput(score=float(met), test_pass=met, reason="g")]
 
-    blocks = [Block(Scripted({"temperature": 0.5}, {"temperature": 1.0}), "temperature"), Block(Scripted(), "cm")]
+    blocks = [Block(Scripted({"temperature": 0.5}, {"temperature": 1.0}), "temperature"), Block(Scripted(), "manager")]
     optimizer = _optimizer(
         Experiment(cases=experiment.cases, evaluators=[Temperature(), Grounded(name="Grounded")]),
         rollout_fn=_temperature_rollout,
@@ -1411,7 +1411,9 @@ async def test_costs_after_resume_count_a_killed_iterations_trials(tmp_path):
     copy = _killed(
         original._run.root, tmp_path, lambda events: _index(events, "score", after=_index(events, "iteration_end"))
     )
-    search = Search([Block(Scripted({"temperature": 0.0}), "temperature"), Block(Scripted(), "cm")], schedule=Joint())
+    search = Search(
+        [Block(Scripted({"temperature": 0.0}), "temperature"), Block(Scripted(), "manager")], schedule=Joint()
+    )
     resumed = _resume(copy, search=search)
     result = await resumed.run_async()
     assert all(c.values["temperature"] != 1.0 for c in result.candidates.values())
@@ -1603,7 +1605,7 @@ async def test_resume_rebuilds_scores_as_the_closed_iterations_left_them(tmp_pat
         return _optimizer(
             _experiment(evaluators=[Temperature()]),
             rollout_fn=rollout,
-            search=Search([Block(proposer, "temperature"), Block(Scripted(), "cm")], schedule=Joint()),
+            search=Search([Block(proposer, "temperature"), Block(Scripted(), "manager")], schedule=Joint()),
             max_workers=64,
             rerun_passes=0,
             proposals_per_iteration=1,
@@ -1629,7 +1631,7 @@ async def test_resume_rebuilds_scores_as_the_closed_iterations_left_them(tmp_pat
         factory=create_agent,
         rollout_fn=rollout,
         search=Search(
-            [Block(Scripted({"temperature": 0.5}, {"temperature": 1.0}), "temperature"), Block(Scripted(), "cm")],
+            [Block(Scripted({"temperature": 0.5}, {"temperature": 1.0}), "temperature"), Block(Scripted(), "manager")],
             schedule=Joint(),
         ),
     )
@@ -1727,7 +1729,7 @@ async def test_reports_match_what_experiment_returns_for_the_same_trials(tmp_pat
         rollout_fn=_crashing_temperature_rollout(crashes_on),
         objective=Maximize("Temperature"),
         search=Search(
-            [Block(Scripted({"temperature": 0.5}), "temperature"), Block(Scripted(), "cm")], schedule=Joint()
+            [Block(Scripted({"temperature": 0.5}), "temperature"), Block(Scripted(), "manager")], schedule=Joint()
         ),
         budget=Budget(max_iterations=1),
         proposals_per_iteration=1,
@@ -1867,7 +1869,7 @@ async def test_pareto_ships_the_front_s_max_gain_member_and_tests_every_member(t
         _experiment(evaluators=[Temperature(), Cool()]),
         rollout_fn=_temperature_rollout,
         search=Search(
-            [Block(Scripted({"temperature": 1.0}, {"temperature": 0.5}), "temperature"), Block(Scripted(), "cm")],
+            [Block(Scripted({"temperature": 1.0}, {"temperature": 0.5}), "temperature"), Block(Scripted(), "manager")],
             schedule=Joint(),
         ),
         objective=Pareto(Maximize("Temperature", weight=2), Maximize("Cool")),
@@ -1894,7 +1896,7 @@ async def test_a_front_member_with_no_completed_test_trial_is_listed_as_failed(t
         _experiment(evaluators=[Temperature(), Cool()]),
         rollout_fn=_temperature_rollout,
         search=Search(
-            [Block(Scripted({"temperature": 1.0}, {"temperature": 0.5}), "temperature"), Block(Scripted(), "cm")],
+            [Block(Scripted({"temperature": 1.0}, {"temperature": 0.5}), "temperature"), Block(Scripted(), "manager")],
             schedule=Joint(),
         ),
         objective=Pareto(Maximize("Temperature", weight=2), Maximize("Cool")),
@@ -1922,8 +1924,8 @@ async def test_a_front_member_with_no_completed_test_trial_is_listed_as_failed(t
 
 
 @tunable(
-    outer=choice(a=component(Truncate, keep_recent=Int(1, 100)), b=component(Summarize, utilization=Float(0.1, 0.9))),
-    inner=choice(x=component(Truncate, keep_recent=Int(1, 100)), y=component(Summarize, utilization=Float(0.1, 0.9))),
+    outer=choice(a=component(Window, size=Int(1, 100)), b=component(Summary, ratio=Float(0.1, 0.9))),
+    inner=choice(x=component(Window, size=Int(1, 100)), y=component(Summary, ratio=Float(0.1, 0.9))),
     temperature=Float(0.0, 1.0, default=0.5),
 )
 def _two_structural(outer, inner, temperature):

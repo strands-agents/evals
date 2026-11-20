@@ -230,8 +230,9 @@ def component(factory: Callable[..., Any], /, **kwargs: Any) -> Component:
 
     `factory` is positional-only, so a constructor kwarg named `factory` can still be passed. An
     `Int` / `Float` / `OneOf` kwarg without `default=` takes the constructor parameter's default
-    (a `OneOf` without one, its first option), e.g. `component(ContextManager, stash=OneOf(None, False))`
-    (the constructor's default, None, is the baseline). A constructor default of None
+    (a `OneOf` without one, its first option), e.g.
+    `component(SlidingWindowConversationManager, window_size=Int(4, 40), pin_first=OneOf(None, 1))`
+    (the constructor's defaults, 40 and None, are the baseline). A constructor default of None
     doesn't count for an `Int` / `Float`: pass `default=`.
 
     The constructor is probed once, here, with its defaults, so its side effects (a client it
@@ -245,8 +246,8 @@ def component(factory: Callable[..., Any], /, **kwargs: Any) -> Component:
     `object()` sentinel becomes a new object that `is` no longer matches. Functions, classes, and
     enum members, which `deepcopy` returns as they are, stay shared. A fixed kwarg that can't be
     deep-copied (such as an `Agent`, which holds a lock) raises here: construct it in the factory
-    instead, e.g. `component(make_judge, temperature=Float(0.0, 1.0))` with a function
-    `make_judge(temperature=0.3)` that builds the `Agent`.
+    instead, e.g. `component(make_summarizing, summary_ratio=Float(0.1, 0.8))` with a function
+    `make_summarizing(summary_ratio=0.3)` that builds the manager and its summarization `Agent`.
     The factory is never copied, so an object it refers to is shared: that is how to share one on
     purpose (a thread-safe client), or to avoid copying a large one for every build.
 
@@ -302,7 +303,7 @@ def choice(*alternatives: Component, **labeled: Component | Any) -> Choice:
     """Declare a swap between alternatives; the first is the baseline.
 
     Pass components positionally, labeled by class name, or by keyword, labeled by the keyword:
-    `choice(truncate=component(...), summarize=component(...))`. The keyword form is needed when the same
+    `choice(window=component(...), summary=component(...))`. The keyword form is needed when the same
     class appears twice. A keyword alternative may also be a fixed value:
     `choice(on=component(ToolCallLimiter, max_calls=Int(1, 20)), off=None)`. Like a fixed
     `component()` kwarg, it is deep-copied for every build (`fn()` included), and one that can't be
@@ -313,7 +314,7 @@ def choice(*alternatives: Component, **labeled: Component | Any) -> Choice:
     Under `tunable`, the first alternative replaces the wrapped parameter's default, so the plain
     call `fn()` builds it too (unlike `Int` / `Float` / `OneOf` / `TextValue`, which take the
     parameter's default). To keep what production builds as the baseline, list it first, e.g.
-    `choice(off=None, truncate=component(...))` for a parameter that defaults to None.
+    `choice(off=None, window=component(...))` for a parameter that defaults to None.
 
     Args:
         *alternatives: From `component()`, labeled by class name.
@@ -338,10 +339,10 @@ def choice(*alternatives: Component, **labeled: Component | Any) -> Choice:
             )
         label = alternative.label
         if not label.isidentifier() or (label == "partial" and isinstance(alternative.factory, functools.partial)):
-            # "<lambda>" or "partial" would become a key segment, e.g. "cm.<lambda>.keep_recent".
+            # "<lambda>" or "partial" would become a key segment, e.g. "manager.<lambda>.size".
             raise TypeError(
                 f"choice(): a component of {alternative.factory!r} has no usable class name to label it; "
-                "label it by keyword, e.g. choice(truncate=component(...))"
+                "label it by keyword, e.g. choice(window=component(...))"
             )
     for label, alternative in labeled.items():
         if inspect.isclass(alternative):
@@ -487,7 +488,7 @@ def _fill_default(marker: _ValueMarkerT, default: Any, *, where: str, source: st
     Args:
         marker: The marker to fill.
         default: The source's default.
-        where: Error prefix, e.g. `"component(Truncate)"` or the declared name.
+        where: Error prefix, e.g. `"component(Window)"` or the declared name.
         source: What `default` is, e.g. `"the parameter's default"`.
 
     Raises:

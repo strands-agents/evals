@@ -35,14 +35,14 @@ SPACE = Space(
 KEYS = ["option", "other"]
 
 
-class Truncate:
-    def __init__(self, keep_recent: int = 10, preview: int = 0):
-        self.keep_recent, self.preview = keep_recent, preview
+class Window:
+    def __init__(self, size: int = 10, pin: int = 0):
+        self.size, self.pin = size, pin
 
 
-class Summarize:
-    def __init__(self, utilization: float = 0.5):
-        self.utilization = utilization
+class Summary:
+    def __init__(self, ratio: float = 0.5):
+        self.ratio = ratio
 
 
 def world(space, truths, *, cases=12, runs=2, noise=0.03, seed=0):
@@ -279,16 +279,16 @@ def test_random_weights_aim_at_other_trade_offs_and_declared_weights_do_not():
 
 
 def test_a_combination_counts_once_by_the_keys_active_under_it():
-    space = Space({"cm": choice(truncate=component(Truncate, preview=OneOf(0, 1)), summarize=component(Summarize))})
-    keys = ["cm", "cm.truncate.preview"]
-    measured_summarize = space.complete({"cm": "summarize"})
-    summaries = [summary(content_id(measured_summarize), measured_summarize)]
+    space = Space({"manager": choice(window=component(Window, pin=OneOf(0, 1)), summary=component(Summary))})
+    keys = ["manager", "manager.window.pin"]
+    measured_summary = space.complete({"manager": "summary"})
+    summaries = [summary(content_id(measured_summary), measured_summary)]
     patches = propose(Thompson(), request(space, keys, candidates=summaries, n=2))
-    assert sorted(p.updates["cm.truncate.preview"] for p in patches) == [0, 1]
-    assert all(p.updates["cm"] == "truncate" for p in patches)
-    # Every combination fresh is taken, so the third falls back to all three: summarize once, not once per preview.
+    assert sorted(p.updates["manager.window.pin"] for p in patches) == [0, 1]
+    assert all(p.updates["manager"] == "window" for p in patches)
+    # Every combination fresh is taken, so the third falls back to all three: summary once, not once per pin.
     (third,) = propose(Thompson(), request(space, keys, candidates=summaries, n=3))[2:]
-    assert ("cm.truncate.preview" in third.updates) == (third.updates["cm"] == "truncate")
+    assert ("manager.window.pin" in third.updates) == (third.updates["manager"] == "window")
 
 
 def test_options_python_compares_equal_stay_apart():
@@ -336,9 +336,9 @@ def test_a_combination_is_scored_at_the_parents_values_outside_the_block():
 
 
 def test_nothing_to_propose_when_no_block_key_is_active():
-    space = Space({"cm": choice(truncate=component(Truncate, preview=OneOf(0, 1)), summarize=component(Summarize))})
-    parent = Candidate(space.complete({"cm": "summarize"}), None, ("baseline",), "")
-    assert propose(Thompson(), request(space, ["cm.truncate.preview"], parent=parent)) == []
+    space = Space({"manager": choice(window=component(Window, pin=OneOf(0, 1)), summary=component(Summary))})
+    parent = Candidate(space.complete({"manager": "summary"}), None, ("baseline",), "")
+    assert propose(Thompson(), request(space, ["manager.window.pin"], parent=parent)) == []
 
 
 def test_many_combinations_are_sampled_down():
