@@ -48,9 +48,10 @@ class EventLog:
     - `config`: the `run.json` contents, including `schema_version`.
     - `propose`: `candidate_id`, `number` (display only), `parent_id`, `origin`, `values` (the only copy of
       the candidate's typed values), `changed_keys`, `rationale`, `inherited`, `defaulted`, `round`, `role`;
-      `rescore=true` for an ineligible candidate proposed again (then no `values`, the first number and
-      parent kept); `deferred_patches` (block -> `Patch`) for the blocks whose observe is deferred (a
-      round's opener), else None.
+      `rescore=true` for an ineligible candidate proposed again that a re-score can change: a train trial
+      left to run or a failed evaluator to judge again (one with neither is a duplicate). Then no `values`,
+      and the first number and parent are kept; `deferred_patches` (block -> `Patch`) for the blocks whose
+      observe is deferred (a round's opener), else None.
     - `trial`: `record` (`TrialRecord`, its trajectory replaced by `transcript`: `{hash, format}` or None),
       one per trial as soon as it finishes. A later one for the same (candidate, run, case) replaces it.
       Trials of concurrently scored candidates interleave; every other event is written in a fixed order.

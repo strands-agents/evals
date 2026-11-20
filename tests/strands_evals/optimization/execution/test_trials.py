@@ -694,6 +694,38 @@ async def test_rows_experiment_replaced_after_its_evaluators_ran_are_not_scores(
     assert record.judge_usage["J"].tokens == 30  # the judge's spend is still counted
 
 
+async def test_rows_experiment_replaced_in_a_re_judge_are_not_scores(traces, monkeypatch, caplog):
+    cache = MemoryCache()
+    ok, broken = Fixed("Ok"), Fixed("Broken", score=0.3, failures=1)
+    await _runner(traces, cache, _cases("a"), [ok, broken], rerun_passes=0).run(
+        "cand", _plain, ["a"], runs=1, allowance=0
+    )
+
+    def failing_dump(self, *args, **kwargs):
+        raise RuntimeError("can't dump")
+
+    monkeypatch.setattr(EvaluationData, "model_dump", failing_dump)  # Experiment dumps the case after judging it
+    with caplog.at_level(logging.WARNING):
+        records, spent = await _runner(traces, cache, _cases("a"), [ok, broken]).run(
+            "cand", _plain, ["a"], runs=1, allowance=0, rejudge=True
+        )
+
+    record = records[0]
+    assert (spent, broken.calls) == (0, 2)  # judged again once, in the first re-judge; not in the re-run passes
+    assert "Broken" not in record.evaluations  # not the placeholder's 0
+    assert record.evaluator_errors == {}  # nothing left to judge again
+    assert (record.error_type, record.error) == ("RuntimeError", "can't dump")
+    assert record.evaluations["Ok"].score == 1.0  # the first pass's score is kept
+    assert record.status is TrialStatus.COMPLETED
+    assert "case failed after the evaluators were judged again" in caplog.text
+
+    monkeypatch.undo()
+    await _runner(traces, cache, _cases("a"), [ok, broken]).run(
+        "cand", _plain, ["a"], runs=1, allowance=0, rejudge=True
+    )
+    assert broken.calls == 2  # a later re-judge leaves it alone too
+
+
 async def test_a_session_that_cant_be_built_after_the_rollout_returned_is_unmeasured(traces, monkeypatch):
     def broken(*args, **kwargs):
         raise RuntimeError("can't map spans")

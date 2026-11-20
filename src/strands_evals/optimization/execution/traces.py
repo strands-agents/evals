@@ -203,8 +203,13 @@ class TraceCapture:
     def case_error(self, trace_id: str) -> tuple[str | None, str | None]:
         """The exception `Experiment` caught for the trial's case, read from its `execute_case` span.
 
-        That span is the trial's root. `Experiment` records an exception on it only when it gives up on
-        the case and writes a placeholder row for every evaluator instead of its result.
+        That span is the trial's root. `Experiment` records an exception on it whenever it gives up on the
+        case and writes a placeholder row for every evaluator instead of its result. That includes a task
+        that raised: its own exception is recorded there too, so the result means `Experiment` failed after
+        the task returned only for a trial whose task completed.
+
+        The message is the span event's `exception.message`, so an OTel attribute length limit
+        (`OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT`) can cut it shorter than the reason `Experiment` reported.
 
         Args:
             trace_id: The trial's trace.

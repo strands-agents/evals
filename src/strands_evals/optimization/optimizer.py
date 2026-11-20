@@ -1245,7 +1245,14 @@ class Optimizer:
                     outcomes.append(_outcome(draw, None, None, parent.id, "invalid", None))
                     continue
                 existing = self._train.get(candidate.id)
-                if existing is not None and existing.is_eligible:
+                # An ineligible candidate is scored again only if a re-score can change it: a train trial still
+                # to run (missing or `infrastructure_invalid`) or with a failed evaluator to judge again. One
+                # with neither is a duplicate too, else re-proposing it would save a candidate for 0 rollouts.
+                trials = [r for r in self._records.get(candidate.id, {}).values() if r.split == "train"]
+                settled = len(trials) == len(self._case_split.train) * self._runs_per_candidate and not any(
+                    r.status is TrialStatus.INFRASTRUCTURE_INVALID or r.evaluator_errors for r in trials
+                )
+                if existing is not None and (existing.is_eligible or settled):
                     a = assessments.get(candidate.id)
                     if step.role == "opener" and deferred & set(draw.patches):
                         for block, patch in draw.patches.items():

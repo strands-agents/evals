@@ -156,7 +156,9 @@ class TrialRecord(BaseModel):
     Stores no objective: scoring computes each run's objective from `evaluations` and `usage`.
     When the agent completed, each evaluator name is in exactly one of `evaluations` and `evaluator_errors`
     (both are empty when it didn't), unless `Experiment` failed on the case after the task returned: then
-    both are empty and `error_type` and `error` name the exception it caught. `details` has the same
+    both are empty and `error_type` and `error` name the exception it caught. When that happens in a
+    re-judge, `evaluations` keeps the earlier scores and the evaluators judged again are in neither.
+    `details` has the same
     keys as `evaluations`: each evaluator's own outputs (one per tool call or turn for tool- and
     turn-level evaluators), so reports rebuilt from the records match what `Experiment` returned and
     Reflection sees per-row reasons. Status, metrics, and usage read the last attempt;

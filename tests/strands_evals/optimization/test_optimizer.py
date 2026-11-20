@@ -362,7 +362,7 @@ async def test_a_baseline_with_unmeasured_cases_stops_at_setup(tmp_path):
     assert stop["event"] == "stop" and stop["reason"] == "setup" and "sandbox down" in stop["message"]
 
 
-async def test_a_baseline_experiment_fails_on_after_the_task_returned_stops_at_setup(tmp_path):
+async def test_a_baseline_experiment_fails_after_its_task_returned_stops_at_setup(tmp_path):
     async def rollout(agent_factory, case):
         return {"output": {(0, 1): "x"}}  # Experiment can't serialize it for its span
 
@@ -2346,6 +2346,64 @@ async def test_resume_rebuilds_scores_as_the_closed_iterations_left_them(tmp_pat
     )
     await resumed_optimizer._start()
     assert not resumed_optimizer._train[rescored.candidate_id].is_eligible  # as step 1 left it
+
+
+def test_reports_keep_a_re_judges_earlier_scores():
+    case = Case(name="a", input="question a")
+    split = CaseSplit(train=("a",), validation=(), test=())
+    record = TrialRecord(
+        candidate_id="c",
+        case_name="a",
+        run_index=0,
+        split="train",
+        status=TrialStatus.COMPLETED,
+        error_type="RuntimeError",
+        error="can't dump",  # Experiment failed on the case when "Second" was judged again
+        attempts=2,
+        previous_attempts=[],
+        output="x",
+        trajectory=None,
+        interactions=None,
+        environment_state=None,
+        evaluations={"Score": EvaluationOutput(score=1.0, test_pass=True, reason="right")},
+        details={"Score": []},
+        evaluator_errors={},
+        usage=Usage.zero(),
+        judge_usage={},
+        rollouts=0,
+    )
+    evaluators = [Score(), Score(name="Second")]
+
+    report = _reports({"c": {("a", 0): record}}, cases=[case], evaluators=evaluators, split=split)["c"]["train"]
+
+    assert report.scores == [1.0, 0.0]
+    assert report.reasons == ["right", "An error occurred: can't dump"]
+
+
+async def test_an_ineligible_candidate_a_re_score_cant_change_is_a_duplicate(tmp_path):
+    # temperature 0.5's output can't be serialized for its span, so its trials are evaluator_invalid for good.
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        return {"output": {(0, 1): "x"}} if temperature == 0.5 else str(temperature)
+
+    proposer = Scripted({"temperature": 0.5}, {"temperature": 0.5}, {"temperature": 1.0})
+    optimizer = _optimizer(
+        _experiment(evaluators=[Temperature()]),
+        rollout_fn=rollout,
+        search=Search([Block(proposer, "temperature"), Block(Scripted(), "manager")], schedule=Joint()),
+        max_workers=64,
+        proposals_per_iteration=1,
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=2),
+    )
+    result = await optimizer.run_async()
+
+    first, second = result.iterations[0].proposals, result.iterations[1].proposals
+    assert [p.outcome for p in first] == ["ineligible"]
+    assert [p.outcome for p in second] == ["duplicate", "feasible"]  # 0.5 again isn't scored, the redraw is
+    assert second[0].candidate_id == first[0].candidate_id
+    assert not any(e["event"] == "propose" and e["rescore"] for e in _events(optimizer))
+    assert [o.outcome for o in proposer.observed] == ["ineligible", "duplicate", "feasible"]
 
 
 async def test_max_iterations_counts_candidate_slots_not_steps(tmp_path):
