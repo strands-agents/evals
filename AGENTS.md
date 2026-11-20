@@ -54,6 +54,9 @@ strands-evals depends on **`strands-agents`** (the Python SDK) for all LLM inter
 strands-evals/
 │
 ├── .agents/skills/                           # Agent skills (not shipped in the wheel)
+│   ├── optimize/                             # Set up, run, and report `strands-evals optimize` on a harness agent
+│   │   ├── SKILL.md                          # Find the agent and experiment, ask, review, run, report, resume
+│   │   └── scripts/plan.py                   # Split counts, rollout estimate, and minimum cap, from the optimizer
 │   └── session-converter/                  # Convert agent sessions into experiments
 │       ├── SKILL.md                          # Locate sessions, extract episodes, write an experiment
 │       ├── assets/segmenter.md               # Subagent steps: split sessions into episodes
