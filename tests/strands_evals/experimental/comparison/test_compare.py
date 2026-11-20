@@ -3,7 +3,15 @@ import pytest
 import strands_evals.experimental.comparison as comparison_module
 from strands_evals import Case, Experiment
 from strands_evals.evaluators import Equals
-from strands_evals.experimental.comparison import compare_paired
+from strands_evals.experimental import (
+    CalibrationProfile,
+    CalibrationTarget,
+    CalibrationTargetDefinition,
+    Calibrator,
+    EqualWeightingAlgorithm,
+)
+from strands_evals.experimental.calibrator import CalibratedEqualAlgorithm
+from strands_evals.experimental.comparison import compare_calibrated, compare_paired
 from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
 from strands_evals.types.evaluation_report import EvaluationReport
 
@@ -32,6 +40,61 @@ def _report(evaluator_deltas: dict[str, list[float]], *, trial_offset: float = 0
     )
 
 
+def _score_report(scores: list[float], *, case_prefix: str = "case") -> EvaluationReport:
+    return EvaluationReport(
+        overall_score=sum(scores) / len(scores),
+        scores=scores,
+        cases=[
+            {
+                "name": f"{case_prefix}-{index}",
+                "input": f"input-{index}",
+                "evaluator": "quality",
+            }
+            for index in range(len(scores))
+        ],
+        test_passes=[score >= 0.5 for score in scores],
+        detailed_results=[[] for _ in scores],
+    )
+
+
+def _report_runs(
+    scores_by_run: list[list[float]],
+    *,
+    replay_offsets: tuple[float, ...] = (0.0,),
+    case_prefix: str = "case",
+) -> list[list[EvaluationReport]]:
+    return [
+        [_score_report([score + offset for score in scores], case_prefix=case_prefix) for offset in replay_offsets]
+        for scores in scores_by_run
+    ]
+
+
+def _target_profile() -> CalibrationProfile:
+    calibrator = Calibrator(
+        step_sizes={"quality": 0.1},
+        algorithm=CalibratedEqualAlgorithm(),
+    )
+    training_scores = [
+        [0.1, 0.2, 0.3, 0.7, 0.8, 0.9],
+        [0.12, 0.22, 0.32, 0.72, 0.82, 0.92],
+    ]
+    calibrator.fit(
+        _report_runs(training_scores, replay_offsets=(-0.01, 0.01)),
+        targets=[
+            CalibrationTarget(
+                case_name=f"case-{case_index}",
+                agent_run=agent_run,
+                value=float(case_index >= 3),
+            )
+            for agent_run in range(2)
+            for case_index in range(6)
+        ],
+        target_definition=CalibrationTargetDefinition(name="task_success", version="1"),
+    )
+    assert calibrator.profile is not None
+    return calibrator.profile
+
+
 def test_compares_single_reports():
     baseline = _report({"correctness": [0.0] * 6})
     candidate = _report({"correctness": [0.1] * 6})
@@ -45,6 +108,79 @@ def test_compares_single_reports():
     assert all(pair.baseline_trial_count == 1 for pair in result.pairs)
     assert all(pair.candidate_trial_count == 1 for pair in result.pairs)
     assert result.evaluator_summaries[0].verdict == "improved"
+
+
+def test_compares_calibrated_target_probabilities_with_one_profile():
+    profile = _target_profile()
+    baseline = _report_runs(
+        [
+            [0.49] * 6,
+            [0.49] * 6,
+        ]
+    )
+    candidate = _report_runs(
+        [
+            [0.51] * 6,
+            [0.51] * 6,
+        ]
+    )
+
+    result = compare_calibrated(
+        profile=profile,
+        baseline=baseline,
+        candidate=candidate,
+    )
+
+    assert result.profile_id == profile.profile_id
+    assert result.target_definition == CalibrationTargetDefinition(name="task_success", version="1")
+    assert result.verdict == "improved"
+    assert result.trial_count == 2
+    assert len(result.pairs) == 6
+    assert all(pair.evaluator == "target:task_success@1" for pair in result.pairs)
+    assert all(pair.baseline_trial_count == 2 for pair in result.pairs)
+    assert all(pair.candidate_trial_count == 2 for pair in result.pairs)
+    assert result.evaluator_summaries[0].mean_delta > 0.0
+
+
+def test_calibrated_comparison_excludes_corrupted_runs_before_scoring():
+    profile = _target_profile()
+    baseline = _report_runs([[0.2] * 6]) + [[]]
+    candidate = _report_runs([[0.3] * 6]) + [[]]
+
+    result = compare_calibrated(
+        profile=profile,
+        baseline=baseline,
+        candidate=candidate,
+        corrupted_trial_indices={1},
+    )
+
+    assert result.trial_count == 1
+    assert result.corrupted_trial_indices == [1]
+
+
+def test_calibrated_comparison_requires_target_profile_and_matching_cases():
+    equal_calibrator = Calibrator(
+        step_sizes={"quality": 0.1},
+        algorithm=EqualWeightingAlgorithm(),
+    )
+    equal_calibrator.fit(
+        _report_runs([[0.2, 0.3], [0.25, 0.35]], replay_offsets=(-0.01, 0.01)),
+    )
+    assert equal_calibrator.profile is not None
+
+    with pytest.raises(ValueError, match="requires a calibrated-equal profile"):
+        compare_calibrated(
+            profile=equal_calibrator.profile,
+            baseline=_report_runs([[0.2, 0.3]]),
+            candidate=_report_runs([[0.3, 0.4]]),
+        )
+
+    with pytest.raises(ValueError, match="same calibrated case-runs"):
+        compare_calibrated(
+            profile=_target_profile(),
+            baseline=_report_runs([[0.2] * 6]),
+            candidate=_report_runs([[0.3] * 6], case_prefix="changed"),
+        )
 
 
 def test_reports_tradeoff_across_evaluators_and_trials():
