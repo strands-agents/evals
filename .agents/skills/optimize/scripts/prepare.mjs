@@ -9,6 +9,8 @@ import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 
 const BRIDGE = ['evals-agent/entry-files.js', 'temporary-evals-fork/typescript-runner-main.js']
+const MEMORY_OFF = 'every trial runs with memory off, so trials do not share state'
+const SKILLS_TEXT = 'skills can be turned on or off, but their SKILL.md text is not rewritten'
 const AGENTS = { 'agent.py': ['python', 'create_harness'], 'agent.ts': ['typescript', 'createHarness'] }
 
 const reply = process.stdout.write.bind(process.stdout)
@@ -80,7 +82,7 @@ const listExperiments = (directory) => {
   })
 }
 
-const shown = ({ key, label, kind, detail, unavailable, choices, current, entries, enabled }) => ({
+const shown = ({ key, label, kind, detail, unavailable, choices, current, entries, enabled, note }) => ({
   key,
   label,
   kind,
@@ -89,6 +91,7 @@ const shown = ({ key, label, kind, detail, unavailable, choices, current, entrie
   ...(choices ? { choices } : {}),
   ...(current === undefined ? {} : { current: typeof current === 'string' ? current.slice(0, 80) : current }),
   ...(entries ? { entries: entries.map((entry) => entry.label) } : {}),
+  ...(note ? { note } : {}),
   recommended: enabled,
 })
 
@@ -96,6 +99,7 @@ const setup = async (agent, knobs, experiments) => {
   const chosen = experiments.find((experiment) => experiment.name === args.experiment)
   if (!chosen) fail(`no experiment named ${args.experiment}; the workspace has ${experiments.map((e) => e.name).join(', ') || 'none'}`)
   const tune = args.tune.length > 0 ? args.tune : ['instructions']
+  if (tune.includes('memory')) fail(`cannot tune memory: ${MEMORY_OFF}`)
   const tunable = knobs.filter((knob) => !knob.unavailable).map((knob) => knob.key)
   const unknown = tune.filter((key) => !tunable.includes(key))
   if (unknown.length > 0) fail(`cannot tune ${unknown.join(', ')}; the tunable knobs are ${tunable.join(', ')}`)
@@ -152,7 +156,15 @@ try {
   if (action === 'setup' && !args.experiment) fail('setup needs --experiment NAME, a name from inspect')
   const agent = await findAgent(workspace, directory)
   const { readTemporaryKnobs } = await load('temporary-evals-fork/knobs.js')
-  const knobs = await readTemporaryKnobs(agent)
+  // The CLI leaves memory out when the agent doesn't set it and skills out only if a future catalog does; list both.
+  const read = await readTemporaryKnobs(agent)
+  const memory = { key: 'memory', label: 'memory', kind: 'choice', detail: 'on/off', enabled: false }
+  const skills = { key: 'skills', label: 'skills', kind: 'choice', detail: 'on · off', choices: [true, false], current: true, enabled: false }
+  const knobs = [
+    ...read.filter((knob) => knob.key !== 'memory'),
+    ...(read.some((knob) => knob.key === 'skills') ? [] : [skills]),
+    { ...(read.find((knob) => knob.key === 'memory') ?? memory), unavailable: MEMORY_OFF },
+  ].map((knob) => (knob.key === 'skills' && !knob.unavailable ? { ...knob, note: SKILLS_TEXT } : knob))
   const experiments = listExperiments(directory)
   const output =
     action === 'inspect'

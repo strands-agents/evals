@@ -1,7 +1,7 @@
 ---
 name: optimize
 description: Use when the user wants to tune a strands-workspace agent (agent.py or agent.ts built with create_harness / createHarness) against one of its experiments, such as its instructions, model, effort, tools, or plugins, with `strands-evals optimize`. Sets up the run from a free-text request or step by step (experiment, knobs, objective, constraints, case split, budget, crashes and pick), confirms a review summary, runs the agent through the installed Strands CLI's evals bridge with progress, and saves a report.
-version: 0.5.0
+version: 0.6.0
 ---
 
 # optimize
@@ -48,7 +48,7 @@ If the user describes it, decide every value of steps 2 to 7 from that text and 
 
 ### 2. Knobs: what may change
 
-List **every** knob from step 1 that has no `unavailable`, by its `label`, with its current value and what the optimizer may try (`detail`). Mark each recommended knob `(Recommended)`; the user picks any number of them. After the list, name the untunable knobs in one line with their reason, only when one of them is something the user might expect to tune (ex. "system prompt: set in code").
+List **every** knob from step 1 that has no `unavailable`, by its `label`, with its current value and what the optimizer may try (`detail`), and a knob's `note` in plain words under it. Mark each recommended knob `(Recommended)`; the user picks any number of them. After the list, always name memory as not tunable with its reason, and name any other untunable knob in the same line when the user might expect to tune it (ex. "system prompt: set in code"). Skills and memory are always in the list `inspect` prints.
 
 ```text
 What may the optimizer change? Pick any (ex. "1, 3").
@@ -60,8 +60,10 @@ What may the optimizer change? Pick any (ex. "1, 3").
 6. background tasks: on or off; now off
 7. context manager: auto, agentic, or off; now auto
 8. skills: on or off; now on
+   (skills can be turned on or off, but their SKILL.md text is not rewritten)
 9. built-in plugins: keep or drop each of todos, environment
 10. Your own: for example, "only the instructions and effort low or medium"
+Not tunable: memory, because every trial runs with memory off, so trials do not share state.
 ```
 
 The kinds behind the labels:
@@ -71,7 +73,7 @@ The kinds behind the labels:
 - **choice** (effort, prompt caching, background tasks, context manager, skills): one of `choices`.
 - **switches** (built-in tools, tools, MCP servers, built-in plugins, plugins, interventions, or a skills list): each entry in `entries` is kept or left out.
 
-Session and memory are off in every trial.
+Session and memory are off in every trial, whatever the agent sets, so memory is never tunable and setup refuses it. Skills tune as on or off, or as each skill kept or dropped when the agent lists them; the bridge rewrites only text options, so a skill's own text can't be tuned.
 
 **Recommend** the knobs with `recommended: true` (the instructions). When the goal or the request is about cost, length, or speed, also recommend effort, prompt caching, and the context manager when the agent has them. Recommend switches only for entries the cases don't need. Recommend a model choice only with model ids the user named.
 
@@ -83,35 +85,39 @@ Session and memory are off in every trial.
 
 **Metrics** are the experiment's evaluator names (`Helpfulness` resolves to `HelpfulnessEvaluator`) and the usage metrics tokens, input tokens, output tokens, cache read tokens, cache write tokens, seconds, and model calls. A TypeScript agent runs outside the optimizer's process: it reports usage, but evaluators that read the trace (ex. `Helpfulness`, `TrajectoryEvaluator`, `ToolCalled`) are refused, so pick an experiment whose evaluators read only the answer (ex. `OutputEvaluator`).
 
-Ask what to improve. The options hold only objectives; limits come in step 4:
+Ask what to improve. The options hold only objectives; limits come in step 4. When the answer is option 1, 2, 5, or 6, ask its follow-up in one short message: which metric, or which metrics with their weights, each with a recommended answer.
 
 ```text
 What should the optimizer improve?
-1. The mean score of every evaluator (Recommended)
-2. One evaluator only: <Evaluator>
-3. Fewer tokens
+1. Maximize a metric you pick: an evaluator's score, or the mean of every evaluator (Recommended)
+2. Minimize a metric you pick, ex. output tokens, model calls, or seconds
+3. Least tokens
 4. Less time
-5. The evaluators and fewer tokens, weighed together
-6. The evaluators and less time, weighed together
-7. The evaluators, fewer tokens, and less time, weighed together
-8. The best trade-offs between the evaluators and tokens, without weighing them
-9. Your own: for example, "fewer output tokens, OutputEvaluator counting twice as much"
+5. Best trade-offs between two or more metrics, without weighing them
+6. Weighted sum: two or more metrics, each with how much it counts
+7. Your own: for example, "fewer output tokens, OutputEvaluator counting twice as much"
 ```
 
-Offer option 2 once per evaluator, and only when there are several. Recommend option 1 unless the request is about length or cost (option 5, or option 5 with output tokens when it's about answer length) or speed (option 6). Offer "shorter answers" (output tokens) in place of tokens when the request is about answer length.
+Follow-ups, in plain words:
 
-A "Your own" goal uses the metrics of step 4. Objective rules: every metric resolves to an evaluator of the experiment or a usage metric; a metric appears once; an experiment with no evaluator needs a usage goal (option 3 or 4); option 8 needs 2 goals or more; a metric name with `:` can't be used.
+- **Maximize**: which metric; recommend the mean of every evaluator, or the one evaluator the request names.
+- **Minimize**: which usage metric; recommend output tokens when the request is about answer length.
+- **Best trade-offs** and **Weighted sum**: which metrics, at least two (ex. "OutputEvaluator and tokens"); for a weighted sum also how much each counts (ex. "OutputEvaluator twice as much as tokens"), and for a tokens or time metric how big a change matters (ex. "1000 tokens", "10 seconds"), recommending 1000 tokens and 10 seconds. Say that best trade-offs re-checks at least 5 finalists.
+
+**Recommend** option 1 with the mean of every evaluator unless the request is about length or cost (option 6 with the evaluators and tokens, or output tokens when it's about answer length) or speed (option 6 with the evaluators and seconds).
+
+Objective rules: every metric resolves to an evaluator of the experiment or a usage metric of step 4; a metric appears once; an experiment with no evaluator needs a usage goal (option 2, 3, or 4); options 5 and 6 need 2 metrics or more; a metric name with `:` can't be used.
 
 **Build.** Each goal is one `--objective {maximize,minimize}:METRIC[:weight=X][:scale=X]`; several goals form a weighted sum.
 
-- Option 1: no `--objective`.
-- Option 2: `--objective maximize:<Evaluator>`.
+- Option 1: the mean of every evaluator passes no `--objective`; one evaluator is `--objective maximize:<Evaluator>`.
+- Option 2: `--objective minimize:<metric>`.
 - Options 3 and 4: `--objective minimize:tokens` or `--objective minimize:seconds`.
-- Options 5 to 7: `--objective maximize:<Evaluator>` per evaluator plus `--objective minimize:tokens:scale=1000` and/or `--objective minimize:seconds:scale=10`.
-- Option 8: option 5 plus `--pareto`.
-- Option 9: one `--objective` per goal the user names, plus `--pareto` when they ask for trade-offs without weighing.
+- Option 5: one `--objective` per metric (maximize an evaluator, minimize a usage metric) plus `--pareto`; under it at least 5 finalists go to validation (step 6).
+- Option 6: one `--objective` per metric with `weight=` from how much it counts.
+- Option 7: one `--objective` per goal the user names, plus `--pareto` when they ask for trade-offs without weighing.
 
-A usage metric in a weighted sum or a Pareto front needs `scale=`, the size of a meaningful change: `scale=100` on `output_tokens` weighs 100 tokens like the whole 0-1 range of an evaluator. `weight=` and `scale=` count only when there are several goals.
+A usage metric in a weighted sum or a Pareto front needs `scale=`, the size of a meaningful change: `scale=100` on `output_tokens` weighs 100 tokens like the whole 0-1 range of an evaluator; default `scale=1000` for tokens and `scale=10` for seconds. `weight=` and `scale=` count only when there are several goals.
 
 ### 4. Constraints: limits on top of the objective
 
@@ -135,7 +141,7 @@ The judge's own calls don't count toward tokens, seconds, or model calls.
 
 An evaluator with its own score range shows that range instead of 0 to 1. A TypeScript agent reports tokens, seconds, and model calls too, but its experiment can't use evaluators that read the agent's steps (ex. Helpfulness, TrajectoryEvaluator, ToolCalled); with one of those, say the experiment needs a Python agent or answer-only evaluators.
 
-When the objective is usage only (step 3, option 3 or 4), recommend option 2 instead and say why: with nothing but tokens or time to improve, an agent that answers badly, or not at all, can look best, so a minimum score per evaluator keeps the answers good.
+When the objective is usage only (step 3: minimize a usage metric, least tokens, or less time), recommend option 2 instead and say why: with nothing but tokens or time to improve, an agent that answers badly, or not at all, can look best, so a minimum score per evaluator keeps the answers good.
 
 Rules: each constraint is one metric from the list above, "at least" or "at most", and a number; a metric name with `<`, `>`, or `=` can't be used.
 
@@ -184,7 +190,7 @@ rollouts = runs × (current agent on train + steps × candidates × train
 with 6 cases: 3 train / 2 validation / 1 test.
 ```
 
-Under the best trade-offs objective (step 3, option 8), at least 5 finalists go to validation and test checks every finalist and the current agent, so the last term is `(finalists + 1) × test`; say so in the formula line. Judge calls are about rollouts × evaluators, and Reflection's own model calls come on top; neither counts against the budget.
+Under the best trade-offs objective (step 3, option 5), at least 5 finalists go to validation and test checks every finalist and the current agent, so the last term is `(finalists + 1) × test`; say so in the formula line. Judge calls are about rollouts × evaluators, and Reflection's own model calls come on top; neither counts against the budget.
 
 Rules: the cap is 500 rollouts, the Strands CLI's. When the estimate is above 500, recommend fewer steps, candidates, or runs, or raise the cap if the user asks; the cap must cover the parts outside the steps, `runs × (train + (finalists + 1) × validation + tested × test)`. When one step's trials, `candidates × train × runs`, exceed the trials at once, say that steps then run in batches and take longer. 0 steps measures only the baseline and needs no proposer model. Under the best trade-offs objective, recommend 5 finalists and refuse fewer.
 
