@@ -1,7 +1,7 @@
 ---
 name: optimize
 description: Use when the user wants to tune a strands-workspace agent (agent.py or agent.ts built with create_harness / createHarness) against one of its experiments, such as its instructions, model, effort, tools, or plugins, with `strands-evals optimize`. Sets up the run from a free-text request or step by step (experiment, knobs, objective, constraints, case split, budget, crashes and pick), confirms a review summary, runs the agent through the installed Strands CLI's evals bridge with progress, and saves a report.
-version: 0.3.0
+version: 0.4.0
 ---
 
 # optimize
@@ -10,7 +10,7 @@ Sets up and runs `strands-evals optimize run` on the agent of a `strands-workspa
 
 The optimizer is experimental and isn't on evals `main` yet; the bridge installs the build the Strands CLI pins.
 
-`<skill_dir>` below is the folder holding this file. `scripts/prepare.py` finds the CLI and the workspace, reads the knobs, and writes the run files.
+`<skill_dir>` below is the folder holding this file. `scripts/prepare.mjs` loads the installed Strands CLI's own modules to find the workspace's agent, read its knobs, prepare the optimizer environment, and write the run files; everything else is the optimizer's own output.
 
 ## Steps
 
@@ -20,10 +20,10 @@ Ask every question in plain chat, one step at a time, unless a step says to ask 
 
 ### 1. Find the inputs and ask for a request
 
-From the folder holding `strands-workspace` (or pass the workspace path last), run with Python 3.10 or later:
+From the folder holding `strands-workspace` (or pass the workspace path last), run with the `node` the Strands CLI uses:
 
 ```bash
-python3 <skill_dir>/scripts/prepare.py inspect [path/to/strands-workspace]
+node <skill_dir>/scripts/prepare.mjs inspect [path/to/strands-workspace]
 ```
 
 It prints JSON with:
@@ -71,7 +71,7 @@ The kinds behind the labels:
 
 Session and memory are off in every trial.
 
-**Recommend** the knobs with `on_by_default` (the instructions). When the goal or the request is about cost, length, or speed, also recommend effort, prompt caching, and the context manager when the agent has them. Recommend switches only for entries the cases don't need. Recommend a model choice only with model ids the user named.
+**Recommend** the knobs with `recommended: true` (the instructions). When the goal or the request is about cost, length, or speed, also recommend effort, prompt caching, and the context manager when the agent has them. Recommend switches only for entries the cases don't need. Recommend a model choice only with model ids the user named.
 
 **Rules.** At least one knob must be tuned. When a text knob is tuned, warn: Reflection writes shell commands and runs them on this machine with the user's environment, credentials, and network. It is not a sandbox, and text in the cases can carry prompt injection. Run it in a container or VM that has only the credentials the run needs.
 
@@ -146,27 +146,31 @@ Rules: train and validation get a share above 0. The optimizer refuses a split w
 
 ### 6. Budget
 
-Ask all five settings together in one message, with the rollout estimate of the recommended set, and take one reply for all of them; a setting the reply leaves out keeps its recommended value. Recompute the estimate from the reply and show it before moving on; when a value breaks a rule, say which and ask only for that one again.
+Ask all five settings together in one message, each with one line on what it does, then what a rollout is and the estimate for the recommended set, worked out with the case counts from step 5. Take one reply for all of them; a setting the reply leaves out keeps its recommended value. Recompute the estimate from the reply and show it the same way before moving on; when a value breaks a rule, say which and ask only for that one again.
 
 ```text
 Budget: answer any of these in one reply (ex. "2 steps, 2 runs"); the rest keep the recommended value.
-1. Steps: 0 (baseline only), 1, 2, 4 (Recommended), 6, or 8
-2. Candidates per step: 2, 4 (Recommended), 6, or 8
-3. Runs of each case per candidate: 1 (Recommended), 2, 3, or 5
-4. Finalists checked on validation: 1, 2, 3 (Recommended), or 5
-5. Trials at once: 1, 2, 4 (Recommended), 8, or 16
-With the recommended values: about 61 rollouts (6 cases: 3 train / 2 validation / 1 test), ~61 judge calls.
+1. Steps: rounds of proposing and testing new versions of the agent.
+   0 (measure only the current agent), 1, 2, 4 (Recommended), 6, or 8
+2. Candidates per step: new versions tried in each round.
+   2, 4 (Recommended), 6, or 8
+3. Runs of each case: how often each case is repeated per version, to average out noise.
+   1 (Recommended), 2, 3, or 5
+4. Finalists: the best versions re-checked on the validation cases to pick the winner.
+   1, 2, 3 (Recommended), or 5
+5. Trials at once: how many runs go in parallel; changes speed, not cost.
+   1, 2, 4 (Recommended), 8, or 16
+
+A rollout is one run of the agent on one case; each is judged once per evaluator.
+rollouts = runs × (current agent on train + steps × candidates × train
+                   + (finalists + current agent) × validation + 2 × test)
+         = 1 × (3 + 4 × 4 × 3 + (3 + 1) × 2 + 2 × 1) = 61 rollouts, ~61 judge calls
+with 6 cases: 3 train / 2 validation / 1 test.
 ```
 
-Estimate the rollouts (one case run once):
+Under the best trade-offs objective (step 3, option 8), at least 5 finalists go to validation and test checks every finalist and the current agent, so the last term is `(finalists + 1) × test`; say so in the formula line. Judge calls are about rollouts × evaluators, and Reflection's own model calls come on top; neither counts against the budget.
 
-```text
-rollouts = runs × (train + steps × candidates × train + (finalists + 1) × validation + tested × test)
-```
-
-Under the best trade-offs objective (step 3, option 8), at least 5 finalists go to validation, and `tested` is `finalists + 1`; otherwise `tested` is 2 (the champion and the baseline). Judge calls are about rollouts × evaluators, and Reflection's own model calls come on top; neither counts against the budget.
-
-Rules: the cap is 500 rollouts, the Strands CLI's. When the estimate is above 500, recommend fewer steps, candidates, or runs, or raise the cap if the user asks; the cap must cover the baseline and the end phase, `runs × (train + (finalists + 1) × validation + tested × test)`. When one step's trials, `candidates × train × runs`, exceed the trials at once, say that steps then run in batches and take longer. 0 steps measures only the baseline and needs no proposer model. Under the best trade-offs objective, recommend 5 finalists and refuse fewer.
+Rules: the cap is 500 rollouts, the Strands CLI's. When the estimate is above 500, recommend fewer steps, candidates, or runs, or raise the cap if the user asks; the cap must cover the parts outside the steps, `runs × (train + (finalists + 1) × validation + tested × test)`. When one step's trials, `candidates × train × runs`, exceed the trials at once, say that steps then run in batches and take longer. 0 steps measures only the baseline and needs no proposer model. Under the best trade-offs objective, recommend 5 finalists and refuse fewer.
 
 **Build.** Steps are `--max-iterations N`, candidates `--proposals-per-iteration N`, runs `--runs-per-candidate N`, finalists `--n-finalists N` (passed only when it isn't 3, and never with a lower-bound pick), trials at once `--max-workers N`, and the cap `--max-rollouts 500`. 0 steps passes no `--max-iterations` and no `--reflection-model`, and adds `--baseline-only` to the setup command.
 
@@ -214,7 +218,7 @@ Then show the commands, built from the **Build** notes:
 **Setup command**, from the same folder as step 1:
 
 ```bash
-python3 <skill_dir>/scripts/prepare.py setup [path/to/strands-workspace] --experiment <name> \
+node <skill_dir>/scripts/prepare.mjs setup [path/to/strands-workspace] --experiment <name> \
   --tune <knob key> [--tune ...] [--model <model id> ...] [--baseline-only] [--final-pick N:Q]
 ```
 
@@ -231,9 +235,8 @@ python3 <skill_dir>/scripts/prepare.py setup [path/to/strands-workspace] --exper
 
 ### 9. Run
 
-**Setup.** Run the setup command. It prints progress to stderr and JSON to stdout:
+**Setup.** Run the setup command. It prints progress to stderr and JSON to stdout. On the way it prepares the optimizer environment, as the Strands CLI does: it reuses the Strands CLI's environment at `strands-workspace/strands-dev/tmp/.state/evals-env`, or creates it from the workspace's `.venv` Python (a TypeScript agent: `python3`, or `$PYTHON`) and installs the pinned optimizer once into a shared folder under `~/.strands/temporary-evals/`. A Python agent's packages are added after the optimizer's. The JSON holds:
 
-- `python` (`OPT_PY` below): the optimizer environment. Setup reuses the Strands CLI's environment at `strands-workspace/strands-dev/tmp/.state/evals-env`, or creates it from the workspace's `.venv` Python (a TypeScript agent: `python3`, or `$PYTHON`) and installs the pinned optimizer once into a shared folder under `~/.strands/temporary-evals/`. A Python agent's packages are added after the optimizer's.
 - `folder`: the run's folder, `strands-workspace/strands-dev/experiments/<name>/optimizations/<stamp>/`, where the Strands CLI keeps its own runs. The experiments folder's `.gitignore` already leaves out `optimizations/`, so nothing lands in git. Its `.state/` holds `space.json` (the tuned knobs as text, choice, and switch variables keyed by `create_harness` option, snake_case in Python) and `task.py`, which the CLI's own code writes and which loads the agent through the bridge.
 - `variables`: the knobs that `space.json` tunes. Check they match the review.
 - `command`: `cd` to the agent root, put the optimizer's `bin` first on `PATH`, and start `strands-evals optimize run` with `--agent`, `--rollout`, `--search` (with `--baseline-only`), `--final-pick` (with `--final-pick`), `--base-dir`, and `--rich`.
@@ -245,18 +248,12 @@ If setup exits with code 2, show its last stderr lines. For a failed install, as
 
 ```bash
 F=<folder>
-(<command> <optimize flags> > "$F/run.out" 2> "$F/run.log"; echo $? > "$F/run.exit") &
+(<command> <optimize flags> > "$F/summary.txt" 2> "$F/run.log"; echo $? > "$F/run.exit") &
 ```
 
 If you can't run a background process, run it in the foreground with a long timeout and show the output when it ends. As soon as `run.log` prints `strands-evals optimize: run folder <RUN_DIR>`, tell the user the folder.
 
-**Progress.** Until `$F/run.exit` exists, about once a minute, relay each new `strands-evals optimize: iteration N (<blocks>): P proposals, R rollouts` line from `run.log`, and show the run's status:
-
-```bash
-"$OPT_PY" <skill_dir>/scripts/progress.py <RUN_DIR>
-```
-
-It prints the phase (measuring the baseline, the search iteration, or the end phase), the elapsed time, the rollouts spent of the budget, the baseline and the best objective measured on train, and the latest candidates with their measured objective and the proposer's reason. The best measured on train isn't what ships: the end phase picks the champion on validation.
+**Progress**, as the Strands CLI shows it: until `$F/run.exit` exists, about once a minute, relay each new line of `run.log` that starts with `strands-evals optimize:`, such as `iteration N (<blocks>): P proposals, R rollouts`, and any warning or error line, in plain words (ex. "step 2 of 4 done: 4 new versions tried, 61 rollouts so far"). Read new lines with `tail -n +<next line> "$F/run.log"`.
 
 **Exit codes**, from `$F/run.exit`:
 
@@ -264,16 +261,10 @@ It prints the phase (measuring the baseline, the search iteration, or the end ph
 - **3 with `<RUN_DIR>/result.json`**: the search stopped on a proposer error, but the end phase ran and the result is valid. Show the error from `run.log`, then go to step 10.
 - **3 without `result.json`**: the run stopped before it finished, most often at setup. Show the error line from `run.log`. When it says the baseline's train cases are unmeasured or every baseline trial failed, the agent or a model service failed (ex. `NoCredentialsError`, `Could not load credentials`): ask the user to check that the agent answers a case and that the credentials are fresh, then run setup and the command again.
 - **2**: bad input (a flag, the agent, a trace-level evaluator with a TypeScript agent, or a space variable). Show the error, fix the value in its step, and show the review again.
-- **130**, or the process is gone without writing `run.exit` (killed): continue with `<resume> <RUN_DIR> --rich`, started the same way. Finished trials aren't run again, and only `--max-rollouts`, `--max-iterations`, and `--max-workers` may change on resume.
+- **130**, or the process is gone without writing `run.exit` (killed): continue with `(<resume> <RUN_DIR> --rich > "$F/summary.txt" 2>> "$F/run.log"; echo $? > "$F/run.exit") &`, then follow it the same way. Finished trials aren't run again, and only `--max-rollouts`, `--max-iterations`, and `--max-workers` may change on resume.
 
 ### 10. Report
 
-Write the report and print its path:
-
-```bash
-"$OPT_PY" <skill_dir>/scripts/report.py <RUN_DIR>
-```
-
-It writes `<RUN_DIR>/report.md`: what ships, the test check (the champion against the baseline on the test cases, with its 90% range and whether the gain is likely real), the changed values, the diff, the optimizer's summary, and the run's files. Give the user its path to open, and the headline: the candidate that ships, or that no candidate beat the current agent.
+The report is `$F/summary.txt`, the optimizer's own summary (`--rich`): why the search stopped, what ships, every finalist on validation, the test check (the champion against the current agent on the test cases, with its 90% interval), the effects of each option, and the costs. Give the user its path to open, and the headline in plain words: the version that ships, or that no version beat the current agent; whether the test gain is likely real (the whole interval above 0), likely worse (below 0), or may be luck (it includes 0, and more test cases narrow it).
 
 Nothing in the user's project changes. The champion's changes are keyed like `space.json`: `<RUN_DIR>/best.diff` holds each changed text (ex. `instructions`) as a diff under its key, and `<RUN_DIR>/best.values.json` holds each changed choice or switch as `{"old": ..., "new": ...}`, where a switch key such as `builtin_tools_0` is `false` when that entry is left out. Apply them to the agent's `create_harness` / `createHarness` call only when the user asks, and suggest evaluating the agent again after.
