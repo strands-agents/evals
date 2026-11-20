@@ -249,9 +249,7 @@ function show(view, opts) {
   if (view === 'experiment' && !EXP) view = 'experiments';
   if (view === 'compare' && !CMP.length) view = 'reports';
   if (view === 'session' && !sesMeta) view = 'sessions';
-  const section = SECTION_OF[listOf(view)];
   const moved = !$('v-' + view).classList.contains('on');
-  app.querySelectorAll('.sec').forEach(s => s.classList.toggle('on', s.dataset.sec === section));
   app.querySelectorAll('.tab').forEach(t => {
     const here = t.dataset.view === view;
     t.classList.toggle('on', here || t.dataset.view === listOf(view));
@@ -274,16 +272,13 @@ function show(view, opts) {
   }[view] || ROOT;
   renderPageHead(view);
   renderGuide(view);
+  markRunList();
   if (opts && opts.silent) return;
   /* A view moved to starts at its top, where its heading and any notice are. */
   if (moved) window.scrollTo(0, 0);
   writeAddress(view);
 }
 app.querySelectorAll('.tab').forEach(t => t.onclick = () => show(t.dataset.view));
-app.querySelectorAll('.sec').forEach(s => s.onclick = () => {
-  const first = [...app.querySelectorAll('.tab')].find(t => t.dataset.sec === s.dataset.sec && !t.hidden);
-  if (first) show(first.dataset.view);
-});
 /* Rows, chips and chart marks that act as buttons carry tabindex="0": Enter or Space clicks them. */
 app.addEventListener('keydown', e => {
   if ((e.key !== 'Enter' && e.key !== ' ') || e.target.getAttribute('tabindex') !== '0') return;

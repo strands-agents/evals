@@ -70,7 +70,7 @@ pre.val { margin: 0; font: 12.5px/1.5 var(--mono); white-space: pre-wrap; overfl
 h2, .chart h3, .pane > header .t, .hero .big, .stat .v, .winner .wid {
   font-family: var(--mono);
 }
-.btn:focus-visible, .tab:focus-visible, .sec:focus-visible, .seg button:focus-visible,
+.btn:focus-visible, .tab:focus-visible, .seg button:focus-visible,
 .addchip:focus-visible, .more:focus-visible, .theme-toggle:focus-visible, .x:focus-visible,
 .help:focus-visible, .guide-toggle:focus-visible, .guide-close:focus-visible,
 .app [tabindex="0"]:focus-visible {
@@ -124,23 +124,38 @@ h2, .chart h3, .pane > header .t, .hero .big, .stat .v, .winner .wid {
   display: flex; flex-direction: column; gap: 8px; font-size: 12.5px;
 }
 .nav-foot a { color: var(--ink2); }
-.sgroup { display: flex; flex-direction: column; gap: 2px; }
-.sec {
-  appearance: none; border: 0; background: none; text-align: left; cursor: pointer;
-  font: 700 11px var(--sans); letter-spacing: .05em; text-transform: uppercase;
-  color: var(--ink1); padding: 6px 12px;
-}
-.sec:hover { color: var(--accent); }
-.sections.lonely .sec { display: none; }
 .tabs { display: flex; flex-direction: column; gap: 2px; }
 .tab {
   appearance: none; border: 0; background: none; text-align: left; cursor: pointer;
   font: 14px/1.4 var(--sans); color: var(--ink2);
-  padding: 6px 12px 6px 28px; border-radius: 4px;
+  padding: 6px 12px; border-radius: 4px;
 }
-.sections.lonely .tab { padding-left: 12px; }
 .tab:hover { color: var(--ink1); }
+/* A section of the sidebar: its name, the view under it, and what that view holds under that. The
+   name is a label and not a control — the row under it is what opens the list. */
+.sgroup { display: flex; flex-direction: column; gap: 2px; }
+.sec {
+  font: 700 11px var(--sans); letter-spacing: .05em; text-transform: uppercase;
+  color: var(--ink1); padding: 10px 12px 2px;
+}
+.sgroup .tab { padding-left: 24px; }
 .tab.on { font-weight: 600; color: var(--on-brand); background: var(--brand); }
+
+/* ── the runs, under the view that names them ──
+   A step in past the Runs row, so the three levels read as three, and its own scroller once a folder
+   holds many runs. A row of the list, not a link written into prose: none of the underline those
+   carry, which the `#runs-sub` here is for — it outranks the `a[data-report]` rule further down. */
+#runs-sub { max-height: 30vh; overflow: auto; }
+#runs-sub .runrow {
+  display: block; font: 13px/1.5 var(--sans); color: var(--ink2); text-decoration: none;
+  cursor: pointer; border-bottom: 0; padding: 2px 6px 2px 36px; border-radius: 4px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#runs-sub .runrow:hover { color: var(--ink1); background: var(--hair2); }
+#runs-sub .runrow.on, #runs-sub .runrow.on:hover {
+  font-weight: 600; color: var(--on-brand); background: var(--brand);
+}
+
 .grow { flex: 1; }
 .source { margin: -10px 0 18px; }
 .path { color: var(--ink3); font-size: 12.5px; }
@@ -847,8 +862,14 @@ th[data-term], th[data-tip], .cap[data-term] {
   .navlinks { display: none; }
   .nav-foot { flex-direction: row; flex-wrap: wrap; width: 100%; margin: 0; padding: 0; border-top: 0; gap: 4px 18px; }
   .tabs { flex-direction: row; flex-wrap: wrap; }
-  .tab, .sections.lonely .tab { padding: 5px 10px; }
-  .sec { padding: 2px 10px; }
+  /* The sidebar is a strip here, so Optimization and its runs take a line of their own beside the
+     views rather than a place in the row, with the heading inline with the row it names. The runs
+     are kept to a column: a row stretched across the strip reads as a bar, not a run. */
+  .sgroup { flex-direction: row; flex-wrap: wrap; align-items: baseline; }
+  .sec { padding: 5px 0 5px 2px; }
+  #runs-sub { flex-basis: 100%; max-height: 160px; max-width: 360px; }
+  #runs-sub .runrow { padding-left: 10px; }
+  .tab, .sgroup .tab { padding: 5px 10px; }
   main { padding: 22px 16px 48px; }
   /* The header's actions sit under its facts, not beside them. */
   .facts { flex-basis: 100%; }

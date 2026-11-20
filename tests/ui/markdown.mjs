@@ -832,7 +832,7 @@ ${JSON.stringify(LOST, null, 2)}
     'asked for by its own file, a diagnosis names the session file it was made from');
 
   // ── an optimizer run: its result, and one candidate ──
-  await p.click('#sec-opt');
+  await p.click('.tab[data-view="opt-runs"]');
   await p.click('#opt-runs-rows tr[data-opt-run]');
   await waitFor(() => !!p.$('#opt-winner [data-md="result"]'), 'the run');
   await p.click('.tab[data-view="opt-overview"]');
