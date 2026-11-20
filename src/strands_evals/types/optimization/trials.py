@@ -21,8 +21,9 @@ CANDIDATE_SPAN_KEY = "strands_evals.optimization.candidate"
 class TrialStatus(str, Enum):
     """What happened in a trial, decided from what happened, never inferred from a score.
 
-    `EVALUATOR_INVALID` means every evaluator failed, with at least one evaluator. A trial with
-    zero evaluators (usage-only objective) is `COMPLETED`.
+    `EVALUATOR_INVALID` means no evaluator produced a score, with at least one evaluator: every one
+    failed, or `Experiment` failed on the case after the task returned (the exception it caught is the
+    record's `error`). A trial with zero evaluators (usage-only objective) is `COMPLETED`.
     """
 
     COMPLETED = "completed"
@@ -154,7 +155,10 @@ class TrialRecord(BaseModel):
 
     Stores no objective: scoring computes each run's objective from `evaluations` and `usage`.
     When the agent completed, each evaluator name is in exactly one of `evaluations` and `evaluator_errors`
-    (both are empty when it didn't); `details` has the same
+    (both are empty when it didn't), unless `Experiment` failed on the case after the task returned: then
+    both are empty and `error_type` and `error` name the exception it caught. When that happens in a
+    re-judge, `evaluations` keeps the earlier scores and the evaluators judged again are in neither.
+    `details` has the same
     keys as `evaluations`: each evaluator's own outputs (one per tool call or turn for tool- and
     turn-level evaluators), so reports rebuilt from the records match what `Experiment` returned and
     Reflection sees per-row reasons. Status, metrics, and usage read the last attempt;
@@ -173,7 +177,8 @@ class TrialRecord(BaseModel):
     A failed evaluator never changes the status: the trial stays `completed` with it in
     `evaluator_errors` (every evaluator failed is `evaluator_invalid`); `infrastructure_invalid` is the
     agent side only. `judge_usage` is keyed by evaluator name, like `evaluations`: each judge's spend
-    for the score in `evaluations` (a failed evaluator's spend is under its name too), including scores
+    for the score in `evaluations` (a failed evaluator's spend is under its name too, as is every evaluator's
+    when `Experiment` failed on the case), including scores
     kept from a record a judge-only re-run replaced; the trial's judge spend is the sum.
 
     `benchmark_usage` is what the last attempt's other agents spent: its model calls outside the agents the

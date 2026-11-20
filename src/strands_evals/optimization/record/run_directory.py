@@ -191,7 +191,8 @@ class RunDirectory:
         """Append the `propose` event and return the candidate's display number.
 
         0 for the baseline, then 1, 2, ... in proposal order; for people only, never a key. An id already
-        indexed (an ineligible candidate proposed again) gets `rescore=true`, no values, the same number;
+        indexed (an ineligible candidate proposed again, which the optimizer re-scores only when a re-score can
+        change it) gets `rescore=true`, no values, the same number;
         except one from a killed iteration, which resume dropped: it gets a full event with its old number,
         replacing it in the index.
 
