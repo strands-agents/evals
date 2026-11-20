@@ -1,0 +1,188 @@
+{
+  "events": [
+    {
+      "config": {
+        "tools": [
+          "calculator"
+        ]
+      },
+      "end_time": 1791305858337,
+      "event_id": "ca919217-15f6-4215-993b-156b13045d3e",
+      "event_name": "invoke_agent Strands Agents",
+      "event_type": "tool",
+      "inputs": {},
+      "outputs": {
+        "result": "25 multiplied by 4 is 100.\n"
+      },
+      "session_id": "1b2ed822-7af5-4919-a0cc-b46ed6023eed",
+      "start_time": 1791305852926,
+      "metadata": {
+        "_event.gen_ai.user.message.0.content": "[{\"text\": \"What is 25 * 4?\"}]",
+        "parent_span_id": "",
+        "span_id": "2654850abe72be37",
+        "trace_id": "5e965e1ed7d7de0b7689326d7b8597bc"
+      }
+    },
+    {
+      "config": {},
+      "end_time": 1791305857081,
+      "event_id": "7d4b39fe-79b9-4282-ad41-1c7ed9f84d15",
+      "event_name": "execute_event_loop_cycle",
+      "event_type": "tool",
+      "inputs": {},
+      "outputs": {
+        "result": "[{\"toolUse\":{\"input\":{\"expression\":\"25 * 4\"},\"name\":\"calculator\",\"toolUseId\":\"call_epDZuWSGnNwCpn5YO8Ws8U7T\"}}]"
+      },
+      "session_id": "1b2ed822-7af5-4919-a0cc-b46ed6023eed",
+      "start_time": 1791305852928,
+      "metadata": {
+        "_event.gen_ai.user.message.0.content": "[{\"text\": \"What is 25 * 4?\"}]",
+        "parent_span_id": "2654850abe72be37",
+        "span_id": "9d6f4397fb710526",
+        "trace_id": "5e965e1ed7d7de0b7689326d7b8597bc"
+      }
+    },
+    {
+      "config": {},
+      "end_time": 1791305857076,
+      "event_id": "974dbb4b-5187-4249-a62d-1e75db203068",
+      "event_name": "chat",
+      "event_type": "model",
+      "inputs": {
+        "chat_history": [
+          {
+            "content": "You are a helpful assistant.",
+            "role": "system"
+          },
+          {
+            "content": "What is 25 * 4?",
+            "role": "user"
+          }
+        ]
+      },
+      "outputs": {
+        "content": [
+          {
+            "toolUse": {
+              "input": {
+                "expression": "25 * 4"
+              },
+              "name": "calculator",
+              "toolUseId": "call_epDZuWSGnNwCpn5YO8Ws8U7T"
+            }
+          }
+        ]
+      },
+      "session_id": "1b2ed822-7af5-4919-a0cc-b46ed6023eed",
+      "start_time": 1791305852928,
+      "metadata": {
+        "parent_span_id": "9d6f4397fb710526",
+        "span_id": "7c27c99a2bcc981d",
+        "trace_id": "5e965e1ed7d7de0b7689326d7b8597bc"
+      }
+    },
+    {
+      "end_time": 1791305852933,
+      "event_id": "1b2ed822-7af5-4919-a0cc-b46ed6023eed",
+      "event_name": "strands-py-retest",
+      "event_type": "session",
+      "inputs": {},
+      "outputs": {},
+      "session_id": "1b2ed822-7af5-4919-a0cc-b46ed6023eed",
+      "start_time": 1791305852932,
+      "metadata": {}
+    },
+    {
+      "config": {
+        "tool_name": "calculator"
+      },
+      "end_time": 1791305857080,
+      "event_id": "3e26ba0d-5541-4610-bb72-27dedec1c3c9",
+      "event_name": "execute_tool calculator",
+      "event_type": "tool",
+      "inputs": {
+        "parameters": {
+          "expression": "25 * 4"
+        }
+      },
+      "outputs": {
+        "result": 100,
+        "tool_call_id": "call_epDZuWSGnNwCpn5YO8Ws8U7T"
+      },
+      "session_id": "1b2ed822-7af5-4919-a0cc-b46ed6023eed",
+      "start_time": 1791305857078,
+      "metadata": {
+        "parent_span_id": "9d6f4397fb710526",
+        "span_id": "3e21bc3f8b885765",
+        "tool_call_id": "call_epDZuWSGnNwCpn5YO8Ws8U7T",
+        "trace_id": "5e965e1ed7d7de0b7689326d7b8597bc"
+      }
+    },
+    {
+      "config": {},
+      "end_time": 1791305858336,
+      "event_id": "640830b3-2993-4b7e-881a-fd6d822b284d",
+      "event_name": "chat",
+      "event_type": "model",
+      "inputs": {
+        "chat_history": [
+          {
+            "content": "You are a helpful assistant.",
+            "role": "system"
+          },
+          {
+            "content": "What is 25 * 4?",
+            "role": "user"
+          },
+          {
+            "content": [
+              {
+                "toolUse": {
+                  "input": {
+                    "expression": "25 * 4"
+                  },
+                  "name": "calculator",
+                  "toolUseId": "call_epDZuWSGnNwCpn5YO8Ws8U7T"
+                }
+              }
+            ],
+            "role": "assistant"
+          },
+          {
+            "content": "{\"toolResult\": {\"toolUseId\": \"call_epDZuWSGnNwCpn5YO8Ws8U7T\", \"status\": \"success\", \"content\": [{\"text\": \"100\"}]}}",
+            "role": "tool"
+          }
+        ]
+      },
+      "outputs": {
+        "content": "25 multiplied by 4 is 100."
+      },
+      "session_id": "1b2ed822-7af5-4919-a0cc-b46ed6023eed",
+      "start_time": 1791305857082,
+      "metadata": {
+        "parent_span_id": "05d379b13d4d2557",
+        "span_id": "74316ecf0b0ada57",
+        "trace_id": "5e965e1ed7d7de0b7689326d7b8597bc"
+      }
+    },
+    {
+      "config": {},
+      "end_time": 1791305858337,
+      "event_id": "7ed80361-62b2-48cf-810f-46cafa02fa99",
+      "event_name": "execute_event_loop_cycle",
+      "event_type": "tool",
+      "inputs": {
+        "parameters": "100"
+      },
+      "outputs": {},
+      "session_id": "1b2ed822-7af5-4919-a0cc-b46ed6023eed",
+      "start_time": 1791305857082,
+      "metadata": {
+        "_event.gen_ai.user.message.0.content": "[{\"text\": \"What is 25 * 4?\"}]",
+        "parent_span_id": "2654850abe72be37",
+        "span_id": "05d379b13d4d2557",
+        "trace_id": "5e965e1ed7d7de0b7689326d7b8597bc"
+      }
+    }
+  ]
+}
