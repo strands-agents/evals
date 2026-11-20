@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -178,3 +179,48 @@ def test_a_path_to_a_tunable_factory_still_loads_as_one(experiment_path, tmp_pat
     assert main(args) == 0
     capsys.readouterr()
     assert set(_run(tmp_path / "runs").best.values) >= {"manager", "temperature"}
+
+
+@pytest.mark.parametrize(
+    ("spec", "is_file"),
+    [
+        ("agent.py", True),
+        ("agent.ts", True),
+        ("./src/agent.mjs:agent", True),
+        ("agent.ts:agent", True),
+        ("C:\\work\\agent.ts", True),
+        ("pkg.module:factory", False),
+        ("agent:factory", False),
+    ],
+)
+def test_agent_files_are_told_from_dotted_modules(spec, is_file):
+    from strands_evals.cli._optimize import is_agent_file
+
+    assert is_agent_file(spec) is is_file
+
+
+def test_a_typescript_file_without_node_asks_for_node(tmp_path, monkeypatch):
+    path = tmp_path / "agent.ts"
+    path.write_text("export const agent = 1\n")
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    with pytest.raises(Exception, match="Node.js 22.18"):
+        _agent_file.load(str(path), [])
+
+
+def test_a_run_file_takes_an_agent_file_and_its_tune(experiment_path, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("strands_evals.optimization.search.blocks.Reflection", AddInstruction)  # no model calls
+    shutil.copy(AGENT_FILE, tmp_path / "agent.py")
+    run_file = tmp_path / "run.toml"
+    run_file.write_text(
+        f'experiment = "{experiment_path}"\nobjective = ["maximize:Correct"]\nmax_iterations = 1\n'
+        f'custom_evaluator = ["{AGENTS}:Correct"]\nbase_dir = "runs"\n'
+        '[agent]\nfactory = "agent.py"\ntune = [\'effort=["auto","low"]\']\n'
+    )
+    assert main(["--json", "optimize", "run", str(run_file)]) == 0
+    capsys.readouterr()
+    saved = json.loads(next((tmp_path / "runs").iterdir()).joinpath("cli.json").read_text())
+    assert saved["agent"] == str(tmp_path / "agent.py")  # resolved against the run file's folder
+    assert saved["tune"] == ['effort=["auto","low"]']
+    # --agent on the command line naming an agent file keeps the file's tune
+    assert main(["--json", "optimize", "run", str(run_file), "--agent", str(tmp_path / "agent.py")]) == 0
+    capsys.readouterr()

@@ -21,6 +21,7 @@ from ...case import Case
 from ...telemetry import get_tracer
 from ...types.optimization import TrialStatus
 from ..declaration.tunable import _FactoryArgumentError
+from .node import NodeAgent
 from .status import InfrastructureError, classify
 from .traces import ATTEMPT_SPAN, FACTORY_AGENT, FACTORY_TAGGED, ROLLOUT_SPAN, SPAN_KIND, TraceCapture
 
@@ -136,7 +137,7 @@ def make_task(
     `__enter__` runs waits for it to finish, exits the environment, then re-raises the cancellation (a
     second cancellation during that wait leaves the environment entered).
 
-    The factory `rollout_fn` receives also tags each strands `Agent` or multi-agent system it returns,
+    The factory `rollout_fn` receives also tags each strands `Agent`, multi-agent system, or `NodeAgent` it returns,
     through its `trace_attributes`, to tell the candidate's model calls (its agents and everything under
     them: sub-agents, a `ToolSimulator` behind one of its tools) from every other agent's in the attempt,
     such as a simulated user or an agent the environment built. Those are `TrialRecord.benchmark_usage`,
@@ -202,8 +203,8 @@ async def _rollout(rollout_fn: RolloutFn, agent_factory: Callable[..., Any], cas
 
 
 def _tagging(agent_factory: Callable[..., Any], rollout_span: Span) -> Callable[..., Any]:
-    """`agent_factory`, setting `FACTORY_AGENT` in the `trace_attributes` of each strands `Agent` or multi-agent
-    system it builds (an async factory's once awaited).
+    """`agent_factory`, setting `FACTORY_AGENT` in the `trace_attributes` of each strands `Agent`, multi-agent
+    system, or `NodeAgent` (set on its spans in Node) it builds (an async factory's once awaited).
 
     Strands reads `trace_attributes` at each invocation, so the agent's spans carry the tag. Arguments are
     passed through unchanged. Anything else built is returned as is, sets `FACTORY_TAGGED` False on the rollout
@@ -212,7 +213,7 @@ def _tagging(agent_factory: Callable[..., Any], rollout_span: Span) -> Callable[
 
     def tag(built: Any) -> Any:
         attributes = getattr(built, "trace_attributes", None)
-        if isinstance(built, (Agent, MultiAgentBase)) and isinstance(attributes, dict):
+        if isinstance(built, (Agent, MultiAgentBase, NodeAgent)) and isinstance(attributes, dict):
             attributes[FACTORY_AGENT] = True
             return built
         rollout_span.set_attribute(FACTORY_TAGGED, False)

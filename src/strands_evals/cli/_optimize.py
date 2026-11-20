@@ -272,13 +272,16 @@ def load_hook(spec: str, flag: str, kind: Any, what: str) -> Any:
     return target
 
 
+_AGENT_FILE_SUFFIXES = (".py", ".ts", ".mts", ".cts", ".js", ".mjs", ".cjs")
+
+
 def is_agent_file(spec: str) -> bool:
-    """Whether `--agent` names a Python file (`agent.py`, `./agent.py:agent`), loaded by `_agent_file.load`, rather
-    than a dotted `module:attr`. Doesn't import strands-harness."""
-    if spec.endswith(".py"):
+    """Whether `--agent` names a file (`agent.py`, `./agent.py:agent`, `agent.ts`), loaded by `_agent_file.load`,
+    rather than a dotted `module:attr`. Doesn't import strands-harness."""
+    if spec.endswith(_AGENT_FILE_SUFFIXES):
         return True
     module, sep, attr = spec.rpartition(":")
-    return bool(sep and module and attr and _looks_like_path(module))
+    return bool(sep and module and attr and (_looks_like_path(module) or module.endswith(_AGENT_FILE_SUFFIXES)))
 
 
 def load_factory(spec: str) -> TunableFactory:
@@ -528,7 +531,8 @@ def apply_run_file(path: Path, parser: argparse.ArgumentParser, args: argparse.N
     command line
     (`--agent`, `--build-task` / `--space`, `--config`) chooses the route: the file's agent keys that don't fit it
     are dropped, those that do are kept (with `--agent`: `rollout`, `environment`; with `--build-task`: the other
-    of `build_task` / `space`; with `--config`: `tune`, `tune_instructions`, `rollout`). Likewise a flag that excludes
+    of `build_task` / `space`; with `--config`, or `--agent` naming an agent file: `tune`, `tune_instructions`,
+    `rollout`). Likewise a flag that excludes
     another replaces the file's value of it (`--search` / `reflection_model`, `--final-pick` / `n_finalists`). Paths
     (`experiment`, `config`, `base_dir`) and path-form `MODULE:ATTR`s resolve against the file's folder; dotted
     modules import from the working directory, as on the command line.
@@ -566,7 +570,10 @@ def apply_run_file(path: Path, parser: argparse.ArgumentParser, args: argparse.N
             data.pop(exclusive, None)
     route = _command_line_route(on_command_line)
     if route is not None:  # the command line chose the route: drop the file's agent keys that don't fit it
-        data = {key: value for key, value in data.items() if key not in _AGENT_KEYS or key in _ROUTE_KEYS[route]}
+        fits = set(_ROUTE_KEYS[route])
+        if route == "agent" and is_agent_file(args.agent):  # an agent file takes --tune, as --config does
+            fits |= {"tune", "tune_instructions"}
+        data = {key: value for key, value in data.items() if key not in _AGENT_KEYS or key in fits}
     for key, value in data.items():
         action = actions[key]
         if action.dest in on_command_line:
@@ -782,6 +789,9 @@ def _run_file_value(path: Path, key: str, action: argparse.Action, value: Any) -
 def _resolve_against(base: Path, dest: str, value: Any) -> Any:
     """A path or path-form `MODULE:ATTR` from the run file, made absolute against the file's folder."""
     if dest in _PATH_KEYS:
+        target = Path(value).expanduser()
+        return str(target if target.is_absolute() else base / target)
+    if dest == "agent" and value.endswith(_AGENT_FILE_SUFFIXES):  # an agent file named without :ATTR
         target = Path(value).expanduser()
         return str(target if target.is_absolute() else base / target)
     if dest in _HOOK_KEYS:

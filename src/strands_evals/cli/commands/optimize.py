@@ -334,7 +334,8 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
         parents=[parent],
         help="search for a better configuration of a tunable agent",
         description=(
-            "Load an Experiment (its cases and evaluators), take the agent from --agent (a @tunable factory), "
+            "Load an Experiment (its cases and evaluators), take the agent from --agent (a @tunable factory, or an "
+            "agent.py / agent.ts file whose agent create_harness builds), "
             "--build-task with --space (your task builder and its space), or --config (a strands-harness portable "
             "config), and run the optimizer: the search on the train cases, the champion picked on validation, "
             "and the champion compared with the baseline on the test cases. Writes the run folder (events, best.diff, "
@@ -358,11 +359,13 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
     agent = parser.add_mutually_exclusive_group()
     agent.add_argument(
         "--agent",
-        metavar="MODULE:ATTR | FILE.py[:ATTR]",
+        metavar="MODULE:ATTR | FILE.py[:ATTR] | FILE.ts[:ATTR]",
         help=(
             "a tunable factory (@tunable or tunable(fn, inject=...)), as 'module:attr' or 'path/to/file.py:attr'; or "
-            "a file whose agent (default attribute 'agent') is built by create_harness, as /export writes: its "
-            "instructions are tuned, plus each --tune over that call's arguments, and each trial runs the file again"
+            "an agent file whose agent (the attribute or export named 'agent' unless :ATTR says) is built by "
+            "create_harness / createHarness, as /export writes it: agent.py, or agent.ts / .mts / .js / .mjs (run "
+            "in Node.js 22.18+, with @strands-agents/harness installed). Its instructions are tuned, plus each --tune "
+            "over that call's arguments, and each trial runs the file again"
         ),
     )
     agent.add_argument(
@@ -384,8 +387,8 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
         action="append",
         default=None,
         help=(
-            "with --config or an agent file, repeatable: a dotted config path (or create_harness argument) to tune, "
-            "as text (e.g. 'description', or "
+            "with --config or an agent file, repeatable: a dotted config path (or create_harness / createHarness "
+            "argument) to tune, as text (e.g. 'description', or "
             "'skills' for its skill folder), with =JSON_LIST as a choice (e.g. 'effort=[\"low\",\"high\"]'), or "
             "with =int:LO..HI / =float:LO..HI as a number in a range (e.g. 'builtinTools.subagent.maxDepth=int:0..3')"
         ),

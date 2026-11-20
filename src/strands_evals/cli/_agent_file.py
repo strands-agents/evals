@@ -15,12 +15,14 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import itertools
+import json
 import logging
 import shutil
 import sys
 import tempfile
 import threading
 import weakref
+from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,6 +34,8 @@ import strands_harness.agent
 from strands_harness.defaults import DEFAULT_MEMORY_DIR
 
 from ..optimization import Marker, OneOf, SkillLibrary, TextValue, TunableFactory, tunable
+from ..optimization.execution import node
+from ..optimization.execution.status import InfrastructureError
 from ._entrypoint import EntryPointError, _looks_like_path, import_attr
 from ._harness import DEFAULT_TUNED, Tuned, _number, _path, _Range, _set, _split
 
@@ -85,7 +89,8 @@ def load(spec: str, tune: list[str], *, tune_instructions: bool = True) -> Tunab
     """The `--agent` file as a `TunableFactory`: its own when it defines one, else its `create_harness` agent's.
 
     Args:
-        spec: `FILE.py` (the attribute `agent`) or `FILE[.py]:ATTR`.
+        spec: `FILE.py` (the attribute `agent`) or `FILE[.py]:ATTR`; or a TypeScript / JavaScript file (`agent.ts`,
+            `agent.mjs`, ...), with or without `:ATTR`, whose agent `createHarness` builds, run in a Node worker.
         tune: The `--tune` specs, as `--config` takes them, over the agent's `create_harness` keyword arguments.
         tune_instructions: Whether `instructions` is tuned without a `--tune` naming it.
 
@@ -98,6 +103,8 @@ def load(spec: str, tune: list[str], *, tune_instructions: bool = True) -> Tunab
     if found is None:
         raise EntryPointError(f"--agent {spec}: not a Python file")
     path, attr = found
+    if path.suffix in node.SUFFIXES:
+        return _load_node(path, attr, tune, tune_instructions=tune_instructions)
     if spec.endswith(".py"):  # no attribute given: new with agent files
         module, capture = _run_file(path, _Capture())
         target = getattr(module, attr, _MISSING)
@@ -122,7 +129,8 @@ def load(spec: str, tune: list[str], *, tune_instructions: bool = True) -> Tunab
             f"--agent {spec}: {attr} is a {type(target).__name__}, neither a tunable factory (@tunable) nor an agent "
             f"built by a create_harness call in {path.name}"
         )
-    markers, tuned = _declare(capture.calls[index][0], tune, tune_instructions=tune_instructions)
+    kwargs = capture.calls[index][0]
+    markers, tuned = _declare(lambda p, t: _current(kwargs, p, t), tune, tune_instructions=tune_instructions)
     return tunable(_AgentFile(path, attr, index, tuned).build, inject=markers)
 
 
@@ -156,16 +164,16 @@ _MISSING = object()
 
 
 def _file_and_attr(spec: str) -> tuple[Path, str] | None:
-    if spec.endswith(".py"):
+    if spec.endswith((".py", *node.SUFFIXES)):
         file, attr = spec, DEFAULT_ATTR
     elif ":" in spec:
         file, attr = spec.rsplit(":", 1)
-        if not _looks_like_path(file) or not attr:
+        if not (_looks_like_path(file) or file.endswith(tuple(node.SUFFIXES))) or not attr:
             return None
     else:
         return None
     path = Path(file).expanduser()
-    return (path if path.suffix == ".py" else path.with_suffix(".py")).resolve(), attr
+    return (path if path.suffix in {".py", *node.SUFFIXES} else path.with_suffix(".py")).resolve(), attr
 
 
 def _run_file(path: Path, capture: _Capture) -> tuple[ModuleType, _Capture]:
@@ -195,9 +203,10 @@ def _run_file(path: Path, capture: _Capture) -> tuple[ModuleType, _Capture]:
 
 
 def _declare(
-    kwargs: dict[str, Any], tune: list[str], *, tune_instructions: bool
+    current: Callable[[tuple[str | int, ...], str], Any], tune: list[str], *, tune_instructions: bool
 ) -> tuple[dict[str, Marker], list[Tuned]]:
-    """The space over the agent's `create_harness` keyword arguments, as `_harness.declare` over a config."""
+    """The space over the agent's `create_harness` arguments, as `_harness.declare` over a config; `current(path,
+    text)` gives the agent's value at a path, or raises `ValueError` naming the `--tune` `text`."""
     specs = [_split(spec) for spec in tune]
     if tune_instructions and DEFAULT_TUNED not in {path for path, _ in specs}:
         specs.insert(0, (DEFAULT_TUNED, None))
@@ -211,7 +220,7 @@ def _declare(
         name = text.replace(".", "_")
         if name in markers:
             raise ValueError(f"--tune {text}: another --tune path is also named {name!r}")
-        value = _current(kwargs, path, text)
+        value = current(path, text)
         if isinstance(options, _Range):
             markers[name], kind = _number(text, options, value), "number"
         elif options is not None:
@@ -289,3 +298,65 @@ def _fresh_state(kwargs: dict[str, Any], folder: Path) -> dict[str, Any]:
         config["dir"] = str(folder / key)
         trial[key] = config
     return trial
+
+
+_RUNNERS: dict[Path, node.NodeRunner] = {}
+
+
+def _load_node(path: Path, attr: str, tune: list[str], *, tune_instructions: bool) -> TunableFactory:
+    """A TypeScript / JavaScript agent file as a `TunableFactory` of `NodeAgent`s, its space from the Node worker."""
+    if not path.is_file():
+        raise EntryPointError(f"--agent: cannot find {path}")
+    try:
+        runner = _RUNNERS.get(path) or _RUNNERS.setdefault(path, node.NodeRunner(path))
+    except FileNotFoundError as error:
+        raise EntryPointError(f"--agent {path.name}: {error}") from error
+    specs = [_split(spec) for spec in tune]
+    paths = [_path(text) for text, _ in specs]
+    if tune_instructions and (DEFAULT_TUNED,) not in paths:
+        paths.insert(0, (DEFAULT_TUNED,))
+    try:
+        described = runner.call({"type": "describe", "attr": attr, "paths": [list(p) for p in paths]})
+    except RuntimeError as error:
+        raise EntryPointError(f"--agent {path.name}: {error}") from error
+    if "error" in described:
+        raise EntryPointError(f"--agent {path.name}: {described['error']}")
+    found = dict(zip(paths, described["values"], strict=True))
+
+    def current(at: tuple[str | int, ...], text: str) -> Any:
+        entry = found[at]
+        if "missing" in entry:
+            raise ValueError(f"--tune {text}: {entry['missing']}; write it in the createHarness call to tune it")
+        return entry["value"]
+
+    markers, tuned = _declare(current, tune, tune_instructions=tune_instructions)
+    return tunable(_NodeAgentFile(runner, attr, int(described["index"]), tuned).build, inject=markers)
+
+
+@dataclass(frozen=True)
+class _NodeAgentFile:
+    """Builds a `NodeAgent` for the values, after the worker built that agent once without errors."""
+
+    runner: node.NodeRunner
+    attr: str
+    index: int
+    tuned: list[Tuned]
+    _built: set[str] = field(default_factory=set)
+
+    def build(self, **values: Any) -> node.NodeAgent:
+        by_name = {item.name: item for item in self.tuned}
+        overrides = [
+            (list(by_name[name].path), str(value) if by_name[name].kind == "skills" else value)
+            for name, value in values.items()
+            if name in by_name
+        ]
+        key = json.dumps(overrides, sort_keys=True)
+        if key not in self._built:  # once per candidate: a value the agent can't be built with fails here
+            reply = self.runner.call({"type": "probe", "attr": self.attr, "index": self.index, "values": overrides})
+            if not reply.get("ok"):
+                error = node.node_error(str(reply.get("error_type") or "Error"), str(reply.get("error") or ""))
+                if reply.get("status") == "infrastructure_invalid":
+                    raise InfrastructureError(str(error)) from error
+                raise error
+            self._built.add(key)
+        return node.NodeAgent(self.runner, self.attr, self.index, overrides)
