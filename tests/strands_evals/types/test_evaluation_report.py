@@ -454,6 +454,27 @@ class TestEvaluationReportFileOperations:
             assert loaded.cases[0]["evaluator"] == "Eval1"
             assert loaded.cases[1]["evaluator"] == "Eval2"
 
+    def test_calibration_context_roundtrip(self, tmp_path):
+        report = EvaluationReport(
+            overall_score=1.0,
+            scores=[1.0],
+            cases=[{"name": "case-1", "evaluator": "Eval1"}],
+            test_passes=[True],
+            calibration_context={
+                "version": "1",
+                "dataset": "dataset-hash",
+                "evaluators": "evaluator-hash",
+                "step_sizes": "step-hash",
+                "overall": "overall-hash",
+            },
+        )
+        path = tmp_path / "calibrated.json"
+
+        report.to_file(str(path))
+        loaded = EvaluationReport.from_file(str(path))
+
+        assert loaded.calibration_context == report.calibration_context
+
     def test_legacy_evaluator_name_field_ignored(self):
         """Older saved reports may have evaluator_name; loading must not raise."""
         data = {
