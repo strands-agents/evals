@@ -8,8 +8,8 @@ from pathlib import Path
 from strands_evals.optimization import OptimizationResult
 
 FILES = (
-    ("best.diff", "the champion's text changes, as a diff on your real files"),
-    ("best.values.json", "every typed value of the champion"),
+    ("best.diff", "the champion's text changes, as a diff under each knob's key"),
+    ("best.values.json", "the champion's changed choices and switches, before and after"),
     ("effects.json", "what each option did to each metric, from the search fit"),
     ("result.json", "the whole result, reports included"),
 )
