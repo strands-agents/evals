@@ -193,6 +193,8 @@ const RUN = {
   eq([p.text('#form'), frog(p, '#form')],
     ['No cases on this lily pad yetThis experiment’s case list is empty. Use + Case to add one.', true],
     'and an experiment with no cases says how to add one');
+  eq([p.text('#case-list'), p.text('#case-count')], ['No cases yet', '0 of 0 cases'],
+    'its case list says it is empty, not that a search found no match');
 }
 {
   const p = await served(SAMPLE, { route: '/reports/report.json' });
