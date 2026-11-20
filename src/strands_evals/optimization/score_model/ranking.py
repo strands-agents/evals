@@ -152,9 +152,10 @@ def assess(
     adjusted mean (`Assessment.adjusted_means`) over the cases any candidate in `ids` has a value for (those
     assessed from the fit included): the candidate's own values, plus each case it has no value on filled
     with the mean, over the other candidates with a value there, of that value plus the candidate's mean
-    difference from that candidate on the cases the two share, clipped to the metric's range (the values
-    averaged are in `Assessment.adjusted_by_case`). A candidate with a value on every such case gets its plain
-    mean; one with gaps depends on who else is in `ids`. Constraints are judged on the same adjusted means.
+    difference from that candidate on the cases the two share, weighed by the number of those cases, and
+    clipped to the metric's range widened to the values measured on that case (the values averaged are in
+    `Assessment.adjusted_by_case`). A candidate with a value on every such case gets its plain mean; one
+    with gaps depends on who else is in `ids`. Constraints are judged on the same adjusted means.
     The plain means stay in `CandidateScores` and `measured_metrics`.
 
     Args:
@@ -255,7 +256,9 @@ def _adjusted_means(
     Per goal metric, over the cases any candidate in `ids` has a value for. A candidate with a value on every
     one of them gets its plain mean. A candidate missing some has each missing case filled with the mean, over
     the other candidates with a value there, of that value plus the candidate's mean difference from that
-    candidate on the cases the two share (no difference when they share none), clipped to the metric's range.
+    candidate on the cases the two share, weighed by the number of those cases (a candidate sharing none counts
+    only when none shares any, unshifted), and clipped to the metric's range widened to the values measured on
+    that case.
     So each filled value is shifted against the candidates it comes from: when two candidates share a gap,
     neither one's values move the other's fill. A metric the candidate has no value for on any case is left
     out, as with plain means.
@@ -284,18 +287,32 @@ def _adjusted_means(
             if missing:
                 # Its mean difference from each other candidate on the cases the two share (0 when they share
                 # none), so a case is filled from the candidates judged there, each shifted by its own difference.
-                offsets = {}
+                # Its mean difference from each other candidate on the cases the two share, and how many
+                # cases that rests on; 0 and 0 when they share none.
+                offsets: dict[str, float] = {}
+                weights: dict[str, int] = {}
                 for d, theirs in values.items():
                     if d != c and theirs:
                         shared = [case for case in own if case in theirs]
                         offsets[d] = statistics.fmean([own[k] - theirs[k] for k in shared]) if shared else 0.0
+                        weights[d] = len(shared)
                 for case in missing:
-                    # Some other candidate has a value on `case`, so `terms` isn't empty. The mean is the first
-                    # term plus the mean offset from it, so equal terms give exactly that value back (fsum / n
-                    # doesn't, e.g. for 0.1 three times).
-                    terms = [values[d][case] + offset for d, offset in offsets.items() if case in values[d]]
-                    mean = terms[0] + (math.fsum(terms) - len(terms) * terms[0]) / len(terms)
-                    filled[case] = _clip(mean, low, high)
+                    # Some other candidate has a value on `case`, so `judged` isn't empty. Each one judged there gives
+                    # its value plus the difference, weighed by the cases the difference rests on; its value alone
+                    # only when none shares a case with this candidate.
+                    judged = [d for d in offsets if case in values[d]]
+                    donors = [d for d in judged if weights[d]] or judged
+                    terms = [values[d][case] + offsets[d] for d in donors]
+                    ws = [weights[d] or 1 for d in donors]
+                    # The first term plus the weighted mean offset from it, so equal terms give exactly that value
+                    # back (fsum / n doesn't, e.g. for 0.1 three times).
+                    mean = terms[0] + math.fsum(w * (t - terms[0]) for w, t in zip(ws, terms, strict=True)) / sum(ws)
+                    # Within the range, widened to the values measured on the case: a fill leaves the range only as
+                    # far as a measured value there does.
+                    there = [values[d][case] for d in judged]
+                    filled[case] = _clip(
+                        mean, None if low is None else min(low, *there), None if high is None else max(high, *there)
+                    )
             for case, value in {**own, **filled}.items():
                 by_case[c][case][metric] = value
             means[c][metric] = statistics.fmean([*own.values(), *filled.values()])
@@ -303,14 +320,10 @@ def _adjusted_means(
 
 
 def _clip(value: float, low: float | None, high: float | None) -> float:
-    """`value` within `[low, high]`; a None end is unbounded, and a value outside by float noise is kept.
-
-    As scoring keeps a measured value at a range end up to float noise, so a filled value equal to a
-    measured one stays equal to it.
-    """
-    if low is not None and value < low and not near(value, low):
+    """`value` within `[low, high]`; a None end is unbounded."""
+    if low is not None and value < low:
         return low
-    if high is not None and value > high and not near(value, high):
+    if high is not None and value > high:
         return high
     return value
 

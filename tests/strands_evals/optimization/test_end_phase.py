@@ -659,6 +659,63 @@ def test_pick_by_measured_means_ships_the_baseline_over_a_finalist_below_it_that
     assert report.objectives["worse"] == pytest.approx(0.55) and report.objectives["0"] == pytest.approx(0.6)
 
 
+def _pick_measured(criteria, pool, tokens=None):
+    """`pick(fit=None)` on validation scores `pool` (candidate -> case -> HELP, N/A left out), "0" the baseline."""
+    cases = list(dict.fromkeys(k for by in pool.values() for k in by))
+    validation = {
+        c: _train_scores(
+            c,
+            {k: ({HELP: by[k]} if k in by else {}) | ({TOKENS: tokens[c]} if tokens else {}) for k in cases},
+            criteria,
+        )
+        for c, by in pool.items()
+    }
+    return pick(
+        baseline_id="0",
+        finalist_ids=[c for c in pool if c != "0"],
+        validation=validation,
+        fit=None,
+        values={c: {} for c in pool},
+        trial_counts={c: 1 for c in pool},
+        completed={c: 1 for c in pool},
+        criteria=criteria,
+        rule=Mean(),
+    )
+
+
+def test_pick_weighs_each_fill_by_the_cases_its_difference_rests_on():
+    # "w" equals the baseline on a, is below it on c, and is N/A on b. "x", weak and judged on b, shares only a with
+    # "w"; counted as much as the baseline, it filled b at 0.625, above both scores measured there, and "w" shipped.
+    report = _pick_measured(
+        Criteria(Maximize(HELP), [], REGISTRY),
+        {"0": {"a": 0.7, "b": 0.5, "c": 0.5}, "w": {"a": 0.7, "c": 0.4}, "x": {"a": 0.1, "b": 0.2}},
+    )
+    assert report.champion_id == "0"
+
+
+def test_pick_fills_unshifted_only_when_no_candidate_shares_a_case():
+    # "d" is judged only on "w"'s gap (and is over the token cap, so it can't ship). The baseline shares "hard" with
+    # "w", so it alone fills "easy"; "d"'s unshifted 1.0 used to go in beside it, and "w" shipped.
+    report = _pick_measured(
+        Criteria(Maximize(HELP), [AtMost(TOKENS, 1000.0)], REGISTRY),
+        {"0": {"easy": 0.7, "hard": 0.5}, "w": {"hard": 0.42}, "d": {"easy": 1.0}},
+        tokens={"0": 500.0, "w": 500.0, "d": 2000.0},
+    )
+    assert report.champion_id == "0"
+
+
+def test_pick_float_noise_in_a_fill_below_the_floor_does_not_beat_a_tie():
+    # Under Minimize at a floor of 0, "w" matches the baseline where judged; its fill on c averages 0.0 with
+    # 0.3 + (-0.30000000000000004), a hair below 0. Nothing measured on c is below 0, so it is clipped and the
+    # baseline wins the tie.
+    report = _pick_measured(
+        Criteria(Minimize(HELP), [], REGISTRY),
+        {"0": {"a": 0.0, "b": 0.0, "c": 0.0}, "w": {"a": 0.0, "b": 0.0}, "x": {"a": 0.4, "b": 0.2, "c": 0.3}},
+    )
+    assert report.champion_id == "0"
+    assert report.adjusted_means["w"] == {HELP: 0.0}
+
+
 def test_pick_reports_adjusted_means_for_every_assessed_candidate():
     criteria = Criteria(Maximize(HELP), [], REGISTRY)
     validation = {"0": _val_scores("0", 0.6), "a": _val_scores("a", 0.9), "b": _val_scores("b", 0.7)}

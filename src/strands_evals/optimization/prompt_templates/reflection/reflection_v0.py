@@ -225,9 +225,9 @@ class VersionRow:
         is_current: Whether its conversations are the ones in the trajectory folder.
         is_baseline: Whether it is the baseline.
         changed: What it changed from the version it was built from.
-        cells: Each goal metric, formatted, in the table's column order: the fit's estimate, or without one the
-            adjusted mean when it differs from the measured mean, then the measured mean (`0.84 (measured 0.9)`);
-            else the measured mean alone.
+        cells: Each goal metric, formatted, in the table's column order: the fit's estimate then the measured mean
+            (`0.84 (measured 0.9)`), or without an estimate the adjusted mean when it differs from the measured mean
+            (`0.65 adjusted (measured 0.9)`); else the measured mean alone.
         meets_limits: Whether it meets the constraints, as the ranking assessed it; None when unknown.
         conversations: How many of its conversations completed.
     """
@@ -301,9 +301,9 @@ def task_message(
     parts.append(
         f"{len(versions)} versions, best first for this study's goal{limits_note}. Each version's results are, for "
         "each metric, the study's estimate of its mean over all of its conversations, which also draws on the "
-        "versions like it, then its measured mean (a metric with no estimate shows instead the version's mean with "
-        "the conversations it wasn't judged on filled in from the other versions, then its measured mean, or its "
-        "measured mean alone when the two are equal). The "
+        "versions like it, then its measured mean. A result marked `adjusted` has no estimate: its first number is "
+        "the version's mean with the conversations it wasn't judged on filled in from the other versions. A lone "
+        "number is the measured mean. The "
         "current version (marked ←) is the one whose conversations are in "
         f"the trajectory folder. Each version's parameters, in full, are in `{versions_folder}`: one folder per "
         "version, named by its rank, with its results in `version.md` and each parameter alone in a file of its own "

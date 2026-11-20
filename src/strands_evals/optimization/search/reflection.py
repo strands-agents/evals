@@ -1206,16 +1206,17 @@ def _cell(x: float | None) -> str:
 
 def _shown(c: CandidateSummary, metric: str) -> str:
     """A metric as the versions table shows it: the value the ranking used, then the measured mean over the version's
-    train cases (`0.84 (measured 0.9)`). The value used is the fit's estimate, or without one the adjusted mean (its
-    N/A cases filled in from the other versions), shown only when it differs from the measured mean; the measured
-    mean alone otherwise (no N/A case filled in, an ineligible version)."""
+    train cases. The value used is the fit's estimate (`0.84 (measured 0.9)`), or without one the adjusted mean (its
+    N/A cases filled in from the other versions), marked so the two can't be confused (`0.65 adjusted (measured
+    0.9)`) and shown only when it differs from the measured mean; the measured mean alone otherwise (no N/A case
+    filled in, an ineligible version)."""
     measured = c.measured[metric].mean if metric in c.measured else None
     if metric in c.estimates:
         estimate = _cell(c.estimates[metric].mean)
         return estimate if measured is None else f"{estimate} (measured {_cell(measured)})"
     shown = _cell(measured)
     adjusted = _cell(c.adjusted_means[metric]) if metric in c.adjusted_means else shown
-    return shown if adjusted == shown else f"{adjusted} (measured {shown})"
+    return shown if adjusted == shown else f"{adjusted} adjusted (measured {shown})"
 
 
 def _text_files(names: Sequence[str]) -> dict[str, str]:
