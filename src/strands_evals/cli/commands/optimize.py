@@ -132,6 +132,14 @@ def _run(args: argparse.Namespace) -> int:
             "tune_instructions": args.tune_instructions is not False,
             "harness_version": _harness.harness_version(),
         }
+    elif args.agent is not None and _optimize.is_agent_file(args.agent):
+        from .. import _harness  # needs strands-harness, in the `optimization` extra
+
+        harness = {
+            "tune": args.tune or [],
+            "tune_instructions": args.tune_instructions is not False,
+            "harness_version": _harness.harness_version(),
+        }
     inputs = _optimize.Inputs(
         experiment_file=str(Path(experiment_file).resolve()),
         agent=args.agent,
@@ -204,10 +212,16 @@ def _check_agent_flags(args: argparse.Namespace) -> str | None:
     if len(routes) != 1:
         given = f"got {', '.join(routes)}" if routes else "got none"
         return f"give exactly one of --agent, --build-task (with --space), --config ({given})"
-    if args.config is None and args.tune:
-        return "--tune needs --config (with --agent or --space, declare what may change with markers)"
-    if args.config is None and args.tune_instructions is not None:
-        return "--tune-instructions / --no-tune-instructions go with --config"
+    from .._optimize import is_agent_file
+
+    tunes = args.config is not None or (args.agent is not None and is_agent_file(args.agent))
+    if not tunes and args.tune:
+        return (
+            "--tune needs --config or an agent file (--agent agent.py); with a tunable factory or --space, declare "
+            "what may change with markers"
+        )
+    if not tunes and args.tune_instructions is not None:
+        return "--tune-instructions / --no-tune-instructions go with --config or an agent file (--agent agent.py)"
     if (args.build_task is None) != (args.space is None):
         return "--build-task and --space go together: the task builder and the space it reads values from"
     if args.build_task is not None and args.rollout:
@@ -344,8 +358,12 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
     agent = parser.add_mutually_exclusive_group()
     agent.add_argument(
         "--agent",
-        metavar="MODULE:ATTR",
-        help="a tunable factory (@tunable or tunable(fn, inject=...)), as 'module:attr' or 'path/to/file.py:attr'",
+        metavar="MODULE:ATTR | FILE.py[:ATTR]",
+        help=(
+            "a tunable factory (@tunable or tunable(fn, inject=...)), as 'module:attr' or 'path/to/file.py:attr'; or "
+            "a file whose agent (default attribute 'agent') is built by create_harness, as /export writes: its "
+            "instructions are tuned, plus each --tune over that call's arguments, and each trial runs the file again"
+        ),
     )
     agent.add_argument(
         "--build-task",
@@ -366,7 +384,8 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
         action="append",
         default=None,
         help=(
-            "with --config, repeatable: a dotted config path to tune, as text (e.g. 'description', or "
+            "with --config or an agent file, repeatable: a dotted config path (or create_harness argument) to tune, "
+            "as text (e.g. 'description', or "
             "'skills' for its skill folder), with =JSON_LIST as a choice (e.g. 'effort=[\"low\",\"high\"]'), or "
             "with =int:LO..HI / =float:LO..HI as a number in a range (e.g. 'builtinTools.subagent.maxDepth=int:0..3')"
         ),
@@ -375,7 +394,9 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
         "--tune-instructions",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="with --config: tune the config's instructions (default); --no-tune-instructions tunes only --tune",
+        help=(
+            "with --config or an agent file: tune the instructions (default); --no-tune-instructions tunes only --tune"
+        ),
     )
     parser.add_argument(
         "--rollout",

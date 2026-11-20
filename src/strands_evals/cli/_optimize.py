@@ -272,6 +272,15 @@ def load_hook(spec: str, flag: str, kind: Any, what: str) -> Any:
     return target
 
 
+def is_agent_file(spec: str) -> bool:
+    """Whether `--agent` names a Python file (`agent.py`, `./agent.py:agent`), loaded by `_agent_file.load`, rather
+    than a dotted `module:attr`. Doesn't import strands-harness."""
+    if spec.endswith(".py"):
+        return True
+    module, sep, attr = spec.rpartition(":")
+    return bool(sep and module and attr and _looks_like_path(module))
+
+
 def load_factory(spec: str) -> TunableFactory:
     """The `--agent` target, which must be a `TunableFactory`."""
     target = import_attr(spec)
@@ -376,7 +385,12 @@ def agent_arguments(inputs: Inputs) -> dict[str, Any]:
         space = load_hook(inputs.space, "--space", Mapping, "a mapping of declared names to markers")
         return {**common, "build_task": build, "space": space, "search": build_search(Space(space), inputs)}
     assert inputs.agent is not None
-    factory = load_factory(inputs.agent)
+    if is_agent_file(inputs.agent):
+        from . import _agent_file  # needs strands-harness, in the `optimization` extra
+
+        factory = _agent_file.load(inputs.agent, inputs.tune, tune_instructions=inputs.tune_instructions)
+    else:
+        factory = load_factory(inputs.agent)
     environment = inputs.environment
     return {
         **common,
