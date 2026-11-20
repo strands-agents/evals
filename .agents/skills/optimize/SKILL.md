@@ -126,7 +126,7 @@ Which constraints should the winner also meet?
 A constraint is "at least" or "at most" a number, on the average per run of one case:
 - OutputEvaluator: its score, from 0 (worst) to 1 (best)
 - tokens: all tokens the agent's model used to answer one case (input plus output)
-- input tokens, output tokens: the tokens it read and the tokens it wrote
+- input tokens, output tokens: the tokens it read (cached ones included) and the tokens it wrote
 - cache read tokens, cache write tokens: input tokens read from or written to the prompt cache
 - seconds: how long the agent took to answer one case
 - model calls: how many times the agent called its model for one case
@@ -137,7 +137,7 @@ An evaluator with its own score range shows that range instead of 0 to 1. A Type
 
 When the objective is usage only (step 3, option 3 or 4), recommend option 2 instead and say why: with nothing but tokens or time to improve, an agent that answers badly, or not at all, can look best, so a minimum score per evaluator keeps the answers good.
 
-Rules: each constraint is a metric of step 3, "at least" or "at most", and a number; a metric name with `<`, `>`, or `=` can't be used.
+Rules: each constraint is one metric from the list above, "at least" or "at most", and a number; a metric name with `<`, `>`, or `=` can't be used.
 
 When at least one constraint was added, ask how sure each must be to hold:
 
