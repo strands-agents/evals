@@ -672,6 +672,7 @@ async def test_one_iteration_writes_its_events_in_order(tmp_path):
     first = next(i for i, e in enumerate(events) if e["event"] == "select")
     assert _names(events, first) == [
         "select",
+        "draw",
         "propose",
         "score",
         "fit",
@@ -1719,14 +1720,13 @@ async def test_a_search_a_proposer_stopped_can_end_with_what_it_found(tmp_path):
 async def test_costs_after_resume_count_a_killed_iterations_trials(tmp_path):
     original = _two_steps({"temperature": 0.5}, {"temperature": 1.0}, base_dir=tmp_path / "runs")
     await original.run_async()
-    # Killed once iteration 2's candidate (temperature 1.0) is scored; the resumed proposer proposes only repeats.
+    # Killed once iteration 2's candidate (temperature 1.0) is scored; the resumed budget stops the search
+    # before iteration 2 runs again, so that candidate is in no result.
     copy = _killed(
         original._run.root, tmp_path, lambda events: _index(events, "score", after=_index(events, "iteration_end"))
     )
-    search = Search(
-        [Block(Scripted({"temperature": 0.0}), "temperature"), Block(Scripted(), "manager")], schedule=Joint()
-    )
-    resumed = _resume(copy, search=search)
+    search = Search([Block(Scripted(), "temperature"), Block(Scripted(), "manager")], schedule=Joint())
+    resumed = _resume(copy, search=search, budget=Budget(max_iterations=1))
     result = await resumed.run_async()
     assert all(c.values["temperature"] != 1.0 for c in result.candidates.values())
     trials = [e["record"] for e in _events_at(copy) if e["event"] == "trial"]
@@ -1734,6 +1734,188 @@ async def test_costs_after_resume_count_a_killed_iterations_trials(tmp_path):
         seconds = sum(r["usage"]["seconds"] for r in trials if r["split"] == split)
         assert result.agent_cost[split].seconds == pytest.approx(seconds)
     assert result.rollouts_spent == len(trials)
+
+
+_SPEND = Usage(
+    input_tokens=9,
+    output_tokens=1,
+    tokens=10,
+    cache_read_tokens=None,
+    cache_write_tokens=None,
+    model_calls=1,
+    seconds=1.0,
+    models=["m"],
+)
+
+
+class Paid(Scripted):
+    """`Scripted`, each patch carrying 10 tokens of proposer spend."""
+
+    async def propose(self, request):
+        return [p.model_copy(update={"usage": _SPEND}) for p in await super().propose(request)]
+
+
+# Iteration 1 proposes 0.5; iteration 2 proposes 0.25 (not an option, so invalid), then 1.0 on its redraw.
+_STEPS = ({"temperature": 0.5}, {"temperature": 0.25}, {"temperature": 1.0})
+
+
+def _replay_search(proposer):
+    return Search([Block(proposer, "temperature"), Block(Scripted(), "manager")], schedule=Joint())
+
+
+async def _two_paid_steps(base_dir):
+    optimizer = _optimizer(
+        _experiment(evaluators=[Temperature()]),
+        rollout_fn=_temperature_rollout,
+        search=_replay_search(Paid(*_STEPS)),
+        budget=Budget(max_iterations=2),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=base_dir,
+    )
+    result = await optimizer.run_async()
+    assert [p.outcome for p in result.iterations[1].proposals] == ["invalid", "feasible"]
+    return optimizer, result
+
+
+def _scored_in(iteration):
+    """Just past the first `score` after the iteration's `select`: its candidate scored, the iteration not closed."""
+    return lambda events: _index(events, "score", after=_index(events, "select", nth=iteration))
+
+
+@pytest.mark.parametrize(
+    ("killed", "again"),
+    [
+        (1, None),
+        (2, None),
+        (2, "after reopening"),  # the resumed process killed again before it drew: the first draw is replayed
+        (2, "mid-iteration"),  # killed again after it replayed and scored: its own draw is replayed
+    ],
+)
+async def test_a_killed_iteration_runs_again_on_the_proposals_it_drew(tmp_path, killed, again):
+    original_optimizer, original = await _two_paid_steps(tmp_path / "runs")
+    copy = _killed(original_optimizer._run.root, tmp_path, _scored_in(killed))
+    # Asked again, the proposer would answer differently: it holds only what the run proposes after the kill.
+    later = _STEPS[1:] if killed == 1 else ()
+    if again is not None:
+        await _resume(copy, search=_replay_search(Paid(*later))).run_async()
+        reopened = _index(_events_at(copy), "resume")
+        keep = reopened if again == "after reopening" else _index(_events_at(copy), "score", after=reopened)
+        copy = _killed(copy, tmp_path / "again", lambda events: keep)
+
+    proposer = Paid(*later)
+    resumed = await _resume(copy, search=_replay_search(proposer)).run_async()
+
+    _assert_same(resumed, original, rerun=killed)
+    assert killed not in {r.iteration for r in proposer.requests}
+    # Told every patch as the uninterrupted run's proposer was, the replayed invalid one included.
+    told = [(o.patch, o.outcome) for o in original_optimizer._proposer("numbers").observed]
+    assert [(o.patch, o.outcome) for o in proposer.observed] == told
+    assert resumed.search_cost == original.search_cost  # every patch paid for once
+    trials = {e["record"]["candidate_id"] for e in _events_at(copy) if e["event"] == "trial"}
+    assert trials <= set(resumed.candidates)
+
+
+async def test_a_step_killed_before_its_proposals_are_all_in_asks_the_proposers_again(tmp_path):
+    original_optimizer, original = await _two_paid_steps(tmp_path / "runs")
+    # Killed once iteration 2's first proposal is found invalid, before its redraw: nothing of it was scored.
+    copy = _killed(original_optimizer._run.root, tmp_path, lambda events: _index(events, "invalid"))
+    proposer = Paid(*_STEPS[1:])
+
+    resumed = await _resume(copy, search=_replay_search(proposer)).run_async()
+
+    _assert_same(resumed, original)
+    assert [(r.iteration, r.redraw) for r in proposer.requests] == [(2, 0), (2, 1)]
+
+
+@pytest.mark.parametrize(("field", "value"), [("parent_id", "another"), ("blocks", ["numbers"])])
+async def test_a_draw_recorded_for_another_parent_or_blocks_is_not_replayed(tmp_path, field, value):
+    original_optimizer, original = await _two_paid_steps(tmp_path / "runs")
+    copy = _killed(original_optimizer._run.root, tmp_path, _scored_in(2))
+    events = _events_at(copy)
+    for event in events:
+        if event["event"] == "draw" and event["iteration"] == 2:
+            event[field] = value
+    (copy / "events.jsonl").write_text("".join(json.dumps(event) + "\n" for event in events))
+    proposer = Paid(*_STEPS[1:])
+
+    resumed = await _resume(copy, search=_replay_search(proposer)).run_async()
+
+    assert [(r.iteration, r.redraw) for r in proposer.requests] == [(2, 0), (2, 1)]
+    _assert_same(resumed, original, rerun=2)
+
+
+async def test_a_replayed_step_cut_narrower_on_resume_takes_its_first_proposals(tmp_path):
+    original_optimizer = _searching(
+        Block(Scripted({"temperature": 0.5}, {"temperature": 1.0}), "temperature"),
+        schedule=Joint(),
+        base_dir=tmp_path / "runs",
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=2,
+    )
+    original = await original_optimizer.run_async()
+    assert len(original.iterations[0].proposals) == 2
+    # Killed once both proposals were saved, before either was scored.
+    copy = _killed(original_optimizer._run.root, tmp_path, lambda events: _index(events, "propose", nth=3))
+    proposer = Scripted({"temperature": 1.0})
+
+    # 8 baseline + 36 reserve + 8: room for one candidate of the two the step drew.
+    resumed = await _resume(
+        copy, search=_replay_search(proposer), budget=Budget(max_rollouts=52, max_iterations=1)
+    ).run_async()
+
+    (step,) = resumed.iterations
+    assert step.n_candidates == 1
+    assert [resumed.candidates[p.candidate_id].values["temperature"] for p in step.proposals] == [0.5]
+    assert proposer.requests == [] and resumed.rollouts_spent <= 52
+
+
+async def test_a_step_wider_on_resume_asks_the_proposers_again(tmp_path):
+    # 8 baseline + 36 reserve + 8: the step is cut to one candidate.
+    with pytest.warns(UserWarning, match="leaves less than one iteration"):
+        original_optimizer = _searching(
+            Block(Scripted({"temperature": 0.5}), "temperature"),
+            schedule=Joint(),
+            base_dir=tmp_path / "runs",
+            budget=Budget(max_rollouts=52, max_iterations=1),
+            proposals_per_iteration=2,
+        )
+    await original_optimizer.run_async()
+    copy = _killed(original_optimizer._run.root, tmp_path, _scored_in(1))
+    proposer = Scripted({"temperature": 0.5}, {"temperature": 1.0})
+
+    # A larger budget makes room for both: asked again, as an uninterrupted run with that budget would be.
+    with pytest.warns(UserWarning, match="leaves less than one iteration"):  # the saved budget, then replaced
+        resumed_optimizer = _resume(copy, search=_replay_search(proposer), budget=Budget(max_iterations=1))
+    resumed = await resumed_optimizer.run_async()
+
+    (step,) = resumed.iterations
+    assert [r.iteration for r in proposer.requests] == [1, 1]
+    assert [resumed.candidates[p.candidate_id].values["temperature"] for p in step.proposals] == [0.5, 1.0]
+
+
+async def test_a_replayed_slot_merges_each_blocks_patch_as_drawn(tmp_path):
+    def search(structure, numbers):
+        return Search([Block(numbers, "temperature"), Block(structure, "manager")], schedule=Joint())
+
+    original_optimizer = _optimizer(
+        _experiment(evaluators=[Temperature()]),
+        rollout_fn=_temperature_rollout,
+        search=search(Scripted({"manager": "Summary"}), Scripted({"temperature": 0.5})),
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path / "runs",
+    )
+    original = await original_optimizer.run_async()
+    (proposal,) = original.iterations[0].proposals
+    assert len(proposal.origin) == 2  # the structural block first, then the numbers block on its structure
+    copy = _killed(original_optimizer._run.root, tmp_path, _scored_in(1))
+
+    resumed = await _resume(copy, search=search(Scripted(), Scripted())).run_async()
+
+    _assert_same(resumed, original, rerun=1)
+    assert resumed.candidates[proposal.candidate_id].values["manager"] == "Summary"
 
 
 async def test_resuming_a_finished_run_returns_its_result_and_spends_nothing(tmp_path):
@@ -3099,7 +3281,8 @@ def _two_structural_search():
     return Search([Block(TPE(n_startup_trials=2), "outer"), Block(TPE(n_startup_trials=2), "inner")])
 
 
-async def test_resume_inside_a_two_level_nested_matches_the_uninterrupted_run(tmp_path):
+@pytest.mark.parametrize("killed_step", ["inner", "opener"])
+async def test_resume_inside_a_two_level_nested_matches_the_uninterrupted_run(tmp_path, killed_step):
     experiment = Experiment(cases=_experiment().cases, evaluators=[Temperature()])
     original_optimizer = Optimizer(
         experiment,
@@ -3121,8 +3304,17 @@ async def test_resume_inside_a_two_level_nested_matches_the_uninterrupted_run(tm
         )
         return _index(events, "score", after=closed)
 
-    copy = _killed(original_optimizer._run.root, tmp_path, inner_round_scored)
+    # The second inner round's opener: its patch deferred to the round's end, the outer round open.
+    opener = [r.iteration for r in original.iterations if r.role == "opener" and len(r.round or ()) == 2][1]
+
+    def inner_opener_scored(events):
+        """Just past the first `score` after the opener's `select`."""
+        return _index(events, "score", after=_index(events, "select", nth=opener))
+
+    cut = inner_round_scored if killed_step == "inner" else inner_opener_scored
+    copy = _killed(original_optimizer._run.root, tmp_path, cut)
     killed = 1 + sum(1 for e in _events_at(copy) if e["event"] == "iteration_end")
+    assert killed_step == "inner" or killed == opener
     resumed = await Optimizer.resume(
         copy,
         experiment=experiment,
