@@ -149,11 +149,19 @@ strands-evals/
 │   │   └── (data records in types/optimization/)
 │   │
 │   ├── experimental/                         # Experimental features (no stability guarantees)
-│   │   └── comparison/                       # Strict baseline/candidate report pairing
+│   │   ├── comparison/                       # Strict baseline/candidate report pairing
 │   │       ├── __init__.py
 │   │       ├── compare.py                    # Strict paired-comparison facade and result
 │   │       ├── pairing.py                    # Exact baseline/candidate report pairing
 │   │       └── summary.py                    # Per-evaluator paired statistics
+│   │   └── calibrator/                       # Statistical evaluator calibration
+│   │       ├── __init__.py                   # Calibration public exports
+│   │       ├── algorithm.py                  # Pluggable fitting/model interfaces
+│   │       ├── calibration.py                # Public calibration facade
+│   │       ├── calibration_profile.py        # Versioned profile schema
+│   │       ├── _bootstrap.py                 # Hierarchical bootstrap diagnostics
+│   │       ├── _calibration.py               # Private report/statistics helpers
+│   │       └── _collection.py                # Fixed-output replay collection
 │   │
 │   ├── detectors/                            # Failure detection + RCA
 │   │   ├── failure_detector.py               # detect_failures (model.stream text mode)
@@ -252,10 +260,18 @@ strands-evals/
 │   ├── chaos/
 │   ├── detectors/
 │   ├── experimental/
-│   │   └── comparison/
+│   │   ├── comparison/
 │   │       ├── test_compare.py
 │   │       ├── test_pairing.py
 │   │       └── test_summary.py
+│   │   └── calibrator/
+│   │       ├── test_algorithm.py
+│   │       ├── test_bootstrap.py
+│   │       ├── test_calibration.py
+│   │       ├── test_calibration_customer_workflow.py
+│   │       ├── test_calibration_profile.py
+│   │       ├── test_collection.py
+│   │       └── test_profile_integration.py
 │   ├── redteam/                          # Mirrors src/strands_evals/redteam/
 │   ├── optimization/                     # Mirrors src/strands_evals/optimization/
 │   ├── simulation/

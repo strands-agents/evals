@@ -1,6 +1,8 @@
+import copy
 import json
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel
 from typing_extensions import Self, TypeVar
@@ -20,6 +22,7 @@ class EvaluationReport(BaseModel):
             the evaluator that produced that row.
         test_passes: A list of booleans indicating whether the test pass or fail.
         reasons: A list of reason for each test case.
+        calibration_context: Optional compatibility fingerprint for calibration.
     """
 
     overall_score: float
@@ -30,6 +33,7 @@ class EvaluationReport(BaseModel):
     detailed_results: list[list[EvaluationOutput]] = []
     diagnoses: list[dict | None] = []
     recommendations: list[str | None] = []
+    calibration_context: dict[str, Any] | None = None
 
     @staticmethod
     def is_applicable(outputs: list[EvaluationOutput]) -> bool:
@@ -95,6 +99,12 @@ class EvaluationReport(BaseModel):
             detailed_results=detailed,
             diagnoses=diags,
             recommendations=recs,
+            calibration_context=(
+                copy.deepcopy(reports[0].calibration_context)
+                if all(report.calibration_context == reports[0].calibration_context for report in reports)
+                and reports[0].calibration_context is not None
+                else None
+            ),
         )
 
     @staticmethod
@@ -282,7 +292,8 @@ class EvaluationReport(BaseModel):
         """
         Returns a dictionary representation of the report.
         """
-        return self.model_dump()
+        exclude = {"calibration_context"} if self.calibration_context is None else None
+        return self.model_dump(exclude=exclude)
 
     @classmethod
     def from_dict(cls, data: dict) -> Self:
