@@ -218,7 +218,9 @@ function renderList() {
       + `<span class="nm">${esc(c.name || '(unnamed)')}</span>`
       + (isDraft(c) ? '<span class="badge" data-term="draft">draft</span>' : '')
       + `<span class="props mono">${props(c)}</span></li>`;
-  }).join('') || '<li class="empty">No match</li>';
+  }).join('')
+    /* An empty list is not a search that found nothing: "No match" would blame the search box. */
+    || `<li class="empty">${cases.length ? 'No match' : 'No cases yet'}</li>`;
   const d = dirtyCases().length;
   $('case-count').textContent = `${shown.length} of ${plural(cases.length, 'case')}` + (d ? ` · ${d} edited` : '');
   renderReview();

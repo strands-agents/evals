@@ -29,7 +29,7 @@ function intervalSide(o) {
 
 /* The objective's interval as the hero reads it: `[kind, words]` by where it sits. */
 const GAIN_READING = {
-  none: ['flat', 'no interval'], point: ['flat', 'no interval'],
+  none: ['flat', 'no interval'], point: ['flat', 'no width'],
   above: ['good', 'clear of zero'], below: ['bad', 'a regression'], across: ['flat', 'not shown'],
 };
 
