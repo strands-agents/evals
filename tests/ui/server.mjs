@@ -75,7 +75,7 @@ try {
     text('#skips'));
 
   // ── the optimizer run, summarised by the server before the page has read its log ──
-  await click('#sec-opt');
+  await click('.tab[data-view="opt-runs"]');
   const optRow = $('#opt-runs-rows tr[data-opt-run]');
   ok(/support-tuning-20261110-091500-7af3e1/.test(text(optRow)) && /c10/.test(text(optRow.children[2]))
     && /10 candidates/.test(text(optRow.children[3])) && /6 iterations/.test(text(optRow.children[3])),

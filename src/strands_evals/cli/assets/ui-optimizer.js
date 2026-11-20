@@ -10,6 +10,71 @@ let optToX = null, optToY = null;
 let optEffGoal = null;
 let optCases = null;
 
+/* ══════════ the runs in the sidebar ══════════
+
+   Every run is listed under the Runs view that names them, so opening one is a click from any page
+   rather than a trip through the list first. The list stays there and the Runs row still opens it,
+   with the columns a sidebar row has no space for. */
+
+const baseOf = path => path.slice(path.lastIndexOf('/') + 1);
+
+/** Every run, in the order the Runs list has them, so the two agree. A run is a directory, so it is
+    named by that directory; since this is one flat list rather than a tree, two runs whose
+    directories share a name are named by the whole path instead.
+
+    A run is marked only while a page of that run is showing. The Runs list is not a page of one run:
+    it shows all of them, and selects the first before anyone asks for one, so marking it there would
+    say the reader opened a run they have not. A candidate read as a report is a page of its run,
+    which is why the section is what the mark is read off, not the view. */
+function runRows() {
+  const named = OPT_RUNS.map(r => (r.dir && r.dir !== '.' ? baseOf(r.dir) : r.run_id));
+  const twice = new Set(named.filter((name, i) => named.indexOf(name) !== i));
+  const view = currentView();
+  const here = SECTION_OF[listOf(view)] === 'optimization' && view !== 'opt-runs';
+  return OPT_RUNS.map((r, i) => ({
+    name: twice.has(named[i]) && r.dir && r.dir !== '.' ? r.dir : named[i],
+    id: r.id,
+    on: here && (OPT_RUNS[optSel] || {}).id === r.id,
+    title: `${r.dir && r.dir !== '.' ? r.dir : r.events_path} · optimizer run`
+      + ` · ${plural(r.candidates, 'candidate')}`,
+  }));
+}
+
+/** Draw them under the Runs row. Nothing is drawn there before a run is found, and the row and the
+    Optimization heading over it are hidden then too. No count on the row: they are all listed right
+    under it. */
+function renderRunList() {
+  const runs = runRows();
+  $('runs-sub').hidden = !runs.length;
+  redraw($('runs-sub'), runs.map(r =>
+    `<a class="runrow${r.on ? ' on' : ''}" data-opt-run-id="${esc(r.id)}" tabindex="0" role="link"`
+    + ` title="${esc(r.title)}"${r.on ? ' aria-current="true"' : ''}>${esc(r.name)}</a>`).join(''));
+}
+
+/** Move the mark to the run the page is showing. Called on every view change, which is cheaper than
+    redrawing and is all that changes. */
+function markRunList() {
+  const on = new Map(runRows().map(r => [r.id, r.on]));
+  for (const el of $('runs-sub').querySelectorAll('[data-opt-run-id]')) {
+    const here = on.get(el.dataset.optRunId) === true;
+    el.classList.toggle('on', here);
+    if (here) el.setAttribute('aria-current', 'true');
+    else el.removeAttribute('aria-current');
+  }
+}
+
+/* Clicking one opens that run on its overview, wherever the reader was: that is the point of
+   listing them. The run the page already has open needs no reading. */
+app.addEventListener('click', e => {
+  const named = e.target.closest('[data-opt-run-id]');
+  if (!named) return;
+  e.preventDefault();
+  const at = OPT_RUNS.findIndex(r => r.id === named.dataset.optRunId);
+  if (at < 0) return;
+  if (at === optSel) { show('opt-overview'); return; }
+  openOptimizerRun(at).then(arrived => arrived && show('opt-overview'));
+});
+
 /* ── the run list, and the run that is open ── */
 
 /* A view of the open run with nothing to draw says why in place of its content. */
@@ -39,9 +104,9 @@ function runResultCell(r) {
 
 function renderOptimizerRuns() {
   const any = OPT_RUNS.length > 0;
-  $('sec-opt').hidden = !any;
+  /* The Optimization section, the Runs view in it, and the run's own page tabs: all of them wait
+     for a run to be found, so a folder with none is never told it has a section. */
   $('sgroup-opt').hidden = !any;
-  $('sections').classList.toggle('lonely', !any);
   app.querySelectorAll('.tab[data-sec="optimization"]').forEach(t => {
     t.hidden = !any || (t.dataset.multi !== undefined && !(OPT && OPT.goals.length >= 2));
   });
@@ -66,6 +131,7 @@ function renderOptimizerRuns() {
   }).join('') : `<tr><td colspan="6">${emptyState('No optimizer runs in this pond yet',
     `No directory under ${esc(ROOT)} holds a run.json with an events.jsonl beside it.`)}</td></tr>`;
 
+  renderRunList();
   /* The list can be shown empty; a view of one run cannot outlive the run. */
   if (!any && SECTION_OF[currentView()] === 'optimization' && currentView() !== 'opt-runs') show(homeView());
 }

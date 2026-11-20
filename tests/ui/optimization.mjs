@@ -129,22 +129,62 @@ const blockDiff = root => {
 // ── section visibility ──
 {
   const none = await served(SAMPLE);
-  ok(none.$('#sec-opt').hidden && none.$$('.tab[data-sec="optimization"]').every(t => t.hidden)
-    && none.$('#sections').classList.contains('lonely'), 'with no optimizer run the section and its tabs are hidden');
+  ok(none.$('#sgroup-opt').hidden && none.$$('.tab[data-sec="optimization"]').every(t => t.hidden),
+    'with no optimizer run there is no Optimization section, no Runs view and no tabs of a run');
+  ok(none.$('#runs-sub').hidden && !none.$('#runs-sub .runrow'),
+    'and nothing is listed under the Runs row it does not have');
+}
+
+// ── the runs listed under the Runs row ──
+{
+  const run = id => ({ run_id: id, objective: 'Quality' });
+  const log = id => jsonl([START, { event: 'propose', iteration: 1, candidate_id: `${id}-c1`,
+    parent_id: null, values: { temperature: 0.2 }, changed_keys: ['temperature'] }]);
+  const q = await served({
+    'a.report.json': { overall_score: 0.5, scores: [0.5], test_passes: [true],
+      cases: [{ name: 'a', evaluator: 'E', input: 'q' }] },
+    'evals/runs/nightly/run.json': run('tune-1'), 'evals/runs/nightly/events.jsonl': log('a'),
+    'later/nightly/run.json': run('tune-2'), 'later/nightly/events.jsonl': log('b'),
+    'alone/run.json': run('tune-3'), 'alone/events.jsonl': log('c'),
+  });
+  const sidebar = () => q.$$('#runs-sub .runrow').map(el => el.textContent);
+  const marked = () => q.$$('#runs-sub .runrow.on').map(el => el.textContent);
+  const row = name => q.$$('#runs-sub .runrow').find(el => el.textContent === name);
+  eq(sidebar(), q.$$('#opt-runs-rows tr td:first-child .path').map(el => el.textContent),
+    'every run is listed under the Runs row, in the order the Runs list has them');
+  ok(sidebar().includes('evals/runs/nightly') && sidebar().includes('later/nightly'),
+    'two runs whose directories share a name are named by the whole path, not the name twice',
+    sidebar().join());
+  eq(row('alone').getAttribute('title'), 'alone · optimizer run · 1 candidate',
+    'and each says where it is and what it holds');
+  eq(marked(), [],
+    'the Runs list selects a run before anyone asks for one, so the list marks none as open');
+
+  /* The point of listing them: opening a run should not take a trip through the list first. */
+  await q.click('.tab[data-view="reports"]');
+  await q.click(row('later/nightly'));
+  eq([q.view(), marked(), q.text('#opt-runs-rows tr.on td:first-child .path')],
+    ['v-opt-overview', ['later/nightly'], 'later/nightly'],
+    'clicking one opens that run on its overview from anywhere, and the list follows to it');
+  await q.click('.tab[data-view="opt-runs"]');
+  eq([q.view(), marked()], ['v-opt-runs', []],
+    'the Runs row itself still opens the list of every run, which has no one run open');
+  ok(!q.$('#sections .tcount') && !q.$('#sections details'),
+    'they are simply listed: no count on the row, and nothing in the sidebar folds away');
 }
 const p = await served({
   'demo/run.json': CONFIG, 'demo/events.jsonl': jsonl(EVENTS), 'demo/effects.json': EFFECTS, ...TRANSCRIPTS,
 });
 const { $, $$, text, click } = p;
-ok(!$('#sec-opt').hidden && !$('#sections').classList.contains('lonely'), 'a run directory shows the section');
 eq($$('#sections .tab:not([hidden])').map(t => t.dataset.view).join(), 'reports,experiments,opt-runs',
-  'and the sidebar gains Runs, beside the two lists of Evals');
+  'a run directory gains the sidebar a Runs view, after the views of the folder itself');
+eq([p.text('#sgroup-opt .sec'), $('#sgroup-opt .tab').textContent],
+  ['Optimization', 'Runs'], 'under an Optimization heading, which names the section and opens nothing');
 eq(skips(p), [], 'the transcripts and effects.json of a run are not reported as unusable files');
 
 // ── Runs ──
-await click('#sec-opt');
-eq([$$('.sec.on').map(s => s.dataset.sec).join(), $$('.tab.on').map(t => t.dataset.view).join()],
-  ['optimization', 'opt-runs'], 'the section opens on its run list');
+await click('.tab[data-view="opt-runs"]');
+eq($$('.tab.on').map(t => t.dataset.view).join(), 'opt-runs', 'which opens the list of runs');
 ok($('#pagehead').hidden, 'which is a list, so no page header names anything');
 eq(rows(p, '#opt-runs-rows tr[data-opt-run]').map(r => r.slice(0, 5)),
   [[`${RUN_ID} / support-tuning demo`, '+0.143 held out · clear of zero', 'c10', '10 candidates 6 iterations',
@@ -701,10 +741,10 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
     'a broken line in the middle is reported by number, as a warning', broken.text('#opt-note'));
 
   const configOnly = await open({ 'demo/run.json': CONFIG });
-  ok(configOnly.$('#sec-opt').hidden && skips(configOnly).some(s => /demo\/run\.json/.test(s)),
+  ok(configOnly.$('.tab[data-view="opt-runs"]').hidden && skips(configOnly).some(s => /demo\/run\.json/.test(s)),
     'a run.json with no event log is not a run, and is reported as unusable', skips(configOnly).join(' | '));
   const logOnly = await open({ 'demo/events.jsonl': jsonl(EVENTS) });
-  ok(logOnly.$('#sec-opt').hidden && skips(logOnly).some(s => /no run\.json beside it/.test(s)),
+  ok(logOnly.$('.tab[data-view="opt-runs"]').hidden && skips(logOnly).some(s => /no run\.json beside it/.test(s)),
     'an event log with no run.json is not one either, and says what it lacks', skips(logOnly).join(' | '));
 }
 
@@ -900,7 +940,7 @@ const WRITTEN = configWith(c => {
 // ── a run with nothing measured yet, on a Pareto objective ──
 {
   const q = await openLog({ objective: 'Maximize(H)', is_pareto: true }, [START]);
-  ok(!q.$('#sec-opt').hidden && stats(q)[1].startsWith('Best on training | — |'),
+  ok(!q.$('.tab[data-view="opt-runs"]').hidden && stats(q)[1].startsWith('Best on training | — |'),
     'a run with only a config event is a run, with a dash for its best', stats(q)[1]);
   ok(/No candidate has been scored/.test(q.text('#opt-series-chart'))
     && /No iteration has finished/.test(q.text('#opt-budget-chart')) && /No candidate yet/.test(q.text('#opt-cands')),
