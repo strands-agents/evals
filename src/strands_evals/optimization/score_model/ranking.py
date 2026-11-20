@@ -15,7 +15,7 @@ import math
 import statistics
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from ...types.optimization import CandidateLabel, CandidateScores, Estimate, Values, near
@@ -75,6 +75,8 @@ class Assessment:
         is_from_fit: True when the fit judged at least one goal metric (`estimates` is not empty); False when
             assessed by measured means alone (no fit, the last refit raised, every goal metric flagged, a
             flagged name that isn't a goal metric, or the candidate not in the fit).
+        adjusted_by_case: Case -> goal metric -> the value each of `adjusted_means` averages: the candidate's
+            own values and the ones filled in; only the metrics in `adjusted_means`.
     """
 
     candidate_id: str
@@ -87,6 +89,7 @@ class Assessment:
     estimates: dict[str, Estimate]
     adjusted_means: dict[str, float]
     is_from_fit: bool
+    adjusted_by_case: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -148,9 +151,11 @@ def assess(
     could rank above one that was judged there. So instead of its plain mean, each goal metric gets an
     adjusted mean (`Assessment.adjusted_means`) over the cases any candidate in `ids` has a value for (those
     assessed from the fit included): the candidate's own values, plus each case it has no value on filled
-    with the other candidates' mean there, shifted by the candidate's mean difference from them on the cases
-    they share, and clipped to the metric's range. A candidate with a value on every such case gets its plain
-    mean; one with gaps depends on who else is in `ids`. Constraints are judged on the same adjusted means.
+    with the mean, over the other candidates with a value there, of that value plus the candidate's mean
+    difference from that candidate on the cases the two share, weighed by the number of those cases, and
+    clipped to the metric's range widened to the values measured on that case (the values averaged are in
+    `Assessment.adjusted_by_case`). A candidate with a value on every such case gets its plain mean; one
+    with gaps depends on who else is in `ids`. Constraints are judged on the same adjusted means.
     The plain means stay in `CandidateScores` and `measured_metrics`.
 
     Args:
@@ -170,7 +175,7 @@ def assess(
     by_fit: list[str] = []
     if fit is not None and set(fit.flagged) <= set(criteria.goal_metrics):
         by_fit = [m for m in criteria.goal_metrics if m not in fit.flagged]
-    adjusted: dict[str, dict[str, float]] | None = None
+    adjusted: tuple[dict[str, dict[str, float]], dict[str, dict[str, dict[str, float]]]] | None = None
     out: dict[str, Assessment] = {}
     for candidate_id in ids:
         estimates: dict[str, Estimate] = {}
@@ -180,10 +185,16 @@ def assess(
         # Every goal metric the fit doesn't judge is judged by its adjusted mean, in the objective and the constraints
         # alike: all of them without a usable fit, the flagged ones with one.
         adjusted_means: dict[str, float] = {}
+        adjusted_by_case: dict[str, dict[str, float]] = {}
         if any(m not in estimates for m in criteria.goal_metrics):
             if adjusted is None:
                 adjusted = _adjusted_means(ids, measured, criteria)
-            adjusted_means = {m: v for m, v in adjusted[candidate_id].items() if m not in estimates}
+            adjusted_means = {m: v for m, v in adjusted[0][candidate_id].items() if m not in estimates}
+            adjusted_by_case = {
+                case: kept
+                for case, by_metric in adjusted[1][candidate_id].items()
+                if (kept := {m: v for m, v in by_metric.items() if m not in estimates})
+            }
         point = dict(adjusted_means)
         for metric, is_max in maximized.items():
             if metric in estimates:
@@ -232,20 +243,25 @@ def assess(
             estimates=estimates,
             adjusted_means=adjusted_means,
             is_from_fit=bool(estimates),
+            adjusted_by_case=adjusted_by_case,
         )
     return out
 
 
 def _adjusted_means(
     ids: Sequence[str], measured: Mapping[str, CandidateScores], criteria: Criteria
-) -> dict[str, dict[str, float]]:
+) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, dict[str, float]]]]:
     """Each candidate's goal-metric means for the measured-means ranking, adjusted for the cases it has no value on.
 
     Per goal metric, over the cases any candidate in `ids` has a value for. A candidate with a value on every
-    one of them gets its plain mean. A candidate missing some has each missing case filled with the other
-    candidates' mean on that case, shifted by the candidate's mean difference from the others on the cases
-    it shares with them (no shift when it shares none), and clipped to the metric's range. A metric the
-    candidate has no value for on any case is left out, as with plain means.
+    one of them gets its plain mean. A candidate missing some has each missing case filled with the mean, over
+    the other candidates with a value there, of that value plus the candidate's mean difference from that
+    candidate on the cases the two share, weighed by the number of those cases (a candidate sharing none counts
+    only when none shares any, unshifted), and clipped to the metric's range widened to the values measured on
+    that case.
+    So each filled value is shifted against the candidates it comes from: when two candidates share a gap,
+    neither one's values move the other's fill. A metric the candidate has no value for on any case is left
+    out, as with plain means.
 
     Args:
         ids: The pool; only those in `measured` count.
@@ -253,40 +269,54 @@ def _adjusted_means(
         criteria: Gives the goal metrics and their ranges.
 
     Returns:
-        Candidate id -> goal metric -> mean.
+        Candidate id -> goal metric -> mean, and candidate id -> case -> goal metric -> the value each mean
+        averages (its own and the filled ones).
     """
     pool = {c: measured[c].metrics_by_case for c in dict.fromkeys(ids) if c in measured}
-    out: dict[str, dict[str, float]] = {c: {} for c in pool}
+    means: dict[str, dict[str, float]] = {c: {} for c in pool}
+    by_case: dict[str, dict[str, dict[str, float]]] = {c: defaultdict(dict) for c in pool}
     for metric in criteria.goal_metrics:
         values = {c: {case: m[metric] for case, m in cases.items() if metric in m} for c, cases in pool.items()}
-        observed: dict[str, list[float]] = defaultdict(list)
-        for own in values.values():
-            for case, value in own.items():
-                observed[case].append(value)
-        # Per case, the pool's sum and mean. The mean is the first value plus the mean offset from it, so equal
-        # values give exactly that value back (fsum / n doesn't, e.g. for 0.1 three times).
-        sums = {case: math.fsum(case_values) for case, case_values in observed.items()}
-        means = {case: vs[0] + (sums[case] - len(vs) * vs[0]) / len(vs) for case, vs in observed.items()}
+        cases = list(dict.fromkeys(case for own in values.values() for case in own))
         low, high = criteria.registry.range(metric)
         for c, own in values.items():
             if not own:
                 continue
-            missing = [case for case in observed if case not in own]
-            if not missing:
-                out[c][metric] = statistics.fmean(own.values())
-                continue
-            # Its difference from the others' mean on each case it shares with them: (n * own - sum) / (n - 1) for
-            # n values on the case, exactly 0 when they are all equal.
-            differences = [
-                (len(observed[case]) * value - sums[case]) / (len(observed[case]) - 1)
-                for case, value in own.items()
-                if len(observed[case]) > 1
-            ]
-            shift = statistics.fmean(differences) if differences else 0.0
-            # A case it has no value on: `means` there is the others' mean.
-            filled = [_clip(means[case] + shift, low, high) for case in missing]
-            out[c][metric] = statistics.fmean([*own.values(), *filled])
-    return out
+            missing = [case for case in cases if case not in own]
+            filled: dict[str, float] = {}
+            if missing:
+                # Its mean difference from each other candidate on the cases the two share (0 when they share
+                # none), so a case is filled from the candidates judged there, each shifted by its own difference.
+                # Its mean difference from each other candidate on the cases the two share, and how many
+                # cases that rests on; 0 and 0 when they share none.
+                offsets: dict[str, float] = {}
+                weights: dict[str, int] = {}
+                for d, theirs in values.items():
+                    if d != c and theirs:
+                        shared = [case for case in own if case in theirs]
+                        offsets[d] = statistics.fmean([own[k] - theirs[k] for k in shared]) if shared else 0.0
+                        weights[d] = len(shared)
+                for case in missing:
+                    # Some other candidate has a value on `case`, so `judged` isn't empty. Each one judged there gives
+                    # its value plus the difference, weighed by the cases the difference rests on; its value alone
+                    # only when none shares a case with this candidate.
+                    judged = [d for d in offsets if case in values[d]]
+                    donors = [d for d in judged if weights[d]] or judged
+                    terms = [values[d][case] + offsets[d] for d in donors]
+                    ws = [weights[d] or 1 for d in donors]
+                    # The first term plus the weighted mean offset from it, so equal terms give exactly that value
+                    # back (fsum / n doesn't, e.g. for 0.1 three times).
+                    mean = terms[0] + math.fsum(w * (t - terms[0]) for w, t in zip(ws, terms, strict=True)) / sum(ws)
+                    # Within the range, widened to the values measured on the case: a fill leaves the range only as
+                    # far as a measured value there does.
+                    there = [values[d][case] for d in judged]
+                    filled[case] = _clip(
+                        mean, None if low is None else min(low, *there), None if high is None else max(high, *there)
+                    )
+            for case, value in {**own, **filled}.items():
+                by_case[c][case][metric] = value
+            means[c][metric] = statistics.fmean([*own.values(), *filled.values()])
+    return means, {c: dict(cases) for c, cases in by_case.items()}
 
 
 def _clip(value: float, low: float | None, high: float | None) -> float:
@@ -417,7 +447,7 @@ def label_candidate(
     unmet = [
         f"{c}: P(met) {assessment.p_met[str(c)]:.2g} < {threshold:g}"
         if str(c) in assessment.p_met
-        else _unmet_by_mean(c, v)
+        else _unmet_by_mean(c, assessment.adjusted_means.get(c.metric), v)
         for c, v in zip(criteria.constraints, assessment.violations, strict=True)
         if v > 0
     ]
@@ -433,9 +463,11 @@ def label_candidate(
     )
 
 
-def _unmet_by_mean(constraint: Constraint, violation: float) -> str:
-    """The sentence `Criteria.unmet_constraints` gives for a constraint its adjusted mean misses by `violation`."""
-    if math.isinf(violation):
+def _unmet_by_mean(constraint: Constraint, mean: float | None, violation: float) -> str:
+    """The sentence `Criteria.unmet_constraints` gives for a constraint whose adjusted `mean` misses by `violation`.
+
+    The mean is the one judged, not the bound plus or minus the violation, which can differ in the last digit.
+    """
+    if mean is None or math.isinf(violation):
         return f"{constraint}: never measured"
-    mean = constraint.bound + violation if isinstance(constraint, AtMost) else constraint.bound - violation
     return f"{constraint}: mean {mean:.4g} violates by {violation:.4g}"

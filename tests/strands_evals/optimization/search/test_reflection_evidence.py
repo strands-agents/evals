@@ -691,7 +691,7 @@ def test_versions_without_a_fit_show_the_adjusted_mean_the_ranking_used(folders)
     with open(os.path.join(versions, "rank-001-version-0", "version.md")) as f:
         assert "\nScore: 0.75\nconversations" in f.read()  # no N/A case filled in: the measured mean alone
     with open(os.path.join(versions, "rank-002-version-1", "version.md")) as f:
-        assert "\nScore: 0.65 (measured 0.9)\nconversations" in f.read()
+        assert "\nScore: 0.65 adjusted (measured 0.9)\nconversations" in f.read()
 
 
 def test_text_file_names():

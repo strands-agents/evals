@@ -365,22 +365,19 @@ class Criteria:
             return None
         return tuple(_oriented(t, metrics[t.metric]) for t in self._terms)
 
-    def unmet_constraints(self, metrics_by_case: Mapping[str, Mapping[str, float]]) -> list[str]:
-        """One sentence per constraint not met on plain measured means; a constraint never measured counts as unmet.
+    def unmet_constraints(self, metrics: Mapping[str, float]) -> list[str]:
+        """One sentence per constraint not met by `metrics`; a constraint whose metric is missing is never measured.
 
-        Worded as `CandidateLabel.unmet_constraints`. The ranking and the label judge measured means adjusted for
-        N/A cases instead (`assess`), so for a candidate with N/A cases the result can differ from
-        `Assessment.violations`.
-
-        `metrics_by_case` maps case name -> metric name -> value, as `CandidateScores.metrics_by_case`.
+        `metrics` maps metric name -> mean, as `objective_value` and `terms` take it. Worded as
+        `CandidateLabel.unmet_constraints`, which is this called on `Assessment.adjusted_means` when the
+        ranking assessed by measured means.
         """
         sentences = []
         for constraint in self.constraints:
-            values = [case[constraint.metric] for case in metrics_by_case.values() if constraint.metric in case]
-            if not values:
+            if constraint.metric not in metrics:
                 sentences.append(f"{constraint}: never measured")
                 continue
-            mean = statistics.fmean(values)
+            mean = metrics[constraint.metric]
             excess = mean - constraint.bound if isinstance(constraint, AtMost) else constraint.bound - mean
             # A mean equal to the bound up to float noise (0.1 + 0.2 against 0.3) is met.
             if excess > 0 and not near(mean, constraint.bound):
