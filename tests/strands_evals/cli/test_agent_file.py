@@ -212,14 +212,14 @@ def test_a_run_file_takes_an_agent_file_and_its_tune(experiment_path, tmp_path, 
     shutil.copy(AGENT_FILE, tmp_path / "agent.py")
     run_file = tmp_path / "run.toml"
     run_file.write_text(
-        f'experiment = "{experiment_path}"\nobjective = ["maximize:Correct"]\nmax_iterations = 1\n'
-        f'custom_evaluator = ["{AGENTS}:Correct"]\nbase_dir = "runs"\n'
-        '[agent]\nfactory = "agent.py"\ntune = [\'effort=["auto","low"]\']\n'
+        f"experiment = '{experiment_path}'\n"  # a literal string: a Windows path's backslashes aren't escapes
+        f'objective = ["maximize:Correct"]\nmax_iterations = 1\ncustom_evaluator = ["{AGENTS}:Correct"]\n'
+        'base_dir = "runs"\n[agent]\nfactory = "agent.py"\ntune = [\'effort=["auto","low"]\']\n'
     )
     assert main(["--json", "optimize", "run", str(run_file)]) == 0
     capsys.readouterr()
     saved = json.loads(next((tmp_path / "runs").iterdir()).joinpath("cli.json").read_text())
-    assert saved["agent"] == str(tmp_path / "agent.py")  # resolved against the run file's folder
+    assert Path(saved["agent"]).resolve() == (tmp_path / "agent.py").resolve()  # against the run file's folder
     assert saved["tune"] == ['effort=["auto","low"]']
     # --agent on the command line naming an agent file keeps the file's tune
     assert main(["--json", "optimize", "run", str(run_file), "--agent", str(tmp_path / "agent.py")]) == 0

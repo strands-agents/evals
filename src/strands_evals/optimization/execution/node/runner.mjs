@@ -67,7 +67,7 @@ class Collector {
   take(traceId) {
     const spans = this.traces.get(traceId) ?? []
     this.traces.delete(traceId)
-    return spans.map(spanJson)
+    return withoutRepeatedModelCalls(spans).map(spanJson)
   }
   onStart() {}
   onEnd(span) {
@@ -79,6 +79,22 @@ class Collector {
   shutdown() {
     return Promise.resolve()
   }
+}
+
+// A model provider's SDK may trace its own call during the Strands `chat` span (e.g. the Anthropic SDK's
+// `anthropic.messages.create`, parented elsewhere), also as `gen_ai.operation.name` `chat`: one model call read twice.
+// Strands spans carry `gen_ai.event.start_time`; another `chat` span whose time overlaps a Strands one's, give or
+// take `SLACK` (the two may be timed on clocks a millisecond or so apart), is that call again, and is left out.
+const SLACK = 100_000_000n // 100 ms, in nanoseconds
+const isChat = (span) => span.attributes['gen_ai.operation.name'] === 'chat'
+const isStrands = (span) => 'gen_ai.event.start_time' in span.attributes
+const toNanos = ([seconds, nanoseconds]) => BigInt(seconds) * 1000000000n + BigInt(nanoseconds)
+
+function withoutRepeatedModelCalls(spans) {
+  const calls = spans.filter((span) => isChat(span) && isStrands(span))
+  const overlaps = (a, b) =>
+    toNanos(a.startTime) <= toNanos(b.endTime) + SLACK && toNanos(a.endTime) + SLACK >= toNanos(b.startTime)
+  return spans.filter((span) => !isChat(span) || isStrands(span) || !calls.some((call) => overlaps(span, call)))
 }
 
 const nanos = ([seconds, nanoseconds]) => (BigInt(seconds) * 1000000000n + BigInt(nanoseconds)).toString()
