@@ -99,6 +99,16 @@ def test_filling_the_parameters_default_keeps_log_and_edit_instructions():
     assert (space.param("prompt").default, space.param("prompt").edit_instructions) == ("You help.", "be brief")
 
 
+def test_filling_the_parameters_default_keeps_the_step():
+    @tunable(tokens=Int(256, 4096, step=256), temperature=Float(0.0, 1.0, step=0.1))
+    def build(tokens=1024, temperature=0.3):
+        return tokens, temperature
+
+    space = build.space
+    assert (space.param("tokens").default, space.param("tokens").step) == (1024, 256)
+    assert (space.param("temperature").default, space.param("temperature").step) == (0.3, 0.1)
+
+
 def test_the_plain_call_builds_the_baseline_without_an_optimizer():
     built = make_agent()
     assert isinstance(built["manager"], Window) and built["manager"].size == 40
@@ -166,6 +176,7 @@ def test_a_positional_only_parameter_fails():
         (lambda: tunable(lambda prompt: prompt, inject={"prompt": TextValue()}), "has no default"),
         (lambda: tunable(lambda prompt=None: prompt, inject={"prompt": TextValue()}), "default is None"),
         (lambda: tunable(lambda size=500: size, inject={"size": Int(1, 100)}), "doesn't fit its marker"),
+        (lambda: tunable(lambda size=50: size, inject={"size": Int(0, 100, step=20)}), "doesn't fit its marker"),
         (lambda: tunable(lambda effort="mid": effort, inject={"effort": OneOf("low", "high")}), "doesn't fit"),
         (lambda: tunable(lambda prompt="x": prompt, inject={"prompt": "not a marker"}), "is not a marker"),
         (lambda: tunable(lambda prompt="x": prompt), "@tunable needs markers"),  # a bare @tunable

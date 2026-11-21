@@ -6,7 +6,9 @@ import pytest
 
 from strands_evals.optimization import (
     AtMost,
+    Candidate,
     Criteria,
+    Float,
     Int,
     Maximize,
     MetricRegistry,
@@ -550,6 +552,24 @@ def test_the_design_lists_factors_inactive_levels_and_omitted_keys():
     assert "fixed" not in factors  # a bare component can never change
     assert described["omitted"] == [{"key": "k", "why": "one value"}]
     assert {row["level"] for row in effects(fit)} == {"off", "rewritten", *factors["cm.window.size"]["levels"][1:-1]}
+
+
+def test_a_stepped_number_proposed_near_a_grid_point_is_fitted_at_that_points_level():
+    space = Space({"x": Float(0.0, 1.0, default=0.3, step=0.1), "k": Int(1, 9, default=5)})
+    baseline = Candidate.baseline(space)
+    # 3 * 0.1 is 0.30000000000000004: as a value of its own it would be a bin "(0.3, 0.3]" beside the default's.
+    proposed = [{"x": 3 * 0.1, "k": 2}, {"x": 0.7, "k": 8}]
+    candidates = {"c0": baseline.values}
+    candidates.update(
+        {
+            f"c{i}": baseline.child(space, update, origin=["numbers"], rationale="").values
+            for i, update in enumerate(proposed, 1)
+        }
+    )
+    observations = {cid: {"a": [0.5], "b": [0.6]} for cid in candidates}
+    fit = _fit(candidates, observations, ["a", "b"], space=space, text_blocks={}, ranges={"score": (0, 1)})
+    factors = {f["key"]: f for f in design(fit)["factors"]}
+    assert factors["x"]["levels"] == ["(-inf, 0.3]", "(0.3, 0.7]"]
 
 
 class Moded:

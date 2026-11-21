@@ -261,6 +261,15 @@ def test_space_stores_text_as_a_hash():
     assert space["k"]["default"] == 3 and space["k"]["min_value"] == 1
 
 
+def test_space_stores_each_numbers_step():
+    @tunable(k=Int(0, 8, default=4, step=2), t=Float(0.0, 1.0, default=0.5))
+    def agent(k, t):
+        return k
+
+    space = {p["key"]: p for p in Optimizer(_experiment(), agent)._config()["space"]}
+    assert (space["k"]["step"], space["t"]["step"]) == (2, None)
+
+
 def test_config_round_trips_through_resume(tmp_path):
     run = RunDirectory.create(tmp_path, _optimizer()._config())
     reopened = RunDirectory.open(run.root)

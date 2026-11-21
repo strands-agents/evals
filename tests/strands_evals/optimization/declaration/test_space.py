@@ -95,6 +95,19 @@ def test_param_infos_carry_log_and_edit_instructions():
     assert space.param("tools.lookup").edit_instructions == "keep it short"
 
 
+def test_param_infos_carry_the_step():
+    space = Space(
+        {
+            "temperature": Float(0.0, 1.0, default=0.3, step=0.1),
+            "manager": component(Window, size=Int(8, 96, step=8)),
+            "plain": Int(1, 9, default=3),
+        }
+    )
+    assert space.param("temperature").step == 0.1
+    assert space.param("manager.Window.size").step == 8
+    assert space.param("plain").step is None
+
+
 def test_text_without_size_cap_gets_the_derived_cap():
     space = Space({"prompt": TextValue(default="x" * 1000)})
     assert space.param("prompt").size_cap == 3000
@@ -221,6 +234,39 @@ def test_complete_turns_a_negative_zero_float_into_zero():
     assert str(filled) == "0.0"
 
 
+def test_complete_puts_a_stepped_float_on_its_grid_point():
+    space = Space(
+        {"temperature": Float(0.0, 1.0, default=0.3, step=0.1), "ratio": Float(0.05, 0.95, step=0.15, default=0.5)}
+    )
+    # 0.3 and 0.5 as float arithmetic can give them: the same agents as the defaults, so the same values.
+    assert space.complete({"temperature": 0.30000000000000004, "ratio": 0.49999999999999994}) == space.complete({})
+    assert str(space.complete({"temperature": 0.7000000000000001})["temperature"]) == "0.7"
+    filled = space.complete({}, fill=lambda key: (0.6000000000000001, "abc123"))
+    assert str(filled["temperature"]) == "0.6"
+    assert space.complete({"temperature": 0.25})["temperature"] == 0.25  # off the grid: kept for validate to report
+    signed = Space({"x": Float(-1.0, 1.0, default=0.5, step=0.5)})
+    assert str(signed.complete({"x": -0.0})["x"]) == "0.0"
+    assert str(signed.complete({"x": -1e-12})["x"]) == "0.0"
+
+
+def test_a_value_just_past_a_bound_is_outside_until_complete_stores_the_bound():
+    space = Space({"x": Float(0.0, 0.3, default=0.0, step=0.1)})
+    with pytest.raises(ValueError, match="outside"):
+        space.validate({"x": 3 * 0.1})  # 0.30000000000000004 > 0.3, as given
+    completed = space.complete({"x": 3 * 0.1})
+    assert completed == {"x": 0.3}
+    space.validate(completed)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), "0.3", 1])
+def test_complete_leaves_a_non_number_at_a_stepped_key_for_validate(value):
+    space = Space({"temperature": Float(0.0, 1.0, default=0.3, step=0.1)})
+    completed = space.complete({"temperature": value})
+    assert repr(completed["temperature"]) == repr(value)
+    with pytest.raises(ValueError, match="temperature"):
+        space.validate(completed)
+
+
 def test_complete_keeps_unknown_keys_so_validate_reports_them():
     completed = make_space().complete({"temprature": 0.2})
     assert completed["temprature"] == 0.2
@@ -265,6 +311,32 @@ def test_validation_reports_every_problem_at_once():
         make_space().validate({**BASELINE, "temperature": 2.0, "effort": "medium", "typo": 1})
     message = str(raised.value)
     assert "temperature" in message and "effort" in message and "typo" in message
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"temperature": 0.25}, "temperature: 0.25 is not min_value=0.0 plus a multiple of step=0.1"),
+        ({"temperature": 0.3000001}, "temperature: 0.3000001 is not"),
+        ({"tokens": 300}, "tokens: 300 is not min_value=256 plus a multiple of step=256"),
+        ({"tokens": 5120}, "outside"),
+    ],
+)
+def test_values_off_the_step_grid_fail_validation(change, message):
+    space = Space(
+        {"temperature": Float(0.0, 1.0, default=0.3, step=0.1), "tokens": Int(256, 4096, step=256, default=512)}
+    )
+    space.validate({"temperature": 0.3, "tokens": 4096})
+    space.validate({"temperature": 0.30000000000000004, "tokens": 512})  # on the grid, to Optuna's tolerance
+    with pytest.raises(ValueError, match=message):
+        space.validate({"temperature": 0.3, "tokens": 512, **change})
+
+
+def test_an_int_grid_may_be_negative_or_huge():
+    space = Space({"n": Int(-10, 10, default=-5, step=5), "big": Int(0, 10**20, default=10**19, step=10**10)})
+    space.validate({"n": -10, "big": 10**20 - 10**10})
+    with pytest.raises(ValueError, match=r"n: -3 is not .*; big: 99999999999999999999 is not"):
+        space.validate({"n": -3, "big": 10**20 - 1})
 
 
 def test_one_of_validation_compares_types():
