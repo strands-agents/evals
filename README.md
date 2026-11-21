@@ -494,7 +494,7 @@ def task(case):
 report = ChaosExperiment(cases=chaos_cases, evaluators=[...]).run_evaluations(task=task)
 ```
 
-Available effects: `Timeout`, `NetworkError`, `ExecutionError`, `ValidationError` (cancel the tool call); `TruncateFields`, `RemoveFields`, `CorruptValues` (corrupt the response). Pair with chaos-aware evaluators in `strands_evals.evaluators.chaos` (`FailureCommunicationEvaluator`, `PartialCompletionEvaluator`, `RecoveryStrategyEvaluator`). For the full authoring guide see [`SKILL.md`](SKILL.md#chaos-testing-deterministic-fault-injection).
+Available effects: `Timeout`, `NetworkError`, `ExecutionError`, `ValidationError` (cancel the tool call); `TruncateFields`, `RemoveFields`, `CorruptValues` (corrupt the response). Pair with chaos-aware evaluators in `strands_evals.evaluators.chaos` (`FailureCommunicationEvaluator`, `PartialCompletionEvaluator`, `RecoveryStrategyEvaluator`). For the full authoring guide see [`SKILL.md`](.agents/skills/strands-evals/SKILL.md#chaos-testing-deterministic-fault-injection).
 
 ### Custom Evaluators with Structured Output
 

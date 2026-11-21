@@ -97,6 +97,29 @@ jobs:
             "$WORK/venv/bin/python" -c "import strands_evals; from importlib.metadata import version; print('strands-agents-evals version:', version('strands-agents-evals'))"
           fi
 
+          "$WORK/venv/bin/python" - <<'PYEOF'
+          import os
+          import re
+          from importlib.metadata import distribution
+          from pathlib import Path
+
+          import yaml
+
+          package = distribution("strands-agents-evals")
+          source_root = Path(os.environ["GITHUB_WORKSPACE"])
+          source_skills = sorted((source_root / ".agents/skills").glob("*/SKILL.md"))
+          for source_skill in source_skills:
+              contents = source_skill.read_text()
+              match = re.match(r"---\s*\n(.*?)\n---\s*\n", contents, flags=re.DOTALL)
+              assert match, f"missing frontmatter: {source_skill}"
+              name = yaml.safe_load(match.group(1)).get("name")
+              assert name, f"missing skill name in frontmatter: {source_skill}"
+              skill = Path(package.locate_file(f".agents/skills/{name}/SKILL.md"))
+              assert skill.is_file(), f"missing packaged skill: {skill}"
+              assert skill.read_text() == contents, f"packaged skill differs: {skill}"
+              print(f"skill OK: {skill}")
+          PYEOF
+
       # Upload for release.yml's inspect/publish path to consume.
       # PR-triggered runs also upload (short retention) — harmless.
       - name: Upload wheel + sdist for downstream inspect/publish
