@@ -99,25 +99,26 @@ jobs:
 
           "$WORK/venv/bin/python" - <<'PYEOF'
           import os
-          import re
-          from importlib.metadata import distribution
+          from importlib.resources import files
           from pathlib import Path
 
           import yaml
 
-          package = distribution("strands-agents-evals")
-          source_root = Path(os.environ["GITHUB_WORKSPACE"])
-          source_skills = sorted((source_root / ".agents/skills").glob("*/SKILL.md"))
-          for source_skill in source_skills:
-              contents = source_skill.read_text()
-              match = re.match(r"---\s*\n(.*?)\n---\s*\n", contents, flags=re.DOTALL)
-              assert match, f"missing frontmatter: {source_skill}"
-              name = yaml.safe_load(match.group(1)).get("name")
-              assert name, f"missing skill name in frontmatter: {source_skill}"
-              skill = Path(package.locate_file(f".agents/skills/{name}/SKILL.md"))
-              assert skill.is_file(), f"missing packaged skill: {skill}"
-              assert skill.read_text() == contents, f"packaged skill differs: {skill}"
-              print(f"skill OK: {skill}")
+          def tree(root):
+              return {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+          source = tree(Path(os.environ["GITHUB_WORKSPACE"]) / ".agents/skills")
+          assert source, "no skills found under .agents/skills"
+          packaged = tree(Path(str(files("strands_evals") / ".agents" / "skills")))
+          # one-directional: installers add files like __pycache__/*.pyc next to packaged scripts
+          differ = sorted(path for path, contents in source.items() if packaged.get(path) != contents)
+          assert not differ, f"packaged skills missing or differ: {differ}"
+          for path, contents in source.items():
+              if path.endswith("/SKILL.md"):
+                  frontmatter = yaml.safe_load(contents.decode().split("---")[1])
+                  assert frontmatter["name"] == path.split("/")[0], f"name does not match folder: {path}"
+                  assert len(frontmatter["description"]) <= 1024, f"description over 1024 chars: {path}"
+          print(f"skills OK: {sorted(source)}")
           PYEOF
 
       # Upload for release.yml's inspect/publish path to consume.

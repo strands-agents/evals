@@ -54,9 +54,9 @@ strands-evals/
 │
 ├── .agents/skills/                           # Agent skills
 │   ├── session-converter/                  # Convert agent sessions into experiments
-│       ├── SKILL.md                          # Locate sessions, extract episodes, write an experiment
-│       ├── assets/segmenter.md               # Subagent steps: split sessions into episodes
-│       └── scripts/synthesize_cases.py       # Append synthetic cases in the existing cases' voice
+│   │   ├── SKILL.md                          # Locate sessions, extract episodes, write an experiment
+│   │   ├── assets/segmenter.md               # Subagent steps: split sessions into episodes
+│   │   └── scripts/synthesize_cases.py       # Append synthetic cases in the existing cases' voice
 │   └── strands-evals/                        # Author evaluations with strands-evals
 │       └── SKILL.md                          # Evaluation authoring guidance
 │
@@ -260,7 +260,7 @@ strands-evals/
 
 ### Directory Purposes
 
-- **`.agents/skills/`**: Agent skills, one directory per skill containing a `SKILL.md`; the folder name must match the skill's `name` frontmatter. They are included in the wheel at this path.
+- **`.agents/skills/`**: Agent skills, one directory per skill containing a `SKILL.md`; the folder name must match the skill's `name` frontmatter.
 - **`src/strands_evals/`**: All production code
 - **`src/strands_evals/cli/`**: `strands-evals` console script — six subcommands (`run`, `validate`, `report`, `diagnose`, `generate`, `fetch`) plus the `module:attr` resolver and synthesized task wrapper used by `--agent`. `fetch` has per-provider sub-subcommands (`cloudwatch`, `langfuse`, `opensearch`); langfuse / opensearch are imported lazily so they only fail when invoked without their extra installed.
 - **`tests/strands_evals/`**: Unit tests mirroring src/ structure

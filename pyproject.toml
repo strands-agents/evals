@@ -36,7 +36,7 @@ dependencies = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/strands_evals"]
-force-include = {".agents/skills" = ".agents/skills"}
+force-include = {".agents/skills" = "strands_evals/.agents/skills"}
 
 [project.scripts]
 strands-evals = "strands_evals.cli:main"
