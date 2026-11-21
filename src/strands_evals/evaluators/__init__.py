@@ -7,6 +7,7 @@ from .correctness_evaluator import CorrectnessEvaluator
 from .deterministic import (
     Contains,
     Equals,
+    FuzzyEquals,
     SkillInvoked,
     StartsWith,
     StateEquals,
@@ -67,6 +68,7 @@ __all__ = [
     "InstructionFollowingEvaluator",
     "Contains",
     "Equals",
+    "FuzzyEquals",
     "StartsWith",
     "StateEquals",
     "ToolCalled",
