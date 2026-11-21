@@ -1,12 +1,12 @@
 ---
 name: optimize
 description: Use when the user wants to tune a strands-harness agent (agent.py built with create_harness, or agent.ts built with createHarness) against an experiment with `strands-evals optimize`, such as its instructions, model, effort, caching, or context manager. Sets up the run from a free-text request or step by step, confirms a review, runs it with progress, and reports the result.
-version: 0.9.0
+version: 0.1.0
 ---
 
 # optimize
 
-Sets up and runs `strands-evals optimize run` on an agent built with strands-harness: a Python `agent.py` (`create_harness`) or a TypeScript `agent.ts` (`createHarness`). The optimizer takes the agent file itself (`--agent agent.py` or `--agent agent.ts`): it tunes the arguments of the call that builds `agent`, and runs the file again for each trial, with a fresh session and a copy of the memory folder. A TypeScript agent runs in a Node.js worker, and its usage and steps are traced as a Python agent's are.
+Sets up and runs `strands-evals optimize run` on an agent built with strands-harness: a Python `agent.py` (`create_harness`) or a TypeScript `agent.ts` (`createHarness`). The optimizer takes the agent file itself (`--agent agent.py` or `--agent agent.ts`): it tunes the arguments of the call that builds `agent`, and runs the file again for each trial, with a fresh session and a copy of the memory folder. A Python file can instead hold a tunable factory (a function marked `@tunable(...)`, or `tunable(fn, inject=...)`), whose markers declare what may change; the skill then passes that factory (`--agent agent.py:create_agent`) and skips the knobs question. A TypeScript agent runs in a Node.js worker, and its usage and steps are traced as a Python agent's are.
 
 `<skill_dir>` below is the folder holding this file.
 
@@ -49,6 +49,9 @@ The first line lists the agent files; the rest lists the workspace's experiments
   ```bash
   python -m pip install 'strands-agents-evals[optimization] @ git+https://github.com/strands-agents/evals@workstream/optimizer-workflow'
   ```
+- **Tunable factory**, Python only. Read the agent file and list its tunable factories: module-level names bound to a function decorated with `@tunable(...)` (under any import alias or module prefix, ex. `@tn(...)` or `@opt.tunable(...)`), or assigned the result of `tunable(fn, inject=...)` (with or without a type annotation), including one defined inside a module-level `if` block. Don't count a `@tunable` in a comment or docstring, a name rebound later to something else, or a function with another decorator above `@tunable` (it no longer returns the factory). A factory the file imports from another module counts too when the file's own code or comments say it is tunable; when you can't tell, ask the user.
+
+  With one name, the run uses that factory and skips step 2; with several, ask which, up to three, the first as the default. With none, the agent is the `create_harness` agent above. Read the markers in the factory's `@tunable(...)` (or `inject=`) for the review's tune row: one per name, ex. `OneOf("auto", "low")` is a choice and `TextValue()` a text the proposer rewrites.
 - **Experiments.** The files the second line lists. For each, read only its counts: `jq '{cases: (.cases | length), evaluators: [.evaluators[].evaluator_type]}' <file>` (each `evaluator_type` is a metric name); skip a file `jq` can't read that way.
 
 Then ask the first question:
@@ -61,9 +64,11 @@ Describe the optimization you want, or answer "step by step".
 
 Next, unless the request names one, ask which experiment to use: up to three, by name with their cases and evaluators (ex. `capitals: 6 cases, scored by OutputEvaluator`), the most cases first as the default, then "Your own: another experiment's name or path", naming any others found in one line under the list. With none found, ask for the path of an experiment file (the JSON file with cases and evaluators that `strands-evals run` reads), and stop if there is none.
 
-When the user describes the run, take every value of steps 2 to 5 and every review row from that text and the files, using each default where the text says nothing, ask no setup question, and go to step 6. A value that breaks a rule becomes the closest valid one and is flagged in the review.
+When the user describes the run, take every value of steps 2 to 5 (3 to 5 with a tunable factory) and every review row from that text and the files, using each default where the text says nothing, ask no setup question, and go to step 6. A value that breaks a rule becomes the closest valid one and is flagged in the review.
 
 ### 2. Knobs: what may change
+
+Skip this step with a tunable factory (step 1): its markers already say what may change. Still give the Reflection warning under **Rules** when one of them is a text marker (`TextValue`, `FileText`, `JsonField`, `SkillLibrary`, or `tool_descriptions`).
 
 Read the agent's `create_harness(...)` or `createHarness(...)` call and offer the knobs below with their current values. An option the call doesn't pass is at the harness default (effort and context manager auto; caching and skills on; background tasks off; the model the harness's own). In TypeScript, background tasks can be tuned only when the call writes them. The system prompt is a text knob only when the call passes one, and then replaces the instructions. Name in one not-tunable line a knob set in code (a variable, a call, a model instance). Memory and session aren't offered: every trial starts with a fresh session and a copy of the memory folder. Tools, MCP servers, and plugins can't be switched one by one yet.
 
@@ -90,7 +95,7 @@ A choice the user narrows (ex. "effort low or medium") always keeps the current 
 
 **Rules.** At least one knob is tuned. When a text knob is tuned, warn: Reflection, the proposer, writes shell commands and runs them on this machine with the user's environment, credentials, and network. It is not a sandbox, and text in the cases can carry prompt injection. Run it in a container or VM that has only the credentials the run needs.
 
-**Build.** Each knob is a `--tune` over an argument of the call, named as the call names it: `system_prompt`, `context_manager`, and `background_tasks` in Python; `systemPrompt`, `contextManager`, and `backgroundTasks` in TypeScript. The instructions are tuned unless `--no-tune-instructions` is passed; a Python agent that doesn't set them needs `instructions=""` in the call. The system prompt is `--tune system_prompt` (or `systemPrompt`). A choice is `--tune 'OPTION=JSON_LIST'` with a list that includes the current value, for `model`, `effort`, `caching`, the context manager, background tasks, or `skills` (on/off are `true`/`false`, the context manager's off is `false`), ex. `--tune 'effort=["auto","low","high"]'`. For an option the call leaves out, the current value is `"auto"` for effort and the context manager and `true` for caching and skills; the model is `null` in Python and the harness's default model id in TypeScript (ex. `bedrock/global.anthropic.claude-opus-5`); background tasks are `null` in Python.
+**Build.** Each knob is a `--tune` over an argument of the call, named as the call names it: `system_prompt`, `context_manager`, and `background_tasks` in Python; `systemPrompt`, `contextManager`, and `backgroundTasks` in TypeScript. The instructions are tuned unless `--no-tune-instructions` is passed; a Python agent that doesn't set them needs `instructions=""` in the call. The system prompt is `--tune system_prompt` (or `systemPrompt`). A choice is `--tune 'OPTION=JSON_LIST'` with a list that includes the current value, for `model`, `effort`, `caching`, the context manager, background tasks, or `skills` (on/off are `true`/`false`, the context manager's off is `false`), ex. `--tune 'effort=["auto","low","high"]'`. For an option the call leaves out, the current value is `"auto"` for effort and the context manager and `true` for caching and skills; the model is `null` in Python and the harness's default model id in TypeScript (ex. `bedrock/global.anthropic.claude-opus-5`); background tasks are `null` in Python. A tunable factory takes no `--tune` and no `--no-tune-instructions` (the optimizer refuses both); the run passes `--agent <agent file>:<factory name>` instead (step 7).
 
 ### 3. Objective: what to improve
 
@@ -103,7 +108,7 @@ What should the optimizer improve?
 1. Maximize a metric: an evaluator's score, or the mean of every evaluator (Default)
 2. Minimize a metric: ex. tokens, output tokens, seconds, or model calls
 3. Balance several metrics: weigh them together, or find the best trade-offs without weighing
-4. Your own: for example, "fewer output tokens, mean of every evaluator scoring >= 0.8"
+4. Your own: for example, "fewer output tokens"
 ```
 
 Follow-ups, in plain words:
@@ -169,7 +174,7 @@ Work out the estimate yourself; show the user only the totals. Rollouts (one run
 
 ### 6. Review
 
-Show the setup as one summary, then the command, and ask the user to start or to name a row to change. For a row of steps 2 to 5, go back to that step; for a default row, take the new value here and check it against its rules below. Then show the review again.
+Show the setup as one summary, then the command, and ask the user to start or to name a row to change. For a row of steps 2 to 5, go back to that step (a tunable factory's tune row changes only in its markers: propose the code edit, and make it only when the user agrees); for a default row, take the new value here and check it against its rules below. Then show the review again.
 
 ```text
 optimize · capitals · 6 cases · 3 train / 2 validation / 1 test
@@ -202,7 +207,7 @@ The default rows:
 - Sureness: `--feasibility-threshold X`, only when it isn't 0.9.
 - Crashes: nothing by default, `--agent-failure-score none` to leave crashed runs out, `--agent-failure-score X` for a score.
 - Pick: nothing by default; X% sure writes `final_pick` into hooks.py (step 7) with `q = 1 - X` (ex. 75% is 0.25) and N the finalists, and passes `--final-pick "$F/hooks.py:final_pick"`.
-- Proposer model: `--reflection-model MODEL_ID` (default Bedrock `global.anthropic.claude-sonnet-5-5`), only when the user asks and a text knob is tuned.
+- Proposer model: `--reflection-model MODEL_ID` (default Bedrock `global.anthropic.claude-sonnet-5-5`), only when the user asks and a text knob is tuned (or the factory has a text marker).
 
 The command is step 7's **Start**, with the flags of the **Build** notes of steps 2 to 6 and `--seed 0` after `--rich`.
 
@@ -231,11 +236,11 @@ final_pick = FinalPick(n_finalists=N, rule=LowerBound(q=Q))  # a cautious pick
 
 ```bash
 cd <project> && (strands-evals optimize run <experiment> \
-  --agent <absolute path of the agent file> --base-dir "$F/record" --rich <flags of steps 2 to 6> \
+  --agent <absolute path of the agent file>[:<factory name>] --base-dir "$F/record" --rich <flags of steps 2 to 6> \
   > "$F/summary.txt" 2> "$F/run.log"; echo $? > "$F/run.exit") &
 ```
 
-If you can't run a background process, run it in the foreground with a long timeout and show the output when it ends. As soon as `run.log` prints `strands-evals optimize: run folder <RUN_DIR>`, tell the user the folder.
+If you can't run a background process, run it in the foreground with a long timeout and show the output when it ends. `<RUN_DIR>`, the run folder, is the one folder the optimizer creates under `$F/record` once the run starts: find it with `ls -d "$F"/record/*/` on the first progress check, and tell the user. Don't wait for `run.log`'s `strands-evals optimize: run folder <RUN_DIR>` line to report it: that line can come only at the end, with the result.
 
 **Progress**: until `$F/run.exit` exists, about once a minute, relay each new `run.log` line that starts with `strands-evals optimize:` (ex. `iteration N (<blocks>): P proposals, R rollouts`) and any warning or error, in plain words (ex. "step 2 of 4 done: 4 new versions tried, 61 rollouts so far"). Read new lines with `tail -n +<next line> "$F/run.log"`.
 
@@ -259,7 +264,7 @@ Nothing in the user's project changes. `<RUN_DIR>/best.diff` holds each changed 
 
 ## Resuming a run
 
-Resume only when the user explicitly asks; never on your own. A run can be resumed when it was killed (130, or no `run.exit`), stopped on a proposer error (3 with the `continue` line), or finished before its test check ran (step 8); any other failed run starts over as a new run. Skip steps 1 to 6: take the run folder `$F` the user names, else the newest resumable one under the experiment's `optimizations/` (or `<project>/.strands-evals/runs/`), and confirm it with the user. `<RUN_DIR>` is the path on the `strands-evals optimize: run folder` line of `$F/run.log`; without that line the run never started, so there is nothing to resume. With `PY` and `<project>` as in step 1, run:
+Resume only when the user explicitly asks; never on your own. A run can be resumed when it was killed (130, or no `run.exit`), stopped on a proposer error (3 with the `continue` line), or finished before its test check ran (step 8); any other failed run starts over as a new run. Skip steps 1 to 6: take the run folder `$F` the user names, else the newest resumable one under the experiment's `optimizations/` (or `<project>/.strands-evals/runs/`), and confirm it with the user. `<RUN_DIR>` is the one folder under `$F/record` (step 7); without one the run never started, so there is nothing to resume. With `PY` and `<project>` as in step 1, run:
 
 ```bash
 cd <project> && (strands-evals optimize resume "<RUN_DIR>" --rich \
