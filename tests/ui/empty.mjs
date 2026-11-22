@@ -169,6 +169,9 @@ const RUN = {
   eq([p.text('#experiments-rows'), frog(p, '#experiments-rows')],
     ['No experiments in this pond yetNo experiment JSON under /served. Create your first experiment', true],
     'and the same for experiments');
+  ok(p.$('#reports-tree').hidden && p.$('#experiments-tree').hidden
+    && p.$$('.fold[data-fold]').every(f => f.hidden),
+  'with nothing found, nothing is listed under the sidebar rows and no caret offers to fold it');
 }
 {
   const p = await page({ fetchImpl: fakeServer(), url: 'http://127.0.0.1:9999/optimization' });
