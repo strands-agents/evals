@@ -167,6 +167,10 @@ conflict check against the file's mtime so a concurrent `run` or editor is never
 While the page is open it checks every few seconds whether the folder changed and re-reads what it is
 showing, so a run in progress fills in without a reload; unsaved edits are never replaced.
 
+The sidebar lists every optimizer run the scan found, under Optimization and the Runs view in it, so
+opening one is a click from any page rather than a trip through the list first. Runs itself still
+opens that list, with the columns a sidebar row has no space for.
+
 Every view has an address of its own, so Back and Forward work and a view can be bookmarked or shared
 with someone serving the same folder:
 
