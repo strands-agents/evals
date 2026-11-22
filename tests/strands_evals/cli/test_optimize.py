@@ -1287,3 +1287,24 @@ def test_a_bad_range_table_is_a_usage_error(experiment_path, tmp_path, capsys, f
     _depth_config(tmp_path)
     assert main(["optimize", "run", str(_write_run_file(tmp_path, body))]) == 2
     assert message in capsys.readouterr().err
+
+
+def test_a_list_choice_declares_a_json_choice_on_the_config(tmp_path):
+    from strands_evals.cli import _harness
+    from strands_evals.optimization import JsonChoice, Space
+
+    config = _write_config(tmp_path)
+    markers, tuned = _harness.declare(config, ['builtinTools=[[],["read"]]'], tune_instructions=False)
+    marker = markers["builtinTools"]
+    assert isinstance(marker, JsonChoice) and marker.options == ("[]", '["read"]') and marker.default == "[]"
+    assert tuned[0].kind == "choice" and tuned[0].path == ("builtinTools",)
+    # `build_task` reads the decoded value off the space, so each trial's config gets the real list.
+    assert Space(markers).resolve("builtinTools", {"builtinTools": '["read"]'}, None) == ["read"]
+
+
+def test_a_list_choice_missing_the_configs_value_is_rejected(tmp_path):
+    from strands_evals.cli import _harness
+
+    config = _write_config(tmp_path, builtinTools=["read"])
+    with pytest.raises(ValueError, match="the config's value .* must be one of the options"):
+        _harness.declare(config, ['builtinTools=[[],["write"]]'], tune_instructions=False)

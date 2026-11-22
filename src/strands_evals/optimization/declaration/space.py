@@ -27,7 +27,19 @@ from .files import (
     _outer_folders,
     _SkillFile,
 )
-from .markers import _UNSET, Choice, Component, Float, Int, OneOf, TextValue, _default_size_cap, _is_option, choice
+from .markers import (
+    _UNSET,
+    Choice,
+    Component,
+    Float,
+    Int,
+    JsonChoice,
+    OneOf,
+    TextValue,
+    _default_size_cap,
+    _is_option,
+    choice,
+)
 from .tools import ToolDescriptions
 
 Marker: TypeAlias = (
@@ -236,6 +248,7 @@ class Space:
           when `workspace` is None (the plain call).
         - `SkillLibrary`: the path of the directory inside `workspace`, or the original directory
           when `workspace` is None.
+        - `JsonChoice`: the chosen option decoded from its canonical JSON text, e.g. `["read"]`.
         - Any other marker: the value itself, e.g. `0.2` or the prompt text.
 
         `values` must already pass `validate`; nothing is checked here. A component's fixed kwargs
@@ -260,6 +273,8 @@ class Space:
             return marker.build({tool: cast(str, values[f"{name}.{tool}"]) for tool in marker.tools})
         if isinstance(marker, SkillLibrary) or (isinstance(marker, FileText) and marker.as_path):
             return marker.path if workspace is None else workspace / _location_in_copy(self._copy_folders, marker.path)
+        if isinstance(marker, JsonChoice):
+            return json.loads(cast(str, values[name]))
         return values[name]
 
     def create_candidate_copy(self, values: Values, directory: Path) -> Path:

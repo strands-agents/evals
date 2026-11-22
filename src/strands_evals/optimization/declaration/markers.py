@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import functools
 import inspect
+import json
 import math
 from collections.abc import Callable, Sequence
 from typing import Any, TypeVar, cast
@@ -145,6 +146,39 @@ class OneOf(_ValueMarker):
         return OneOf(*self.options, default=default)
 
 
+class JsonChoice(OneOf):
+    """A choice among JSON values (lists and objects included), carried as canonical JSON text.
+
+    Each option is stored as its canonical JSON (sorted keys, no spaces), so a candidate's value is
+    plain text and searches, records, and the score model treat the key as any other choice.
+    `Space.resolve` decodes the chosen text back to its JSON value for the factory. `--tune
+    PATH=JSON_LIST` declares one when a list or object is among the options, e.g.
+    `--tune 'builtinTools=[[],["read"]]'` for the tool sets an agent may run with.
+    """
+
+    def __init__(self, *options: Any, default: Any = _UNSET):
+        """Declare a choice among JSON values.
+
+        Args:
+            *options: The JSON values to choose from; scalars, lists, and objects may be mixed.
+            default: The baseline value; omit to use the wrapped parameter's default, or the first option.
+
+        Raises:
+            TypeError: No options, an option that isn't a JSON value (NaN and infinity included),
+                options whose canonical JSON repeats, or a default that isn't one of the options.
+        """
+        canonical = tuple(_canonical_json("JsonChoice options", option) for option in options)
+        super().__init__(
+            *canonical, default=_UNSET if default is _UNSET else _canonical_json("JsonChoice default", default)
+        )
+
+    def _with_default(self, default: Any) -> JsonChoice:
+        # The stored options are already canonical text; only the new default still needs encoding.
+        marker = JsonChoice.__new__(JsonChoice)
+        OneOf.__init__(marker, *self.options, default=_canonical_json("JsonChoice default", default))
+        return marker
+
+
 class TextValue(_ValueMarker):
     """A text knob; `size_cap` rejects prompt bloat. Without `default=`, the parameter's (see `_ValueMarker`)."""
 
@@ -277,6 +311,12 @@ def component(factory: Callable[..., Any], /, **kwargs: Any) -> Component:
         if unknown:
             raise TypeError(f"component({name}): no keyword arguments named {unknown}")
     for key, value in kwargs.items():
+        if isinstance(value, JsonChoice):
+            # `Component.build` passes values straight to the constructor, which would get the canonical
+            # text rather than the decoded JSON value; only `Space.resolve` decodes, for a top-level name.
+            raise TypeError(
+                f"component({name}): {key}= is a JsonChoice; declare it as its own marker, not in a component"
+            )
         if isinstance(value, (Int, Float, OneOf)):
             result.tunable[key] = _with_constructor_default(name, key, value, parameters)
         elif isinstance(value, _Marker):
@@ -386,6 +426,20 @@ def choice(*alternatives: Component, **labeled: Component | Any) -> Choice:
 def _is_option(value: Any, options: Sequence[Any]) -> bool:
     """Whether `value` is one of `options`, comparing types too (so `True` is not the option `1`)."""
     return any(type(option) is type(value) and option == value for option in options)
+
+
+def _canonical_json(what: str, value: Any) -> str:
+    """`value` as canonical JSON text (sorted keys, no spaces); `what` names the value in the error.
+
+    Raises:
+        TypeError: `value` isn't a JSON value (an object, NaN, or infinity).
+    """
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError):
+        raise TypeError(
+            f"{what} must be JSON values (str, number, bool, None, list, or object), got {value!r}"
+        ) from None
 
 
 def _default_size_cap(baseline: str) -> int:

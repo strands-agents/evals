@@ -282,3 +282,16 @@ def test_an_exported_file_tunes_its_skills_list_and_left_out_defaults(exported, 
     factory.bind({**values, "caching": False, "effort": "auto"})()
     (candidate,) = calls
     assert candidate["caching"] is False and "effort" not in candidate  # only what changed
+
+
+def test_a_list_choice_tunes_the_tool_set():
+    factory = _agent_file.load(str(AGENT_FILE), ['builtin_tools=[[],["read"]]'], tune_instructions=False)
+    assert factory.space.param("builtin_tools").options == ("[]", '["read"]')
+    with_read = factory.bind({"builtin_tools": '["read"]'})()
+    assert "read" in with_read.tool_names  # the call got the decoded list, not its JSON text
+    assert "read" not in factory().tool_names  # the baseline still builds the call as written
+
+
+def test_a_list_choice_missing_the_calls_value_is_rejected():
+    with pytest.raises(ValueError, match="must be one of the options"):
+        _agent_file.load(str(AGENT_FILE), ['builtin_tools=[["read"],["read","write"]]'])

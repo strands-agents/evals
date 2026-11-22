@@ -43,7 +43,7 @@ from ..types.optimization import (
 )
 from .candidate import Candidate
 from .declaration.files import FileText, JsonField, SkillLibrary
-from .declaration.markers import Choice, Component, Float, Int, OneOf, TextValue, choice, component
+from .declaration.markers import Choice, Component, Float, Int, JsonChoice, OneOf, TextValue, choice, component
 from .declaration.space import FileSource, Marker, ParamInfo, ParamKind, Space
 from .declaration.tools import ToolDescriptions, tool_descriptions
 from .declaration.tunable import BuildContext, TunableFactory, tunable
@@ -113,6 +113,7 @@ __all__ = [
     "Int",
     "IterationRecord",
     "Joint",
+    "JsonChoice",
     "JsonField",
     "LabelOutcome",
     "LowerBound",
