@@ -57,6 +57,7 @@ Strands Evaluation is a powerful framework for evaluating AI agents and LLM appl
 - **Built-in Scoring Tools**: Helper functions for exact, in-order, and any-order trajectory matching
 - **Failure Detection & Root Cause Analysis**: Automatically detect failures in agent sessions and diagnose root causes with actionable fix recommendations
 - **Chaos Testing**: Deterministic fault injection via Strands plugin hooks — simulate tool timeouts, network errors, and response corruption to evaluate agent resilience
+- **Agent Optimization**: Declare what may change about an agent (prompts, skills, tool descriptions, tool sets, components, numeric settings) and search for the best configuration on your experiment, returning a reviewable diff and typed values
 - **Red Team Evaluation**: Adversarial safety testing with built-in attack strategies (Crescendo, GOAT, PAIR, BadLikertJudge, SequentialBreak); see [src/strands_evals/redteam/README.md](src/strands_evals/redteam/README.md)
 
 ## Quick Start
@@ -111,7 +112,7 @@ report.run_display()
 
 ## Command-Line Interface
 
-Installing `strands-agents-evals` also installs the `strands-evals` console script, a thin wrapper over the Python API for CI and one-off use. It has five subcommands:
+Installing `strands-agents-evals` also installs the `strands-evals` console script, a thin wrapper over the Python API for CI and one-off use. It has seven subcommands:
 
 | Command | Purpose |
 | --- | --- |
@@ -120,6 +121,8 @@ Installing `strands-agents-evals` also installs the `strands-evals` console scri
 | `strands-evals report` | Render an existing `EvaluationReport` JSON via Rich, or dump it as JSON. |
 | `strands-evals diagnose` | Run `detect_failures`, `analyze_root_cause`, or the full `diagnose_session` pipeline on a Session JSON file. |
 | `strands-evals generate` | Synthesize an Experiment via `ExperimentGenerator` from a free-form `--context` or an existing `--experiment` file. |
+| `strands-evals fetch` | Fetch traces from a provider (CloudWatch, Langfuse, OpenSearch) and emit a Session JSON. |
+| `strands-evals optimize` | Search for a better agent configuration against an Experiment (`run`), or continue a stopped run (`resume`). Needs the `optimization` extra. |
 
 Common flows:
 
@@ -151,6 +154,24 @@ strands-evals generate --context "$(cat tools.txt)" --num-cases 10 \
 
 Run any subcommand with `--help` for the full flag set (custom evaluators via `MODULE:CLASS`, trace attributes, `--fail-on` exit-code rules, output formats, etc.).
 
+## Agent Skills
+
+The package ships skills for coding agents (source in [`.agents/skills/`](.agents/skills/)):
+
+| Skill | Purpose |
+| --- | --- |
+| [`strands-evals`](.agents/skills/strands-evals/SKILL.md) | Write evaluations: cases and experiments, evaluators, simulators, failure diagnosis, chaos testing, red teaming, and experiment generation. |
+| [`session-converter`](.agents/skills/session-converter/SKILL.md) | Turn past agent conversations (local harness sessions or traces) into an experiment JSON file. |
+| [`optimize`](.agents/skills/optimize/SKILL.md) | Set up, review, and run `strands-evals optimize` on a strands-harness agent (`agent.py` or `agent.ts`), then report the result. |
+
+The skills ship inside the `strands-agents-evals` package. Install them into your coding assistant with the [`skills` CLI](https://github.com/vercel-labs/skills), run from the environment where you installed the package:
+
+```bash
+npx skills add "$(python -c 'import strands_evals, pathlib; print(pathlib.Path(strands_evals.__file__).parent / ".agents" / "skills")')" --copy
+```
+
+`--copy` copies the skills into your project, so they keep working if that environment is deleted. Run it again after upgrading `strands-agents-evals`. Add `-s optimize` to install only some skills, `-a claude-code` to pick an assistant, or `-g` to install for every project.
+
 ## Installation
 
 Ensure you have Python 3.10+ installed, then:
@@ -171,6 +192,9 @@ pip install -e ".[test,dev]"
 
 # Install with field-level structured-output scoring
 pip install -e ".[stickler]"
+
+# Install with agent optimization (numpy, scipy, Optuna, strands-harness)
+pip install -e ".[optimization]"
 ```
 
 ## Features at a Glance
@@ -495,6 +519,45 @@ report = ChaosExperiment(cases=chaos_cases, evaluators=[...]).run_evaluations(ta
 ```
 
 Available effects: `Timeout`, `NetworkError`, `ExecutionError`, `ValidationError` (cancel the tool call); `TruncateFields`, `RemoveFields`, `CorruptValues` (corrupt the response). Pair with chaos-aware evaluators in `strands_evals.evaluators.chaos` (`FailureCommunicationEvaluator`, `PartialCompletionEvaluator`, `RecoveryStrategyEvaluator`). For the full authoring guide see [`SKILL.md`](.agents/skills/strands-evals/SKILL.md#chaos-testing-deterministic-fault-injection).
+
+### Agent Optimization
+
+Mark what may change about your agent, pass the experiment that measures how well it does its task, and the optimizer searches for a better configuration. Text values are rewritten from the agent's own conversations; choices and numbers are searched with Bayesian optimization; a statistical model ranks every configuration tried. The winner is picked on validation cases the search never saw and compared with your current agent on a held-out test split. Nothing in your code changes: you get a diff for the rewritten text and the new values for everything else. Rewriting text runs model-written shell commands on your machine (Linux or macOS only), so run the optimizer in a container or VM that holds only the credentials it needs.
+
+```python
+from strands import Agent
+from strands.models import BedrockModel
+from strands_evals import Case, Experiment
+from strands_evals.evaluators import HelpfulnessEvaluator
+from strands_evals.optimization import (
+    Budget, Float, Maximize, Minimize, Optimizer, TextValue, WeightedSum, tunable,
+)
+
+@tunable(system_prompt=TextValue(), temperature=Float(0.0, 1.0))
+def create_agent(system_prompt="You are a friendly support agent.", temperature=0.7):
+    return Agent(
+        model=BedrockModel(temperature=temperature),
+        system_prompt=system_prompt,
+        callback_handler=None,
+    )
+
+experiment = Experiment(
+    cases=[Case(name=f"q{i}", input=q) for i, q in enumerate(customer_questions)],
+    evaluators=[HelpfulnessEvaluator()],
+)
+
+result = Optimizer(
+    experiment,
+    create_agent,
+    objective=WeightedSum(Maximize("Helpfulness"), Minimize("output_tokens", scale=100)),
+    budget=Budget(max_rollouts=200),
+).run()
+
+print(result.summary())     # what shipped, the validation pick, the test report
+print(result.best.diff())   # the rewritten system prompt, as a unified diff
+```
+
+The same run works from the command line (`strands-evals optimize run experiment.json --agent agent.py:create_agent`), including Strands harness config files (`--config agent.json`) and agent files exported by the strands CLI (`--agent agent.py` or `--agent agent.ts`). Every trial is saved as it finishes, so a stopped run resumes without paying twice. The budget counts the agent's rollouts only; the model calls that rewrite text and the LLM judges come on top, and `result.summary()` reports the tokens of each. The [`optimize`](.agents/skills/optimize/SKILL.md) skill walks a coding agent through such a run. Install with `pip install 'strands-agents-evals[optimization]'`; see the [Optimization guide](https://strandsagents.com/docs/user-guide/evals-sdk/optimization/).
 
 ### Custom Evaluators with Structured Output
 
@@ -951,6 +1014,7 @@ For detailed guidance & examples, explore our documentation:
 - [User Guide](https://strandsagents.com/latest/documentation/docs/user-guide/evals-sdk/quickstart/)
 - [Evaluator Reference](https://strandsagents.com/latest/documentation/docs/user-guide/evals-sdk/evaluators/)
 - [Simulators Guide](https://strandsagents.com/latest/documentation/docs/user-guide/evals-sdk/simulators/)
+- [Optimization Guide](https://strandsagents.com/docs/user-guide/evals-sdk/optimization/)
 
 ## Contributing ❤️
 
