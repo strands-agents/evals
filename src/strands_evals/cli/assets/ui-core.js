@@ -273,12 +273,30 @@ function show(view, opts) {
   renderPageHead(view);
   renderGuide(view);
   markRunList();
+  markFileTrees();
   if (opts && opts.silent) return;
   /* A view moved to starts at its top, where its heading and any notice are. */
   if (moved) window.scrollTo(0, 0);
   writeAddress(view);
 }
-app.querySelectorAll('.tab').forEach(t => t.onclick = () => show(t.dataset.view));
+/* The sidebar lists start folded. Clicking a view's row opens the view and unfolds its list; the
+   caret beside the row folds it back, or unfolds it without opening anything. */
+const TREE_OF = { reports: 'reports-tree', experiments: 'experiments-tree', 'opt-runs': 'runs-sub' };
+function setFolded(tree, folded) {
+  $(tree).classList.toggle('folded', folded);
+  app.querySelector(`.fold[data-fold="${tree}"]`).setAttribute('aria-expanded', String(!folded));
+}
+app.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+  const tree = TREE_OF[t.dataset.view];
+  /* Clicking the row of the view already showing folds its list back and forth: the caret is a
+     small target, and the row is already going nowhere. */
+  if (tree) setFolded(tree, currentView() === t.dataset.view && !$(tree).classList.contains('folded'));
+  show(t.dataset.view);
+});
+app.addEventListener('click', e => {
+  const fold = e.target.closest('.fold[data-fold]');
+  if (fold) setFolded(fold.dataset.fold, fold.getAttribute('aria-expanded') === 'true');
+});
 /* Rows, chips and chart marks that act as buttons carry tabindex="0": Enter or Space clicks them. */
 app.addEventListener('keydown', e => {
   if ((e.key !== 'Enter' && e.key !== ' ') || e.target.getAttribute('tabindex') !== '0') return;

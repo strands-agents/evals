@@ -150,6 +150,20 @@ const blockDiff = root => {
   const sidebar = () => q.$$('#runs-sub .runrow').map(el => el.textContent);
   const marked = () => q.$$('#runs-sub .runrow.on').map(el => el.textContent);
   const row = name => q.$$('#runs-sub .runrow').find(el => el.textContent === name);
+
+  /* The list starts folded away: the Runs row unfolds it, and the caret beside the row folds it back. */
+  const caret = q.$('.fold[data-fold="runs-sub"]');
+  ok(!caret.hidden && q.$('#runs-sub').classList.contains('folded') && caret.getAttribute('aria-expanded') === 'false',
+    'the runs start folded under their row, with the caret that offers to unfold them');
+  await q.click('.tab[data-view="opt-runs"]');
+  ok(!q.$('#runs-sub').classList.contains('folded') && caret.getAttribute('aria-expanded') === 'true',
+    'opening the Runs view unfolds them, saying so');
+  await q.click('.tab[data-view="opt-runs"]');
+  ok(q.$('#runs-sub').classList.contains('folded') && q.view() === 'v-opt-runs',
+    'clicking the Runs row again, already on its view, folds them back and stays there');
+  await q.click('.tab[data-view="opt-runs"]');
+  ok(!q.$('#runs-sub').classList.contains('folded'), 'and a third click unfolds them again');
+
   eq(sidebar(), q.$$('#opt-runs-rows tr td:first-child .path').map(el => el.textContent),
     'every run is listed under the Runs row, in the order the Runs list has them');
   ok(sidebar().includes('evals/runs/nightly') && sidebar().includes('later/nightly'),
@@ -169,14 +183,22 @@ const blockDiff = root => {
   await q.click('.tab[data-view="opt-runs"]');
   eq([q.view(), marked()], ['v-opt-runs', []],
     'the Runs row itself still opens the list of every run, which has no one run open');
-  ok(!q.$('#sections .tcount') && !q.$('#sections details'),
-    'they are simply listed: no count on the row, and nothing in the sidebar folds away');
+  ok(!q.$('#sections .tcount'), 'no count on the row: they are all listed right under it');
+  await q.click(caret);
+  eq([q.$('#runs-sub').classList.contains('folded'), caret.getAttribute('aria-expanded'), q.view()],
+    [true, 'false', 'v-opt-runs'],
+    'the same caret folds the runs away again, and the open view stays where it was');
+
+  /* However a run is opened, the list unfolds: the mark is never hidden in a folded one. */
+  await q.click('#opt-runs-rows tr[data-opt-run]');
+  ok(q.view() === 'v-opt-overview' && !q.$('#runs-sub').classList.contains('folded') && marked().length === 1,
+    'opening a run unfolds the folded list, so the marked run is in sight', `${q.view()} ${marked()}`);
 }
 const p = await served({
   'demo/run.json': CONFIG, 'demo/events.jsonl': jsonl(EVENTS), 'demo/effects.json': EFFECTS, ...TRANSCRIPTS,
 });
 const { $, $$, text, click } = p;
-eq($$('#sections .tab:not([hidden])').map(t => t.dataset.view).join(), 'reports,experiments,opt-runs',
+eq($$('#sections .tab:not([hidden])').map(t => t.dataset.view).join(), 'experiments,reports,opt-runs',
   'a run directory gains the sidebar a Runs view, after the views of the folder itself');
 eq([p.text('#sgroup-opt .sec'), $('#sgroup-opt .tab').textContent],
   ['Optimization', 'Runs'], 'under an Optimization heading, which names the section and opens nothing');

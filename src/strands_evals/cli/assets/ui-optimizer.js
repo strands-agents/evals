@@ -40,21 +40,25 @@ function runRows() {
   }));
 }
 
-/** Draw them under the Runs row. Nothing is drawn there before a run is found, and the row and the
-    Optimization heading over it are hidden then too. No count on the row: they are all listed right
-    under it. */
+/** Draw them under the Runs row. Nothing is drawn there before a run is found, and the row, the
+    caret that folds the list, and the Optimization heading over it are hidden then too. No count on
+    the row: they are all listed right under it. */
 function renderRunList() {
   const runs = runRows();
   $('runs-sub').hidden = !runs.length;
+  app.querySelector('.fold[data-fold="runs-sub"]').hidden = !runs.length;
   redraw($('runs-sub'), runs.map(r =>
     `<a class="runrow${r.on ? ' on' : ''}" data-opt-run-id="${esc(r.id)}" tabindex="0" role="link"`
     + ` title="${esc(r.title)}"${r.on ? ' aria-current="true"' : ''}>${esc(r.name)}</a>`).join(''));
 }
 
 /** Move the mark to the run the page is showing. Called on every view change, which is cheaper than
-    redrawing and is all that changes. */
+    redrawing and is all that changes. The list unfolds while a run is marked: however the run was
+    opened, the mark is never left hidden in a folded list. */
 function markRunList() {
-  const on = new Map(runRows().map(r => [r.id, r.on]));
+  const rows = runRows();
+  if (rows.some(r => r.on)) setFolded('runs-sub', false);
+  const on = new Map(rows.map(r => [r.id, r.on]));
   for (const el of $('runs-sub').querySelectorAll('[data-opt-run-id]')) {
     const here = on.get(el.dataset.optRunId) === true;
     el.classList.toggle('on', here);
