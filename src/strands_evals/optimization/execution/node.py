@@ -5,6 +5,10 @@ is a `NodeAgent`: `invoke_async` sends the case to the worker with the current s
 runs the file again, builds a fresh agent, runs it inside that context, and replies with its output, its status, and
 its spans, which `traces.ingest` adds to the trial's trace. So usage, the trajectory, and the candidate's spans read
 as a Python agent's.
+
+A rollout that speaks more than once opens a `NodeSession` (`NodeAgent.session()`): the worker builds the agent once
+and keeps it, every `turn` is answered by that same agent with the conversation so far, and leaving the session
+releases it.
 """
 
 from __future__ import annotations
@@ -156,11 +160,37 @@ def _checked(reply: dict[str, Any]) -> dict[str, Any]:
     return reply
 
 
+def _answered(reply: dict[str, Any]) -> str:
+    """The reply's output when it completed; otherwise the failure it reports, raised.
+
+    Ingests the reply's spans either way (a crash's spend is real), names the error after the JavaScript
+    error's type, and raises `InfrastructureError` for a reply the worker classified as infrastructure.
+    """
+    ingest(reply.get("spans") or [])
+    status = reply.get("status")
+    if status == "completed":
+        return str(reply.get("output", ""))
+    failure = node_error(str(reply.get("error_type") or "Error"), str(reply.get("error") or ""))
+    if status == "infrastructure_invalid":
+        raise InfrastructureError(str(failure)) from failure
+    raise failure
+
+
+def _traced(request: dict[str, Any]) -> dict[str, Any]:
+    """`request` with the current span's trace context, when there is one, so the agent's spans parent to it."""
+    context = trace_api.get_current_span().get_span_context()
+    if context.is_valid:
+        request["trace_id"] = format(context.trace_id, "032x")
+        request["span_id"] = format(context.span_id, "016x")
+    return request
+
+
 class NodeAgent:
     """A trial's agent in the Node worker: the file's `attr`, its `index`-th `createHarness` call given `values`.
 
-    Only `invoke_async(prompt)` is supported; it returns the agent's answer as text. `trace_attributes` are set on
-    the agent's spans in Node (the optimizer tags the factory's agent through them).
+    `invoke_async(prompt)` asks a fresh agent once and returns its answer as text; `session()` opens a
+    conversation whose turns share one agent. `trace_attributes` are set on the agent's spans in Node (the
+    optimizer tags the factory's agent through them).
     """
 
     def __init__(self, runner: NodeRunner, attr: str, index: int, values: list[tuple[list[str | int], Any]]) -> None:
@@ -168,27 +198,97 @@ class NodeAgent:
         self.trace_attributes: dict[str, Any] = {}
 
     async def invoke_async(self, prompt: Any) -> str:
-        context = trace_api.get_current_span().get_span_context()
-        request: dict[str, Any] = {
-            "type": "run",
-            "attr": self._attr,
-            "index": self._index,
-            "values": self._values,
-            "input": prompt,
-            "trace_attributes": self.trace_attributes,
-        }
-        if context.is_valid:
-            request["trace_id"] = format(context.trace_id, "032x")
-            request["span_id"] = format(context.span_id, "016x")
+        request = _traced(
+            {
+                "type": "run",
+                "attr": self._attr,
+                "index": self._index,
+                "values": self._values,
+                "input": prompt,
+                "trace_attributes": self.trace_attributes,
+            }
+        )
         try:
             reply = await self._runner.call_async(request)
         except NodeRunnerGone as error:
             raise InfrastructureError(str(error)) from error
-        ingest(reply.get("spans") or [])
-        status = reply.get("status")
-        if status == "completed":
-            return str(reply.get("output", ""))
-        failure = node_error(str(reply.get("error_type") or "Error"), str(reply.get("error") or ""))
-        if status == "infrastructure_invalid":
-            raise InfrastructureError(str(failure)) from failure
-        raise failure
+        return _answered(reply)
+
+    def session(self) -> NodeSession:
+        """A conversation with one agent, for a rollout that speaks more than once.
+
+        Use as an async context manager: entering builds the agent in the worker and holds it open, each
+        `turn(prompt)` asks that same agent (the conversation so far included), and leaving releases it::
+
+            async with agent.session() as session:
+                first = await session.turn("hello")
+                second = await session.turn("and again?")
+        """
+        return NodeSession(self._runner, self._attr, self._index, self._values, self.trace_attributes)
+
+
+class NodeSession:
+    """One agent held open in the Node worker, answering every `turn` with the conversation so far.
+
+    Built by `NodeAgent.session()`. Entering sends `start` (the agent is built once there; a build the
+    values break fails here), each `turn` sends the prompt to that agent, and leaving sends `release`.
+    `last_result` is the latest completed turn's structured result as the worker could write it to JSON
+    (the stop reason, the final message, any structured output), or None.
+    """
+
+    def __init__(
+        self,
+        runner: NodeRunner,
+        attr: str,
+        index: int,
+        values: list[tuple[list[str | int], Any]],
+        trace_attributes: dict[str, Any],
+    ) -> None:
+        self._runner, self._attr, self._index, self._values = runner, attr, index, values
+        self._trace_attributes = dict(trace_attributes)
+        self._session: str | None = None
+        self.last_result: Any = None
+
+    async def __aenter__(self) -> NodeSession:
+        request = {
+            "type": "start",
+            "attr": self._attr,
+            "index": self._index,
+            "values": self._values,
+            "trace_attributes": self._trace_attributes,
+        }
+        try:
+            reply = await self._runner.call_async(request)
+        except NodeRunnerGone as error:
+            raise InfrastructureError(str(error)) from error
+        if not reply.get("ok"):
+            failure = node_error(str(reply.get("error_type") or "Error"), str(reply.get("error") or ""))
+            if reply.get("status") == "infrastructure_invalid":
+                raise InfrastructureError(str(failure)) from failure
+            raise failure
+        self._session = str(reply["session"])
+        return self
+
+    async def turn(self, prompt: Any) -> str:
+        """Ask the held agent `prompt` and return its answer as text; `last_result` holds the structured result."""
+        if self._session is None:
+            raise RuntimeError("the session is not open: enter it first (`async with agent.session() as session`)")
+        request = _traced({"type": "turn", "session": self._session, "input": prompt})
+        try:
+            reply = await self._runner.call_async(request)
+        except NodeRunnerGone as error:
+            # The worker restarting lost the conversation: later turns would silently start one afresh.
+            self._session = None
+            raise InfrastructureError(str(error)) from error
+        answer = _answered(reply)
+        self.last_result = reply.get("result")
+        return answer
+
+    async def __aexit__(self, *exc_info: Any) -> None:
+        session, self._session = self._session, None
+        if session is None:
+            return
+        try:
+            await self._runner.call_async({"type": "release", "session": session})
+        except NodeRunnerGone:
+            pass  # the worker is gone, and with it everything the session held open

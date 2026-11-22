@@ -8,14 +8,23 @@
 //   describe {attr, paths}           -> {index, values: [{value} | {missing}]}  the agent's call and its values
 //   probe    {attr, index, values}   -> {ok} | {ok: false, status, error_type, error}  build it once, run nothing
 //   run      {attr, index, values, input, trace_id, span_id, trace_attributes}
-//                                    -> {status, output?, error_type?, error?, spans}
-//   cancel   {target}                -> (no reply) abort that run
+//                                    -> {status, output?, result?, error_type?, error?, spans}
+//   start    {attr, index, values, trace_attributes}
+//                                    -> {ok, session} | {ok: false, status, error_type, error}  hold an agent open
+//   turn     {session, input, trace_id, span_id}
+//                                    -> {status, output?, result?, error_type?, error?, spans}  ask it again
+//   release  {session}               -> {ok}  let the agent go and remove its folders
+//   cancel   {target}                -> (no reply) abort that run or turn
 //
 // `values` is a list of [path, value]: set on the `index`-th `createHarness` call of the file's run. Every call gets
 // fresh `session` and `memory` folders (memory a copy of the configured one) and `printer: false` unless it gives
 // one. A run's agent runs inside the given trace context, so its spans belong to the Python trial's trace; the
 // spans of that trace are returned with the reply, crashes included. `status` is `completed`, `agent_failure`, or
 // `infrastructure_invalid` (throttling, network, credentials, a model service's 5xx).
+//
+// `run` builds a fresh agent, asks it once, and lets it go. A conversation is `start`, then `turn` for each message
+// (the same agent, keeping what was said), then `release`; the one who started it releases it. `output` is the
+// answer as text; `result` is its JSON-safe heart (the stop reason, the final message, any structured output).
 
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { cpSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
@@ -258,11 +267,9 @@ async function probe({ attr, index, values }) {
 
 const running = new Map()
 
-async function runCase({ id, attr, index, values, input, trace_id, span_id, trace_attributes }) {
-  const { otel, collector } = await setup
-  const controller = new AbortController()
-  running.set(id, controller)
-  const parent = trace_id
+/** The trace context a request's agent runs inside: the Python trial's span, or nothing. */
+const parentContext = (otel, trace_id, span_id) =>
+  trace_id
     ? otel.trace.setSpanContext(otel.ROOT_CONTEXT, {
         traceId: trace_id,
         spanId: span_id,
@@ -270,23 +277,97 @@ async function runCase({ id, attr, index, values, input, trace_id, span_id, trac
         isRemote: true,
       })
     : otel.ROOT_CONTEXT
+
+/** The JSON-safe heart of an invoke's AgentResult, or null when none of it survives JSON. */
+function resultJson(result) {
+  if (!result || typeof result !== 'object') return null
+  try {
+    return JSON.parse(
+      JSON.stringify({
+        stop_reason: result.stopReason ?? null,
+        last_message: result.lastMessage ?? null,
+        structured_output: result.structuredOutput ?? null,
+      })
+    )
+  } catch {
+    return null
+  }
+}
+
+async function runCase({ id, attr, index, values, input, trace_id, span_id, trace_attributes }) {
+  const { otel, collector } = await setup
+  const controller = new AbortController()
+  running.set(id, controller)
   if (trace_id) collector.watch(trace_id)
   let built
   try {
-    const result = await otel.context.with(parent, async () => {
+    const result = await otel.context.with(parentContext(otel, trace_id, span_id), async () => {
       built = await build(attr, index, values, trace_attributes)
       if (built.run.calls[index]?.agent !== built.agent) throw new Error(`${attr} was built by another createHarness call`)
       return built.agent.invoke(typeof input === 'string' ? input : JSON.stringify(input), {
         cancelSignal: controller.signal,
       })
     })
-    return { status: 'completed', output: String(result) }
+    return { status: 'completed', output: String(result), result: resultJson(result) }
   } catch (error) {
     return { status: classify(error), ...describeError(error) }
   } finally {
     running.delete(id)
     await built?.cleanup()
   }
+}
+
+// Conversations held open by `start`: the same agent answers every `turn` of its session until `release`.
+let sessionCount = 0
+const sessions = new Map()
+
+async function startSession({ attr, index, values, trace_attributes }) {
+  let built
+  try {
+    built = await build(attr, index, values, trace_attributes)
+    if (built.run.calls[index]?.agent !== built.agent) throw new Error(`${attr} was built by another createHarness call`)
+  } catch (error) {
+    await built?.cleanup()
+    return { ok: false, status: classify(error), ...describeError(error) }
+  }
+  const session = `s${++sessionCount}`
+  sessions.set(session, built)
+  return { ok: true, session }
+}
+
+async function turn({ id, session, input, trace_id, span_id }) {
+  const { otel, collector } = await setup
+  const built = sessions.get(session)
+  if (!built) {
+    // Released, never started, or lost to a worker restart: the Python side reads this as infrastructure.
+    return {
+      status: 'infrastructure_invalid',
+      error_type: 'NodeSessionGone',
+      error: `no open session ${session}: it was released, or the worker restarted since it started`,
+    }
+  }
+  const controller = new AbortController()
+  running.set(id, controller)
+  if (trace_id) collector.watch(trace_id)
+  try {
+    const result = await otel.context.with(parentContext(otel, trace_id, span_id), () =>
+      built.agent.invoke(typeof input === 'string' ? input : JSON.stringify(input), {
+        cancelSignal: controller.signal,
+      })
+    )
+    return { status: 'completed', output: String(result), result: resultJson(result) }
+  } catch (error) {
+    return { status: classify(error), ...describeError(error) }
+  } finally {
+    running.delete(id)
+  }
+}
+
+async function releaseSession({ session }) {
+  const built = sessions.get(session)
+  sessions.delete(session)
+  if (built) await built.cleanup()
+  return { ok: true }
 }
 
 // Mirrors the Python optimizer's `classify`: the model service, the network, or credentials failing is
@@ -353,10 +434,12 @@ async function answer(line) {
       return
     }
     await setup
-    const handler = { describe, probe, run: runCase }[request.type]
+    const handler = { describe, probe, run: runCase, start: startSession, turn, release: releaseSession }[request.type]
     if (!handler) throw new Error(`unknown request type ${request.type}`)
     const reply = await handler(request)
-    if (request.type === 'run' && request.trace_id) reply.spans = (await setup).collector.take(request.trace_id)
+    if ((request.type === 'run' || request.type === 'turn') && request.trace_id) {
+      reply.spans = (await setup).collector.take(request.trace_id)
+    }
     send({ ...reply, id: request.id })
   } catch (error) {
     send({ id: request.id, setup_error: describeError(error).error })
@@ -370,4 +453,10 @@ createInterface({ input: process.stdin })
     pending.add(answering)
     void answering.finally(() => pending.delete(answering))
   })
-  .on('close', () => void Promise.allSettled([...pending]).then(() => process.exit(0))) // finish what's in flight
+  .on('close', () =>
+    void Promise.allSettled([...pending]).then(async () => {
+      // Finish what's in flight, then let go of any conversation nobody released, folders included.
+      for (const built of sessions.values()) await built.cleanup().catch(() => undefined)
+      process.exit(0)
+    })
+  )

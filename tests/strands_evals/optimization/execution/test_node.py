@@ -131,6 +131,113 @@ async def test_a_runner_that_exited_is_infrastructure(traces, tracer):
     assert isinstance(error, InfrastructureError) and classify(error) is TrialStatus.INFRASTRUCTURE_INVALID
 
 
+class SessionRunner(FakeRunner):
+    """Answers `start` / `turn` / `release` as the runner would; turns reply with the recorded run reply."""
+
+    def __init__(self, start_reply=None, **reply):
+        super().__init__(**reply)
+        self.start_reply = start_reply
+        self.opened = 0
+
+    async def call_async(self, message):
+        if message.get("type") == "start":
+            self.requests.append(message)
+            self.opened += 1
+            return self.start_reply or {"ok": True, "session": f"s{self.opened}"}
+        if message.get("type") == "release":
+            self.requests.append(message)
+            return {"ok": True}
+        return await super().call_async(message)
+
+
+async def _converse(tracer, traces, agent, prompts):
+    """Run one session over `prompts` inside a trial's spans; returns `(trace_id, attempt_span_id, outcomes)`."""
+    outcomes = []
+    with tracer.start_as_current_span("execute_case case", context=Context()) as root:
+        trace_id = format(root.get_span_context().trace_id, "032x")
+        traces.register(trace_id)
+        with tracer.start_as_current_span("attempt case", attributes={SPAN_KIND: ATTEMPT_SPAN}) as attempt:
+            attempt_id = format(attempt.get_span_context().span_id, "016x")
+            rollout = {SPAN_KIND: ROLLOUT_SPAN, FACTORY_TAGGED: True}
+            with tracer.start_as_current_span("rollout case", attributes=rollout) as span:
+                built = _tagging(lambda: agent, span)()
+                async with built.session() as session:
+                    for prompt in prompts:
+                        try:
+                            outcomes.append(await session.turn(prompt))
+                        except Exception as error:
+                            outcomes.append(error)
+    return trace_id, attempt_id, outcomes
+
+
+async def test_a_session_asks_one_held_agent_turn_after_turn(traces, tracer):
+    runner = SessionRunner(result={"stop_reason": "endTurn"})
+    agent = NodeAgent(runner, "agent", 0, [(["instructions"], "Be exact.")])
+    agent.trace_attributes["tagged"] = True
+    trace_id, attempt_id, outcomes = await _converse(tracer, traces, agent, ["question 7", "question 7 again"])
+
+    assert outcomes == ["answer 7", "answer 7"]
+    start, first, second, release = runner.requests
+    assert start["type"] == "start" and start["values"] == [(["instructions"], "Be exact.")]
+    assert start["trace_attributes"]["tagged"] is True  # the factory's tag reaches the one build
+    assert [first["type"], second["type"]] == ["turn", "turn"]
+    assert first["session"] == second["session"] == "s1"  # the same held agent answers both
+    assert "values" not in first and first["trace_id"] == trace_id  # a turn carries the trial's trace, not a build
+    assert release == {"type": "release", "session": "s1"}
+    assert traces.usage(trace_id, attempt_id).tokens == 1400  # both turns' spans land in the trial
+
+
+async def test_a_sessions_last_result_is_the_turns_structured_result(traces, tracer):
+    runner = SessionRunner(result={"stop_reason": "endTurn", "structured_output": {"n": 7}})
+    _, _, outcomes = await _converse(tracer, traces, NodeAgent(runner, "agent", 0, []), ["question 7"])
+    assert outcomes == ["answer 7"]
+    # The session object was context-managed away; read the result off a fresh session instead.
+    async with NodeAgent(runner, "agent", 0, []).session() as session:
+        assert await session.turn("question 7") == "answer 7"
+        assert session.last_result == {"stop_reason": "endTurn", "structured_output": {"n": 7}}
+
+
+async def test_a_start_the_values_break_raises_and_opens_nothing():
+    broken = {"ok": False, "status": "agent_failure", "error_type": "ValidationError", "error": "bad effort"}
+    runner = SessionRunner(start_reply=broken)
+    with pytest.raises(NodeError) as caught:
+        async with NodeAgent(runner, "agent", 0, []).session():
+            pass
+    assert type(caught.value).__name__ == "ValidationError" and str(caught.value) == "bad effort"
+    assert [request["type"] for request in runner.requests] == ["start"]  # nothing to release
+
+    runner = SessionRunner(start_reply={**broken, "status": "infrastructure_invalid"})
+    with pytest.raises(InfrastructureError):
+        async with NodeAgent(runner, "agent", 0, []).session():
+            pass
+
+
+async def test_a_failed_turn_raises_and_the_session_is_still_released(traces, tracer):
+    runner = SessionRunner(status="agent_failure", error_type="ValidationError", error="bad tool input", output=None)
+    _, _, (error,) = await _converse(tracer, traces, NodeAgent(runner, "agent", 0, []), ["question 7"])
+    assert isinstance(error, NodeError) and classify(error) is TrialStatus.AGENT_FAILURE
+    assert runner.requests[-1]["type"] == "release"  # leaving the `async with` still lets the agent go
+
+
+async def test_a_worker_that_dies_mid_session_is_infrastructure():
+    class DiesOnTurn(SessionRunner):
+        async def call_async(self, message):
+            if message.get("type") in ("turn", "release"):
+                raise NodeRunnerGone("the Node agent runner exited with code 1")
+            return await super().call_async(message)
+
+    agent = NodeAgent(DiesOnTurn(), "agent", 0, [])
+    with pytest.raises(InfrastructureError):
+        # The dead worker also makes `release` moot: leaving the session must not raise over the turn's error.
+        async with agent.session() as session:
+            await session.turn("question 7")
+
+
+async def test_a_turn_outside_the_session_says_to_enter_it():
+    with pytest.raises(RuntimeError, match="enter it first"):
+        await NodeAgent(SessionRunner(), "agent", 0, []).session().turn("question 7")
+
+
 def test_ingest_rebuilds_every_field_the_readers_use(traces, tracer):
     with tracer.start_as_current_span("execute_case case", context=Context()) as root:
         trace_id = format(root.get_span_context().trace_id, "032x")
