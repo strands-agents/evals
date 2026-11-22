@@ -32,7 +32,8 @@ const helpLink = p => parse(p.$('.help-pop a'));
   ok(new Set(links.map(a => a.href)).size >= 20 && untagged.length === 0, 'every docs link carries the campaign tags and a placement',
     `${new Set(links.map(a => a.href)).size} links, untagged: ${untagged.join(' ')}`);
   ok(links.every(a => a.blank), 'and opens in a new tab without an opener');
-  const chrome = p.$$('.bar a, .sections a').map(a => parse(a) || a.href);
+  /* The file tree's leaves are in the sidebar and are links, but they open a file in the page. */
+  const chrome = p.$$('.bar a, .sections a:not(.runrow)').map(a => parse(a) || a.href);
   ok(JSON.stringify(chrome) === JSON.stringify([
     '|nav-docs|', 'quickstart/|nav-quickstart|', 'evaluators/|nav-evaluators|',
     'https://github.com/strands-agents/evals',

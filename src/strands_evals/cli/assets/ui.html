@@ -31,21 +31,22 @@
       <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
     </button>
   </header>
-  <!-- Starts `lonely` so no section name shows before the first scan finds an optimizer run. -->
-  <nav class="sections lonely" id="sections" aria-label="Views">
+  <nav class="sections" id="sections" aria-label="Views">
     <a class="slug" data-doc="" data-placement="nav-slug">/evals</a>
-    <div class="sgroup">
-      <button class="sec on" data-sec="evals">Evals</button>
-      <div class="tabs">
-        <button class="tab on" data-view="reports" data-sec="evals" data-tip="Every report found in this folder, whether or not an experiment file sits beside it.">Reports</button>
-        <button class="tab" data-view="experiments" data-sec="evals" data-tip="Every experiment file found in this folder, and the reports made from each.">Experiments</button>
-        <button class="tab" data-view="sessions" data-sec="evals" hidden data-tip="Every recorded session found in this folder, and what a diagnosis found in each.">Sessions</button>
-      </div>
-    </div>
-    <div class="sgroup" id="sgroup-opt" hidden>
-      <button class="sec" data-sec="optimization" id="sec-opt" hidden>Optimization</button>
-      <div class="tabs">
+    <!-- The views, each a kind of thing this folder holds. `data-sec` groups a view with the page
+         tabs that belong to it, which is what hides a run's own tabs until there is a run. -->
+    <div class="tabs">
+      <button class="tab on" data-view="reports" data-sec="evals" data-tip="Every report found in this folder, whether or not an experiment file sits beside it.">Reports</button>
+      <button class="tab" data-view="experiments" data-sec="evals" data-tip="Every experiment file found in this folder, and the reports made from each.">Experiments</button>
+      <button class="tab" data-view="sessions" data-sec="evals" hidden data-tip="Every recorded session found in this folder, and what a diagnosis found in each.">Sessions</button>
+      <!-- Optimization, the Runs view under it, and every run under that: three levels, so a run is
+           one click from any page and the Runs list is not a stop on the way. The heading names what
+           the section is rather than opening anything; the row under it is what opens the list.
+           Hidden whole until a scan finds a run. Always listed, never folded away. -->
+      <div class="sgroup" id="sgroup-opt" hidden>
+        <div class="sec">Optimization</div>
         <button class="tab" data-view="opt-runs" data-sec="optimization" hidden data-tip="Optimizer runs found in this folder.">Runs</button>
+        <div class="runlist" id="runs-sub" hidden></div>
       </div>
     </div>
     <div class="nav-foot">
