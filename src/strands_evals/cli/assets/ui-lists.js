@@ -36,6 +36,56 @@ const experimentSize = e => `${plural(e.cases, 'case')} · ${plural((e.evaluator
 const filed = m => `${m.dir && m.dir !== '.' ? `<span class="dim">${esc(m.dir)} /</span> ` : ''}${esc(m.name)}`
   + `<br><span class="path">${KB(m.size)}</span>`;
 
+/* ── the files, under the views that name them ──
+
+   Like the optimizer runs under Runs: every report and every experiment is listed again right under
+   its view, so opening one is a click from any page rather than a trip through the list first. The
+   lists stay there and the rows above them still open them, with the columns a sidebar row has no
+   space for. Two files that share a name are told apart by the whole path. */
+
+/* The file whose page is showing, if a page of one is: the list views show all of them and mark
+   none, and a candidate read as a report is a page of its run, not of a report file. */
+const openReportPath = () => (currentView() === 'report' && !repCand && repMeta ? repMeta.path : null);
+const openExperimentPath = () => (currentView() === 'experiment' && expMeta ? expMeta.path : null);
+
+/** Draw one tree. Nothing is drawn before a file is found, and the caret that folds it waits too. */
+function renderFileTree(id, kind, metas, open, describe) {
+  const names = metas.map(m => m.name);
+  const twice = new Set(names.filter((n, i) => names.indexOf(n) !== i));
+  $(id).hidden = !metas.length;
+  app.querySelector(`.fold[data-fold="${id}"]`).hidden = !metas.length;
+  redraw($(id), metas.map(m => {
+    const on = open === m.path;
+    return `<a class="runrow${on ? ' on' : ''}" data-${kind}="${esc(m.path)}" tabindex="0" role="link"`
+      + ` title="${esc(`${m.path} · ${describe(m)}`)}"${on ? ' aria-current="true"' : ''}>`
+      + `${esc(twice.has(m.name) ? m.path : m.name)}</a>`;
+  }).join(''));
+}
+
+function renderFileTrees() {
+  renderFileTree('reports-tree', 'report', REPORTS, openReportPath(),
+    r => `report · ${plural(r.rows, 'row')}`);
+  renderFileTree('experiments-tree', 'experiment', EXPERIMENTS, openExperimentPath(),
+    e => `experiment · ${plural(e.cases, 'case')}`);
+}
+
+/** Move the marks to the files the page is showing. Called on every view change, which is cheaper
+    than redrawing and is all that changes. A list holding the open file unfolds: however the file
+    was opened, the mark is never left hidden in a folded list. */
+function markFileTrees() {
+  const mark = (id, key, path) => {
+    if (path != null) setFolded(id, false);
+    for (const el of $(id).querySelectorAll('a.runrow')) {
+      const here = path != null && el.dataset[key] === path;
+      el.classList.toggle('on', here);
+      if (here) el.setAttribute('aria-current', 'true');
+      else el.removeAttribute('aria-current');
+    }
+  };
+  mark('reports-tree', 'report', openReportPath());
+  mark('experiments-tree', 'experiment', openExperimentPath());
+}
+
 function renderLists() {
   $('read-only').hidden = !READONLY;
   $('root-path').textContent = ROOT;
@@ -74,6 +124,7 @@ function renderLists() {
       + skipped.map(s => `<li><code>${esc(s.path)}</code>: ${esc(s.why)}</li>`).join('')
       + '</ul></details>'
     : '';
+  renderFileTrees();
   renderComparePick();
   renderPageHead(currentView());
 }

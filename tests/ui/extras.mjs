@@ -128,6 +128,69 @@ const report = (score, ...cases) => ({
   p.text('#facts'));
 }
 
+// ── the files under their views in the sidebar, the way the optimizer runs are under Runs ──
+{
+  const p = await served({
+    'a/experiment.json': experiment(CASE),
+    'b/experiment.json': experiment(CASE),
+    'solo.report.json': report(0.5, CASE),
+  });
+  const tree = id => p.$$(`#${id} .runrow`).map(el => el.textContent).join();
+  const marked = id => p.$$(`#${id} .runrow.on`).map(el => el.textContent).join();
+
+  ok(p.$$('#sections .tab:not([hidden])').map(t => t.dataset.view).join() === 'experiments,reports',
+    'Experiments sits first in the sidebar, before Reports', p.$$('#sections .tab').map(t => t.dataset.view).join());
+
+  /* Each list starts folded away. The view's own row unfolds it; so does the caret beside it. */
+  const caret = id => p.$(`.fold[data-fold="${id}"]`);
+  ok(['experiments-tree', 'reports-tree'].every(id => !caret(id).hidden
+    && caret(id).getAttribute('aria-expanded') === 'false' && p.$(`#${id}`).classList.contains('folded')),
+  'each list starts folded under its row, with a caret offering to unfold it');
+  await p.click('.tab[data-view="experiments"]');
+  ok(!p.$('#experiments-tree').classList.contains('folded') && caret('experiments-tree').getAttribute('aria-expanded') === 'true'
+    && p.$('#reports-tree').classList.contains('folded'),
+  'opening a view unfolds its own list, saying so, and leaves the other folded');
+  await p.click('.tab[data-view="experiments"]');
+  ok(p.$('#experiments-tree').classList.contains('folded') && p.view() === 'v-experiments',
+    'clicking the row again, already on its view, folds the list back and stays there');
+  await p.click('.tab[data-view="experiments"]');
+  ok(!p.$('#experiments-tree').classList.contains('folded'), 'and a third click unfolds it again');
+  await p.click(caret('reports-tree'));
+  ok(!p.$('#reports-tree').classList.contains('folded') && caret('reports-tree').getAttribute('aria-expanded') === 'true'
+    && p.view() === 'v-experiments',
+  'the caret unfolds a list too, without opening its view');
+
+  ok(tree('reports-tree') === 'solo.report.json', 'every report is listed under the Reports row by name',
+    tree('reports-tree'));
+  ok(tree('experiments-tree') === 'a/experiment.json,b/experiment.json',
+    'two experiments whose files share a name are named by the whole path, not the name twice',
+    tree('experiments-tree'));
+  ok(marked('reports-tree') === '' && marked('experiments-tree') === '',
+    'the lists mark no file while a list view is showing');
+
+  await p.click('#reports-tree .runrow');
+  ok(p.view() === 'v-report' && marked('reports-tree') === 'solo.report.json',
+    'clicking a report in the sidebar opens it from anywhere, and the list follows to it',
+    `${p.view()} ${marked('reports-tree')}`);
+  await p.click('#experiments-tree .runrow');
+  ok(p.view() === 'v-experiment' && marked('experiments-tree') === 'a/experiment.json' && marked('reports-tree') === '',
+    'an experiment too, and the mark moves with the page', `${p.view()} ${marked('experiments-tree')}`);
+  await p.click('.tab[data-view="experiments"]');
+  ok(marked('experiments-tree') === '', 'the row itself still opens the list, which marks no one file');
+
+  /* Folding one list back leaves the other and the view alone. */
+  await p.click(caret('experiments-tree'));
+  ok(p.$('#experiments-tree').classList.contains('folded') && caret('experiments-tree').getAttribute('aria-expanded') === 'false'
+    && !p.$('#reports-tree').classList.contains('folded') && p.view() === 'v-experiments',
+  'the same caret folds its list away again, leaving the other list and the open view where they were');
+
+  /* However a file is opened, its list unfolds: the mark is never hidden in a folded one. */
+  await p.click('#experiments-rows tr.row');
+  ok(p.view() === 'v-experiment' && !p.$('#experiments-tree').classList.contains('folded')
+    && marked('experiments-tree') === 'a/experiment.json',
+  'opening a file unfolds the folded list that holds it, so the marked file is in sight');
+}
+
 // ── the report an unrun experiment is told to write is one the scan would pair with it by name ──
 {
   const p = await served({ 'nightly.experiment.json': experiment(CASE), 'smoke.json': experiment(CASE), 'myexperiment.json': experiment(CASE) });

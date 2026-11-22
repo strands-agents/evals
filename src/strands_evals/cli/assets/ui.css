@@ -138,21 +138,38 @@ h2, .chart h3, .pane > header .t, .hero .big, .stat .v, .winner .wid {
   font: 700 11px var(--sans); letter-spacing: .05em; text-transform: uppercase;
   color: var(--ink1); padding: 10px 12px 2px;
 }
-.sgroup .tab { padding-left: 24px; }
+#sgroup-opt .tab { padding-left: 24px; }
 .tab.on { font-weight: 600; color: var(--on-brand); background: var(--brand); }
 
-/* ── the runs, under the view that names them ──
-   A step in past the Runs row, so the three levels read as three, and its own scroller once a folder
-   holds many runs. A row of the list, not a link written into prose: none of the underline those
-   carry, which the `#runs-sub` here is for — it outranks the `a[data-report]` rule further down. */
-#runs-sub { max-height: 30vh; overflow: auto; }
-#runs-sub .runrow {
+/* A view's row with the caret that folds the list under it. The caret sits over the row's right
+   padding, so the row keeps its full width as the click target that opens the view. */
+.trow { position: relative; display: flex; }
+.trow .tab { flex: 1; min-width: 0; padding-right: 30px; }
+.fold {
+  appearance: none; border: 0; background: none; cursor: pointer; color: var(--ink3);
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  display: inline-flex; padding: 3px; border-radius: 4px;
+}
+.fold:hover { color: var(--ink1); background: var(--hair2); }
+.tab.on + .fold, .tab.on + .fold:hover { color: var(--on-brand); background: none; }
+.fold svg { width: 14px; height: 14px; }
+.fold[aria-expanded="false"] svg { transform: rotate(-90deg); }
+
+/* ── what a view holds, under the row that opens it ──
+   The files or runs of a view, a step in past its row, each with its own scroller once a folder
+   holds many. A row of the list, not a link written into prose: none of the underline those carry,
+   which `.runlist .runrow` is for — it outranks the `a[data-report]` rule further down. */
+.runlist { max-height: 30vh; overflow: auto; }
+.runlist.folded { display: none; }
+.runlist .runrow {
   display: block; font: 13px/1.5 var(--sans); color: var(--ink2); text-decoration: none;
-  cursor: pointer; border-bottom: 0; padding: 2px 6px 2px 36px; border-radius: 4px;
+  cursor: pointer; border-bottom: 0; padding: 2px 6px 2px 24px; border-radius: 4px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-#runs-sub .runrow:hover { color: var(--ink1); background: var(--hair2); }
-#runs-sub .runrow.on, #runs-sub .runrow.on:hover {
+/* The runs sit a level deeper: their row is already indented under the Optimization heading. */
+#sgroup-opt .runlist .runrow { padding-left: 36px; }
+.runlist .runrow:hover { color: var(--ink1); background: var(--hair2); }
+.runlist .runrow.on, .runlist .runrow.on:hover {
   font-weight: 600; color: var(--on-brand); background: var(--brand);
 }
 
@@ -862,14 +879,15 @@ th[data-term], th[data-tip], .cap[data-term] {
   .navlinks { display: none; }
   .nav-foot { flex-direction: row; flex-wrap: wrap; width: 100%; margin: 0; padding: 0; border-top: 0; gap: 4px 18px; }
   .tabs { flex-direction: row; flex-wrap: wrap; }
-  /* The sidebar is a strip here, so Optimization and its runs take a line of their own beside the
-     views rather than a place in the row, with the heading inline with the row it names. The runs
-     are kept to a column: a row stretched across the strip reads as a bar, not a run. */
+  /* The sidebar is a strip here, so each view and what it lists take a place in the row, with any
+     heading inline with the row it names. The lists are kept to a column: a row stretched across
+     the strip reads as a bar, not a file or a run. */
   .sgroup { flex-direction: row; flex-wrap: wrap; align-items: baseline; }
   .sec { padding: 5px 0 5px 2px; }
-  #runs-sub { flex-basis: 100%; max-height: 160px; max-width: 360px; }
-  #runs-sub .runrow { padding-left: 10px; }
-  .tab, .sgroup .tab { padding: 5px 10px; }
+  .runlist { flex-basis: 100%; max-height: 160px; max-width: 360px; }
+  .runlist .runrow, #sgroup-opt .runlist .runrow { padding-left: 10px; }
+  .tab, #sgroup-opt .tab { padding: 5px 10px; }
+  .trow .tab, #sgroup-opt .trow .tab { padding-right: 30px; }
   main { padding: 22px 16px 48px; }
   /* The header's actions sit under its facts, not beside them. */
   .facts { flex-basis: 100%; }
