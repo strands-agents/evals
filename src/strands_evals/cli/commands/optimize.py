@@ -389,7 +389,8 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
         help=(
             "with --config or an agent file, repeatable: a dotted config path (or create_harness / createHarness "
             "argument) to tune, as text (e.g. 'description', or "
-            "'skills' for its skill folder), with =JSON_LIST as a choice (e.g. 'effort=[\"low\",\"high\"]'), or "
+            "'skills' for its skill folder), with =JSON_LIST as a choice of JSON values, lists and objects "
+            'included (e.g. \'effort=["low","high"]\', or \'builtinTools=[[],["read"]]\' for tool sets), or '
             "with =int:LO..HI / =float:LO..HI as a number in a range (e.g. 'builtinTools.subagent.maxDepth=int:0..3')"
         ),
     )

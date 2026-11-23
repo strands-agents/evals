@@ -34,11 +34,11 @@ import strands_harness
 import strands_harness.agent
 from strands_harness.defaults import DEFAULT_MEMORY_DIR
 
-from ..optimization import Marker, OneOf, SkillLibrary, TextValue, TunableFactory, tunable
+from ..optimization import Marker, SkillLibrary, TextValue, TunableFactory, tunable
 from ..optimization.execution import node
 from ..optimization.execution.status import InfrastructureError
 from ._entrypoint import EntryPointError, _looks_like_path, import_attr
-from ._harness import DEFAULT_TUNED, Tuned, _number, _path, _Range, _set, _split
+from ._harness import DEFAULT_TUNED, Tuned, _choice, _number, _path, _Range, _set, _split
 
 logger = logging.getLogger(__name__)
 
@@ -262,9 +262,7 @@ def _declare(
         if isinstance(options, _Range):
             markers[name], kind = _number(text, options, value), "number"
         elif options is not None:
-            if value not in options:
-                raise ValueError(f"--tune {text}: the agent's value {value!r} must be one of the options")
-            markers[name], kind = OneOf(*options, default=value), "choice"
+            markers[name], kind = _choice(text, "the agent's", options, value), "choice"
         elif path == ("skills",):
             if isinstance(value, list) and len(value) == 1:  # /export writes skills=[project_path(...)]
                 listed.add(name)
