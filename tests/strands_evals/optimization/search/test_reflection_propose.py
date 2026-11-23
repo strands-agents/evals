@@ -490,8 +490,8 @@ class WindowedModel(ScriptedModel):
 
 
 async def test_a_full_context_elides_old_messages_but_keeps_the_task_message():
-    """Past 85% of the context window the oldest messages are elided; the task message stays first through every
-    call, the send-back's included, and the tool outputs that remain are whole."""
+    """Past 85% of the context window the messages between the first few and the last ones are elided; the task
+    message stays first through every call, the send-back's included, and the tool outputs that remain are whole."""
 
     reads = [ToolUse("shell", {"command": "printf 'y%.0s' $(seq 1500)"}) for _ in range(8)]
     turns = [*reads, write("p.txt", "x" * 80), submit(prompt="p.txt"), "Done."]
@@ -504,8 +504,9 @@ async def test_a_full_context_elides_old_messages_but_keeps_the_task_message():
     task = model.seen[0][0]
     assert "Write a new version of the parameters" in task
     assert all(messages[0] == task for messages in model.seen)  # the send-back's call included
-    elided = next(messages for messages in model.seen if "elided" in "".join(messages[1:2]))
-    assert len(elided) == 5  # the task + the last 4: Reflection's strategy, not the SDK's emergency fallback
+    elided = next(messages for messages in model.seen if any("messages elided" in m for m in messages))
+    # Reflection's strategy, not the SDK's emergency fallback, which elides from the oldest: the first read stays
+    assert "tool-1" in elided[1] and "messages elided" not in elided[1]
     assert model.tools == {("shell", "submit_optimized_params")}  # no retrieval tool
     assert all("y" * 1500 in m for messages in model.seen for m in messages if "yyyy" in m)  # outputs not cut
 
@@ -558,9 +559,10 @@ async def test_a_rejected_request_is_elided_first_then_a_kept_result_is_cut():
     (patch,) = await reflection.propose(request(events=events))
     assert patch.updates == {"prompt": "Ask for the number.\n"}
     assert model.rejected == 1 and events == []
-    after = next(messages for messages in model.seen if "elided" in "".join(messages[1:2]))
-    assert len(after) == 5  # the task + the last 4: two reads (call, result), the older result cut
-    assert "[cut:" in after[2] and "d" * 200 in after[2] and "e" * 2000 in after[4]
+    after = next(messages for messages in model.seen if any("messages elided" in m for m in messages))
+    # The first read and the last two stay, the reads between are elided; the cut lands on the oldest kept result
+    assert "messages elided" in after[3] and "[cut:" in after[2] and "a" * 200 in after[2]
+    assert "d" * 2000 in after[4] and "e" * 2000 in after[6]
 
 
 async def test_an_unknown_window_is_taken_as_200000_tokens_and_a_rejected_request_still_recovers():

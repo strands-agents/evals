@@ -352,14 +352,15 @@ class Reflection(Proposer):
                     _confined_shell(work, [traces, versions, work], refused, root, running, shell_env=self._shell_env),
                     _submit_tool(work, submitted, parent, rejected, caps),
                 ],
-                # At 85% of the model's context window the oldest messages but the last 4 are elided; the first
-                # message, the task, is never removed, nor is a pinned send-back (except by the SDK's last-resort
-                # truncation, when even the last messages don't fit). Tool outputs stay whole unless the provider
-                # rejects a request as too large, nothing calls a model (so `usage` is the whole spend), and with no
-                # stash there is no retrieval tool: the agent rereads a file through its shell.
+                # At 85% of the model's context window the messages between the first few and the last ones (the
+                # last 4 at least) are elided; the first message, the task, is never removed, nor is a pinned
+                # send-back (except by the SDK's last-resort truncation, when even the last messages don't fit).
+                # Tool outputs stay whole unless the provider rejects a request as too large, nothing calls a model
+                # (so `usage` is the whole spend), and with no stash there is no retrieval tool: the agent rereads a
+                # file through its shell.
                 context_manager={
                     "strategies": [
-                        Offload.truncate("*").when(utilization=0.85, preserve_recent=4),
+                        Offload.truncate("*").when(context_utilization="85%", preserve_recent=4),
                         _ShortenToolResultsOnOverflow(),
                     ],
                     "stash": False,
