@@ -1,6 +1,6 @@
 ---
 name: optimize
-description: Use when the user wants to tune a strands-harness agent (agent.py built with create_harness, or agent.ts built with createHarness) against an experiment with `strands-evals optimize`, such as its instructions, model, effort, caching, or context manager. Sets up the run from a free-text request or step by step, confirms a review, runs it with progress, and reports the result.
+description: Use when the user wants to tune a strands-harness agent (agent.py built with create_harness, or agent.ts built with createHarness) against an experiment with `strands-evals optimize`, such as its instructions, model, effort, caching, or context manager. Sets up the run from a free-text request or step by step, confirms a review (unless the user asks to just run it), runs it with progress, and reports the result.
 version: 0.1.0
 ---
 
@@ -64,7 +64,7 @@ Describe the optimization you want, or answer "step by step".
 
 Next, unless the request names one, ask which experiment to use: up to three, by name with their cases and evaluators (ex. `capitals: 6 cases, scored by OutputEvaluator`), the most cases first as the default, then "Your own: another experiment's name or path", naming any others found in one line under the list. With none found, ask for the path of an experiment file (the JSON file with cases and evaluators that `strands-evals run` reads), and stop if there is none.
 
-When the user describes the run, take every value of steps 2 to 5 (3 to 5 with a tunable factory) and every review row from that text and the files, using each default where the text says nothing, ask no setup question, and go to step 6. A value that breaks a rule becomes the closest valid one and is flagged in the review.
+When the user describes the run, take every value of steps 2 to 5 (3 to 5 with a tunable factory) and every review row from that text and the files, using each default where the text says nothing, ask no setup question, and go to step 6. A value that breaks a rule becomes the closest valid one and is flagged in the review. A request to just run the optimizer, or to skip the confirmation, takes this path too, and step 6 then starts the run without waiting.
 
 ### 2. Knobs: what may change
 
@@ -174,7 +174,9 @@ Work out the estimate yourself; show the user only the totals. Rollouts (one run
 
 ### 6. Review
 
-Show the setup as one summary, then the command, and ask the user to start or to name a row to change. For a row of steps 2 to 5, go back to that step (a tunable factory's tune row changes only in its markers: propose the code edit, and make it only when the user agrees); for a default row, take the new value here and check it against its rules below. Then show the review again.
+**Skipping the confirmation.** When the user explicitly asks to skip the review or confirmation, or to just run the optimizer (ex. "just run it", "no need to confirm"), don't wait for a reply here: show the summary, its warnings, and the command in one message, say the run is starting, and go to step 7. Said in the first request, it also takes the described-run path of step 1: every value the request leaves out takes its default, with no setup question. Still ask for what has no default (the agent or experiment when none is found, the model ids for a model choice) and for every install step the user must run, and still stop at exit code 2 (step 7). Never infer the skip from a request that doesn't ask for it.
+
+Otherwise, show the setup as one summary, then the command, and ask the user to start or to name a row to change. For a row of steps 2 to 5, go back to that step (a tunable factory's tune row changes only in its markers: propose the code edit, and make it only when the user agrees); for a default row, take the new value here and check it against its rules below. Then show the review again.
 
 ```text
 optimize · capitals · 6 cases · 3 train / 2 validation / 1 test
