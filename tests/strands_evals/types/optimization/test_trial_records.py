@@ -1,7 +1,5 @@
 from datetime import datetime, timezone
 
-import pytest
-
 from strands_evals.types.evaluation import EvaluationOutput
 from strands_evals.types.optimization import AttemptRecord, TrialRecord, TrialStatus, Usage
 from strands_evals.types.trace import (
@@ -99,7 +97,6 @@ def test_trial_record_with_session_round_trips_through_json():
 
     restored = TrialRecord.model_validate_json(record.model_dump_json())
 
-    # Compared by saved form, not ==: see the xfail test below for the one class that changes.
     assert restored.model_dump() == record.model_dump()
     assert isinstance(restored.trajectory, Session)
 
@@ -115,14 +112,6 @@ def test_message_roles_survive_a_round_trip():
     assert [message.role for message in inference.messages] == ["user", "assistant"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "types/trace.py: InferenceSpan.messages is UserMessage | AssistantMessage with no discriminator and "
-        "UserMessage.role accepts any Role, so an AssistantMessage is restored as a UserMessage with "
-        "role='assistant'. Read reloaded messages by .role, not by class."
-    ),
-)
 def test_assistant_message_is_restored_as_assistant_message():
     record = _record(_session())
 

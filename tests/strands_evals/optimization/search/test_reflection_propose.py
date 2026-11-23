@@ -396,10 +396,7 @@ async def test_a_value_copying_a_shown_tool_result_is_screened():
     result = "the warehouse in Cologne ships on Mondays only"
     conversation = [
         UserMessage(content=[TextContent(text="Where is my order a?")]),
-        UserMessage(
-            content=[ToolResultContent(name="lookup", content=result, tool_call_id="1")],
-            role="assistant",
-        ),
+        UserMessage(content=[ToolResultContent(name="lookup", content=result, tool_call_id="1")]),
     ]
     trials = [trial("a", score=0.2, output="sorry", trajectory=session(conversation))]
     turns = [write("p.txt", result), submit(prompt="p.txt"), "Done."]
