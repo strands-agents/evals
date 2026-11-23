@@ -1,5 +1,8 @@
+import logging
+from collections.abc import Mapping
 from typing import Any
 
+from pydantic import ValidationError
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
@@ -10,6 +13,7 @@ from rich.tree import Tree
 from ..types.evaluation import EvaluationOutput, all_could_not_evaluate
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 
 def _pass_rate_text(items: dict) -> str:
@@ -30,12 +34,31 @@ def _is_rubric_row(row: EvaluationOutput) -> bool:
     return (row.metadata or {}).get("evaluated_by") == "TypedRubricEvaluator"
 
 
+def _fmt(value: Any) -> str:
+    """Format recorded numbers without rejecting malformed optional metadata."""
+    try:
+        return f"{value:.4g}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def _fast_rubric_rows(outputs: list[EvaluationOutput]) -> list[EvaluationOutput]:
     """Read the audit once; Cascade repeats it on every fallback verdict row."""
     for output in outputs:
         metadata = output.metadata or {}
         if metadata.get("path") == "fallback" and "fast_rows" in metadata:
-            rows = [EvaluationOutput.model_validate(entry) for entry in metadata["fast_rows"]]
+            audit = metadata["fast_rows"]
+            if not isinstance(audit, list):
+                logger.warning(
+                    "audit_type=<%s> | fast rubric audit could not be displayed | expected a list",
+                    type(audit).__name__,
+                )
+                return []
+            try:
+                rows = [EvaluationOutput.model_validate(entry) for entry in audit]
+            except ValidationError as error:
+                logger.warning("error=<%s> | fast rubric audit could not be displayed", error)
+                return []
             return [row for row in rows if _is_rubric_row(row)]
     return []
 
@@ -66,14 +89,21 @@ def _verdict_details(
         if rubric_rows:
             details["decision_model"] += f"; fallback: {_decision_model_text(rubric_rows)}"
     elif rubric_rows:
-        details["decision_model"] = _decision_model_text(rubric_rows)
+        identity = _decision_model_text(rubric_rows)
+        stage = (rubric_rows[0].metadata or {}).get("path")
+        if stage in ("fast", "fallback") and all((row.metadata or {}).get("path") == stage for row in rubric_rows):
+            identity = f"{stage}: {identity}"
+        details["decision_model"] = identity
 
     for field in ("path", "p_gate"):
         values = []
         for row in outputs:
-            value = (row.metadata or {}).get(field)
+            metadata = row.metadata or {}
+            if metadata.get("path") not in ("fast", "fallback"):
+                continue
+            value = metadata.get(field)
             if value is not None:
-                text = f"{value:.4g}" if field == "p_gate" else str(value)
+                text = _fmt(value) if field == "p_gate" else str(value)
                 if text not in values:
                     values.append(text)
         if values:
@@ -100,11 +130,15 @@ def _metrics_tree(outputs: list[EvaluationOutput], title: str) -> Tree:
             if "selected_option" in metadata:
                 selected = metadata["selected_option"]
                 node.add(Text(f"Selected option: {selected if selected is not None else 'n/a'}"))
-            if metadata.get("probabilities") is not None:
-                probabilities = ", ".join(f"{label}={value:.4g}" for label, value in metadata["probabilities"].items())
-                node.add(Text(f"Probabilities: {probabilities}"))
+            probabilities = metadata.get("probabilities")
+            if probabilities is not None:
+                if isinstance(probabilities, Mapping):
+                    text = ", ".join(f"{label}={_fmt(value)}" for label, value in probabilities.items())
+                else:
+                    text = str(probabilities)
+                node.add(Text(f"Probabilities: {text}"))
             if metadata.get("confidence") is not None:
-                node.add(Text(f"Confidence: {metadata['confidence']:.4g}"))
+                node.add(Text(f"Confidence: {_fmt(metadata['confidence'])}"))
             node.add(Text(f"Decision model: {_decision_model_text([result])}"))
         if result.reason:
             node.add(Text(result.reason, style="dim"))

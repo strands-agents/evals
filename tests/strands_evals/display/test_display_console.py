@@ -2,6 +2,7 @@ from io import StringIO
 from typing import Any
 
 import pytest
+from rich.cells import cell_len
 from rich.console import Console
 from strands.decisions import DecisionMetadata, DecisionModel, DecisionResult, Question
 
@@ -178,6 +179,7 @@ def test_cascade_shows_routing_and_the_fast_model(
         assert "Fast Rubric Audit for Case 0" in text
         assert "Metric 1: Score=1.00" in text
     else:
+        assert "fast: stub / checkpoint-1" in text
         assert "Fast Rubric Audit" not in text
 
 
@@ -246,3 +248,130 @@ def test_rubric_text_is_rendered_literally(rubric: TypedRubricEvaluator, capture
     text = captured_console.export_text()
     assert "[bold]literal question[/bold]" in text
     assert "[red]literal answer[/red]" in text
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"path": "/tmp/artifact.txt"},
+        {"path": "/tmp/artifact.txt", "p_gate": "not a probability"},
+        {"p_gate": 0.2},
+        {"path": "custom-stage", "p_gate": 0.2},
+    ],
+)
+def test_custom_metadata_does_not_create_cascade_columns(captured_console: Console, metadata: dict[str, Any]) -> None:
+    row = EvaluationOutput(score=1.0, test_pass=True, metadata=metadata)
+    _report([row]).display(include_input=False)
+
+    text = captured_console.export_text()
+    assert "path" not in text
+    assert "p_gate" not in text
+    assert "decision_model" not in text
+
+
+@pytest.mark.parametrize(
+    "field, value, expected",
+    [
+        ("p_gate", "bad gate", "bad gate"),
+        ("confidence", "bad confidence", "Confidence: bad confidence"),
+        ("probabilities", {"true": None, "false": "bad"}, "Probabilities: true=None, false=bad"),
+        ("probabilities", "not a map", "Probabilities: not a map"),
+    ],
+)
+def test_malformed_optional_numbers_are_displayed_without_changing_the_report(
+    rubric: TypedRubricEvaluator, captured_console: Console, field: str, value: Any, expected: str
+) -> None:
+    row = _rubric_outputs(rubric)[0]
+    row.metadata.update({"path": "fast", "p_gate": 0.2, field: value})
+    report = _report([row])
+    before = report.model_dump_json()
+
+    report.display(include_input=False)
+
+    assert expected in captured_console.export_text()
+    assert report.model_dump_json() == before
+
+
+@pytest.mark.parametrize("audit", [None, "not a list", [{"score": "bad"}]])
+def test_invalid_fast_audit_warns_and_preserves_the_verdict(
+    rubric: TypedRubricEvaluator, captured_console: Console, caplog: pytest.LogCaptureFixture, audit: Any
+) -> None:
+    cascade = Cascade(
+        fast=rubric, fallback=Equals(value="answer"), escalate_when=Band(question="safety", low=0.1, high=0.3)
+    )
+    rows = cascade.evaluate(EvaluationData(input="hi", actual_output="answer"))
+    rows[0].metadata["fast_rows"] = audit
+    report = _report(rows).model_copy(update={"scores": [1.0], "overall_score": 1.0})
+    before = report.model_dump_json()
+
+    report.display(include_input=False)
+
+    text = captured_console.export_text()
+    assert "1.00" in text and "fallback" in text
+    assert "Fast Rubric Audit" not in text
+    assert "fast rubric audit could not be displayed" in caplog.text
+    assert len(caplog.records) == 1
+    assert report.model_dump_json() == before
+
+
+def test_generic_expanded_metrics_show_labels_and_not_applicable_scores(captured_console: Console) -> None:
+    items = {
+        "0": {
+            "details": {"name": "ordinary", "score": "1.00", "test_pass": True},
+            "expanded": True,
+            "detailed_results": [
+                EvaluationOutput(score=0, test_pass=True, label=NOT_APPLICABLE),
+                EvaluationOutput(score=1, test_pass=True, label="passed"),
+            ],
+        }
+    }
+    CollapsibleTableReportDisplay(items, overall_score=1.0).display_items()
+
+    text = captured_console.export_text()
+    assert "Metric 1: Score=n/a" in text
+    assert f"Label: {NOT_APPLICABLE}" in text
+    assert "Metric 2: Score=1.00" in text
+    assert "Label: passed" in text
+
+
+@pytest.mark.parametrize("width", [40, 80])
+def test_narrow_report_wraps_question_details_without_losing_values(
+    rubric: TypedRubricEvaluator, captured_console: Console, width: int
+) -> None:
+    captured_console.width = width
+
+    _report(_rubric_outputs(rubric)).display(include_input=False)
+
+    text = captured_console.export_text()
+    for value in ("checkpoint-1", "true=0.2", "false=0.8", "poor=0.1", "skip=0.9", "Raw answer: True"):
+        assert value in text
+    assert all(cell_len(line) <= width for line in text.splitlines())
+
+
+@pytest.mark.parametrize("field", ["question", "answer", "model_id"])
+def test_unmatched_markup_in_rubric_metadata_is_literal(
+    rubric: TypedRubricEvaluator, captured_console: Console, field: str
+) -> None:
+    row = _rubric_outputs(rubric)[0]
+    row.metadata[field] = "[/x]"
+
+    _report([row]).display(include_input=False)
+
+    assert "[/x]" in captured_console.export_text()
+
+
+def test_unmatched_markup_in_generic_input_and_reasons_is_literal(
+    captured_console: Console, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rows = [EvaluationOutput(score=1, test_pass=True, reason="metric [/x]")] * 2
+    report = _report(rows)
+    report.cases[0]["input"] = "input [/x]"
+    report.reasons[0] = "case [/x]"
+    choices = iter(["0", "q"])
+    monkeypatch.setattr(display_console.Prompt, "ask", lambda *args, **kwargs: next(choices))
+
+    report.run_display()
+
+    text = captured_console.export_text()
+    for value in ("input [/x]", "case [/x]", "metric [/x]"):
+        assert value in text
