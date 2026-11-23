@@ -1,14 +1,27 @@
+import asyncio
 import dataclasses
 import json
 import random
+from datetime import datetime, timezone
 
 import pytest
 from strands.decisions import DecisionMetadata, DecisionModel, DecisionResult
 
 from strands_evals import Case, Experiment
-from strands_evals.evaluators import Band, Cascade, Choice, Equals, Evaluator, Noul, Scale, TypedRubricEvaluator
+from strands_evals.evaluators import (
+    Band,
+    Cascade,
+    Choice,
+    Equals,
+    Evaluator,
+    HarmfulnessEvaluator,
+    Noul,
+    Scale,
+    TypedRubricEvaluator,
+)
 from strands_evals.types import EvaluationData
 from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
+from strands_evals.types.trace import AgentInvocationSpan, EvaluationLevel, Session, SpanInfo, Trace
 
 
 class StubDecisionModel(DecisionModel):
@@ -212,11 +225,39 @@ def test_any_band_is_reachable_for_a_noul():
 
 
 def test_evaluation_level_follows_the_fallback():
-    from strands_evals.evaluators import HarmfulnessEvaluator
-
     rubric = TypedRubricEvaluator([Noul("q")], decision_model=None)
     cascade = Cascade(fast=rubric, fallback=HarmfulnessEvaluator(), escalate_when=Band(question="q1", low=0, high=1))
     assert cascade.evaluation_level == HarmfulnessEvaluator.evaluation_level
+
+
+@pytest.mark.parametrize("level", list(EvaluationLevel))
+def test_fallback_evaluation_level_configures_the_trace_extractor(level, monkeypatch):
+    monkeypatch.setattr(StubJudge, "evaluation_level", level)
+    cascade = _cascade(_noul(0.5))
+    now = datetime.now(timezone.utc)
+    session = Session(
+        session_id="session",
+        traces=[
+            Trace(
+                trace_id="trace",
+                session_id="session",
+                spans=[
+                    AgentInvocationSpan(
+                        span_info=SpanInfo(session_id="session", start_time=now, end_time=now),
+                        user_prompt="hi",
+                        agent_response="hello",
+                        available_tools=[],
+                    )
+                ],
+            )
+        ],
+    )
+    case = EvaluationData(input="hi", actual_trajectory=session)
+
+    assert cascade.evaluation_level == level
+    assert cascade._trace_extractor is not None
+    assert cascade._trace_extractor.evaluation_level == level
+    assert cascade._parse_trajectory(case) == cascade.fallback._parse_trajectory(case)
 
 
 def test_parts_are_read_only():
@@ -261,6 +302,53 @@ async def test_uncertain_case_escalates_and_keeps_the_fallback_reasoning():
     assert metadata["p_gate"] == pytest.approx(0.5)
     assert [row["metadata"]["question_id"] for row in metadata["fast_rows"]] == ["harmful"]
     json.dumps(metadata)  # the audit trail stays writable by `EvaluationReport.to_file`
+
+
+def test_escalation_audit_is_local_to_each_sync_evaluation():
+    cascade = _cascade(_noul(0.3))
+
+    first_rows = cascade.evaluate(EvaluationData(input="first", actual_output="one"))
+    cascade.fast.decision_model.probabilities = _noul(0.7)
+    second_rows = cascade.evaluate(EvaluationData(input="second", actual_output="two"))
+
+    for rows, p_true in [(first_rows, 0.3), (second_rows, 0.7)]:
+        metadata = rows[0].metadata
+        assert metadata["path"] == "fallback"
+        assert len(metadata["fast_rows"]) == 1
+        assert metadata["fast_rows"][0]["metadata"]["probabilities"] == _noul(p_true)["harmful"]
+    assert first_rows[0].metadata["fast_rows"] is not second_rows[0].metadata["fast_rows"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_workers", [1, 2], ids=["sequential", "concurrent"])
+async def test_escalation_audit_is_local_to_each_experiment_case(max_workers, monkeypatch):
+    cascade = _cascade(_noul(0.5))
+
+    async def ask_for_case(state, questions, **kwargs):
+        p_true = json.loads(state)["input"]
+        result = await StubDecisionModel(_noul(p_true))._ask(state, questions, **kwargs)
+        # Let another case enter the shared evaluator before this one reaches the fallback.
+        await asyncio.sleep(0)
+        return result
+
+    monkeypatch.setattr(cascade.fast.decision_model, "_ask", ask_for_case)
+    experiment = Experiment(
+        cases=[Case(name="first", input=0.3), Case(name="second", input=0.7)],
+        evaluators=[cascade],
+    )
+
+    report = await experiment.run_evaluations_async(lambda case: "ok", max_workers=max_workers)
+
+    assert cascade.fallback.calls == 2
+    assert len(report.detailed_results) == 2
+    for rows, p_true in zip(report.detailed_results, [0.3, 0.7], strict=True):
+        metadata = rows[0].metadata
+        assert metadata["path"] == "fallback"
+        assert len(metadata["fast_rows"]) == 1
+        assert metadata["fast_rows"][0]["metadata"]["probabilities"] == _noul(p_true)["harmful"]
+    first_audit = report.detailed_results[0][0].metadata["fast_rows"]
+    second_audit = report.detailed_results[1][0].metadata["fast_rows"]
+    assert first_audit is not second_audit
 
 
 @pytest.mark.asyncio

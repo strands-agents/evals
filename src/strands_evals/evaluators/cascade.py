@@ -155,12 +155,13 @@ class Cascade(Evaluator[InputT, OutputT]):
             )
         _check_band_is_reachable(band, fast.questions[band.question])
 
+        # Telemetry reports the level of the evaluator a case most likely needs to explain it.
+        # Set it before base initialization so the matching trace extractor is configured.
+        self.evaluation_level = fallback.evaluation_level
         super().__init__(name=name)
         self._fast = fast
         self._fallback = fallback
         self._escalate_when = band
-        # Telemetry reports the level of the evaluator a case most likely needs to explain it.
-        self.evaluation_level = fallback.evaluation_level
         self.aggregator = self._aggregate
 
     @property
