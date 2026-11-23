@@ -1,12 +1,33 @@
 import json
 from collections.abc import Sequence
+from datetime import datetime
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import AwareDatetime, BaseModel, field_serializer
 from typing_extensions import Self, TypeVar
 
 from ..display.display_console import CollapsibleTableReportDisplay
 from ..types.evaluation import EvaluationOutput, all_could_not_evaluate
+
+
+class RunInfo(BaseModel):
+    """
+    Which run produced a report, and when.
+
+    Attributes:
+        run_id: Unique to one `run_evaluations` call, so two reports of one experiment can be told apart.
+        start_time: When the run began. Timezone-aware; `Experiment` records it in UTC.
+        end_time: When the run finished evaluating its last case. Timezone-aware, as above.
+    """
+
+    run_id: str
+    start_time: AwareDatetime
+    end_time: AwareDatetime
+
+    @field_serializer("start_time", "end_time")
+    def _as_iso(self, value: datetime) -> str:
+        # `EvaluationReport.to_dict` dumps in python mode and `to_file` hands that to `json`.
+        return value.isoformat()
 
 
 class EvaluationReport(BaseModel):
@@ -20,6 +41,8 @@ class EvaluationReport(BaseModel):
             the evaluator that produced that row.
         test_passes: A list of booleans indicating whether the test pass or fail.
         reasons: A list of reason for each test case.
+        run_info: Which run produced the report, and when. None for a report built by hand, merged by
+            `flatten`, or written before this field existed.
     """
 
     overall_score: float
@@ -30,6 +53,7 @@ class EvaluationReport(BaseModel):
     detailed_results: list[list[EvaluationOutput]] = []
     diagnoses: list[dict | None] = []
     recommendations: list[str | None] = []
+    run_info: RunInfo | None = None
 
     @staticmethod
     def is_applicable(outputs: list[EvaluationOutput]) -> bool:
@@ -77,7 +101,8 @@ class EvaluationReport(BaseModel):
 
         The base `Experiment` already returns a flattened report; this helper exists for callers
         that built reports separately (e.g., across multiple experiments) and want to merge them.
-        Each row's `evaluator` tag is preserved as-is.
+        Each row's `evaluator` tag is preserved as-is. The result has no `run_info`: a merged report is
+        not the product of one run.
         """
         if not reports:
             return cls(overall_score=0.0, scores=[], cases=[], test_passes=[])

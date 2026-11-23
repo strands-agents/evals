@@ -2,7 +2,9 @@ import asyncio
 import json
 import logging
 import os
+import uuid
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
@@ -59,7 +61,7 @@ from .telemetry import get_tracer, serialize
 from .telemetry._cloudwatch_logger import _send_to_cloudwatch
 from .types.detector import DiagnosisConfig
 from .types.evaluation import COULD_NOT_EVALUATE, NOT_APPLICABLE, EvaluationData, EvaluationOutput, InputT, OutputT
-from .types.evaluation_report import EvaluationReport, ReportT
+from .types.evaluation_report import EvaluationReport, ReportT, RunInfo
 from .types.trace import Session
 from .utils import is_throttling_error
 
@@ -683,6 +685,8 @@ class Experiment(Generic[InputT, OutputT, ReportT]):
         if evaluation_data_store is not None:
             self._validate_case_names()
 
+        run_id = str(uuid.uuid4())
+        start_time = datetime.now(timezone.utc)
         queue: asyncio.Queue[tuple[int, Case[InputT, OutputT]]] = asyncio.Queue()
         results: list[Any] = [None] * len(self._cases)
 
@@ -756,9 +760,9 @@ class Experiment(Generic[InputT, OutputT, ReportT]):
 
         # Each case row already carries its evaluator tag (see worker aggregation above), so
         # single-evaluator runs return as-is and multi-evaluator runs simply concatenate.
-        if len(reports) == 1:
-            return reports[0]
-        return self.report_cls.flatten(reports)
+        report = reports[0] if len(reports) == 1 else self.report_cls.flatten(reports)
+        run_info = RunInfo(run_id=run_id, start_time=start_time, end_time=datetime.now(timezone.utc))
+        return report.model_copy(update={"run_info": run_info})
 
     def to_dict(self) -> dict:
         """

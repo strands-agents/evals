@@ -2,12 +2,13 @@
 
 import re
 import warnings
+from datetime import datetime, timezone
 
 import pytest
 
 from strands_evals.redteam.report import AttackResult, RedTeamReport
 from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
-from strands_evals.types.evaluation_report import EvaluationReport
+from strands_evals.types.evaluation_report import EvaluationReport, RunInfo
 from strands_evals.types.redteam import ATTACKER_REFUSED, REFUSAL_JUDGE_FAILURES, RUN_RESULTS
 
 
@@ -65,6 +66,12 @@ def _empty_report() -> RedTeamReport:
 
 
 class TestFromEvaluationReport:
+    def test_keeps_the_run_of_the_report_it_wraps(self):
+        run = RunInfo(run_id="run-1", start_time=datetime.now(timezone.utc), end_time=datetime.now(timezone.utc))
+        base = EvaluationReport(overall_score=0.0, scores=[], cases=[], test_passes=[], run_info=run)
+
+        assert RedTeamReport.from_evaluation_report(base).run_info == run
+
     def test_empty_report(self):
         empty = EvaluationReport(overall_score=0.0, scores=[], cases=[], test_passes=[])
         report = RedTeamReport.from_evaluation_report(empty)
