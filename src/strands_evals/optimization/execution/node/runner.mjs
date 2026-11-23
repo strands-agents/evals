@@ -9,12 +9,13 @@
 //   probe    {attr, index, values}   -> {ok} | {ok: false, status, error_type, error}  build it once, run nothing
 //   run      {attr, index, values, input, trace_id, span_id, trace_attributes}
 //                                    -> {status, output?, result?, error_type?, error?, spans}
-//   start    {attr, index, values, trace_attributes}
-//                                    -> {ok, session} | {ok: false, status, error_type, error}  hold an agent open
+//   start    {attr, index, values, trace_id, span_id, trace_attributes}
+//                                    -> {ok, session, spans} | {ok: false, status, error_type, error, spans}
+//                                       hold an agent open
 //   turn     {session, input, trace_id, span_id}
 //                                    -> {status, output?, result?, error_type?, error?, spans}  ask it again
 //   release  {session}               -> {ok}  let the agent go and remove its folders
-//   cancel   {target}                -> (no reply) abort that run or turn
+//   cancel   {target}                -> (no reply) abort that run or turn; release the session a start opened
 //
 // `values` is a list of [path, value]: set on the `index`-th `createHarness` call of the file's run. Every call gets
 // fresh `session` and `memory` folders (memory a copy of the configured one) and `printer: false` unless it gives
@@ -27,6 +28,7 @@
 // answer as text; `result` is its JSON-safe heart (the stop reason, the final message, any structured output).
 
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { randomUUID } from 'node:crypto'
 import { cpSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { createRequire, register } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -194,9 +196,23 @@ async function build(attr, index, values, traceAttributes) {
       return folder
     },
   }
+  // Never throws: a trial whose agent already answered must not fail because letting it go did.
   const cleanup = async () => {
-    for (const call of run.calls) if (call.agent) await release(call.agent)
-    for (const folder of folders) rmSync(folder, { recursive: true, force: true })
+    for (const call of run.calls) {
+      if (!call.agent) continue
+      try {
+        await release(call.agent)
+      } catch (error) {
+        process.stderr.write(`strands-evals: shutting an agent down failed: ${describeError(error).error}\n`)
+      }
+    }
+    for (const folder of folders) {
+      try {
+        rmSync(folder, { recursive: true, force: true })
+      } catch (error) {
+        process.stderr.write(`strands-evals: removing ${folder} failed: ${describeError(error).error}\n`)
+      }
+    }
   }
   try {
     const namespace = await capture.run(run, () => import(`${agentURL}?run=${++runs}`))
@@ -294,50 +310,58 @@ function resultJson(result) {
   }
 }
 
-async function runCase({ id, attr, index, values, input, trace_id, span_id, trace_attributes }) {
+async function runCase({ attr, index, values, input, trace_id, span_id, trace_attributes }, signal) {
   const { otel, collector } = await setup
-  const controller = new AbortController()
-  running.set(id, controller)
   if (trace_id) collector.watch(trace_id)
   let built
   try {
     const result = await otel.context.with(parentContext(otel, trace_id, span_id), async () => {
       built = await build(attr, index, values, trace_attributes)
       if (built.run.calls[index]?.agent !== built.agent) throw new Error(`${attr} was built by another createHarness call`)
-      return built.agent.invoke(typeof input === 'string' ? input : JSON.stringify(input), {
-        cancelSignal: controller.signal,
-      })
+      return built.agent.invoke(typeof input === 'string' ? input : JSON.stringify(input), { cancelSignal: signal })
     })
     return { status: 'completed', output: String(result), result: resultJson(result) }
   } catch (error) {
     return { status: classify(error), ...describeError(error) }
   } finally {
-    running.delete(id)
     await built?.cleanup()
   }
 }
 
-// Conversations held open by `start`: the same agent answers every `turn` of its session until `release`.
-let sessionCount = 0
+// Conversations held open by `start`: the same agent answers every `turn` of its session until `release`. Ids are
+// random, so an id from before a worker restart never names a session the new worker opened for another trial.
 const sessions = new Map()
+// The session each `start` request opened, by request id, until it is released: a `cancel` aimed at a start that
+// already replied releases it, since the caller cancelled before it could learn the id and will never release it.
+const startedBy = new Map()
 
-async function startSession({ attr, index, values, trace_attributes }) {
+async function startSession({ id, attr, index, values, trace_id, span_id, trace_attributes }, signal) {
+  const { otel, collector } = await setup
+  if (trace_id) collector.watch(trace_id)
   let built
   try {
-    built = await build(attr, index, values, trace_attributes)
+    built = await otel.context.with(parentContext(otel, trace_id, span_id), () =>
+      build(attr, index, values, trace_attributes)
+    )
     if (built.run.calls[index]?.agent !== built.agent) throw new Error(`${attr} was built by another createHarness call`)
   } catch (error) {
     await built?.cleanup()
     return { ok: false, status: classify(error), ...describeError(error) }
   }
-  const session = `s${++sessionCount}`
-  sessions.set(session, built)
+  if (signal.aborted) {
+    // Cancelled while building: nobody will ever hear of this agent, so let it go now.
+    await built.cleanup()
+    return { ok: false, status: 'agent_failure', error_type: 'Cancelled', error: 'the start was cancelled' }
+  }
+  const session = randomUUID()
+  sessions.set(session, { built, startId: id })
+  startedBy.set(id, session)
   return { ok: true, session }
 }
 
-async function turn({ id, session, input, trace_id, span_id }) {
+async function turn({ session, input, trace_id, span_id }, signal) {
   const { otel, collector } = await setup
-  const built = sessions.get(session)
+  const built = sessions.get(session)?.built
   if (!built) {
     // Released, never started, or lost to a worker restart: the Python side reads this as infrastructure.
     return {
@@ -346,27 +370,24 @@ async function turn({ id, session, input, trace_id, span_id }) {
       error: `no open session ${session}: it was released, or the worker restarted since it started`,
     }
   }
-  const controller = new AbortController()
-  running.set(id, controller)
   if (trace_id) collector.watch(trace_id)
   try {
     const result = await otel.context.with(parentContext(otel, trace_id, span_id), () =>
-      built.agent.invoke(typeof input === 'string' ? input : JSON.stringify(input), {
-        cancelSignal: controller.signal,
-      })
+      built.agent.invoke(typeof input === 'string' ? input : JSON.stringify(input), { cancelSignal: signal })
     )
     return { status: 'completed', output: String(result), result: resultJson(result) }
   } catch (error) {
     return { status: classify(error), ...describeError(error) }
-  } finally {
-    running.delete(id)
   }
 }
 
 async function releaseSession({ session }) {
-  const built = sessions.get(session)
+  const open = sessions.get(session)
   sessions.delete(session)
-  if (built) await built.cleanup()
+  if (open) {
+    startedBy.delete(open.startId)
+    await open.built.cleanup()
+  }
   return { ok: true }
 }
 
@@ -428,21 +449,28 @@ async function answer(line) {
     process.stderr.write(`strands-evals runner ignored a line that isn't JSON: ${line.slice(0, 200)}\n`)
     return
   }
+  if (request.type === 'cancel') {
+    running.get(request.target)?.abort()
+    const session = startedBy.get(request.target)
+    if (session !== undefined) await releaseSession({ session })
+    return
+  }
+  // Registered before anything is awaited, so a cancel that follows the request always finds it.
+  const controller = new AbortController()
+  running.set(request.id, controller)
   try {
-    if (request.type === 'cancel') {
-      running.get(request.target)?.abort()
-      return
-    }
     await setup
     const handler = { describe, probe, run: runCase, start: startSession, turn, release: releaseSession }[request.type]
     if (!handler) throw new Error(`unknown request type ${request.type}`)
-    const reply = await handler(request)
-    if ((request.type === 'run' || request.type === 'turn') && request.trace_id) {
+    const reply = await handler(request, controller.signal)
+    if (['run', 'start', 'turn'].includes(request.type) && request.trace_id) {
       reply.spans = (await setup).collector.take(request.trace_id)
     }
     send({ ...reply, id: request.id })
   } catch (error) {
     send({ id: request.id, setup_error: describeError(error).error })
+  } finally {
+    running.delete(request.id)
   }
 }
 
@@ -456,7 +484,7 @@ createInterface({ input: process.stdin })
   .on('close', () =>
     void Promise.allSettled([...pending]).then(async () => {
       // Finish what's in flight, then let go of any conversation nobody released, folders included.
-      for (const built of sessions.values()) await built.cleanup().catch(() => undefined)
+      for (const { built } of sessions.values()) await built.cleanup()
       process.exit(0)
     })
   )

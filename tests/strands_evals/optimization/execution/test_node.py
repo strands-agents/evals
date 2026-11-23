@@ -233,6 +233,31 @@ async def test_a_worker_that_dies_mid_session_is_infrastructure():
             await session.turn("question 7")
 
 
+async def test_a_start_is_traced_and_its_spans_land_in_the_trial(traces, tracer):
+    class SpansOnStart(SessionRunner):
+        async def call_async(self, message):
+            if message.get("type") != "start":
+                return await super().call_async(message)
+            self.requests.append(message)
+            spans = json.dumps(REPLY["spans"])
+            spans = spans.replace(RECORDED_TRACE, message["trace_id"]).replace(RECORDED_PARENT, message["span_id"])
+            return {"ok": True, "session": "s1", "spans": json.loads(spans)}
+
+    runner = SpansOnStart()
+    trace_id, attempt_id, outcomes = await _converse(tracer, traces, NodeAgent(runner, "agent", 0, []), [])
+    assert outcomes == []
+    start = runner.requests[0]
+    assert start["type"] == "start" and start["trace_id"] == trace_id  # the build runs in the trial's trace
+    assert traces.usage(trace_id, attempt_id).tokens == 700  # and what it spent counts
+
+
+async def test_invoke_async_keeps_the_answers_structured_result(traces, tracer):
+    agent = NodeAgent(FakeRunner(result={"stop_reason": "endTurn"}), "agent", 0, [])
+    assert agent.last_result is None
+    _, _, output = await _invoke(tracer, traces, agent)
+    assert output == "answer 7" and agent.last_result == {"stop_reason": "endTurn"}
+
+
 async def test_a_turn_outside_the_session_says_to_enter_it():
     with pytest.raises(RuntimeError, match="enter it first"):
         await NodeAgent(SessionRunner(), "agent", 0, []).session().turn("question 7")

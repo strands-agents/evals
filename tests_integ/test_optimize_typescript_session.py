@@ -13,6 +13,7 @@ import asyncio
 import json
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -31,8 +32,12 @@ def _node_ok() -> bool:
     node, npm = shutil.which("node"), shutil.which("npm")
     if node is None or npm is None:
         return False
-    major, minor, *_ = subprocess.run([node, "--version"], capture_output=True, text=True).stdout[1:].split(".")
-    return (int(major), int(minor)) >= (22, 18)
+    try:
+        done = subprocess.run([node, "--version"], capture_output=True, text=True, timeout=30)
+        major, minor, *_ = done.stdout.strip().lstrip("v").split(".")
+        return done.returncode == 0 and (int(major), int(minor)) >= (22, 18)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False  # a broken shim or a version manager's stub: skip rather than error at collection
 
 
 pytestmark = pytest.mark.skipif(not _node_ok(), reason="needs Node.js 22.18+ and npm")
@@ -41,7 +46,7 @@ pytestmark = pytest.mark.skipif(not _node_ok(), reason="needs Node.js 22.18+ and
 @pytest.fixture(scope="module")
 def project(tmp_path_factory) -> Path:
     folder = tmp_path_factory.mktemp("project") / "agent"
-    shutil.copytree(FIXTURE, folder, ignore=shutil.ignore_patterns("node_modules", "__pycache__"))
+    shutil.copytree(FIXTURE, folder, ignore=shutil.ignore_patterns("node_modules", "__pycache__", ".agent"))
     subprocess.run(
         ["npm", "install", "--ignore-scripts", "--no-audit", "--no-fund"], cwd=folder, check=True, capture_output=True
     )
@@ -121,3 +126,122 @@ def test_optimize_runs_a_two_turn_rollout_over_sessions(project, experiment_path
     # never held open would answer nothing at all (`rollout.py` raises when an opening turn answers).
     best_train = result.reports[result.best.id]["train"]
     assert best_train.overall_score is not None and best_train.overall_score >= 0.8
+
+
+def _fragile_agent(project: Path, name: str, log: Path, *, build_ms: int = 0, shutdown_throws: bool = False) -> Path:
+    """An `agent.ts` variant whose build takes `build_ms` and whose shutdown writes "released" to `log`, then throws
+    when `shutdown_throws`."""
+    path = project / f"{name}.ts"
+    path.write_text(
+        f"""import {{ appendFileSync }} from 'node:fs'
+import {{ createHarness }} from '@strands-agents/harness'
+import {{ TwoTurnDeterministic }} from './world.ts'
+
+await new Promise((done) => setTimeout(done, {build_ms}))
+export const agent = await createHarness({{
+  model: new TwoTurnDeterministic(),
+  instructions: 'You answer questions.',
+  effort: 'auto',
+  builtinTools: [],
+  builtinPlugins: [],
+  skills: false,
+}})
+const shutdown = agent.shutdown?.bind(agent)
+agent.shutdown = async () => {{
+  await shutdown?.()
+  appendFileSync({json.dumps(str(log))}, 'released\\n')
+  if ({json.dumps(shutdown_throws)}) throw new Error('shutdown failed')
+}}
+"""
+    )
+    return path
+
+
+def _released(log: Path, *, within: float = 10.0) -> int:
+    """How many agents `log` says were released, waiting up to `within` seconds for at least one."""
+    deadline = time.monotonic() + within
+    while time.monotonic() < deadline and not log.exists():
+        time.sleep(0.05)
+    return log.read_text().count("released") if log.exists() else 0
+
+
+def _start(runner: NodeRunner, attr_file_index: int) -> tuple[int, str]:
+    """Send a raw `start`; returns `(request id, session id)`."""
+    request_id, future = runner._send({"type": "start", "attr": "agent", "index": attr_file_index, "values": []})
+    reply = future.result(timeout=60)
+    assert reply["ok"], reply
+    return request_id, reply["session"]
+
+
+def _write(runner: NodeRunner, message: dict) -> None:
+    """Write one protocol line to the worker, as `NodeRunner.call_async` writes a cancel."""
+    with runner._lock:
+        runner._process.stdin.write(json.dumps(message) + "\n")
+        runner._process.stdin.flush()
+
+
+def test_a_session_id_from_before_a_restart_names_no_session(project):
+    runner = NodeRunner(project / "agent.ts")
+    try:
+        _, before = _start(runner, 0)
+        runner._process.kill()
+        runner._process.wait(timeout=10)
+        _, after = _start(runner, 0)  # the next request restarts the worker
+        assert before != after
+        reply = runner.call({"type": "turn", "session": before, "input": "question 7"})
+        assert (reply["status"], reply["error_type"]) == ("infrastructure_invalid", "NodeSessionGone")
+        runner.call({"type": "release", "session": after})
+    finally:
+        runner.close()
+
+
+def test_an_agent_whose_shutdown_throws_still_answers(project, tmp_path):
+    log = tmp_path / "released.log"
+    runner = NodeRunner(_fragile_agent(project, "throws_on_shutdown", log, shutdown_throws=True))
+    try:
+        agent = NodeAgent(runner, "agent", 0, [(["instructions"], INSTRUCTIONS[1])])
+
+        async def both() -> tuple[str, str]:
+            single = await agent.invoke_async("question 7")
+            async with agent.session() as session:
+                await session.turn("here it comes: question 7")
+                second = await session.turn("question 7")
+            return single, second
+
+        assert asyncio.run(both()) == ("I'm not sure.", "answer 7")  # neither release failed the answer
+        assert _released(log) == 2
+    finally:
+        runner.close()
+
+
+def test_a_start_cancelled_while_building_releases_its_agent(project, tmp_path):
+    log = tmp_path / "released.log"
+    runner = NodeRunner(_fragile_agent(project, "slow_build", log, build_ms=2000))
+    try:
+        runner.call({"type": "describe", "attr": "agent", "paths": []})  # the worker is up before the clock starts
+
+        async def cancel_the_start() -> None:
+            entering = asyncio.ensure_future(NodeAgent(runner, "agent", 0, []).session().__aenter__())
+            await asyncio.sleep(0.5)
+            entering.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await entering
+
+        log.unlink(missing_ok=True)  # `describe` built and released one too
+        asyncio.run(cancel_the_start())
+        assert _released(log) == 1
+    finally:
+        runner.close()
+
+
+def test_a_start_cancelled_after_it_replied_releases_its_agent(project, tmp_path):
+    log = tmp_path / "released.log"
+    runner = NodeRunner(_fragile_agent(project, "cancel_after_reply", log))
+    try:
+        request_id, session = _start(runner, 0)
+        _write(runner, {"type": "cancel", "target": request_id})  # the caller never learned `session`
+        assert _released(log) == 1
+        reply = runner.call({"type": "turn", "session": session, "input": "question 7"})
+        assert reply["error_type"] == "NodeSessionGone"
+    finally:
+        runner.close()

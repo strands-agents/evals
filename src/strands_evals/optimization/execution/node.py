@@ -188,14 +188,16 @@ def _traced(request: dict[str, Any]) -> dict[str, Any]:
 class NodeAgent:
     """A trial's agent in the Node worker: the file's `attr`, its `index`-th `createHarness` call given `values`.
 
-    `invoke_async(prompt)` asks a fresh agent once and returns its answer as text; `session()` opens a
-    conversation whose turns share one agent. `trace_attributes` are set on the agent's spans in Node (the
-    optimizer tags the factory's agent through them).
+    `invoke_async(prompt)` asks a fresh agent once and returns its answer as text; `last_result` then holds that
+    answer's structured result, as `NodeSession.last_result`. `session()` opens a conversation whose turns share
+    one agent. `trace_attributes` are set on the agent's spans in Node (the optimizer tags the factory's agent
+    through them).
     """
 
     def __init__(self, runner: NodeRunner, attr: str, index: int, values: list[tuple[list[str | int], Any]]) -> None:
         self._runner, self._attr, self._index, self._values = runner, attr, index, values
         self.trace_attributes: dict[str, Any] = {}
+        self.last_result: Any = None
 
     async def invoke_async(self, prompt: Any) -> str:
         request = _traced(
@@ -212,7 +214,9 @@ class NodeAgent:
             reply = await self._runner.call_async(request)
         except NodeRunnerGone as error:
             raise InfrastructureError(str(error)) from error
-        return _answered(reply)
+        answer = _answered(reply)
+        self.last_result = reply.get("result")
+        return answer
 
     def session(self) -> NodeSession:
         """A conversation with one agent, for a rollout that speaks more than once.
@@ -223,6 +227,9 @@ class NodeAgent:
             async with agent.session() as session:
                 first = await session.turn("hello")
                 second = await session.turn("and again?")
+
+        Only TypeScript agents (`NodeAgent`) have `session()`. A Python strands `Agent` already keeps its
+        conversation between calls, so a rollout for one calls `invoke_async` on the same agent again instead.
         """
         return NodeSession(self._runner, self._attr, self._index, self._values, self.trace_attributes)
 
@@ -231,7 +238,8 @@ class NodeSession:
     """One agent held open in the Node worker, answering every `turn` with the conversation so far.
 
     Built by `NodeAgent.session()`. Entering sends `start` (the agent is built once there; a build the
-    values break fails here), each `turn` sends the prompt to that agent, and leaving sends `release`.
+    values break fails here), each `turn` sends the prompt to that agent, and leaving sends `release`. Entering
+    that is cancelled releases the agent in the worker, whether its build had finished or not.
     `last_result` is the latest completed turn's structured result as the worker could write it to JSON
     (the stop reason, the final message, any structured output), or None.
     """
@@ -250,17 +258,20 @@ class NodeSession:
         self.last_result: Any = None
 
     async def __aenter__(self) -> NodeSession:
-        request = {
-            "type": "start",
-            "attr": self._attr,
-            "index": self._index,
-            "values": self._values,
-            "trace_attributes": self._trace_attributes,
-        }
+        request = _traced(
+            {
+                "type": "start",
+                "attr": self._attr,
+                "index": self._index,
+                "values": self._values,
+                "trace_attributes": self._trace_attributes,
+            }
+        )
         try:
             reply = await self._runner.call_async(request)
         except NodeRunnerGone as error:
             raise InfrastructureError(str(error)) from error
+        ingest(reply.get("spans") or [])  # the build's spans, a failed build's included
         if not reply.get("ok"):
             failure = node_error(str(reply.get("error_type") or "Error"), str(reply.get("error") or ""))
             if reply.get("status") == "infrastructure_invalid":
