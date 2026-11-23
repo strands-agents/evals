@@ -16,6 +16,7 @@ from ...evaluators.output_evaluator import OutputEvaluator
 from ...experiment import Experiment
 from ...local_file_task_result_store import LocalFileTaskResultStore
 from ...types.detector import ConfidenceLevel, DiagnosisConfig, DiagnosisTrigger
+from ...types.evaluation import all_could_not_evaluate
 from ...types.evaluation_report import EvaluationReport
 from ...types.trace import EvaluationLevel
 from .._agent_task import synthesize_task_function
@@ -256,15 +257,21 @@ def _print_summary(report: EvaluationReport) -> None:
     summary still reads `<evaluator>: P/T passed (avg)` per evaluator.
 
     Each average is computed the same way as `report.overall_score`, dropping cases that had
-    nothing to judge. Averaging their placeholder 0.0 instead would print a lower per-evaluator
-    number than the overall score computed from the very same rows.
+    nothing to judge or that the evaluator could not judge. The latter still count as not passed
+    and are listed separately as "could not evaluate". Averaging their placeholder 0.0 instead
+    would print a lower per-evaluator number than the overall score computed from the same rows.
     """
     by_eval: dict[str, list[int]] = {}
     by_eval_scores: dict[str, list[float]] = {}
+    by_eval_unjudged: dict[str, int] = {}
     for i, case in enumerate(report.cases):
         name = case.get("evaluator", "unknown")
         by_eval.setdefault(name, []).append(int(report.test_passes[i]))
         outputs = report.detailed_results[i] if i < len(report.detailed_results) else []
+        # Cases the evaluator never judged (e.g. the judge's context window overflowed) count as
+        # not passed, and are named separately so they don't read as the agent failing.
+        unjudged = all_could_not_evaluate(outputs)
+        by_eval_unjudged[name] = by_eval_unjudged.get(name, 0) + int(unjudged)
         if EvaluationReport.is_applicable(outputs):
             by_eval_scores.setdefault(name, []).append(report.scores[i])
         else:
@@ -275,8 +282,10 @@ def _print_summary(report: EvaluationReport) -> None:
         passed = sum(passes)
         total = len(passes)
         scores = by_eval_scores[name]
-        avg = sum(scores) / len(scores) if scores else 0.0
-        parts.append(f"{name}: {passed}/{total} passed ({avg:.2f})")
+        # No judged case means no average to print, so "n/a" rather than a placeholder 0.00.
+        avg = f"{sum(scores) / len(scores):.2f}" if scores else "n/a"
+        unjudged_note = f", {by_eval_unjudged[name]} could not evaluate" if by_eval_unjudged.get(name) else ""
+        parts.append(f"{name}: {passed}/{total} passed{unjudged_note} ({avg})")
 
     parts.append(f"overall: {report.overall_score:.2f}")
     print(" | ".join(parts), file=sys.stderr)  # noqa: T201
@@ -531,7 +540,9 @@ def add_subparser(
             "Per-case freshness is enforced for strands.Agent only — other "
             "callables (custom agent classes, partials, instances with __call__) "
             "are accepted but cross-case isolation becomes the factory's "
-            "responsibility. For non-standard task shapes use --task instead."
+            "responsibility. Cases with metadata['actor_profile'] run multi-turn "
+            "against a simulated user on the Strands default model. "
+            "For non-standard task shapes use --task instead."
         ),
     )
     target.add_argument(

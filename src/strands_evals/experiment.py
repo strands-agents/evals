@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import cast
 
 from opentelemetry.trace import format_trace_id
+from strands.types.exceptions import ContextWindowOverflowException
 from tenacity import (
     RetryError,
     retry,
@@ -19,6 +20,7 @@ from typing_extensions import Any, Generic
 from .case import Case
 from .detectors.diagnosis import diagnose_session
 from .evaluation_data_store import EvaluationDataStore
+from .evaluators.cascade import Cascade
 from .evaluators.coherence_evaluator import CoherenceEvaluator
 from .evaluators.conciseness_evaluator import ConcisenessEvaluator
 from .evaluators.correctness_evaluator import CorrectnessEvaluator
@@ -52,10 +54,11 @@ from .evaluators.stereotyping_evaluator import StereotypingEvaluator
 from .evaluators.tool_parameter_accuracy_evaluator import ToolParameterAccuracyEvaluator
 from .evaluators.tool_selection_accuracy_evaluator import ToolSelectionAccuracyEvaluator
 from .evaluators.trajectory_evaluator import TrajectoryEvaluator
+from .evaluators.typed_rubric_evaluator import TypedRubricEvaluator
 from .telemetry import get_tracer, serialize
 from .telemetry._cloudwatch_logger import _send_to_cloudwatch
 from .types.detector import DiagnosisConfig
-from .types.evaluation import NOT_APPLICABLE, EvaluationData, EvaluationOutput, InputT, OutputT
+from .types.evaluation import COULD_NOT_EVALUATE, NOT_APPLICABLE, EvaluationData, EvaluationOutput, InputT, OutputT
 from .types.evaluation_report import EvaluationReport, ReportT
 from .types.trace import Session
 from .utils import is_throttling_error
@@ -69,38 +72,24 @@ _INITIAL_RETRY_DELAY = 4
 _MAX_RETRY_DELAY = 240  # 4 minutes
 
 
-def _get_label_from_score(
-    evaluator: Evaluator,
-    score: float,
-    outputs: list[EvaluationOutput] | None = None,
-) -> str:
+def _is_context_overflow(exception: BaseException) -> bool:
+    """Whether `exception` is, or was explicitly raised from, a judge context-window overflow.
+
+    Type-only on purpose. `detectors.utils._is_context_exceeded` also matches message substrings
+    such as "too long", which is fine where a false positive only triggers chunking. Here a false
+    positive would turn a real evaluator error (say `ValueError("expected_output too long")`) into
+    an unjudged row and hide it, so only `ContextWindowOverflowException` counts.
     """
-    Get the label from score using evaluator's _score_mapping if available.
-    If no mapping exists, returns "YES" for scores >= 0.5, "NO" otherwise.
-
-    Args:
-        evaluator: The evaluator instance
-        score: The numeric score
-        outputs: The rows the score was aggregated from, when available. A case whose every row
-            was not-applicable has no verdict to report, and its 0.0 is a placeholder rather than
-            a score, so reverse-mapping it would emit the mapping's worst label for a case that
-            was never judged.
-
-    Returns:
-        The label corresponding to the score
-    """
-    if outputs is not None and not EvaluationReport.is_applicable(outputs):
-        return NOT_APPLICABLE
-
-    if hasattr(evaluator, "_score_mapping") and evaluator._score_mapping:
-        # Create reverse mapping from score to label
-        reverse_mapping = {v: k for k, v in evaluator._score_mapping.items()}
-        # Find the score in the mapping
-        if score in reverse_mapping:
-            return str(reverse_mapping[score])
-
-    # Otherwise, return YES/NO based on score
-    return "YES" if score >= 0.5 else "NO"
+    seen: set[int] = set()
+    current: BaseException | None = exception
+    while current is not None and id(current) not in seen:
+        if isinstance(current, ContextWindowOverflowException):
+            return True
+        seen.add(id(current))
+        # Only an explicit `raise ... from` chain. Following `__context__` would misread a real
+        # error raised after an overflow was caught and handled (e.g. a retry) as an overflow.
+        current = current.__cause__
+    return False
 
 
 class Experiment(Generic[InputT, OutputT, ReportT]):
@@ -406,7 +395,7 @@ class Experiment(Generic[InputT, OutputT, ReportT]):
                 ) = await _evaluate_with_retry()
 
                 try:
-                    label = _get_label_from_score(evaluator, aggregate_score, evaluation_outputs)
+                    label = evaluator._get_label(aggregate_score, aggregate_pass, evaluation_outputs)
                 except Exception:
                     label = "UNKNOWN"
 
@@ -485,6 +474,28 @@ class Experiment(Generic[InputT, OutputT, ReportT]):
                 "detailed_results": [],
             }
         except Exception as e:
+            # A judge whose prompt overflowed its context window never produced a verdict. Record a
+            # NOT_APPLICABLE row marked COULD_NOT_EVALUATE: is_applicable leaves it out of averages
+            # (its 0.0 is not a judgment of the agent), and test_pass=False keeps pass/fail gates
+            # failing, since nothing was judged. Every other error keeps its score-0 failure shape.
+            if _is_context_overflow(e):
+                reason = f"Could not evaluate: judge context window exceeded ({str(e)})"
+                return {
+                    "evaluator_name": evaluator.get_name(),
+                    "evaluator_type": evaluator.get_type_name(),
+                    "test_pass": False,
+                    "score": 0,
+                    "reason": reason,
+                    "detailed_results": [
+                        EvaluationOutput(
+                            score=0.0,
+                            test_pass=False,
+                            reason=reason,
+                            label=NOT_APPLICABLE,
+                            metadata={COULD_NOT_EVALUATE: "judge_context_window_exceeded"},
+                        )
+                    ],
+                }
             # Catch non-throttling errors and record as failure (error isolation)
             return {
                 "evaluator_name": evaluator.get_name(),
@@ -684,10 +695,13 @@ class Experiment(Generic[InputT, OutputT, ReportT]):
             asyncio.create_task(self._worker(queue, task, results, evaluation_data_store)) for _ in range(num_workers)
         ]
 
-        await queue.join()
-        for worker in workers:
-            worker.cancel()
-        await asyncio.gather(*workers, return_exceptions=True)
+        try:
+            await queue.join()
+        finally:
+            # also when this call is cancelled: a worker left running would finish its case on its own
+            for worker in workers:
+                worker.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
 
         # Organize results by evaluator (keyed on instance name so two instances
         # of the same class with distinct `name=` kwargs do not collide).
@@ -852,29 +866,36 @@ class Experiment(Generic[InputT, OutputT, ReportT]):
             "StructuredOutputSimilarity": StructuredOutputSimilarity,
             "ToolCalled": ToolCalled,
             "SkillInvoked": SkillInvoked,
+            "TypedRubricEvaluator": TypedRubricEvaluator,
+            "Cascade": Cascade,
         }
         all_evaluators: dict[str, type[Evaluator]] = {
             **default_evaluators,
             **{v.get_type_name(): v for v in custom_evaluators},
         }
 
-        evaluators = []
-        for evaluator_dict in data["evaluators"]:
+        def build(evaluator_dict: dict) -> Evaluator:
             evaluator_type = evaluator_dict["evaluator_type"]
-            evaluator_args = {k: v for k, v in evaluator_dict.items() if k != "evaluator_type"}
-
-            if "model_id" in evaluator_args:
-                evaluator_args["model"] = evaluator_args.pop("model_id")
-
-            if evaluator_type in all_evaluators:
-                evaluator = all_evaluators[evaluator_type](**evaluator_args)
-                evaluators.append(evaluator)
-            else:
+            if evaluator_type not in all_evaluators:
                 raise Exception(
                     f"Cannot find {evaluator_type}. Make sure the evaluator type is spelled correctly and "
                     f"all relevant custom evaluators are passed in."
                 )
+            evaluator_class = all_evaluators[evaluator_type]
+            # Only the arguments the class declares as evaluators, such as a `Cascade`'s `fast` and
+            # `fallback`, are rebuilt; every other argument is passed through unchanged.
+            evaluator_args: dict[str, Any] = {
+                k: build(v) if k in evaluator_class._evaluator_args else v
+                for k, v in evaluator_dict.items()
+                if k != "evaluator_type"
+            }
 
+            if "model_id" in evaluator_args:
+                evaluator_args["model"] = evaluator_args.pop("model_id")
+
+            return evaluator_class(**evaluator_args)
+
+        evaluators = [build(evaluator_dict) for evaluator_dict in data["evaluators"]]
         return cls(cases=cases, evaluators=evaluators)
 
     @classmethod
