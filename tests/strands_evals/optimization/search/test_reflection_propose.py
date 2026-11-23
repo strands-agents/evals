@@ -463,20 +463,24 @@ class WindowedModel(ScriptedModel):
     """Records each request, reports its size as a provider does (utilization is read from the reported usage),
     and rejects one over its 4,000-token window, as a provider does, without using up a scripted turn.
 
-    `believed` is the window Strands is told (the real one by default)."""
+    `believed` is the window Strands is told (the real one by default). With `beyond_task`, the window it rejects
+    at is the task message's size plus `beyond_task`, so the temp paths the task message holds can't move the
+    request it rejects."""
 
     window = 4000  # tokens: a few large reads fill it
 
-    def __init__(self, turns, *, believed=None):
+    def __init__(self, turns, *, believed=None, beyond_task=None):
         super().__init__(turns)
         self.config["context_window_limit"] = believed or self.window
+        self.beyond_task = beyond_task
         self.seen, self.tools, self.rejected, self.metadata = [], set(), 0, []
 
     async def stream(self, messages, tool_specs=None, *args, **kwargs):
         self.metadata += [m["metadata"] for m in messages if "metadata" in m]
         request = [json.dumps(m["content"]) for m in messages]
         tokens = sum(map(len, request)) // 4
-        if tokens > self.window:
+        window = self.window if self.beyond_task is None else len(request[0]) // 4 + self.beyond_task
+        if tokens > window:
             self.rejected += 1
             raise ContextWindowOverflowException(f"{tokens} tokens")
         self.tools.add(tuple(spec["name"] for spec in tool_specs))
@@ -549,7 +553,7 @@ async def test_a_rejected_request_is_elided_first_then_a_kept_result_is_cut():
     then the elision runs first and the cut lands on a result the elided request keeps."""
     reads = [ToolUse("shell", {"command": f"printf '{c}%.0s' $(seq 2000)"}) for c in "abcdef"]
     turns = [*reads, write("p.txt", "Ask for the number."), submit(prompt="p.txt"), "Done."]
-    model = WindowedModel(turns, believed=200_000)
+    model = WindowedModel(turns, believed=200_000, beyond_task=2500)  # four reads fit (~2,210), five don't (~2,760)
     reflection = Reflection(model)
     reflection._warned = True
     events = []
@@ -567,7 +571,7 @@ async def test_an_unknown_window_is_taken_as_200000_tokens_and_a_rejected_reques
     handled as for a window Strands believes too large."""
     reads = [ToolUse("shell", {"command": f"printf '{c}%.0s' $(seq 2000)"}) for c in "abcdef"]
     turns = [*reads, write("p.txt", "Ask for the number."), submit(prompt="p.txt"), "Done."]
-    model = WindowedModel(turns)
+    model = WindowedModel(turns, beyond_task=2500)
     del model.config["context_window_limit"]
     reflection = Reflection(model)
     reflection._warned = True
