@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 EventName = Literal[
     "config",
+    "draw",
     "propose",
     "trial",
     "score",
@@ -47,6 +48,9 @@ class EventLog:
     only; resume never uses it). Records nest whole under the key shown, via `model_dump`.
 
     - `config`: the `run.json` contents, including `schema_version`.
+    - `draw`: `parent_id`, `blocks` (the step's), `n_candidates`, `draws` (per redraw, 0 first, each
+      proposal's patches as block -> `Patch`, in the order the proposers returned them); written after a
+      step's last redraw and before any candidate is saved or scored (none when a proposer raised).
     - `propose`: `candidate_id`, `number` (display only), `parent_id`, `origin`, `values` (the only copy of
       the candidate's typed values), `changed_keys`, `rationale`, `inherited`, `defaulted`, `round`, `role`;
       `rescore=true` for an ineligible candidate proposed again that a re-score can change: a train trial
@@ -90,7 +94,8 @@ class EventLog:
     with no observe yet; `stop_reason` from the last `stop`; proposer feedback from `observe` / `evidence`;
     `search_cost` from every `proposer_usage` event, a killed iteration's included; the fit sequence from
     `fit`; the end phase's progress from `finalists` / `picked` / `test`. Only search events of closed iterations
-    (ended by `iteration_end` or by `stop`) are replayed; trial and `proposer_usage` events are always read.
+    (ended by `iteration_end` or by `stop`) are replayed; trial and `proposer_usage` events are always read, and
+    so is the killed iteration's last `draw`, whose proposals it runs again on instead of asking the proposers.
     """
 
     def __init__(self, path: Path):
