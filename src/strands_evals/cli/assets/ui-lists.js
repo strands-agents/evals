@@ -48,8 +48,9 @@ const filed = m => `${m.dir && m.dir !== '.' ? `<span class="dim">${esc(m.dir)} 
 const openReportPath = () => (currentView() === 'report' && !repCand && repMeta ? repMeta.path : null);
 const openExperimentPath = () => (currentView() === 'experiment' && expMeta ? expMeta.path : null);
 
-/** Draw one tree. Nothing is drawn before a file is found, and the caret that folds it waits too. */
-function renderFileTree(id, kind, metas, open, describe) {
+/** Draw one tree. Nothing is drawn before a file is found, and the caret that folds it waits too.
+    No tooltip on a row: anchored under the row, it would cover the rows beneath it. */
+function renderFileTree(id, kind, metas, open) {
   const names = metas.map(m => m.name);
   const twice = new Set(names.filter((n, i) => names.indexOf(n) !== i));
   $(id).hidden = !metas.length;
@@ -57,16 +58,13 @@ function renderFileTree(id, kind, metas, open, describe) {
   redraw($(id), metas.map(m => {
     const on = open === m.path;
     return `<a class="runrow${on ? ' on' : ''}" data-${kind}="${esc(m.path)}" tabindex="0" role="link"`
-      + ` title="${esc(`${m.path} · ${describe(m)}`)}"${on ? ' aria-current="true"' : ''}>`
-      + `${esc(twice.has(m.name) ? m.path : m.name)}</a>`;
+      + `${on ? ' aria-current="true"' : ''}>${esc(twice.has(m.name) ? m.path : m.name)}</a>`;
   }).join(''));
 }
 
 function renderFileTrees() {
-  renderFileTree('reports-tree', 'report', REPORTS, openReportPath(),
-    r => `report · ${plural(r.rows, 'row')}`);
-  renderFileTree('experiments-tree', 'experiment', EXPERIMENTS, openExperimentPath(),
-    e => `experiment · ${plural(e.cases, 'case')}`);
+  renderFileTree('reports-tree', 'report', REPORTS, openReportPath());
+  renderFileTree('experiments-tree', 'experiment', EXPERIMENTS, openExperimentPath());
 }
 
 /** Move the marks to the files the page is showing. Called on every view change, which is cheaper
