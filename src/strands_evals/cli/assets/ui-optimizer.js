@@ -35,21 +35,20 @@ function runRows() {
     name: twice.has(named[i]) && r.dir && r.dir !== '.' ? r.dir : named[i],
     id: r.id,
     on: here && (OPT_RUNS[optSel] || {}).id === r.id,
-    title: `${r.dir && r.dir !== '.' ? r.dir : r.events_path} · optimizer run`
-      + ` · ${plural(r.candidates, 'candidate')}`,
   }));
 }
 
 /** Draw them under the Runs row. Nothing is drawn there before a run is found, and the row, the
     caret that folds the list, and the Optimization heading over it are hidden then too. No count on
-    the row: they are all listed right under it. */
+    the row: they are all listed right under it. No tooltip on a row: anchored under the row, it
+    would cover the rows beneath it; the Runs view has the full paths. */
 function renderRunList() {
   const runs = runRows();
   $('runs-sub').hidden = !runs.length;
   app.querySelector('.fold[data-fold="runs-sub"]').hidden = !runs.length;
   redraw($('runs-sub'), runs.map(r =>
     `<a class="runrow${r.on ? ' on' : ''}" data-opt-run-id="${esc(r.id)}" tabindex="0" role="link"`
-    + ` title="${esc(r.title)}"${r.on ? ' aria-current="true"' : ''}>${esc(r.name)}</a>`).join(''));
+    + `${r.on ? ' aria-current="true"' : ''}>${esc(r.name)}</a>`).join(''));
 }
 
 /** Move the mark to the run the page is showing. Called on every view change, which is cheaper than

@@ -169,8 +169,8 @@ const blockDiff = root => {
   ok(sidebar().includes('evals/runs/nightly') && sidebar().includes('later/nightly'),
     'two runs whose directories share a name are named by the whole path, not the name twice',
     sidebar().join());
-  eq(row('alone').getAttribute('title'), 'alone · optimizer run · 1 candidate',
-    'and each says where it is and what it holds');
+  eq(row('alone').getAttribute('title'), null,
+    'and no row carries a tooltip, which would cover the rows beneath it');
   eq(marked(), [],
     'the Runs list selects a run before anyone asks for one, so the list marks none as open');
 
