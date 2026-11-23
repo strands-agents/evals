@@ -648,6 +648,10 @@ The case score is the weighted mean of the applicable questions, and it passes a
 `pass_threshold` unless a `required` question failed. Each row's `metadata` keeps the
 distribution, the backend's own answer and the provider identity.
 
+`report.display()` shows the decision-model identity and each question's score, label, raw
+answer, selected option, and probabilities. `report.run_display()` shows the question details
+when a case is expanded. Missing model ids are marked as not reported.
+
 **Saving experiments.** `to_file()` saves the rubric but never the decision model. Re-attach
 it after loading:
 
@@ -710,6 +714,16 @@ rows also record `escalation_reason`, and keep the rubric's rows under `fast_row
 not apply to the case. The second wins, and its `p_gate` says nothing about the band. After loading a saved experiment, re-attach
 the decision model with `cascade.fast.decision_model = decision_model`, and on
 `cascade.fallback` too when the fallback is a `TypedRubricEvaluator`.
+
+Rendered Cascade reports include `path` and `p_gate` columns. Fallback cases show the final
+verdicts and a separate fast-rubric audit, with the decision models identified by stage.
+These details also appear when rendering a saved report with `strands-evals --rich report`.
+Routing columns are shown only for the recorded `fast` and `fallback` stages. Malformed
+optional numeric metadata is shown as text; an invalid fast-rubric audit logs a warning
+while the final verdict remains visible.
+
+Expanded metric details also show labels for other evaluators, and display not-applicable
+scores as `n/a`. Input, reasons, and metadata text are rendered literally, including brackets.
 
 ### Tool Usage and Parameter Evaluation
 
