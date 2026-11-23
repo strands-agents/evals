@@ -77,7 +77,8 @@ class EventLog:
     - `resume`: `spent`, `budget`, `code` (`code_version()` of the resuming code: strands-evals version, git commit,
       dirty, numpy and optuna versions).
     - `stop`: `reason` (a `stop_reason`, or `"setup"` when the baseline can't be a parent: ineligible, no
-      completed train trial, or a goal metric never measured), `message`.
+      completed train trial, or a goal metric never measured), `message`, and for a search stop `max_rollouts`
+      (the budget it stopped under).
     - `observe`: `block`, `candidate_id` (None for an invalid patch), `observation` (`Observation`).
     - `evidence`: `block` (the proposer told), `evidence` (`Evidence`).
     - `iteration_end`: `record` (`IterationRecord`), `exhausted`, `best_after`, `best_objective` (the first

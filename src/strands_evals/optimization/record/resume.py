@@ -100,6 +100,8 @@ class ResumeState:
         front_test: The `test` event's front reports (`{}` unless the objective is a `Pareto`).
         test_failed_ids: The `test` event's tested candidates with no completed test trial.
         stop_reason: The last `stop` event's reason.
+        stop_max_rollouts: The `max_rollouts` the search stopped under (the last `stop` event's); None before
+            the search stopped, and for a `stop` event written before it recorded the budget.
         trials: (candidate id, run index, case name) -> the last `trial` event's saved record by the end of the
             closed iterations (every trial once the search stopped), so scores are rebuilt as the uninterrupted run
             had them (`RunDirectory.record_from` makes it a `TrialRecord`); a trial a killed iteration replaced is
@@ -128,6 +130,7 @@ class ResumeState:
     front_test: dict[str, TestReport]
     test_failed_ids: list[str]
     stop_reason: StopReason | None
+    stop_max_rollouts: int | None
     trials: dict[tuple[str, int, str], Mapping[str, Any]]
     draw: DrawReplay | None
 
@@ -188,6 +191,7 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
         front_test={},
         test_failed_ids=[],
         stop_reason=None,
+        stop_max_rollouts=None,
         trials={},
         draw=None,
     )
@@ -259,6 +263,7 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
             state.test_failed_ids = list(event.get("failed", []))
         elif name == "stop":
             state.stop_reason = event["reason"]
+            state.stop_max_rollouts = event.get("max_rollouts")
     if state.stop_reason is None:  # the killed iteration runs again; a later attempt's draw replaces an earlier one
         for event in events:
             if event["event"] == "draw" and event["iteration"] == state.iteration + 1:

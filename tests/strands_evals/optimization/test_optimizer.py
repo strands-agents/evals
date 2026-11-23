@@ -1068,6 +1068,55 @@ class _Sequence(ScoreModel):
         return self.fits.pop(0) if self.fits else None
 
 
+async def test_a_flagged_validation_fit_is_the_picks_problem(tmp_path):
+    optimizer = _searching(
+        Block(Scripted({"temperature": 0.5}), "temperature"),
+        schedule=Alternate(),
+        base_dir=tmp_path,
+        score_model=_Sequence(*(_FlaggedFit() for _ in range(5))),  # every fit, the validation fit's included
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+    )
+    result = await optimizer.run_async()
+    assert result.validation.problem == "flagged: Temperature"
+    assert not any(result.validation.estimates.values())  # picked by measured means
+    assert "Validation fit:  flagged: Temperature" in result.summary()
+
+
+class _ScoreFlagged:
+    """A fit that flagged `Score` only and estimates Temperature at the candidate's temperature."""
+
+    flagged = ["Score"]
+    diagnostics: dict = {}
+    candidates = type("_Every", (), {"__contains__": lambda self, _: True})()
+
+    def estimates(self, values, candidate=None):
+        return {"Temperature": Estimate(mean=float(values["temperature"]), sd=0.01)}
+
+
+async def test_a_partly_flagged_validation_fit_says_the_other_metrics_kept_the_fit(tmp_path):
+    optimizer = _optimizer(
+        _experiment(evaluators=[Temperature(), Score()]),
+        rollout_fn=_temperature_rollout,
+        search=Search(
+            [Block(Scripted({"temperature": 0.5}), "temperature"), Block(Scripted(), "manager")], schedule=Alternate()
+        ),
+        objective=Maximize("Temperature"),
+        constraints=[AtLeast("Score", 0.5)],
+        base_dir=tmp_path,
+        score_model=_Sequence(*(_ScoreFlagged() for _ in range(5))),
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+        max_workers=64,
+    )
+    result = await optimizer.run_async()
+    v = result.validation
+    assert v.problem == "flagged: Score (by adjusted means; the other metrics by the fit)"
+    assert all(set(e) == {"Temperature"} for e in v.estimates.values())  # the fit judged the unflagged metric
+    assert all(set(a) == {"Score"} for a in v.adjusted_means.values())
+    assert f"Validation fit:  {v.problem}" in result.summary().splitlines()
+
+
 async def test_a_flagged_fit_reaches_the_proposers_and_the_selection(tmp_path):
     seen = []
 
@@ -1598,8 +1647,11 @@ def _assert_same(resumed, original, *, rerun=None):
     assert resumed.stop_reason == original.stop_reason
     assert resumed.rollouts_spent == original.rollouts_spent
     assert resumed.effects == original.effects
-    for field in ("champion_id", "front", "objectives", "estimates", "infeasible", "problem", "reason"):
+    validation_fields = ("champion_id", "front", "objectives", "estimates", "adjusted_means", "infeasible")
+    for field in (*validation_fields, "p_met", "problem", "rule", "outcome", "reason"):
         assert getattr(resumed.validation, field) == getattr(original.validation, field)
+    for field in ("objective", "constraints", "feasibility_threshold", "proposers"):
+        assert getattr(resumed, field) == getattr(original, field)
     for field in ("champion_id", "objective", "difference", "ratio", "missing"):
         assert getattr(resumed.test, field) == getattr(original.test, field)
     assert resumed.test_failed_ids == original.test_failed_ids
@@ -1859,9 +1911,9 @@ async def test_a_replayed_step_cut_narrower_on_resume_takes_its_first_proposals(
     copy = _killed(original_optimizer._run.root, tmp_path, lambda events: _index(events, "propose", nth=3))
     proposer = Scripted({"temperature": 1.0})
 
-    # 8 baseline + 36 reserve + 8: room for one candidate of the two the step drew.
+    # 8 baseline + 48 reserve + 8: room for one candidate of the two the step drew.
     resumed = await _resume(
-        copy, search=_replay_search(proposer), budget=Budget(max_rollouts=52, max_iterations=1)
+        copy, search=_replay_search(proposer), budget=Budget(max_rollouts=64, max_iterations=1)
     ).run_async()
 
     (step,) = resumed.iterations
@@ -1871,13 +1923,13 @@ async def test_a_replayed_step_cut_narrower_on_resume_takes_its_first_proposals(
 
 
 async def test_a_step_wider_on_resume_asks_the_proposers_again(tmp_path):
-    # 8 baseline + 36 reserve + 8: the step is cut to one candidate.
+    # 8 baseline + 48 reserve + 8: the step is cut to one candidate.
     with pytest.warns(UserWarning, match="leaves less than one iteration"):
         original_optimizer = _searching(
             Block(Scripted({"temperature": 0.5}), "temperature"),
             schedule=Joint(),
             base_dir=tmp_path / "runs",
-            budget=Budget(max_rollouts=52, max_iterations=1),
+            budget=Budget(max_rollouts=64, max_iterations=1),
             proposals_per_iteration=2,
         )
     await original_optimizer.run_async()
@@ -1930,6 +1982,9 @@ async def test_resuming_a_finished_run_returns_its_result_and_spends_nothing(tmp
     again = await resumed.run_async()
 
     _assert_same(again, original)
+    # The budget the search stopped under, not the larger one it was resumed with.
+    assert again.max_rollouts == original.max_rollouts != 2000
+    assert f"Rollouts:   {original.rollouts_spent:,} / {original.max_rollouts:,}" in again.summary()
     assert sum(1 for e in _events_at(root) if e["event"] == "trial") == trials
     assert [e["event"] for e in _events_at(root)][-1] == "resume"  # nothing else appended
     assert OptimizationResult.from_file(root / "result.json") == again
@@ -2046,8 +2101,8 @@ async def test_a_test_report_lost_to_infrastructure_at_a_tight_budget_names_the_
     spent = result.rollouts_spent
     assert result.test is None and spent < budget.max_rollouts < spent + 6
     assert result.test_reason == (
-        f"every test trial of the champion failed, 6 on infrastructure; resume with max_rollouts >= {spent + 6} "
-        "to run them again"
+        "every test trial of the champion failed, 6 on infrastructure; "
+        f"resume with max_rollouts >= {spent + 6} to run them again"
     )
 
     # The sandbox is back, but the saved budget can't afford the 6 trials: still not saved as done.
@@ -2945,10 +3000,16 @@ async def test_the_result_reloads_whole_without_the_run_folder_and_summarizes(tm
     assert reloaded == result and reloaded.to_rows("case") == result.to_rows("case")
     assert reloaded.reports[result.best.id]["test"] == result.reports[result.best.id]["test"]
 
+    assert (result.objective, result.constraints, result.max_rollouts) == ("Maximize(Temperature)", [], 500)
+    assert result.feasibility_threshold == 0.9 and result.proposers == {"numbers": "Scripted", "block": "Scripted"}
+    assert (result.validation.outcome, result.validation.rule) == ("top_finalist", {"kind": "Mean"})
     text = result.summary()
-    assert f"Ships candidate {result.best.number} ({result.best.id})" in text
-    assert "Validation:" in text and "Test, the champion vs the baseline" in text
-    assert "temperature: 0.0 -> 1.0" in text
+    assert (
+        f"Champion:     candidate {result.best.number} " in text
+        and "Proposers:    numbers (Scripted), block (Scripted)" in text
+    )
+    assert f"candidate {result.best.number} *  {result.best.id}" in text and "Test vs baseline" in text
+    assert "temperature  0.0       1.0" in text
     with pytest.raises(ValueError, match="unknown grain"):
         result.to_rows("trial")
 
@@ -2963,25 +3024,22 @@ async def test_the_summary_names_the_flagged_metrics_or_why_there_are_no_effects
 
     def effects_lines(effects):
         text = result.model_copy(update={"effects": {**result.effects, **effects}}).summary()
-        return [line for line in text.splitlines() if line.startswith("Effects:")]
+        return [line.split(":", 1)[1].strip() for line in text.splitlines() if line.startswith(("Effects:", "Held-"))]
 
     assert effects_lines({"metrics": metrics, "reason": None}) == [
-        "Effects: the held-out check flagged tokens, seconds; from then on the search ranked them by measured "
-        "means and the other metrics by the fit."
+        "flagged tokens, seconds; from then on the search ranked them by measured means, the other metrics by the fit"
     ]
     one = {**metrics, "seconds": {"diagnostics": {"flagged": False}}}
     assert effects_lines({"metrics": one, "reason": None}) == [
-        "Effects: the held-out check flagged tokens; from then on the search ranked it by measured means and the "
-        "other metrics by the fit."
+        "flagged tokens; from then on the search ranked it by measured means, the other metrics by the fit"
     ]
     every = {m: {"diagnostics": {"flagged": True}} for m in metrics}
     assert effects_lines({"metrics": every, "reason": None}) == [
-        "Effects: the held-out check flagged Temperature, tokens, seconds; from then on the search ranked by "
-        "measured means, not the fit."
+        "flagged Temperature, tokens, seconds; from then on the search ranked by measured means, not the fit"
     ]
     # Empty effects with a reason (as a flagged fit gave before) print only the reason.
     empty = {"effects": [], "factors": [], "omitted": [], "metrics": metrics, "reason": "flagged: tokens, seconds"}
-    assert effects_lines(empty) == ["Effects: none (flagged: tokens, seconds)."]
+    assert effects_lines(empty) == ["flagged: tokens, seconds"]
     assert effects_lines({"metrics": {"tokens": {"diagnostics": {"flagged": False}}}, "reason": None}) == []
 
 
@@ -3255,8 +3313,19 @@ async def test_without_a_fit_the_label_rows_and_summary_report_the_adjusted_mean
     adjusted = v.adjusted_means[partial]["EvenOnly"]
     assert adjusted == pytest.approx(v.objectives[partial]) and adjusted < v.measured[partial]["EvenOnly"].mean
     assert v.adjusted_means[result.baseline_id] == {"EvenOnly": v.measured[result.baseline_id]["EvenOnly"].mean}
-    assert f"{adjusted:.3g} adjusted (measured 0.9)" in result.summary()
-    assert f"{v.objectives[result.baseline_id]:.3g} (measured)" in result.summary()
+    lines = result.summary().splitlines()
+    head = next(line for line in lines if line.startswith("Validation  "))
+    assert head.split() == [
+        "Validation",
+        "id",
+        "estimate",
+        "sd",
+        "adjusted",
+        "measured",
+        "n",
+    ]  # the objective = adjusted
+    row = next(line for line in lines if partial in line).split()
+    assert row[-5:] == ["-", "-", f"{adjusted:.3f}", "0.900", "1"]
 
 
 # ---- resume inside a two-level Nested -------------------------------------------------------------------

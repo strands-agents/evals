@@ -1,0 +1,9 @@
+{
+  "name": "strands-evals-typescript-agent-fixture",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@strands-agents/harness": "0.5.0",
+    "@strands-agents/sdk": "1.26.0"
+  }
+}

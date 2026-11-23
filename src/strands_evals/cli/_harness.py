@@ -1,7 +1,8 @@
 """The `--config` agent of `strands-evals optimize`: a strands-harness portable config.
 
 The space comes from the config's paths (`instructions`, plus every `--tune`): a text field is a `JsonField` on the
-config, a `skills` path a `SkillLibrary`, a choice a `OneOf`. Each candidate's values are set at their paths in a copy
+config, a `skills` path a `SkillLibrary`, a choice a `OneOf` (a `JsonChoice` when a list or object is among the
+options, e.g. tool sets). Each candidate's values are set at their paths in a copy
 of the config held in memory; each trial builds a fresh harness from it, with its own empty session folder and a copy
 of the configured memory folder, so no trial sees another's state. A `--rollout` runs each trial instead of the
 default `invoke_async(case.input)`, given a factory that builds such a fresh harness.
@@ -30,7 +31,8 @@ from strands_harness import (
 from strands_harness.defaults import DEFAULT_MEMORY_DIR
 
 from ..case import Case
-from ..optimization import BuildContext, Float, Int, JsonField, Marker, OneOf, RolloutFn, SkillLibrary
+from ..optimization import BuildContext, Float, Int, JsonChoice, JsonField, Marker, OneOf, RolloutFn, SkillLibrary
+from ..optimization.declaration.markers import _canonical_json
 from ..optimization.execution.rollout import _call
 
 logger = logging.getLogger(__name__)
@@ -119,10 +121,9 @@ def declare(
             markers[name], kind = number, "number"
         elif options is not None:
             value = _get(current, path, text)
-            if value not in options:
-                raise ValueError(f"--tune {text}: the config's value {value!r} must be one of the options")
+            marker = _choice(text, "the config's", options, value)
             _check_accepted(raw, path, text, options)
-            markers[name], kind = OneOf(*options, default=value), "choice"
+            markers[name], kind = marker, "choice"
         elif path == ("skills",):
             skills = raw.get("skills")
             if not isinstance(skills, str) or skills.startswith(("http://", "https://")):
@@ -232,6 +233,33 @@ def _fresh_state(config: dict[str, Any], base_dir: Path, folder: Path) -> dict[s
         memory["dir"] = str(target)
         trial["memory"] = memory
     return trial
+
+
+def _choice(text: str, whose: str, options: list[Any], value: Any) -> OneOf:
+    """The marker of a `--tune PATH=JSON_LIST`: a `OneOf` over plain options, a `JsonChoice` when a list or
+    object is among them.
+
+    Args:
+        text: The `--tune` path, for errors.
+        whose: Whose value `value` is, for errors: `"the config's"` or `"the agent's"`.
+        options: The parsed JSON list.
+        value: The baseline (the config's or the agent call's value), which must be one of the options.
+
+    Raises:
+        ValueError: The baseline isn't one of the options (canonical JSON compared for a `JsonChoice`),
+            or an option or the baseline isn't a JSON value.
+    """
+    if all(isinstance(option, (str, int, float, bool)) or option is None for option in options):
+        if value not in options:
+            raise ValueError(f"--tune {text}: {whose} value {value!r} must be one of the options")
+        return OneOf(*options, default=value)
+    try:
+        held = _canonical_json(f"--tune {text}: {whose} value", value)
+        if held not in {_canonical_json(f"--tune {text}: the options", option) for option in options}:
+            raise ValueError(f"--tune {text}: {whose} value {value!r} must be one of the options")
+        return JsonChoice(*options, default=value)
+    except TypeError as error:
+        raise ValueError(str(error)) from None
 
 
 def _check_accepted(raw: dict[str, Any], path: tuple[str | int, ...], text: str, values: list[Any]) -> None:

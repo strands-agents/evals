@@ -197,15 +197,15 @@ def changed_values(space: Space, base: Candidate, other: Candidate) -> dict[str,
     return changed
 
 
-def changed_keys(base: Candidate, other: Candidate) -> list[str]:
-    """Every key whose value differs, including keys present in only one of them.
+def changed_keys(base: Mapping[str, Value], other: Mapping[str, Value]) -> list[str]:
+    """Every key whose value differs, including keys present in only one of them, sorted.
 
     Args:
-        base: The candidate compared against, e.g. the parent.
-        other: The candidate shown.
+        base: The values compared against, e.g. the parent's.
+        other: The values shown.
     """
-    keys = sorted(set(base.values) | set(other.values))
-    return [key for key in keys if not _same(base.values.get(key, _ABSENT), other.values.get(key, _ABSENT))]
+    keys = sorted(set(base) | set(other))
+    return [key for key in keys if not _same(base.get(key, _ABSENT), other.get(key, _ABSENT))]
 
 
 def _same(a: Any, b: Any) -> bool:

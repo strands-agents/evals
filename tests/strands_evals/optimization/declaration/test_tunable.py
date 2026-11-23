@@ -7,7 +7,17 @@ from strands.agent.conversation_manager import SlidingWindowConversationManager,
 from strands.hooks import BeforeModelCallEvent
 from strands.models.model import Model
 
-from strands_evals.optimization import Float, Int, OneOf, TextValue, TunableFactory, choice, component, tunable
+from strands_evals.optimization import (
+    Float,
+    Int,
+    JsonChoice,
+    OneOf,
+    TextValue,
+    TunableFactory,
+    choice,
+    component,
+    tunable,
+)
 from strands_evals.optimization.declaration.tunable import _FactoryArgumentError
 
 
@@ -399,3 +409,13 @@ def test_a_build_context_can_be_built_by_hand(tmp_path):
     assert BuildContext({}, lambda name: None).workspace is None
     assert BuildContext({}, lambda name: None, tmp_path).workspace == tmp_path
     assert BuildContext({}, lambda name: None, lambda: tmp_path).workspace == tmp_path
+
+
+def test_a_json_choice_reaches_the_factory_decoded():
+    @tunable(tools=JsonChoice((), ("read",)))
+    def make(tools=()):
+        return list(tools)
+
+    assert make.space.param("tools").default == "[]"  # the parameter default, as canonical JSON
+    assert make() == []  # the plain call builds the baseline
+    assert make.bind({"tools": '["read"]'})() == ["read"]

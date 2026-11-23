@@ -1,8 +1,10 @@
 """Tests for `Reflection.propose`: a scripted model drives the real agent, shell, and submit tool."""
 
 import asyncio
+import json
 import os
 import tempfile
+from types import SimpleNamespace
 
 import pytest
 from botocore.exceptions import (
@@ -12,12 +14,18 @@ from botocore.exceptions import (
     ReadTimeoutError,
     TokenRetrievalError,
 )
-from strands.types.exceptions import EventLoopException, MaxTokensReachedException, ModelThrottledException
+from strands.types.exceptions import (
+    ContextWindowOverflowException,
+    EventLoopException,
+    MaxTokensReachedException,
+    ModelThrottledException,
+)
 
 from strands_evals.optimization import Criteria, InfrastructureError, Maximize, Reflection, Space, TextValue
 from strands_evals.optimization.candidate import Candidate
 from strands_evals.optimization.prompt_templates.reflection.reflection_v0 import CUT_OFF
 from strands_evals.optimization.search.proposer import ProposalRequest
+from strands_evals.optimization.search.reflection import _ShortenToolResultsOnOverflow
 from strands_evals.types.trace import TextContent, ToolResultContent, UserMessage
 from tests.strands_evals.optimization.scripted_model import CutOff, ScriptedModel, ToolUse
 from tests.strands_evals.optimization.search.test_reflection_evidence import (
@@ -454,30 +462,176 @@ async def test_no_trial_to_learn_from_proposes_nothing():
     assert await reflection.propose(request(trials=[trial("a", status="infrastructure_invalid")])) == []
 
 
-async def test_a_send_back_after_a_long_first_turn_still_has_the_task_message():
-    """The window (40 messages) is trimmed at the end of the first call; the task message is pinned through it."""
+class WindowedModel(ScriptedModel):
+    """Records each request, reports its size as a provider does (utilization is read from the reported usage),
+    and rejects one over its 4,000-token window, as a provider does, without using up a scripted turn.
 
-    class Recording(ScriptedModel):
-        def __init__(self, turns):
-            super().__init__(turns)
-            self.first_messages = []
+    `believed` is the window Strands is told (the real one by default)."""
 
-        async def stream(self, messages, *args, **kwargs):
-            self.first_messages.append(messages[0])
-            async for event in super().stream(messages, *args, **kwargs):
-                yield event
+    window = 4000  # tokens: a few large reads fill it
 
-    reads = [ToolUse("shell", {"command": "ls"}) for _ in range(25)]  # 50 messages
+    def __init__(self, turns, *, believed=None):
+        super().__init__(turns)
+        self.config["context_window_limit"] = believed or self.window
+        self.seen, self.tools, self.rejected, self.metadata = [], set(), 0, []
+
+    async def stream(self, messages, tool_specs=None, *args, **kwargs):
+        self.metadata += [m["metadata"] for m in messages if "metadata" in m]
+        request = [json.dumps(m["content"]) for m in messages]
+        tokens = sum(map(len, request)) // 4
+        if tokens > self.window:
+            self.rejected += 1
+            raise ContextWindowOverflowException(f"{tokens} tokens")
+        self.tools.add(tuple(spec["name"] for spec in tool_specs))
+        self.seen.append(request)
+        self.usage = {**self.usage, "inputTokens": tokens}
+        async for event in super().stream(messages, tool_specs, *args, **kwargs):
+            yield event
+
+
+async def test_a_full_context_elides_old_messages_but_keeps_the_task_message():
+    """Past 85% of the context window the oldest messages are elided; the task message stays first through every
+    call, the send-back's included, and the tool outputs that remain are whole."""
+
+    reads = [ToolUse("shell", {"command": "printf 'y%.0s' $(seq 1500)"}) for _ in range(8)]
     turns = [*reads, write("p.txt", "x" * 80), submit(prompt="p.txt"), "Done."]
     turns += [write("p.txt", "Ask for the number."), submit(prompt="p.txt"), "Shortened."]
-    model = Recording(turns)
+    model = WindowedModel(turns)
     reflection = Reflection(model)
     reflection._warned = True
     (patch,) = await reflection.propose(request())
     assert patch.updates == {"prompt": "Ask for the number.\n"}
-    task = model.first_messages[0]
-    assert "Write a new version of the parameters" in task["content"][0]["text"]
-    assert model.first_messages[-1] == task  # the send-back's call starts from the task message too
+    task = model.seen[0][0]
+    assert "Write a new version of the parameters" in task
+    assert all(messages[0] == task for messages in model.seen)  # the send-back's call included
+    elided = next(messages for messages in model.seen if "elided" in "".join(messages[1:2]))
+    assert len(elided) == 5  # the task + the last 4: Reflection's strategy, not the SDK's emergency fallback
+    assert model.tools == {("shell", "submit_optimized_params")}  # no retrieval tool
+    assert all("y" * 1500 in m for messages in model.seen for m in messages if "yyyy" in m)  # outputs not cut
+
+
+async def test_a_send_back_is_pinned_so_elision_keeps_it():
+    """A send-back stays in every request until the agent has answered it, though older messages are elided."""
+    reads = [ToolUse("shell", {"command": "printf 'y%.0s' $(seq 1500)"}) for _ in range(8)]
+    turns = [write("p.txt", "x" * 80), submit(prompt="p.txt"), "Done."]
+    turns += [*reads, write("p.txt", "Ask for the number."), submit(prompt="p.txt"), "Shortened."]
+    model = WindowedModel(turns)
+    reflection = Reflection(model)
+    reflection._warned = True
+    (patch,) = await reflection.propose(request())
+    assert patch.updates == {"prompt": "Ask for the number.\n"}
+    start = next(i for i, messages in enumerate(model.seen) if any("its limit 60" in m for m in messages))
+    after = model.seen[start:]
+    assert any("elided" in m for messages in after for m in messages)  # elided during the send-back's turn
+    assert all(any("its limit 60" in m for m in messages) for messages in after)
+    assert model.metadata == []  # the pin never reaches the model
+
+
+async def test_tool_results_too_large_for_the_window_are_cut_and_the_call_goes_on():
+    """A turn whose tool results alone overflow the window: the provider rejects it once, the results are cut to
+    their first and last 200 characters, and the same call goes on (no retry with a fresh agent)."""
+    big = ToolUse(
+        "shell", {"command": "printf 'a%.0s' $(seq 200); printf 'y%.0s' $(seq 20000); printf 'z%.0s' $(seq 200)"}
+    )
+    turns = [big, write("p.txt", "Ask for the number."), submit(prompt="p.txt"), "Done."]
+    model = WindowedModel(turns)
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    (patch,) = await reflection.propose(request(events=events))
+    assert patch.updates == {"prompt": "Ask for the number.\n"}
+    assert model.rejected == 1 and events == []
+    cut = next(m for messages in model.seen for m in messages if "[cut:" in m)
+    assert "a" * 200 in cut and "z" * 150 in cut and "y" * 200 not in cut  # the tail ends with the exit code
+    assert "characters removed because the context window was full" in cut
+
+
+async def test_a_rejected_request_is_elided_first_then_a_kept_result_is_cut():
+    """Strands believes the window is larger than it is, so nothing is elided until the provider rejects a request;
+    then the elision runs first and the cut lands on a result the elided request keeps."""
+    reads = [ToolUse("shell", {"command": f"printf '{c}%.0s' $(seq 2000)"}) for c in "abcdef"]
+    turns = [*reads, write("p.txt", "Ask for the number."), submit(prompt="p.txt"), "Done."]
+    model = WindowedModel(turns, believed=200_000)
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    (patch,) = await reflection.propose(request(events=events))
+    assert patch.updates == {"prompt": "Ask for the number.\n"}
+    assert model.rejected == 1 and events == []
+    after = next(messages for messages in model.seen if "elided" in "".join(messages[1:2]))
+    assert len(after) == 5  # the task + the last 4: two reads (call, result), the older result cut
+    assert "[cut:" in after[2] and "d" * 200 in after[2] and "e" * 2000 in after[4]
+
+
+async def test_an_unknown_window_is_taken_as_200000_tokens_and_a_rejected_request_still_recovers():
+    """With no `context_window_limit`, Strands assumes 200,000 tokens and warns; the provider's rejection is
+    handled as for a window Strands believes too large."""
+    reads = [ToolUse("shell", {"command": f"printf '{c}%.0s' $(seq 2000)"}) for c in "abcdef"]
+    turns = [*reads, write("p.txt", "Ask for the number."), submit(prompt="p.txt"), "Done."]
+    model = WindowedModel(turns)
+    del model.config["context_window_limit"]
+    reflection = Reflection(model)
+    reflection._warned = True
+    with pytest.warns(UserWarning, match="context_window_limit is not set"):
+        (patch,) = await reflection.propose(request())
+    assert patch.updates == {"prompt": "Ask for the number.\n"}
+    assert model.rejected == 1
+    assert any("[cut:" in m for messages in model.seen for m in messages)
+
+
+async def test_a_request_no_strategy_can_shrink_raises():
+    """The task message alone is over the window: no strategy acts, so the SDK gives up on the first rejection,
+    and Reflection raises with its spend logged."""
+    model = WindowedModel(["unused"])
+    model.window = 50
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    with pytest.raises(ContextWindowOverflowException):
+        await reflection.propose(request(events=events))
+    assert model.rejected == 1 and model.seen == []  # no overflow retry, since no strategy acted
+    assert [e for e, _ in events] == ["proposer_usage"]
+
+
+async def test_every_large_tool_result_of_the_oldest_message_is_cut_at_once():
+    shorten = _ShortenToolResultsOnOverflow()
+    small = "s" * 800
+    message = {
+        "role": "user",
+        "content": [
+            {"toolResult": {"toolUseId": "t1", "content": [{"text": "o" * 1000}]}},
+            {"toolResult": {"toolUseId": "t2", "content": [{"text": small}, {"text": "p" * 3000}]}},
+        ],
+    }
+    assert await shorten.apply(SimpleNamespace(overflow=True, messages=[message]))
+    texts = [item["text"] for block in message["content"] for item in block["toolResult"]["content"]]
+    assert "[cut: 600 characters removed" in texts[0] and texts[1] == small
+    assert "[cut: 2600 characters removed" in texts[2]
+    assert not await shorten.apply(SimpleNamespace(overflow=True, messages=[message]))
+
+
+async def test_tool_results_are_cut_only_on_overflow_oldest_message_first():
+    shorten = _ShortenToolResultsOnOverflow()
+
+    def result(text):
+        return {"role": "user", "content": [{"toolResult": {"toolUseId": "t", "content": [{"text": text}]}}]}
+
+    small = "s" * 800  # cutting it wouldn't shorten it enough to be worth a retry
+    messages = [
+        {"role": "user", "content": [{"text": "task " * 200}]},
+        result("o" * 1000),
+        result(small),
+        result("n" * 1000),
+    ]
+    assert not await shorten.apply(SimpleNamespace(overflow=False, messages=messages))
+    assert await shorten.apply(SimpleNamespace(overflow=True, messages=messages))
+    texts = [m["content"][0].get("toolResult", {}).get("content", [{}])[0].get("text") for m in messages]
+    assert "[cut: 600 characters removed" in texts[1] and texts[3] == "n" * 1000  # the oldest, alone
+    assert await shorten.apply(SimpleNamespace(overflow=True, messages=messages))  # then the next large one
+    assert messages[3]["content"][0]["toolResult"]["content"][0]["text"].endswith("n" * 200)
+    assert not await shorten.apply(SimpleNamespace(overflow=True, messages=messages))  # a cut result isn't cut again
+    assert messages[2]["content"][0]["toolResult"]["content"][0]["text"] == small
+    assert messages[0]["content"][0]["text"] == "task " * 200
 
 
 async def test_the_three_folders_share_one_folder_of_the_call():

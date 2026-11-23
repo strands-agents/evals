@@ -13,7 +13,14 @@ from typing import Any
 
 from scipy import stats
 
-from ..types.optimization import CandidateScores, Estimate, PairedComparison, ValidationReport, Values, near
+from ..types.optimization import (
+    CandidateScores,
+    Estimate,
+    PairedComparison,
+    ValidationReport,
+    Values,
+    near,
+)
 from .score_model.protocols import Fit
 from .score_model.ranking import Assessment, LowerBound, Mean, PickRule, assess, label_candidate, pareto_front, rank
 from .scoring.objectives import AtMost, Criteria, measured_metrics
@@ -184,7 +191,7 @@ def pick(
             that failure value alone (and a crash's usage).
         criteria: The objective, constraints, and feasibility threshold.
         rule: `FinalPick.rule`, passed to `assess`.
-        problem: Why `fit` is None, copied to `ValidationReport.problem`.
+        problem: Why `fit` wasn't used for every goal metric, copied to `ValidationReport.problem`.
     """
     ids = list(dict.fromkeys([baseline_id, *finalist_ids]))
     eligible = [c for c in ids if c in validation and validation[c].is_eligible and completed.get(c, 0) > 0]
@@ -202,7 +209,7 @@ def pick(
         elif not assessments[c].is_feasible:
             infeasible[c] = label_candidate(validation[c], assessments[c], criteria=criteria).reason
     objectives = {c: assessments[c].objective if c in assessments else None for c in ids}
-    return ValidationReport(
+    report = ValidationReport(
         champion_id=champion,
         front=pareto_front(assessments, ranked) if criteria.is_pareto else [],
         objectives=objectives,
@@ -210,32 +217,32 @@ def pick(
         adjusted_means={c: dict(assessments[c].adjusted_means) for c in ids if c in assessments},
         infeasible=infeasible,
         measured={c: measured_metrics(validation[c], criteria.registry) for c in ids if c in validation},
+        p_met={c: dict(assessments[c].p_met) for c in ids if c in assessments},
         problem=problem,
-        reason=_pick_reason(champion, baseline_id, finalist_ids, objectives, feasible),
+        rule=rule.config(),
+        reason="",
     )
+    return report.model_copy(update={"reason": _pick_reason(report, feasible)})
 
 
-def _pick_reason(
-    champion: str,
-    baseline_id: str,
-    finalist_ids: Sequence[str],
-    objectives: Mapping[str, float | None],
-    feasible: Sequence[str],
-) -> str:
-    """One sentence on why `champion` ships."""
+def _pick_reason(report: ValidationReport, feasible: Sequence[str]) -> str:
+    """One sentence on why `report.champion_id` ships, for each `report.outcome`; `feasible` in ranking order."""
+    baseline = next(iter(report.objectives))
 
     def shown(c: str) -> str:
-        value = objectives.get(c)
+        value = report.objectives.get(c)
         return "unmeasured" if value is None else f"{value:.4g}"
 
-    if not finalist_ids:
+    outcome = report.outcome
+    if outcome == "no_finalists":
         return "no finalist from the search; the baseline ships"
-    if champion != baseline_id:
-        return f"{champion} highest on validation: {shown(champion)} vs baseline {shown(baseline_id)}"
-    others = [c for c in feasible if c != baseline_id]
-    if not others:
+    if outcome == "top_finalist":
+        champion = report.champion_id
+        return f"{champion} highest on validation: {shown(champion)} vs baseline {shown(baseline)}"
+    if outcome == "no_feasible_finalist":
         return "no finalist meets every constraint on validation; the baseline ships"
-    return f"the baseline is highest on validation: {shown(baseline_id)} vs best finalist {shown(others[0])}"
+    best = next(c for c in feasible if c != baseline)
+    return f"the baseline is highest on validation: {shown(baseline)} vs best finalist {shown(best)}"
 
 
 def paired_interval(
@@ -266,10 +273,14 @@ def paired_interval(
         return None
     differences = [candidate[c] - reference[c] for c in cases]
     mean = statistics.fmean(differences)
+    means = {
+        "candidate_mean": statistics.fmean(candidate[c] for c in cases),
+        "reference_mean": statistics.fmean(reference[c] for c in cases),
+    }
     if n == 1:
-        return PairedComparison(mean_diff=mean, ci_low=None, ci_high=None, n_cases=n)
+        return PairedComparison(mean_diff=mean, ci_low=None, ci_high=None, n_cases=n, **means)
     half = _t_quantile(level, n - 1) * statistics.stdev(differences) / math.sqrt(n)
-    return PairedComparison(mean_diff=mean, ci_low=mean - half, ci_high=mean + half, n_cases=n)
+    return PairedComparison(mean_diff=mean, ci_low=mean - half, ci_high=mean + half, n_cases=n, **means)
 
 
 def paired_ratio(
@@ -301,15 +312,16 @@ def paired_ratio(
         return None
     a = [candidate[c] for c in cases]
     b = [reference[c] for c in cases]
-    mean_b = statistics.fmean(b)
+    mean_a, mean_b = statistics.fmean(a), statistics.fmean(b)
     if mean_b == 0:
         return None
-    ratio = statistics.fmean(a) / mean_b
+    ratio = mean_a / mean_b
+    means = {"candidate_mean": mean_a, "reference_mean": mean_b}
     if n == 1:
-        return PairedComparison(mean_diff=ratio, ci_low=None, ci_high=None, n_cases=n)
+        return PairedComparison(mean_diff=ratio, ci_low=None, ci_high=None, n_cases=n, **means)
     spread = statistics.variance(a) + ratio * ratio * statistics.variance(b) - 2 * ratio * statistics.covariance(a, b)
     half = _t_quantile(level, n - 1) * math.sqrt(max(spread, 0.0) / (mean_b * mean_b * n))
-    return PairedComparison(mean_diff=ratio, ci_low=ratio - half, ci_high=ratio + half, n_cases=n)
+    return PairedComparison(mean_diff=ratio, ci_low=ratio - half, ci_high=ratio + half, n_cases=n, **means)
 
 
 def _shared_cases(candidate: Mapping[str, float], reference: Mapping[str, float], *, caller: str) -> list[str]:

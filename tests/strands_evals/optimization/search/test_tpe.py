@@ -11,6 +11,7 @@ from strands_evals.optimization import (
     Criteria,
     Float,
     Int,
+    JsonChoice,
     Maximize,
     MetricRegistry,
     Minimize,
@@ -447,3 +448,13 @@ def test_config_is_its_constructor_arguments(seed, n_startup_trials):
         "seed": seed,
         "n_startup_trials": n_startup_trials,
     }
+
+
+def test_a_json_choice_is_searched_as_a_category():
+    space = Space({"tools": JsonChoice([], ["read"], ["read", "write"], default=[])})
+    patches = propose(TPE(), request(space, ["tools"], n=8))
+    drawn = {patch.updates["tools"] for patch in patches}
+    assert drawn <= {"[]", '["read"]', '["read","write"]'}  # always one of the canonical options
+    assert len(drawn) >= 2  # several categories get tried
+    for patch in patches:
+        space.validate(space.complete({**Candidate.baseline(space).values, **patch.updates}))

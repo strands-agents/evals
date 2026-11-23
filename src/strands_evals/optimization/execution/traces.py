@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import threading
 import weakref
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import opentelemetry.trace as trace_api
-from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor
+from opentelemetry.sdk.trace import Event, ReadableSpan, SpanProcessor
 from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider
-from opentelemetry.trace import StatusCode
+from opentelemetry.sdk.util.instrumentation import InstrumentationScope
+from opentelemetry.trace import SpanContext, SpanKind, Status, StatusCode, TraceFlags
 
 from ...mappers.strands_in_memory_session_mapper import StrandsInMemorySessionMapper
 from ...telemetry.config import StrandsEvalsTelemetry
@@ -229,6 +230,41 @@ class TraceCapture:
     def release(self, trace_ids: Iterable[str]) -> None:
         """Drop only these trials' spans."""
         self._filter.release(trace_ids)
+
+
+def ingest(spans: Iterable[Mapping[str, Any]]) -> None:
+    """Add spans another process recorded (a Node agent's, `node.py`) as if they had finished here.
+
+    Each span is JSON as `node/runner.mjs` writes it: hex ids (its own trace's, so a span of a registered trial
+    trace joins it), attributes, events, status, kind, and times in nanoseconds. Rebuilt as a `ReadableSpan` and
+    given to the trial span filter of the current tracer provider, which keeps it only when its trace is
+    registered. Does nothing outside a run (no filter).
+    """
+    span_filter = _FILTERS.get(trace_api.get_tracer_provider())  # type: ignore[call-overload]
+    if span_filter is None:
+        return
+    for data in spans:
+        trace_id = int(data["trace_id"], 16)
+        parent = data.get("parent_span_id")
+        status = data.get("status") or {}
+        scope = data.get("scope")
+        span_filter.on_end(
+            ReadableSpan(
+                name=str(data["name"]),
+                context=SpanContext(trace_id, int(data["span_id"], 16), is_remote=True, trace_flags=TraceFlags(1)),
+                parent=SpanContext(trace_id, int(parent, 16), is_remote=True) if parent else None,
+                attributes=dict(data.get("attributes") or {}),
+                events=[
+                    Event(str(event["name"]), dict(event.get("attributes") or {}), int(event["time_unix_nano"]))
+                    for event in data.get("events") or ()
+                ],
+                kind=SpanKind(int(data.get("kind") or 0)),
+                status=Status(StatusCode(int(status.get("code") or 0)), status.get("message")),
+                start_time=int(data["start_time_unix_nano"]),
+                end_time=int(data["end_time_unix_nano"]),
+                instrumentation_scope=InstrumentationScope(str(scope)) if scope else None,
+            )
+        )
 
 
 def _span_id(span: ReadableSpan) -> str:
