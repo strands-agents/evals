@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import textwrap
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
@@ -21,6 +22,7 @@ from ..types.optimization import (
     CandidateLabel,
     CaseSplit,
     IterationRecord,
+    Measured,
     PairedComparison,
     SplitName,
     StopReason,
@@ -259,7 +261,8 @@ class OptimizationResult(BaseModel):
             ("Test reason", self.test_reason),
             (
                 "Test missing",
-                "; ".join(f"{self._label(c)} {n}" for c, n in missing.items() if n) or None,
+                "; ".join(f"{self._label(c)}: {n} case{'' if n == 1 else 's'}" for c, n in missing.items() if n)
+                or None,
             ),
             (
                 "Test failed",
@@ -381,12 +384,20 @@ class OptimizationResult(BaseModel):
                 row += ["-", "-"] if measured is None else [_number(measured.mean, places), str(measured.n)]
                 if constraints:
                     p = None if constraint is None else v.p_met.get(c, {}).get(constraint)
-                    row.append("" if constraint is None else _number(p, 3))
+                    row.append("" if constraint is None else self._p_met_cell(p))
                 if show_status:
                     row.append(statuses[c] if i == 0 else "")
                 table.append(row)
         numbers = {"objective", "estimate", "sd", "adjusted", "measured", "n", "P(met)"}
         return _columns(table, right=[i for i, name in enumerate(head) if name in numbers])
+
+    def _p_met_cell(self, p: float | None) -> str:
+        """P(met) at 3 decimals, cut instead of rounded when rounding would carry it up to the threshold, so a
+        constraint short of it never prints as meeting it (0.8997 -> 0.899 under 0.9)."""
+        threshold = self.feasibility_threshold
+        if p is not None and threshold is not None and p < threshold <= round(p, 3):
+            return f"{math.floor(p * 1000) / 1000:.3f}"
+        return _number(p, 3)
 
     def _objective_differs(self, goal: Mapping[str, Any], decimals: int) -> bool:
         """Whether a lone objective prints other than its metric's value (negated when lower is better) on any
@@ -403,7 +414,7 @@ class OptimizationResult(BaseModel):
                 value: float | None = estimate.mean
             else:
                 value = adjusted if adjusted is not None else None if measured is None else measured.mean
-            if _number(objective, decimals) != _number(None if value is None else sign * value, decimals):
+            if value is None or round(objective, decimals) != round(sign * value, decimals):
                 return True
         return False
 
@@ -440,18 +451,12 @@ class OptimizationResult(BaseModel):
         return _columns(table, right=range(3, 8))
 
     def _changes_table(self) -> list[str]:
-        """Every changed key with its baseline and champion value: numbers and choices as recorded
-        (`CandidateView.changed`), text as "text"; "inactive" for a side the key isn't active on."""
+        """Every changed number and choice (`CandidateView.changed`; text is in `diff()`) with its baseline and
+        champion value: its repr (a long float to 6 significant digits), cut to 40 characters, and
+        "inactive" for a side the key isn't active on. The exact values are in `best.values`."""
         table = [["Changed", "baseline", "champion"]]
-        for key in changed_keys(self.baseline.values, self.best.values):
-            recorded = self.best.changed.get(key)  # None for text, which `changed` leaves out
-            cells = []
-            for side, values in (("old", self.baseline.values), ("new", self.best.values)):
-                if recorded is None:
-                    cells.append("text" if key in values else "inactive")
-                else:
-                    cells.append(repr(recorded[side]) if side in recorded else "inactive")
-            table.append([key, *cells])
+        for key, sides in self.best.changed.items():
+            table.append([key, *(_value_cell(sides[side]) if side in sides else "inactive" for side in ("old", "new"))])
         return _columns(table, right=())
 
     def _tokens_table(self) -> list[str]:
@@ -482,8 +487,8 @@ class OptimizationResult(BaseModel):
             )
         if self.test is not None or self.front_test:
             notes.append(
-                f"Test: baseline and champion are each one's mean over the cases it measured; diff is champion - "
-                f"baseline, paired over the n cases both measured, with its {_LEVEL}% interval; reported only."
+                "Test: baseline, champion, and diff (champion - baseline, with its "
+                f"{_LEVEL}% interval) are over the n cases both measured; reported only."
             )
         notes.append(
             "Tokens: search is the train split; retries are the agent's and the judges' tokens in attempts run "
@@ -551,9 +556,20 @@ def _rule_name(config: Mapping[str, Any]) -> str:
 
 def _decimals(values: Sequence[float | None]) -> int:
     """One precision for numbers of one metric, by the largest: 0 decimals from 1,000, 1 from 100, 2 from 10,
-    else 3."""
-    largest = max((abs(v) for v in values if v is not None), default=0.0)
+    3 from 0.1, and below that enough for 3 significant digits of the largest (0.000105 -> 6)."""
+    largest = max((abs(v) for v in values if v is not None and math.isfinite(v)), default=0.0)
+    if 0 < largest < 0.1:
+        return 2 - math.floor(math.log10(largest))
     return 0 if largest >= 1000 else 1 if largest >= 100 else 2 if largest >= 10 else 3
+
+
+def _value_cell(value: Value) -> str:
+    """A changed value for the Changed table: its repr (a float's to 6 significant digits when longer than 10
+    characters), cut to 40."""
+    text = repr(value)
+    if isinstance(value, float) and len(text) > 10:
+        text = f"{value:.6g}"
+    return text if len(text) <= 40 else text[:39] + "…"
 
 
 def _number(value: float | None, decimals: int, *, signed: bool = False) -> str:
@@ -586,25 +602,28 @@ class _Compared(NamedTuple):
 
 
 def _test_rows(report: TestReport | None, metrics: Sequence[str], *, objective: bool) -> list[_Compared]:
-    """A test report's rows: the objective first when `objective` (no mean of it is recorded), then each metric
-    with the baseline's and the compared candidate's means (`TestReport.means`); all None without a report."""
+    """A test report's rows: the objective first when `objective`, then each metric, each with both sides' means
+    over the cases both measured and the paired difference; all None without a report."""
     rows = []
     if objective:
-        rows.append(_Compared("objective", None, None, None if report is None else report.objective))
+        compared = None if report is None else report.objective
+        rows.append(_shared("objective", compared, None, None))
     for metric in metrics:
         if report is None:
             rows.append(_Compared(metric, None, None, None))
             continue
         base, other = (report.means.get(c, {}).get(metric) for c in (report.baseline_id, report.champion_id))
-        rows.append(
-            _Compared(
-                metric,
-                None if base is None else base.mean,
-                None if other is None else other.mean,
-                report.difference.get(metric),
-            )
-        )
+        rows.append(_shared(metric, report.difference.get(metric), base, other))
     return rows
+
+
+def _shared(metric: str, compared: PairedComparison | None, base: Measured | None, other: Measured | None) -> _Compared:
+    """A test row with each side's mean over the cases both measured (`PairedComparison`), so the means and the
+    difference cover the same cases; each side's own test mean (`base`, `other`) for a comparison saved
+    before those were recorded."""
+    if compared is not None and compared.reference_mean is not None:
+        return _Compared(metric, compared.reference_mean, compared.candidate_mean, compared)
+    return _Compared(metric, None if base is None else base.mean, None if other is None else other.mean, compared)
 
 
 def _test_table(report: TestReport, *, lone: bool) -> list[str]:

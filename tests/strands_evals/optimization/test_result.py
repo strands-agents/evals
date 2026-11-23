@@ -4,8 +4,8 @@ import statistics
 from pathlib import Path
 
 from strands_evals.optimization import AtMost, Criteria, LowerBound, Maximize, Mean, MetricRegistry, Minimize, Pareto
-from strands_evals.optimization.end_phase import pick
-from strands_evals.optimization.result import CandidateView, OptimizationResult
+from strands_evals.optimization.end_phase import paired_interval, pick
+from strands_evals.optimization.result import CandidateView, OptimizationResult, _decimals, _value_cell
 from strands_evals.optimization.score_model.effects import effects_json
 from strands_evals.types.optimization import (
     CandidateScores,
@@ -98,7 +98,10 @@ def _test(candidate_id, objective, by_metric, n, *, missing=None):
         champion_id=candidate_id,
         baseline_id=BASELINE,
         objective=objective,
-        difference={m: _compared(new - old, low, high, n) for m, (old, new, low, high) in by_metric.items()},
+        difference={
+            m: _compared(new - old, low, high, n).model_copy(update={"candidate_mean": new, "reference_mean": old})
+            for m, (old, new, low, high) in by_metric.items()
+        },
         ratio={},
         missing=missing or {},
         means={
@@ -237,10 +240,9 @@ def test_a_single_objective_run():
             "    its posterior sd; measured: the mean over the cases measured,",
             "    n of them (the runs, when one case has a value); * the",
             "    champion.",
-            "[2] Test: baseline and champion are each one's mean over the",
-            "    cases it measured; diff is champion - baseline, paired over",
-            "    the n cases both measured, with its 90% interval; reported",
-            "    only.",
+            "[2] Test: baseline, champion, and diff (champion - baseline, with",
+            "    its 90% interval) are over the n cases both measured;",
+            "    reported only.",
             "[3] Tokens: search is the train split; retries are the agent's",
             "    and the judges' tokens in attempts run again; other agents",
             "    are the rollouts' agents the factory didn't build (a",
@@ -323,7 +325,7 @@ def test_a_constrained_run_has_a_row_per_candidate_and_goal():
             "Parent:        candidate 2",
             "Proposers:     text (Reflection), numbers (TPE)",
             "Changed:       system_prompt, temperature",
-            "Test missing:  candidate 5 1",
+            "Test missing:  candidate 5: 1 case",
             "========================================================================================================",
             "Validation     id            objective  goal            estimate     sd  measured  n  P(met)  status",
             "--------------------------------------------------------------------------------------------------------",
@@ -346,10 +348,9 @@ def test_a_constrained_run_has_a_row_per_candidate_and_goal():
             "Helpfulness          0.620     0.760  +0.140  [+0.050, +0.230]  8",
             "tokens               3,102     2,490    -612      [-840, -383]  8",
             "========================================================================================================",
-            "Changed        baseline  champion",
+            "Changed      baseline  champion",
             "--------------------------------------------------------------------------------------------------------",
-            "system_prompt  text      text",
-            "temperature    0.7       0.2",
+            "temperature  0.7       0.2",
             "========================================================================================================",
             "Tokens           search  validation     test      total",
             "--------------------------------------------------------------------------------------------------------",
@@ -362,8 +363,8 @@ def test_a_constrained_run_has_a_row_per_candidate_and_goal():
             "Notes:",
             "[1] estimate, sd: the validation fit's estimate of the mean and its posterior sd; measured: the mean",
             "    over the cases measured, n of them (the runs, when one case has a value); * the champion.",
-            "[2] Test: baseline and champion are each one's mean over the cases it measured; diff is champion -",
-            "    baseline, paired over the n cases both measured, with its 90% interval; reported only.",
+            "[2] Test: baseline, champion, and diff (champion - baseline, with its 90% interval) are over the n cases",
+            "    both measured; reported only.",
             "[3] Tokens: search is the train split; retries are the agent's and the judges' tokens in attempts run",
             "    again; other agents are the rollouts' agents the factory didn't build (a simulated user).",
         ]
@@ -421,7 +422,7 @@ def test_a_pareto_run_adds_the_front_on_test():
     assert _pareto_run().summary() == "\n".join(
         [
             "Optimization result: pareto-20261117-101500-77aa01",
-            "================================================================================================",
+            "===================================================================================================",
             "Objective:    Pareto(Maximize(Helpfulness), Minimize(tokens, scale=1000))",
             "Stop reason:  exhausted               Rollouts:   410 / 500",
             "Iterations:   6                       Pick rule:  Mean",
@@ -430,51 +431,49 @@ def test_a_pareto_run_adds_the_front_on_test():
             "Proposers:    text (Reflection)",
             "Changed:      -",
             "Test reason:  the budget couldn't test front members 6",
-            "================================================================================================",
+            "===================================================================================================",
             "Validation   id            objective  goal         estimate     sd  measured   n",
-            "------------------------------------------------------------------------------------------------",
+            "---------------------------------------------------------------------------------------------------",
             "baseline *   58dc753dfc0f     -0.070  Helpfulness     0.810  0.020     0.810  10",
             "                                      tokens          950.0   40.0     950.0  10",
             "candidate 3  4c9d02be17f3     -0.100  Helpfulness     0.700  0.020     0.700  10",
             "                                      tokens          900.0   40.0     900.0  10",
             "candidate 6  0a6e5b3dd981     -0.125  Helpfulness     0.600  0.020     0.600  10",
             "                                      tokens          850.0   40.0     850.0  10",
-            "================================================================================================",
+            "===================================================================================================",
             "Test vs baseline  baseline  champion    diff            90% CI  n",
-            "------------------------------------------------------------------------------------------------",
+            "---------------------------------------------------------------------------------------------------",
             "objective                -         -  +0.000  [+0.000, +0.000]  6",
             "Helpfulness          0.790     0.790  +0.000  [+0.000, +0.000]  6",
             "tokens               962.0     962.0    +0.0      [+0.0, +0.0]  6",
-            "================================================================================================",
-            "Front test vs baseline  id            metric       baseline  member    diff            90% CI  n",
-            "------------------------------------------------------------------------------------------------",
-            "baseline *              58dc753dfc0f  objective           -       -  +0.000  [+0.000, +0.000]  6",
-            "                                      Helpfulness     0.790   0.790  +0.000  [+0.000, +0.000]  6",
-            "                                      tokens          962.0   962.0    +0.0      [+0.0, +0.0]  6",
-            "candidate 3             4c9d02be17f3  objective           -       -  -0.031  [-0.058, -0.004]  6",
-            "                                      Helpfulness     0.790   0.710  -0.080  [-0.130, -0.030]  6",
-            "                                      tokens          962.0   911.5   -50.5    [-84.0, -17.0]  6",
-            "candidate 6             0a6e5b3dd981  objective           -       -       -                 -  -",
-            "                                      Helpfulness         -       -       -                 -  -",
-            "                                      tokens              -       -       -                 -  -",
-            "================================================================================================",
+            "===================================================================================================",
+            "Front test vs baseline  id            metric       baseline  member     diff              90% CI  n",
+            "---------------------------------------------------------------------------------------------------",
+            "baseline *              58dc753dfc0f  objective           -       -  +0.0000  [+0.0000, +0.0000]  6",
+            "                                      Helpfulness     0.790   0.790   +0.000    [+0.000, +0.000]  6",
+            "                                      tokens          962.0   962.0     +0.0        [+0.0, +0.0]  6",
+            "candidate 3             4c9d02be17f3  objective           -       -  -0.0310  [-0.0580, -0.0040]  6",
+            "                                      Helpfulness     0.790   0.710   -0.080    [-0.130, -0.030]  6",
+            "                                      tokens          962.0   911.5    -50.5      [-84.0, -17.0]  6",
+            "candidate 6             0a6e5b3dd981  objective           -       -        -                   -  -",
+            "                                      Helpfulness         -       -        -                   -  -",
+            "                                      tokens              -       -        -                   -  -",
+            "===================================================================================================",
             "Tokens         search  validation   test    total",
-            "------------------------------------------------------------------------------------------------",
+            "---------------------------------------------------------------------------------------------------",
             "agent          43,464      29,629  9,598   82,691",
             "proposers     134,023           0      0  134,023",
             "judges              -           -      -        0",
             "retries             -           -      -        0",
             "other agents        -           -      -        0",
-            "================================================================================================",
+            "===================================================================================================",
             "Notes:",
             "[1] estimate, sd: the validation fit's estimate of the mean and its posterior sd; measured: the",
-            "    mean over the cases measured, n of them (the runs, when one case has a value); * the",
-            "    champion.",
-            "[2] Test: baseline and champion are each one's mean over the cases it measured; diff is champion",
-            "    - baseline, paired over the n cases both measured, with its 90% interval; reported only.",
-            "[3] Tokens: search is the train split; retries are the agent's and the judges' tokens in",
-            "    attempts run again; other agents are the rollouts' agents the factory didn't build (a",
-            "    simulated user).",
+            "    mean over the cases measured, n of them (the runs, when one case has a value); * the champion.",
+            "[2] Test: baseline, champion, and diff (champion - baseline, with its 90% interval) are over the n",
+            "    cases both measured; reported only.",
+            "[3] Tokens: search is the train split; retries are the agent's and the judges' tokens in attempts",
+            "    run again; other agents are the rollouts' agents the factory didn't build (a simulated user).",
         ]
     )
 
@@ -603,7 +602,7 @@ def test_a_lone_minimized_objective_leaves_its_negated_column_out():
     assert "Validation     id            estimate  sd  measured  n" in result.summary().splitlines()
 
 
-def test_the_changed_table_shows_recorded_values_text_and_inactive_sides():
+def test_the_changed_table_shows_recorded_values_and_inactive_sides_and_no_text():
     c1 = "a41f9c03d2e8"
     criteria = Criteria(Maximize("WordCount"), [], REGISTRY)
     validation = _pick(criteria, [c1], None, {c: _cases(4, WordCount=0.5) for c in (BASELINE, c1)})
@@ -623,12 +622,12 @@ def test_the_changed_table_shows_recorded_values_text_and_inactive_sides():
         stop_reason="iterations",
     )
     lines = result.summary().splitlines()
-    assert "Changed:      manager, manager.size, prompt" in lines
+    assert "Changed:      manager, manager.size, prompt" in lines  # the header lists text too
     start = lines.index("Changed       baseline  champion")
     assert lines[start + 2 : start + 5] == [
         "manager       'window'  'summary'",
         "manager.size  8         inactive",
-        "prompt        text      text",
+        "=" * len(lines[1]),  # the text value is in diff(), not here
     ]
 
 
@@ -680,3 +679,64 @@ def test_tested_candidates_with_no_completed_test_trial_are_named():
     run = _constrained_run()
     result = run.model_copy(update={"test_failed_ids": [run.validation.champion_id]})
     assert "Test failed:   candidate 5 (every test trial failed)" in result.summary().splitlines()
+
+
+def test_a_test_rows_means_cover_the_cases_its_difference_does():
+    # The champion lost case e, so the baseline's own test mean (over a-e) and the difference (over a-d) disagree.
+    baseline = {"a": 0.2, "b": 0.4, "c": 0.6, "d": 0.8, "e": 0.0}
+    champion = {"a": 0.3, "b": 0.5, "c": 0.7, "d": 0.9}
+    run = _poem_run()
+    c4 = run.validation.champion_id
+    report = run.test.model_copy(
+        update={
+            "difference": {"WordCount": paired_interval(champion, baseline, level=0.9)},
+            "missing": {c4: 1, BASELINE: 0},
+            "means": {BASELINE: {"WordCount": _measured(0.4, 5)}, c4: {"WordCount": _measured(0.6, 4)}},
+        }
+    )
+    lines = run.model_copy(update={"test": report}).summary().splitlines()
+    row = next(line for line in lines if line.startswith("WordCount "))
+    assert row.split() == ["WordCount", "0.500", "0.600", "+0.100", "[+0.100,", "+0.100]", "4"]
+    assert "Test missing:  candidate 4: 1 case" in lines
+
+
+def test_small_values_keep_three_significant_digits():
+    assert [_decimals([0.000105, 0.000305]), _decimals([0.05]), _decimals([0.5]), _decimals([0.0])] == [6, 4, 3, 3]
+
+
+def test_the_changed_table_cuts_long_values_and_rounds_floats():
+    assert _value_cell(0.6818711275851573) == "0.681871"
+    assert _value_cell("x" * 60) == repr("x" * 60)[:39] + "…"
+    assert _value_cell(0.2) == "0.2" and _value_cell(1.0) == "1.0" and _value_cell(3) == "3"
+    assert _value_cell(None) == "None" and _value_cell("long") == "'long'"
+
+
+def test_a_p_met_short_of_the_threshold_never_prints_as_meeting_it():
+    run = _constrained_run()
+    assert run._p_met_cell(0.8997) == "0.899" and run._p_met_cell(0.9003) == "0.900"
+    assert run._p_met_cell(0.99999) == "1.000" and run._p_met_cell(None) == "-"
+
+
+def test_a_lone_minimized_objective_at_zero_leaves_its_column_out():
+    c1 = "a41f9c03d2e8"
+    criteria = Criteria(Minimize("tokens"), [], REGISTRY)
+    fitted = {BASELINE: 0.4, c1: 0.0}
+    validation = _pick(
+        criteria,
+        [c1],
+        {c: {"tokens": Estimate(mean=mean, sd=0.0001)} for c, mean in fitted.items()},
+        {c: _cases(4, tokens=mean) for c, mean in fitted.items()},
+    )
+    result = _result(
+        criteria,
+        [_view(c1, 1, BASELINE, ["text"], {"system_prompt": "Be brief."})],
+        validation,
+        test=None,
+        steps=1,
+        baseline_values={"system_prompt": "Answer the question."},
+        run_id="zero",
+        rollouts_spent=20,
+        max_rollouts=150,
+        stop_reason="iterations",
+    )
+    assert "objective" not in next(line for line in result.summary().splitlines() if line.startswith("Validation "))

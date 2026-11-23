@@ -772,7 +772,13 @@ class Optimizer:
             "iterations": f"used Budget(max_iterations={cap})'s candidate slots ({cap} steps' worth)",
             "exhausted": "the schedule has nothing left to try",
         }
-        self._run.events.append("stop", iteration=self._iteration, reason=reason, message=messages.get(reason, ""))
+        self._run.events.append(
+            "stop",
+            iteration=self._iteration,
+            reason=reason,
+            message=messages.get(reason, ""),
+            max_rollouts=self._budget.budget.max_rollouts,
+        )
 
     async def _end_phase(self, stop_reason: StopReason) -> OptimizationResult:
         """Finalists from the search ranking (E1), measured with the baseline on validation (E2), the champion
@@ -931,7 +937,10 @@ class Optimizer:
             proposers={_block_name(block): type(block.proposer).__name__ for block, _ in self._blocks},
             iterations=list(self._iterations),
             rollouts_spent=self._budget.spent,
-            max_rollouts=self._budget.budget.max_rollouts,
+            # The budget the search stopped under: resuming a finished run with a larger one runs nothing more.
+            max_rollouts=self._budget.budget.max_rollouts
+            if self._resumed is None or self._resumed.stop_max_rollouts is None
+            else self._resumed.stop_max_rollouts,
             stop_reason=stop_reason,
             agent_cost=agent_cost,
             search_cost=self._search_cost,

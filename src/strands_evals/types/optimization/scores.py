@@ -110,7 +110,9 @@ class PairedComparison(BaseModel):
     """A paired t-interval on the cases both candidates measured (candidate - reference).
 
     For a ratio, `mean_diff` holds the ratio of means. `ci_low` / `ci_high` are None with one shared case
-    (no interval from one difference).
+    (no interval from one difference). `candidate_mean` and `reference_mean` are each side's mean over the
+    same `n_cases` shared cases, so `mean_diff` is their difference (or ratio); None in a comparison saved
+    before they existed.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -119,6 +121,8 @@ class PairedComparison(BaseModel):
     ci_low: float | None
     ci_high: float | None
     n_cases: int
+    candidate_mean: float | None = None
+    reference_mean: float | None = None
 
 
 class CandidateLabel(BaseModel):

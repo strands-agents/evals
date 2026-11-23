@@ -273,10 +273,14 @@ def paired_interval(
         return None
     differences = [candidate[c] - reference[c] for c in cases]
     mean = statistics.fmean(differences)
+    means = {
+        "candidate_mean": statistics.fmean(candidate[c] for c in cases),
+        "reference_mean": statistics.fmean(reference[c] for c in cases),
+    }
     if n == 1:
-        return PairedComparison(mean_diff=mean, ci_low=None, ci_high=None, n_cases=n)
+        return PairedComparison(mean_diff=mean, ci_low=None, ci_high=None, n_cases=n, **means)
     half = _t_quantile(level, n - 1) * statistics.stdev(differences) / math.sqrt(n)
-    return PairedComparison(mean_diff=mean, ci_low=mean - half, ci_high=mean + half, n_cases=n)
+    return PairedComparison(mean_diff=mean, ci_low=mean - half, ci_high=mean + half, n_cases=n, **means)
 
 
 def paired_ratio(
@@ -308,15 +312,16 @@ def paired_ratio(
         return None
     a = [candidate[c] for c in cases]
     b = [reference[c] for c in cases]
-    mean_b = statistics.fmean(b)
+    mean_a, mean_b = statistics.fmean(a), statistics.fmean(b)
     if mean_b == 0:
         return None
-    ratio = statistics.fmean(a) / mean_b
+    ratio = mean_a / mean_b
+    means = {"candidate_mean": mean_a, "reference_mean": mean_b}
     if n == 1:
-        return PairedComparison(mean_diff=ratio, ci_low=None, ci_high=None, n_cases=n)
+        return PairedComparison(mean_diff=ratio, ci_low=None, ci_high=None, n_cases=n, **means)
     spread = statistics.variance(a) + ratio * ratio * statistics.variance(b) - 2 * ratio * statistics.covariance(a, b)
     half = _t_quantile(level, n - 1) * math.sqrt(max(spread, 0.0) / (mean_b * mean_b * n))
-    return PairedComparison(mean_diff=ratio, ci_low=ratio - half, ci_high=ratio + half, n_cases=n)
+    return PairedComparison(mean_diff=ratio, ci_low=ratio - half, ci_high=ratio + half, n_cases=n, **means)
 
 
 def _shared_cases(candidate: Mapping[str, float], reference: Mapping[str, float], *, caller: str) -> list[str]:

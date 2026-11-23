@@ -1646,8 +1646,11 @@ def _assert_same(resumed, original, *, rerun=None):
     assert resumed.stop_reason == original.stop_reason
     assert resumed.rollouts_spent == original.rollouts_spent
     assert resumed.effects == original.effects
-    for field in ("champion_id", "front", "objectives", "estimates", "infeasible", "problem", "reason"):
+    validation_fields = ("champion_id", "front", "objectives", "estimates", "adjusted_means", "infeasible")
+    for field in (*validation_fields, "p_met", "problem", "rule", "outcome", "reason"):
         assert getattr(resumed.validation, field) == getattr(original.validation, field)
+    for field in ("objective", "constraints", "feasibility_threshold", "proposers"):
+        assert getattr(resumed, field) == getattr(original, field)
     for field in ("champion_id", "objective", "difference", "ratio", "missing"):
         assert getattr(resumed.test, field) == getattr(original.test, field)
     assert resumed.test_failed_ids == original.test_failed_ids
@@ -1797,6 +1800,9 @@ async def test_resuming_a_finished_run_returns_its_result_and_spends_nothing(tmp
     again = await resumed.run_async()
 
     _assert_same(again, original)
+    # The budget the search stopped under, not the larger one it was resumed with.
+    assert again.max_rollouts == original.max_rollouts != 2000
+    assert f"Rollouts:   {original.rollouts_spent:,} / {original.max_rollouts:,}" in again.summary()
     assert sum(1 for e in _events_at(root) if e["event"] == "trial") == trials
     assert [e["event"] for e in _events_at(root)][-1] == "resume"  # nothing else appended
     assert OptimizationResult.from_file(root / "result.json") == again
