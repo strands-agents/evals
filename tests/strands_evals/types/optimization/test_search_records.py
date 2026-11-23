@@ -1,0 +1,177 @@
+import json
+import math
+
+import pytest
+from pydantic import ValidationError
+
+from strands_evals.types.optimization import CandidateSummary, Evidence, Observation, Patch
+
+
+def _canonical(values):
+    return json.dumps(values, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [1, 1.0, 0.5, True, False, "1", None],
+    ids=["int", "integral-float", "float", "true", "false", "str", "none"],
+)
+def test_patch_values_keep_their_exact_type_through_json(value):
+    patch = Patch(updates={"key": value}, rationale="")
+
+    restored = Patch.model_validate_json(patch.model_dump_json())
+
+    assert type(restored.updates["key"]) is type(value)
+    assert restored.updates["key"] == value
+
+
+def test_canonical_json_of_values_is_unchanged_by_a_round_trip():
+    updates = {"temperature": 0.5, "max_turns": 3, "use_cache": True, "prompt": "Be brief.", "budget": 2.0}
+    patch = Patch(updates=updates, rationale="")
+
+    restored = Patch.model_validate_json(patch.model_dump_json())
+
+    assert _canonical(restored.updates) == _canonical(updates)
+
+
+def test_observation_round_trips_through_json():
+    observation = Observation(
+        patch=Patch(updates={"max_turns": 3}, rationale="fewer turns", state={"trial": 4}),
+        candidate_id="abc123def456",
+        values={"max_turns": 3, "system_prompt": "Be brief."},
+        objective=0.75,
+        term_values=[0.75],
+        outcome="infeasible",
+        reason="tokens <= 4000: P(met) 0.62 < 0.9",
+        violations=[210.0],
+    )
+
+    restored = Observation.model_validate_json(observation.model_dump_json())
+
+    assert restored == observation
+    assert restored.source_id is None
+    assert restored.round_candidate_ids is None
+
+
+def test_a_round_openers_observation_round_trips_its_round():
+    observation = Observation(
+        patch=Patch(updates={"manager": "window"}, rationale="TPE: random startup", state={}),
+        candidate_id="opener",
+        values={"manager": "window"},
+        source_id="best",
+        round_candidate_ids=["opener", "best", "other"],
+        objective=0.8,
+        term_values=[0.8],
+        outcome="feasible",
+        reason="",
+        violations=[],
+    )
+
+    restored = Observation.model_validate_json(observation.model_dump_json())
+
+    assert restored == observation
+    assert restored.round_candidate_ids == ["opener", "best", "other"]
+
+
+def test_observation_rejects_a_gate_loop_outcome():
+    with pytest.raises(ValidationError):
+        Observation(
+            patch=Patch(updates={}, rationale=""),
+            candidate_id=None,
+            values=None,
+            objective=None,
+            term_values=None,
+            outcome="accepted",
+            reason="",
+            violations=None,
+        )
+
+
+def test_evidence_round_trips_through_json():
+    evidence = Evidence(
+        candidate_id="abc123def456",
+        values={"temperature": 0.2, "use_cache": True},
+        origin=["numbers"],
+        objective=None,
+        term_values=None,
+        violations=None,
+        outcome="ineligible",
+    )
+
+    restored = Evidence.model_validate_json(evidence.model_dump_json())
+
+    assert restored == evidence
+    assert type(restored.values["use_cache"]) is bool
+
+
+def _summary(violations):
+    return CandidateSummary(
+        candidate_id="abc123def456",
+        parent_id=None,
+        origin=["baseline"],
+        values={},
+        number=0,
+        measured_objective=0.5,
+        measured={},
+        trial_count=2,
+        failures=0,
+        ranking_objective=0.5,
+        term_values=[0.5],
+        rank=1,
+        estimates={},
+        adjusted_means={},
+        violations=violations,
+        is_feasible=False,
+        is_eligible=True,
+        changed_keys=[],
+    )
+
+
+def _observation(violations):
+    return Observation(
+        patch=Patch(updates={"max_turns": 3}, rationale="fewer turns"),
+        candidate_id="abc123def456",
+        values={"max_turns": 3},
+        objective=0.75,
+        term_values=[0.75],
+        outcome="infeasible",
+        reason="Grounded >= 0.5: never measured",
+        violations=violations,
+    )
+
+
+def _evidence(violations):
+    return Evidence(
+        candidate_id="abc123def456",
+        values={"max_turns": 3},
+        origin=["numbers"],
+        objective=0.75,
+        term_values=[0.75],
+        violations=violations,
+        outcome="infeasible",
+    )
+
+
+@pytest.mark.parametrize("build", [_summary, _observation, _evidence], ids=["summary", "observation", "evidence"])
+def test_a_constraint_never_measured_is_written_as_null_and_read_back_as_infinite(build):
+    record = build([math.inf, -0.25])
+
+    line = json.dumps(record.model_dump(mode="json"), allow_nan=False)  # how the event log writes it
+
+    assert json.loads(line)["violations"] == [None, -0.25]
+    assert record.model_dump()["violations"] == [math.inf, -0.25]
+    assert type(record).model_validate(json.loads(line)) == record
+    assert type(record).model_validate_json(record.model_dump_json()) == record
+
+
+@pytest.mark.parametrize("bad", [math.nan, -math.inf])
+def test_any_other_non_finite_violation_is_still_not_json(bad):
+    with pytest.raises(ValueError, match="not JSON compliant"):
+        json.dumps(_observation([bad]).model_dump(mode="json"), allow_nan=False)
+
+
+def test_records_are_frozen():
+    patch = Patch(updates={"max_turns": 3}, rationale="")
+
+    with pytest.raises(ValidationError):
+        patch.rationale = "changed"

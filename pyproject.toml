@@ -24,7 +24,7 @@ classifiers = [
 dependencies = [
     "pydantic>=2.4.0,<3.0.0",
     "rich>=15.0.0,<16.0.0",
-    "strands-agents>=1.64.0",
+    "strands-agents>=1.66.0",
     "typing-extensions>=4.13.2,<5.0.0",
     "opentelemetry-api>=1.20.0",
     "opentelemetry-sdk>=1.20.0",
@@ -74,6 +74,14 @@ claude = [
     "claude-agent-sdk>=0.2.0,<0.3.0",
     "openinference-instrumentation-claude-agent-sdk>=0.1.8,<0.2.0",
 ]
+# Optimizer (strands_evals.optimization)
+optimization = [
+    "numpy>=1.26.0,<3.0.0",
+    "scipy>=1.11.0,<2.0.0",
+    "optuna>=5.0.0,<6.0.0",
+    "tomli>=2.0.0,<3.0.0; python_version < '3.11'",  # `strands-evals optimize run FILE.toml` on 3.10
+    "strands-harness>=0.4.0,<0.5.0",  # `strands-evals optimize --config`
+]
 
 [tool.ruff]
 line-length = 120
@@ -82,7 +90,7 @@ include = ["src/**/*.py", "tests/**/*.py", "tests_integ/**/*.py"]
 [tool.hatch.envs.hatch-test]
 installer = "uv"
 extra-args = ["-n", "auto", "-vv"]
-features = ["otel", "langfuse", "langchain", "opensearch", "adk", "claude", "stickler"]
+features = ["otel", "langfuse", "langchain", "opensearch", "adk", "claude", "stickler", "optimization"]
 dependencies = [
     "pytest>=8.0.0,<10.0.0",
     "pytest-cov>=7.0.0,<8.0.0",
@@ -123,7 +131,7 @@ prepare = [
 
 [tool.hatch.envs.hatch-static-analysis]
 installer = "uv"
-features = ["otel", "langfuse", "langchain", "opensearch", "stickler"]
+features = ["otel", "langfuse", "langchain", "opensearch", "stickler", "optimization"]
 dependencies = [
   "mypy>=1.15.0,<3.0.0",
   # PIL is an optional import in types/multimodal.py
