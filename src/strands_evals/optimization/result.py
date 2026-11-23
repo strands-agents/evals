@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import math
+import textwrap
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -20,6 +22,7 @@ from ..types.optimization import (
     CandidateLabel,
     CaseSplit,
     IterationRecord,
+    Measured,
     PairedComparison,
     SplitName,
     StopReason,
@@ -30,7 +33,7 @@ from ..types.optimization import (
     ValidationReport,
     Value,
 )
-from .candidate import Candidate, changed_values, diff
+from .candidate import Candidate, changed_keys, changed_values, diff
 from .declaration.files import _write_text_atomically
 from .declaration.space import Space
 from .end_phase import TEST_LEVEL
@@ -151,8 +154,14 @@ class OptimizationResult(BaseModel):
             when every one of its test trials failed, though it ships. `[]` when every tested candidate
             completed a test trial or the test didn't run, and in a result written before this field existed.
         effects: `effects.json`: per metric and option from the search fit, or empty with the reason.
+        objective: The objective as `run.json` records it, e.g. "Maximize(WordCount)"; None in a result
+            written before this field existed (as for the four fields after it and `max_rollouts`).
+        constraints: Each constraint as `run.json` records it, e.g. "tokens <= 4000", in declaration order.
+        feasibility_threshold: The P(met) a constraint needs to count as met (`Optimizer(feasibility_threshold=)`).
+        proposers: Block name -> its proposer's class name, in the search's block order.
         iterations: Every search step, in order.
         rollouts_spent: Rollouts counted against the budget, the end phase's included.
+        max_rollouts: The budget's `max_rollouts` the run ended under.
         stop_reason: Why the search stopped: `budget` (what's left after the end-phase reserves can't score
             one more candidate), `iterations` (the cap), or `exhausted` (the schedule had nothing left). The end
             phase runs after any of them. Never `setup`: a setup stop raises instead of returning, and so does a
@@ -184,8 +193,13 @@ class OptimizationResult(BaseModel):
     front_test: dict[str, TestReport]
     test_failed_ids: list[str] = Field(default_factory=list)
     effects: dict[str, Any]
+    objective: str | None = None
+    constraints: list[str] = Field(default_factory=list)
+    feasibility_threshold: float | None = None
+    proposers: dict[str, str] = Field(default_factory=dict)
     iterations: list[IterationRecord]
     rollouts_spent: int
+    max_rollouts: int | None = None
     stop_reason: StopReason
     agent_cost: dict[SplitName, Usage]
     search_cost: Usage
@@ -223,120 +237,262 @@ class OptimizationResult(BaseModel):
         return self.validation.champion_id != self.baseline_id
 
     def summary(self) -> str:
-        """The run in a few lines: why the search stopped, what ships and why, every finalist on validation
-        (the validation fit's estimate next to the measured mean; without the fit, the adjusted mean the pick
-        used, marked `adjusted`, next to the measured mean when they differ), under `Pareto` the validated front, the
-        test report, what changed, the costs, and why there are no effects or which metrics the held-out
-        check flagged."""
-        goals = list(dict.fromkeys(goal["metric"] for goal in self.effects.get("goals", [])))
-        v = self.validation
-        steps = len(self.iterations)
-        lines = [
-            f"Run {self.run_id}: the search stopped ({self.stop_reason}) after {steps} step"
-            f"{'' if steps == 1 else 's'}, {self.rollouts_spent} rollouts.",
+        """The run as a header of recorded values, then tables: validation (one row per candidate, or per
+        candidate and goal when there are several goals), why each candidate that can't ship can't, the test
+        report, under `Pareto` each front member against the baseline on test, the changed values when a number
+        or choice changed, and the tokens; then notes on what the columns hold."""
+        v, best = self.validation, self.best
+        goals = self.effects["goals"]
+        first = [("Objective", self.objective or "-")]
+        if self.constraints:
+            threshold = "-" if self.feasibility_threshold is None else f"{self.feasibility_threshold:g}"
+            first += [("Constraints", "; ".join(self.constraints)), ("P(met) >=", threshold)]
+        rollouts = f"{self.rollouts_spent:,}" + ("" if self.max_rollouts is None else f" / {self.max_rollouts:,}")
+        pairs = [
+            ("Stop reason", self.stop_reason, "Rollouts", rollouts),
+            ("Iterations", str(len(self.iterations)), "Pick rule", "-" if v.rule is None else _rule_name(v.rule)),
+            ("Champion", self._label(best.id), "Outcome", v.outcome),
         ]
-        if self.improved:
-            best = self.best
-            parent = "?" if best.parent_id is None else self._name(best.parent_id)
-            lines.append(f"Ships {self._name(best.id)}, proposed from {parent} by {' + '.join(best.origin)}.")
-        else:
-            lines.append("Ships the baseline.")
-        lines.append(v.reason)
+        missing = self.test.missing if self.test is not None else {}
+        notes = [
+            ("Validation fit", v.problem),
+            ("Effects", self.effects.get("reason")),
+            ("Held-out check", self._flagged_note()),
+            ("Test reason", self.test_reason),
+            (
+                "Test missing",
+                "; ".join(f"{self._label(c)}: {n} case{'' if n == 1 else 's'}" for c, n in missing.items() if n)
+                or None,
+            ),
+        ]
+        last = [
+            ("Parent", self._label(best.parent_id)),
+            # Every block of the search with its proposer, whichever of them the champion came from.
+            ("Proposers", ", ".join(f"{block} ({name})" for block, name in self.proposers.items()) or "-"),
+            ("Changed", ", ".join(changed_keys(self.baseline.values, best.values)) or "-"),
+        ]
+        last += [(label, note.splitlines()[0]) for label, note in notes if note]  # an exception message can run long
+        width = max(len(label) for label, *_ in [*first, *pairs, *last]) + 3
 
-        lines += ["", "Validation" + (f" (measured means: {v.problem})" if v.problem else "") + ":"]
-        table = [["", "candidate", "objective", *goals]]
-        for c, objective in v.objectives.items():
-            mark = "*" if c == v.champion_id else ""
-            note = f"  infeasible: {v.infeasible[c]}" if c in v.infeasible else ""
-            table.append(
-                [mark, self._name(c), _number(objective), *(self._metric_cell(c, m) for m in goals)]
-                + ([note] if note else [])
-            )
-        lines += _table(table)
+        def pair(label: str, value: str) -> str:
+            return f"{f'{label}:':<{width}}{value}"
 
+        # The right-hand pairs start at column 38, so short values keep one layout from run to run, or after the
+        # longest left value.
+        left = max(38, *(width + len(value) + 3 for _, value, _, _ in pairs))
+        right = max(len(label) for _, _, label, _ in pairs) + 3
+        paired = [pair(a, value).ljust(left) + f"{f'{b}:':<{right}}{other}" for a, value, b, other in pairs]
+        header = [pair(*item) for item in first] + paired + [pair(*item) for item in last]
+
+        tables = [self._validation_table(goals)]
+        if v.infeasible:
+            tables.append(self._infeasible_table())
+        lone = sum(goal["role"] == "objective" for goal in goals) == 1
+        if self.test is not None:
+            tables.append(_test_table(self.test, lone=lone))
         if v.front:
-            objective_metrics = [g["metric"] for g in self.effects.get("goals", []) if g["role"] == "objective"]
-            lines += ["", "Validated front (* = champion; test: difference vs the baseline):"]
-            table = [["", "candidate", *goals, *(f"test {m}" for m in objective_metrics)]]
-            for c in v.front:
-                report = self.front_test.get(c)
-                table.append(
-                    ["*" if c == v.champion_id else "", self._name(c)]
-                    + [self._metric_cell(c, m) for m in goals]
-                    + [
-                        "-" if report is None or m not in report.difference else _comparison(report.difference[m])
-                        for m in objective_metrics
-                    ]
-                )
-            lines += _table(table)
+            tables.append(self._front_table(goals))
+        if self.improved and best.changed:
+            tables.append(self._changes_table())
+        tables.append(self._tokens_table())
 
-        lines.append("")
-        if self.test is None:
-            lines.append(f"Test: skipped ({self.test_reason}).")
-        else:
-            t = self.test
-            versus = "the baseline against itself" if t.champion_id == t.baseline_id else "the champion vs the baseline"
-            lines.append(f"Test, {versus} (paired {round(TEST_LEVEL * 100)}% interval; reported only):")
-            table = [["objective", "-" if t.objective is None else _comparison(t.objective), ""]]
-            for metric, compared in t.difference.items():
-                ratio = t.ratio.get(metric)
-                table.append([metric, _comparison(compared), "" if ratio is None else f"ratio {_comparison(ratio)}"])
-            lines += _table(table)
-            if self.test_reason:
-                lines.append(self.test_reason)
+        # The rules span the two-column header and the tables; a full-width value may run past them.
+        rule = max(len(line) for line in [*paired, *(line for table in tables for line in table)])
+        lines = [f"Optimization result: {self.run_id}", "=" * rule, *header]
+        for table in tables:
+            lines += ["=" * rule, table[0], "-" * rule, *table[1:]]
+        return "\n".join([*lines, "=" * rule, *self._notes(tables, width=rule)])
 
-        if self.improved:
-            best = self.best
-            texts = sum(1 for line in best.diff_text.splitlines() if line.startswith("+++ "))
-            lines += ["", f"Changes: {texts} text value{'' if texts == 1 else 's'} (diff())"]
-            for key, sides in best.changed.items():
-                old = repr(sides["old"]) if "old" in sides else "(inactive)"
-                new = repr(sides["new"]) if "new" in sides else "(inactive)"
-                lines.append(f"  {key}: {old} -> {new}")
+    def _label(self, candidate_id: str | None) -> str:
+        """How the summary names a candidate: "baseline", "candidate 3", or "-" for none."""
+        if candidate_id is None:
+            return "-"
+        if candidate_id == self.baseline_id:
+            return "baseline"
+        return f"candidate {self.candidates[candidate_id].number}"
 
-        cost = self.agent_cost
-        lines += [
-            "",
-            f"Agent tokens: {cost['train'].tokens} train (the search), {cost['validation'].tokens} validation, "
-            f"{cost['test'].tokens} test. Proposers {self.search_cost.tokens}, judges {self.judge_cost.tokens}, "
-            f"earlier attempts {self.retry_cost.tokens}, other agents in the rollouts {self.benchmark_cost.tokens}.",
-        ]
+    def _flagged_note(self) -> str | None:
+        """Which metrics the held-out check flagged in the search and how the search ranked from then on; None
+        when none was flagged or there are no effects (the `Effects` note says why)."""
         metrics = self.effects.get("metrics", {})
         flagged = [m for m, d in metrics.items() if d.get("diagnostics", {}).get("flagged")]
-        if self.effects.get("reason"):
-            lines.append(f"Effects: none ({self.effects['reason']}).")
-        elif flagged and len(flagged) == len(metrics):
-            lines.append(
-                f"Effects: the held-out check flagged {', '.join(flagged)}; "
-                "from then on the search ranked by measured means, not the fit."
-            )
-        elif flagged:
-            lines.append(
-                f"Effects: the held-out check flagged {', '.join(flagged)}; from then on the search ranked "
-                f"{'it' if len(flagged) == 1 else 'them'} by measured means and the other metrics by the fit."
-            )
-        return "\n".join(lines)
+        if not flagged or self.effects.get("reason"):
+            return None
+        names = ", ".join(flagged)
+        if len(flagged) == len(metrics):
+            return f"flagged {names}; from then on the search ranked by measured means, not the fit"
+        them = "it" if len(flagged) == 1 else "them"
+        return f"flagged {names}; from then on the search ranked {them} by measured means, the other metrics by the fit"
 
-    def _name(self, candidate_id: str) -> str:
-        """How the summary names a candidate: "the baseline" or "candidate 3 (<id>)"."""
-        if candidate_id == self.baseline_id:
-            return "the baseline"
-        return f"candidate {self.candidates[candidate_id].number} ({candidate_id})"
+    def _validation_table(self, goals: Sequence[Mapping[str, Any]]) -> list[str]:
+        """Every candidate on validation, in the pick's order (the baseline, then the finalists): one row each
+        with one goal, else one row per candidate and goal (each objective metric, then each constraint with
+        its P(met)). The objective column is left out when it would print its lone metric's value; the adjusted
+        column is shown when a metric the fit didn't judge has an adjusted mean other than its measured one."""
+        v = self.validation
+        objectives = [goal for goal in goals if goal["role"] == "objective"]
+        constraints = sorted((g for g in goals if g["role"] == "constraint"), key=lambda g: g["index"])
+        # A result written before `constraints` existed labels each constraint by its metric.
+        texts = self.constraints if len(self.constraints) == len(constraints) else [g["metric"] for g in constraints]
+        # Each goal row: its label, its metric, and the constraint it checks.
+        rows: list[tuple[str, str, str | None]] = [(g["metric"], g["metric"], None) for g in objectives]
+        rows += [(text, g["metric"], text) for g, text in zip(constraints, texts, strict=True)]
+        decimals = {
+            metric: _decimals(
+                [e.mean for c in v.objectives if (e := v.estimates.get(c, {}).get(metric)) is not None]
+                + [a for c in v.objectives if (a := v.adjusted_means.get(c, {}).get(metric)) is not None]
+                + [m.mean for c in v.objectives if (m := v.measured.get(c, {}).get(metric)) is not None]
+            )
+            for _, metric, _ in rows
+        }
+        show_adjusted = any(
+            _number(adjusted, decimals[metric]) != _number(measured.mean, decimals[metric])
+            for c in v.objectives
+            for _, metric, _ in rows
+            if (adjusted := v.adjusted_means.get(c, {}).get(metric)) is not None
+            and (measured := v.measured.get(c, {}).get(metric)) is not None
+        )
+        objective_decimals = _decimals(list(v.objectives.values()))
+        show_objective = len(objectives) != 1 or self._objective_differs(objectives[0], objective_decimals)
+        statuses = {c: self._status(c) for c in v.objectives}
+        show_status = bool(constraints) or any(status != "feasible" for status in statuses.values())
+        head = ["Validation", "id", *(["objective"] if show_objective else []), *(["goal"] if len(rows) > 1 else [])]
+        head += ["estimate", "sd", *(["adjusted"] if show_adjusted else []), "measured", "n"]
+        head += ["P(met)"] if constraints else []
+        head += ["status"] if show_status else []
+        table = [head]
+        for c, objective in v.objectives.items():
+            for i, (label, metric, constraint) in enumerate(rows):
+                estimate = v.estimates.get(c, {}).get(metric)
+                measured = v.measured.get(c, {}).get(metric)
+                row = [self._label(c) + (" *" if c == v.champion_id else ""), c] if i == 0 else ["", ""]
+                if show_objective:
+                    row.append(_number(objective, objective_decimals) if i == 0 else "")
+                row += [label] if len(rows) > 1 else []
+                places = decimals[metric]
+                row += (
+                    ["-", "-"] if estimate is None else [_number(estimate.mean, places), _number(estimate.sd, places)]
+                )
+                if show_adjusted:
+                    row.append(_number(v.adjusted_means.get(c, {}).get(metric), places))
+                row += ["-", "-"] if measured is None else [_number(measured.mean, places), str(measured.n)]
+                if constraints:
+                    p = None if constraint is None else v.p_met.get(c, {}).get(constraint)
+                    row.append("" if constraint is None else self._p_met_cell(p))
+                if show_status:
+                    row.append(statuses[c] if i == 0 else "")
+                table.append(row)
+        numbers = {"objective", "estimate", "sd", "adjusted", "measured", "n", "P(met)"}
+        return _columns(table, right=[i for i, name in enumerate(head) if name in numbers])
 
-    def _metric_cell(self, candidate_id: str, metric: str) -> str:
-        """A validation cell: the fit's estimate with its sd and the measured mean; without the fit, the adjusted mean
-        the pick used and the measured mean when they differ, else the measured mean alone."""
-        estimate = self.validation.estimates.get(candidate_id, {}).get(metric)
-        measured = self.validation.measured.get(candidate_id, {}).get(metric)
-        if estimate is not None:
-            text = f"{estimate.mean:.3g} ± {estimate.sd:.2g}"
-            return text + (f" (measured {measured.mean:.3g})" if measured is not None else "")
-        if measured is None:
-            return "-"
-        adjusted = self.validation.adjusted_means.get(candidate_id, {}).get(metric)
-        if adjusted is not None and f"{adjusted:.3g}" != f"{measured.mean:.3g}":
-            return f"{adjusted:.3g} adjusted (measured {measured.mean:.3g})"
-        return f"{measured.mean:.3g} (measured)"
+    def _p_met_cell(self, p: float | None) -> str:
+        """P(met) at 3 decimals, cut instead of rounded when rounding would carry it up to the threshold, so a
+        constraint short of it never prints as meeting it (0.8997 -> 0.899 under 0.9)."""
+        threshold = self.feasibility_threshold
+        if p is not None and threshold is not None and p < threshold <= round(p, 3):
+            return f"{math.floor(p * 1000) / 1000:.3f}"
+        return _number(p, 3)
+
+    def _objective_differs(self, goal: Mapping[str, Any], decimals: int) -> bool:
+        """Whether a lone objective prints other than its metric's value (negated when lower is better) on any
+        validation row: under `LowerBound`, or when `round_to_sd` moved it at the printed precision. The value is
+        the one the pick used: the fit's estimate, else the adjusted mean, else the measured mean."""
+        v, sign = self.validation, 1 if goal["better"] == "higher" else -1
+        for c, objective in v.objectives.items():
+            if objective is None:  # ineligible, which the status column shows
+                continue
+            estimate = v.estimates.get(c, {}).get(goal["metric"])
+            adjusted = v.adjusted_means.get(c, {}).get(goal["metric"])
+            measured = v.measured.get(c, {}).get(goal["metric"])
+            if estimate is not None:
+                value: float | None = estimate.mean
+            else:
+                value = adjusted if adjusted is not None else None if measured is None else measured.mean
+            if value is None or round(objective, decimals) != round(sign * value, decimals):
+                return True
+        return False
+
+    def _status(self, candidate_id: str) -> str:
+        """A candidate's label on validation: `ineligible` (no objective there), `infeasible`, or `feasible`."""
+        if self.validation.objectives.get(candidate_id) is None:
+            return "ineligible"
+        return "infeasible" if candidate_id in self.validation.infeasible else "feasible"
+
+    def _infeasible_table(self) -> list[str]:
+        """Each candidate that can't ship, in the pick's order, with why (`ValidationReport.infeasible`, its first
+        line): a constraint not met, not eligible on validation, or no validation trial completed."""
+        v = self.validation
+        table = [["Not feasible", "why"]]
+        table += [[self._label(c), v.infeasible[c].splitlines()[0]] for c in v.objectives if c in v.infeasible]
+        return _columns(table, right=())
+
+    def _front_table(self, goals: Sequence[Mapping[str, Any]]) -> list[str]:
+        """Under `Pareto`, each validated front member against the baseline on test: its objective, then each
+        objective metric; "-" for a member the test report has no comparison for."""
+        metrics = [goal["metric"] for goal in goals if goal["role"] == "objective"]
+        members = [(c, _test_rows(self.front_test.get(c), metrics, objective=True)) for c in self.validation.front]
+        decimals = {
+            metric: _decimals([x for _, rows in members for row in rows if row.metric == metric for x in row.numbers()])
+            for metric in ["objective", *metrics]
+        }
+        table = [["Front test vs baseline", "id", "metric", "baseline", "member", "diff", f"{_LEVEL}% CI", "n"]]
+        for c, rows in members:
+            label = self._label(c) + (" *" if c == self.validation.champion_id else "")
+            for i, row in enumerate(rows):
+                table.append(
+                    [label if i == 0 else "", c if i == 0 else "", row.metric, *row.cells(decimals[row.metric])]
+                )
+        return _columns(table, right=range(3, 8))
+
+    def _changes_table(self) -> list[str]:
+        """Every changed number and choice (`CandidateView.changed`; text is in `diff()`) with its baseline and
+        champion value: its repr (a long float to 6 significant digits), cut to 40 characters, and
+        "inactive" for a side the key isn't active on. The exact values are in `best.values`."""
+        table = [["Changed", "baseline", "champion"]]
+        for key, sides in sorted(self.best.changed.items()):  # sorted, as the header's `Changed:`
+            table.append([key, *(_value_cell(sides[side]) if side in sides else "inactive" for side in ("old", "new"))])
+        return _columns(table, right=())
+
+    def _tokens_table(self) -> list[str]:
+        """Tokens per role and phase (train is the search), from the cost fields: the agent per split, the
+        proposers, who run only in the search, and the judges, the retried attempts, and the rollouts' other
+        agents, whose fields hold run totals only ("-" for each phase)."""
+        agent = [self.agent_cost[split].tokens for split in SPLIT_NAMES]
+        proposers = [self.search_cost.tokens, 0, 0]
+        table = [["Tokens", "search", "validation", "test", "total"]]
+        table.append(["agent", *(f"{n:,}" for n in agent), f"{sum(agent):,}"])
+        table.append(["proposers", *(f"{n:,}" for n in proposers), f"{sum(proposers):,}"])
+        totals = [("judges", self.judge_cost), ("retries", self.retry_cost), ("other agents", self.benchmark_cost)]
+        for role, usage in totals:
+            table.append([role, "-", "-", "-", f"{usage.tokens:,}"])
+        return _columns(table, right=range(1, 5))
+
+    def _notes(self, tables: Sequence[Sequence[str]], *, width: int) -> list[str]:
+        """What the columns hold, for the tables shown, wrapped to `width`."""
+        heads = [table[0] for table in tables]
+        notes = [
+            "estimate, sd: the validation fit's estimate of the mean and its posterior sd; measured: the mean over "
+            "the cases measured, n of them (the runs, when one case has a value); P(met) is - for a constraint judged "
+            "by its measured or adjusted mean; * the champion."
+        ]
+        if any("adjusted" in head.split() for head in heads):
+            notes.append(
+                "adjusted: the mean the pick used for a metric the fit didn't judge, with the cases N/A for it "
+                "filled in from the other candidates."
+            )
+        if self.test is not None or self.front_test:
+            notes.append(
+                "Test: baseline, champion, and diff (champion - baseline, with its "
+                f"{_LEVEL}% interval) are over the n cases both measured; reported only."
+            )
+        notes.append(
+            "Tokens: search is the train split; retries are the agent's and the judges' tokens in attempts run "
+            "again; other agents are the rollouts' agents the factory didn't build (a simulated user)."
+        )
+        lines = ["Notes:"]
+        for i, note in enumerate(notes, 1):
+            lines += textwrap.wrap(note, width=width, initial_indent=f"[{i}] ", subsequent_indent="    ")
+        return lines
 
     def to_rows(self, grain: Grain = "proposal") -> list[dict[str, Any]]:
         """The run as flat rows, built from the event log, so a resumed run's rows cover the whole run.
@@ -384,20 +540,104 @@ class OptimizationResult(BaseModel):
         return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
-def _number(value: float | None) -> str:
-    return "-" if value is None else f"{value:.4g}"
+_LEVEL = round(TEST_LEVEL * 100)
 
 
-def _comparison(compared: PairedComparison) -> str:
-    """A paired difference or ratio as text: the mean, its interval, and the cases."""
-    interval = "" if compared.ci_low is None else f" [{compared.ci_low:+.3g}, {compared.ci_high:+.3g}]"
-    return f"{compared.mean_diff:+.3g}{interval} over {compared.n_cases} case{'' if compared.n_cases == 1 else 's'}"
+def _rule_name(config: Mapping[str, Any]) -> str:
+    """A pick rule's config as its name: "Mean", "LowerBound(q=0.1)"."""
+    settings = ", ".join(f"{key}={value}" for key, value in config.items() if key != "kind")
+    return f"{config['kind']}({settings})" if settings else str(config["kind"])
 
 
-def _table(rows: list[list[str]]) -> list[str]:
-    """Rows of cells as left-aligned columns, indented two spaces."""
-    widths = [max(len(row[i]) for row in rows if i < len(row)) for i in range(max(map(len, rows)))]
-    return ["  " + "  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip() for row in rows]
+def _decimals(values: Sequence[float | None]) -> int:
+    """One precision for numbers of one metric, by the largest: 0 decimals from 1,000, 1 from 100, 2 from 10,
+    3 from 0.1, and below that enough for 3 significant digits of the largest (0.000105 -> 6)."""
+    largest = max((abs(v) for v in values if v is not None and math.isfinite(v)), default=0.0)
+    if 0 < largest < 0.1:
+        return 2 - math.floor(math.log10(largest))
+    return 0 if largest >= 1000 else 1 if largest >= 100 else 2 if largest >= 10 else 3
+
+
+def _value_cell(value: Value) -> str:
+    """A changed value for the Changed table: its repr (a float's to 6 significant digits when longer than 10
+    characters), cut to 40."""
+    text = repr(value)
+    if isinstance(value, float) and len(text) > 10:
+        text = f"{value:.6g}"
+    return text if len(text) <= 40 else text[:39] + "…"
+
+
+def _number(value: float | None, decimals: int, *, signed: bool = False) -> str:
+    """`value` with thousands separators and `decimals` places; "-" for None."""
+    return "-" if value is None else f"{value:{'+' if signed else ''},.{decimals}f}"
+
+
+class _Compared(NamedTuple):
+    """One row of a test table: a metric or "objective", both test means, and the paired difference."""
+
+    metric: str
+    base: float | None
+    other: float | None
+    difference: PairedComparison | None
+
+    def numbers(self) -> list[float | None]:
+        """Every number the row prints, to choose its precision."""
+        d = self.difference
+        return [self.base, self.other, *(() if d is None else (d.mean_diff, d.ci_low, d.ci_high))]
+
+    def cells(self, decimals: int) -> list[str]:
+        """Both means, the signed difference, its interval ("-" with one case), and the cases."""
+        d = self.difference
+        cells = [_number(self.base, decimals), _number(self.other, decimals)]
+        if d is None:
+            return [*cells, "-", "-", "-"]
+        low, high = (_number(x, decimals, signed=True) for x in (d.ci_low, d.ci_high))
+        interval = "-" if d.ci_low is None or d.ci_high is None else f"[{low}, {high}]"
+        return [*cells, _number(d.mean_diff, decimals, signed=True), interval, str(d.n_cases)]
+
+
+def _test_rows(report: TestReport | None, metrics: Sequence[str], *, objective: bool) -> list[_Compared]:
+    """A test report's rows: the objective first when `objective`, then each metric, each with both sides' means
+    over the cases both measured and the paired difference; all None without a report."""
+    rows = []
+    if objective:
+        compared = None if report is None else report.objective
+        rows.append(_shared("objective", compared, None, None))
+    for metric in metrics:
+        if report is None:
+            rows.append(_Compared(metric, None, None, None))
+            continue
+        base, other = (report.means.get(c, {}).get(metric) for c in (report.baseline_id, report.champion_id))
+        rows.append(_shared(metric, report.difference.get(metric), base, other))
+    return rows
+
+
+def _shared(metric: str, compared: PairedComparison | None, base: Measured | None, other: Measured | None) -> _Compared:
+    """A test row with each side's mean over the cases both measured (`PairedComparison`), so the means and the
+    difference cover the same cases; each side's own test mean (`base`, `other`) for a comparison saved
+    before those were recorded."""
+    if compared is not None and compared.reference_mean is not None:
+        return _Compared(metric, compared.reference_mean, compared.candidate_mean, compared)
+    return _Compared(metric, None if base is None else base.mean, None if other is None else other.mean, compared)
+
+
+def _test_table(report: TestReport, *, lone: bool) -> list[str]:
+    """The test report: the objective (unless it is a lone metric's), then each compared metric, with both
+    test means and the paired difference, each row at its own precision."""
+    table = [["Test vs baseline", "baseline", "champion", "diff", f"{_LEVEL}% CI", "n"]]
+    for row in _test_rows(report, list(report.difference), objective=not lone):
+        table.append([row.metric, *row.cells(_decimals(row.numbers()))])
+    return _columns(table, right=range(1, 6))
+
+
+def _columns(rows: Sequence[Sequence[str]], *, right: Iterable[int]) -> list[str]:
+    """Rows of cells as columns two spaces apart, the `right` ones right-aligned, the rest left-aligned."""
+    right = set(right)
+    widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
+    return [
+        "  ".join(cell.rjust(widths[i]) if i in right else cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip()
+        for row in rows
+    ]
 
 
 def _proposal_rows(

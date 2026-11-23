@@ -772,7 +772,13 @@ class Optimizer:
             "iterations": f"used Budget(max_iterations={cap})'s candidate slots ({cap} steps' worth)",
             "exhausted": "the schedule has nothing left to try",
         }
-        self._run.events.append("stop", iteration=self._iteration, reason=reason, message=messages.get(reason, ""))
+        self._run.events.append(
+            "stop",
+            iteration=self._iteration,
+            reason=reason,
+            message=messages.get(reason, ""),
+            max_rollouts=self._budget.budget.max_rollouts,
+        )
 
     async def _end_phase(self, stop_reason: StopReason) -> OptimizationResult:
         """Finalists from the search ranking (E1), measured with the baseline on validation (E2), the champion
@@ -848,6 +854,12 @@ class Optimizer:
                 problem = f"the model raised: {type(error).__name__}: {error}"
             else:
                 problem = None if fit is not None else "the model returned no fit"
+                if fit is not None and fit.flagged:
+                    # As `assess` decides it: every goal metric flagged (or a flagged name that isn't one) ->
+                    # measured means for all of them; else only the flagged ones, the rest by the fit.
+                    problem = f"flagged: {', '.join(fit.flagged)}"
+                    if set(fit.flagged) < set(criteria.goal_metrics):
+                        problem += " (by adjusted means; the other metrics by the fit)"
         report = pick(
             baseline_id=baseline,
             finalist_ids=finalists,
@@ -919,8 +931,16 @@ class Optimizer:
             front_test=front_test,
             test_failed_ids=list(test_failed_ids),
             effects=effects,
+            objective=str(criteria.objective),
+            constraints=[str(c) for c in criteria.constraints],
+            feasibility_threshold=criteria.feasibility_threshold,
+            proposers={_block_name(block): type(block.proposer).__name__ for block, _ in self._blocks},
             iterations=list(self._iterations),
             rollouts_spent=self._budget.spent,
+            # The budget the search stopped under: resuming a finished run with a larger one runs nothing more.
+            max_rollouts=self._budget.budget.max_rollouts
+            if self._resumed is None or self._resumed.stop_max_rollouts is None
+            else self._resumed.stop_max_rollouts,
             stop_reason=stop_reason,
             agent_cost=agent_cost,
             search_cost=self._search_cost,
@@ -1312,7 +1332,7 @@ class Optimizer:
             deferred_patches = {b: p for b, p in draw.patches.items() if b in deferred}
             self._run.save_candidate(
                 candidate,
-                changed_keys=changed_keys(parent, candidate),
+                changed_keys=changed_keys(parent.values, candidate.values),
                 round=None if step.round is None else list(step.round),
                 role=step.role,
                 deferred_patches=deferred_patches or None,
@@ -1629,7 +1649,7 @@ class Optimizer:
                     is_eligible=scores.is_eligible,
                     changed_keys=[]
                     if candidate.parent_id is None
-                    else changed_keys(self._candidates[candidate.parent_id], candidate),
+                    else changed_keys(self._candidates[candidate.parent_id].values, candidate.values),
                 )
             )
         return out
