@@ -139,7 +139,11 @@ h2, .chart h3, .pane > header .t, .hero .big, .stat .v, .winner .wid {
   color: var(--ink1); padding: 10px 12px 2px;
 }
 #sgroup-opt .tab { padding-left: 24px; }
-.tab.on { font-weight: 600; color: var(--on-brand); background: var(--brand); }
+/* A lit tab is either the open page itself or just the list that page came from. Only the page
+   gets the filled pill; the containing list takes a quieter accent, so a run and the Runs row
+   over it never read as two selections. `aria-current` is what tells the two apart. */
+.tab.on { font-weight: 600; color: var(--accent); background: var(--hair2); }
+.tab.on[aria-current="page"] { color: var(--on-brand); background: var(--brand); }
 
 /* A view's row with the caret that folds the list under it. The caret sits over the row's right
    padding, so the row keeps its full width as the click target that opens the view. */
@@ -151,7 +155,8 @@ h2, .chart h3, .pane > header .t, .hero .big, .stat .v, .winner .wid {
   display: inline-flex; padding: 3px; border-radius: 4px;
 }
 .fold:hover { color: var(--ink1); background: var(--hair2); }
-.tab.on + .fold, .tab.on + .fold:hover { color: var(--on-brand); background: none; }
+.tab.on[aria-current="page"] + .fold,
+.tab.on[aria-current="page"] + .fold:hover { color: var(--on-brand); background: none; }
 .fold svg { width: 14px; height: 14px; }
 .fold[aria-expanded="false"] svg { transform: rotate(-90deg); }
 
