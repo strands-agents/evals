@@ -76,7 +76,9 @@ Group the `failure`s from every episode's error analysis in step 3 into the fail
 - **SkillSelectionAccuracyEvaluator**: the agent used the wrong skill (ex. "use the code-review skill, not implement").
 - **SkillInstructionFollowingEvaluator**: the agent didn't follow the skill it used (ex. "the skill says to ask before posting").
 
-Only suggest evaluators listed above. If no failure mode reaches 10% of episodes, suggest GoalSuccessRateEvaluator alone.
+Only suggest evaluators listed above. If no failure mode reaches 10% of episodes, suggest none of them.
+
+Always add OutputEvaluator. Write its rubric to describe what a good answer looks like across the cases: what it must get right, the form and tone users accepted (ex. short and direct), and what loses credit (ex. padding or hedging, made-up data, no next step). When the cases have a specific right answer, score it against the case's expected output. Ground every criterion in the episodes' expected outputs, user corrections, and error analysis.
 
 ### 5. Output the experiment file
 
@@ -88,6 +90,7 @@ Write the experiment JSON file to the directory the user gives, defaulting to `.
     {
       "name": "<name>",
       "input": "<input>",
+      "expected_output": "<expected_output>",
       "expected_assertion": "<expected_assertion>",
       "metadata": {
         "source": "<source>",
@@ -99,6 +102,7 @@ Write the experiment JSON file to the directory the user gives, defaulting to `.
     }
   ],
   "evaluators": [
+    {"evaluator_type": "OutputEvaluator", "rubric": "<rubric>"},
     {"evaluator_type": "<evaluator>"}
   ]
 }
@@ -108,12 +112,14 @@ Write one case per kept episode from step 3, and one evaluator entry per evaluat
 
 - `name`: a short kebab-case phrase generated from the episode's `summary`, unique within the file.
 - `input`: the episode's user input.
+- `expected_output`: the episode's expected output. Omit if it is missing.
 - `source`: the session's harness or trace provider (ex. claude, langfuse).
 - `conversation_id`: the conversation id listed for the episode's session.
 - `timestamp`: the episode timestamp.
 - `episode_index`: the episode's 0-based position among the episodes returned for its session, as an integer.
 - `failure_modes`: the evaluator name of every failure mode assigned to the episode, once each. Use `[]` if it has none.
-- `evaluator`: the name of a chosen evaluator.
+- `rubric`: the OutputEvaluator rubric from step 4.
+- `evaluator`: the name of a suggested evaluator.
 
 ### 6. Validate the experiment file
 
@@ -133,9 +139,9 @@ Then, read each case for secrets the pattern doesn't cover (ex. API keys, passwo
 jq -r '.cases[] | [(.input | .[0:400] | ascii_downcase | gsub("[^\\p{L}\\p{N}]+"; " ") | ltrimstr(" ") | .[0:100]), .name] | @tsv' <experiment_file> | sort
 ```
 
-Treat cases as duplicates when their inputs make the same request about the same target and differ only in wording, typos, or added context (ex. "can kiro cli spawn subagents" and "can kiro cli spawn subagents?"). Inputs that share wording but point at different files, URLs, or repos aren't duplicates. Read the full inputs of adjacent rows and of cases with similar names, since the sort only groups matching prefixes. In each group, keep the case whose input best stands alone, or the earliest `timestamp` on a tie, and remove the rest. Set the kept case's `failure_modes` to the union of the group's `failure_modes`. If you removed any, update the `evaluators` using the methodology in step 4 with the cases' `failure_modes` instead of episode files.
+Treat cases as duplicates when their inputs make the same request about the same target and differ only in wording, typos, or added context (ex. "can kiro cli spawn subagents" and "can kiro cli spawn subagents?"). Inputs that share wording but point at different files, URLs, or repos aren't duplicates. Read the full inputs of adjacent rows and of cases with similar names, since the sort only groups matching prefixes. In each group, keep the case whose input best stands alone, or the earliest `timestamp` on a tie, and remove the rest. Set the kept case's `failure_modes` and `expected_output` to the union of the group's. If you removed any, update the `evaluators` using the methodology in step 4 with the cases' `failure_modes` instead of episode files, leaving the OutputEvaluator unchanged.
 
-**Actionability.** Read each case's `input` and `expected_assertion` as the agent running it would, with only a shell and web access. Track cases that match any of the following (but don't modify the experiment file):
+**Actionability.** Read each case's `input`, `expected_output`, and `expected_assertion` as the agent running it would, with only a shell and web access. Track cases that match any of the following (but don't modify the experiment file):
 
 - Needs a specific skill, MCP, data only the original user's session had (ex. a private dashboard, an earlier conversation), or resource modification (ex. writes files).
 - A path, URL, or repo symbol it names is inaccessible. Check with `test -e <path>`, `curl -sL --max-time 10 -o /dev/null -w "%{http_code}" <url>`, or `grep -rlw "<name>" <repo>`. Follow the URL checks answer from step 1: only curl public `https` URLs for check public, also curl http/private/localhost URLs for check all, don't curl for skip. For each option, skip URLs with embedded credentials and treat them as inaccessible.
@@ -156,7 +162,7 @@ Run these only if the user asks for them after step 7. If one response asks to s
 
 ### Drop cases
 
-Remove the cases the user names (ex. the inactionable cases from step 6) from the experiment file. Update the `evaluators` using the methodology in step 4 with the cases' `failure_modes` instead of episode files, excluding synthetic cases (`metadata.synthetic`) from the counts and total. Then run `strands-evals validate <experiment_file>` again and fix any issues that occur. Report any evaluator that was added or removed, with its new count.
+Remove the cases the user names (ex. the inactionable cases from step 6) from the experiment file. Update the `evaluators` using the methodology in step 4 with the cases' `failure_modes` instead of episode files, leaving the OutputEvaluator unchanged and excluding synthetic cases (`metadata.synthetic`) from the counts and total. Then run `strands-evals validate <experiment_file>` again and fix any issues that occur. Report any evaluator that was added or removed, with its new count.
 
 ### Smoke-test
 
@@ -185,7 +191,7 @@ python3 <skill_dir>/scripts/synthesize_cases.py <experiment_file> --task-descrip
 If it errors (ex. missing model credentials, `ModuleNotFoundError`), report the error and stop. Then, for each case it appended (named with a UUID, with `metadata` set to `{"synthetic": true}`):
 
 - Rename `name` to a short kebab-case phrase, unique within the file.
-- Write `expected_assertion` from its `input`, in the same style as the existing cases' assertions.
+- Write `expected_assertion` from its `input`, in the same style as the existing cases' assertions. Leave `expected_output` out, since no episode establishes it.
 
 Run step 6 over the new cases, but skip its `evaluators` update after removing duplicates. Remove each new case that duplicates a real case or an earlier synthetic case, or that the actionability check flags. Exclude synthetic cases from the failure mode counts. Repeat from the script run until the kept synthetic cases reach the requested number, stopping early after 3 runs or after a run that keeps no cases. Report how many synthetic cases were kept out of the number requested, how many runs it took, and how many were removed as duplicates and as inactionable.
 

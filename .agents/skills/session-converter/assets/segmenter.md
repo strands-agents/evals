@@ -60,6 +60,7 @@ Input:
 ---
 <input>
 ---
+Expected output: <expected_output>
 Expected assertion: <expected_assertion>
 Error analysis:
 - <failure>: "<evidence>"
@@ -80,6 +81,7 @@ Episode 0
 - `summary`: one line with the goal, what happened, and the outcome (resolved, abandoned, unresolved, or cut off mid-work).
 - `timestamp`: ISO 8601 timestamp for the first user input in the episode, or session timestamp if unavailable.
 - `input`: the opening user input, verbatim. If the input was rewritten in step 3, use that instead. If the user resent or rephrased it before the assistant replied, use the last version.
+- `expected_output`: the answer to the opening input in at most 3 sentences or 60 words: the assistant's final accepted answer (re-read in full by `position` if cut) with the user's corrections applied. Keep only the conclusion (ex. "The default timeout is 30 seconds."). Leave out how it was found or proven (file paths, line numbers, etc.) unless the opening input asked for them. Only include what the episode establishes, and keep exact values as written. If the episode establishes no answer, omit this.
 - `expected_assertion`: generate it from the episode's later user inputs and assistant messages, in order. State the end state that means the opening input's request succeeded, as checkable statements: user corrections, rejections, and requests to explain the assistant's wording reveal unmet expectations, and user acceptance confirms what was right. Include only what the opening input asked for; later inputs that add new questions or scope don't add statements. Ground every statement in the episode, and don't copy the assistant's answer.
 - `failure`: one line per distinct way the assistant fell short of the user's goal in the episode, in your own words (ex. "claimed a function existed that wasn't in the file", "ignored the request to keep it short"). Describe what went wrong.
 - `evidence`: the user input, quoted verbatim and trimmed to one sentence, that shows the failure.
