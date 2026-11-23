@@ -1,7 +1,11 @@
+import errno
 import json
 import os
 import re
 import stat
+import subprocess
+import sys
+import time
 from datetime import datetime
 
 import pytest
@@ -245,6 +249,116 @@ def test_a_trial_event_cut_off_mid_write_counts_as_not_run(tmp_path):
     reopened = RunDirectory.open(run.root)
     assert reopened.load_trial("c1", 0, "a") is not None
     assert reopened.load_trial("c1", 0, "b") is None
+
+
+def test_open_writes_nothing_even_to_a_log_cut_off_mid_write(tmp_path):
+    run = RunDirectory.create(tmp_path, CONFIG)
+    run.save_trial(_trial("c1", "a"))
+    run.save_trial(_trial("c1", "b"))
+    path = run.root / "events.jsonl"
+    path.write_bytes(path.read_bytes()[:-40])  # the writer may still be finishing that line
+    cut = path.read_bytes()
+
+    RunDirectory.open(run.root)
+
+    assert path.read_bytes() == cut
+
+
+def test_one_writer_at_a_time_holds_the_lock(tmp_path):
+    run = RunDirectory.create(tmp_path, CONFIG)
+    run.lock()
+    run.lock()  # already held: a no-op
+    other = RunDirectory.open(run.root)  # reading a run being written is fine
+
+    with pytest.raises(RuntimeError, match="is open for writing in another process"):
+        other.lock()
+
+    run.unlock()
+    run.unlock()  # not held: a no-op
+    other.lock()
+    with pytest.raises(RuntimeError, match="is open for writing"):
+        run.lock()
+    other.unlock()
+
+
+def test_lock_refuses_a_run_another_writer_changed_after_it_was_read(tmp_path):
+    run = RunDirectory.create(tmp_path, CONFIG)
+    reader = RunDirectory.open(run.root)
+    run.save_candidate(_baseline())  # another writer appends after `reader` read the log
+
+    with pytest.raises(RuntimeError, match="events.jsonl changed after it was read"):
+        reader.lock()
+
+    run.lock()  # the refused lock() didn't keep the lock
+    run.save_candidate(_child(_baseline()))  # this object's own appends never make its log look changed
+    run.unlock()
+    run.lock()
+    run.unlock()
+
+
+def _wait_until(condition, seconds):
+    deadline = time.monotonic() + seconds
+    while not condition():
+        assert time.monotonic() < deadline, "timed out"
+        time.sleep(0.1)
+
+
+def _locks(run):
+    try:
+        run.lock()
+    except RuntimeError:
+        return False
+    return True
+
+
+def test_the_lock_of_a_killed_process_is_released(tmp_path):
+    run = RunDirectory.create(tmp_path, CONFIG)
+    ready = tmp_path / "ready"
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from pathlib import Path\n"
+            "from strands_evals.optimization.record.run_directory import RunDirectory\n"
+            "run = RunDirectory.open(Path(sys.argv[1]))\n"
+            "run.lock()\n"
+            "Path(sys.argv[2]).touch()\n"
+            "sys.stdin.read()",
+            str(run.root),
+            str(ready),
+        ],
+        stdin=subprocess.PIPE,
+    )
+    try:
+        _wait_until(lambda: ready.exists() or child.poll() is not None, seconds=60)
+        assert child.poll() is None, f"the child exited with {child.returncode}"
+        with pytest.raises(RuntimeError, match="is open for writing in another process"):
+            run.lock()
+    finally:
+        child.kill()
+        child.wait()
+        child.stdin.close()
+
+    _wait_until(lambda: _locks(run), seconds=10)  # the OS may release a dead process's lock a moment later
+    run.unlock()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the fallback is tested through fcntl.flock")
+def test_a_filesystem_that_cannot_lock_runs_unlocked_with_a_warning(tmp_path, monkeypatch, caplog):
+    def flock(fd, operation):
+        raise OSError(errno.ENOLCK, "No locks available")
+
+    monkeypatch.setattr(run_directory_module.fcntl, "flock", flock)
+    run = RunDirectory.create(tmp_path, CONFIG)
+    reader = RunDirectory.open(run.root)
+
+    run.lock()
+    run.save_candidate(_baseline())
+    run.unlock()
+
+    assert "the filesystem can't lock the run" in caplog.text
+    with pytest.raises(RuntimeError, match="events.jsonl changed after it was read"):
+        reader.lock()  # the stale check still holds
 
 
 def test_effects_diffs_and_the_result_are_written(tmp_path):

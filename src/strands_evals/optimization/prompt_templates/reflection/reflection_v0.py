@@ -79,6 +79,13 @@ REFUSED = (
     "submit_optimized_params."
 )
 
+# Sent in the same conversation when the agent's reply was cut off at the model's output limit; the reply stays in the
+# conversation, each tool call in it replaced by a note that it was incomplete.
+CUT_OFF = (
+    "Your last reply was cut off at the output limit, so any tool call in it did not run. Continue where you were, "
+    "keeping each reply shorter: write a long text to its file in several commands, appending part by part."
+)
+
 _TASK_OPENING = """\
 Write a new version of the parameters below, so that the agent does better on this study's goal. You have two kinds \
 of evidence: the versions measured so far, and the current version's conversations.
@@ -218,8 +225,9 @@ class VersionRow:
         is_current: Whether its conversations are the ones in the trajectory folder.
         is_baseline: Whether it is the baseline.
         changed: What it changed from the version it was built from.
-        cells: Each goal metric, formatted, in the table's column order: the fit's estimate and the measured mean
-            (`0.84 (measured 0.9)`), or the measured mean alone.
+        cells: Each goal metric, formatted, in the table's column order: the fit's estimate then the measured mean
+            (`0.84 (measured 0.9)`), or without an estimate the adjusted mean when it differs from the measured mean
+            (`0.65 adjusted (measured 0.9)`); else the measured mean alone.
         meets_limits: Whether it meets the constraints, as the ranking assessed it; None when unknown.
         conversations: How many of its conversations completed.
     """
@@ -293,7 +301,9 @@ def task_message(
     parts.append(
         f"{len(versions)} versions, best first for this study's goal{limits_note}. Each version's results are, for "
         "each metric, the study's estimate of its mean over all of its conversations, which also draws on the "
-        "versions like it, then its measured mean (a version with no estimate shows its measured mean alone). The "
+        "versions like it, then its measured mean. A result marked `adjusted` has no estimate: its first number is "
+        "the version's mean with the conversations it wasn't judged on filled in from the other versions. A lone "
+        "number is the measured mean. The "
         "current version (marked ←) is the one whose conversations are in "
         f"the trajectory folder. Each version's parameters, in full, are in `{versions_folder}`: one folder per "
         "version, named by its rank, with its results in `version.md` and each parameter alone in a file of its own "

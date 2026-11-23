@@ -138,12 +138,18 @@ class OptimizationResult(BaseModel):
         test: The champion against the baseline on test, report only: a negative `mean_diff` is possible
             and never changes what ships. When the baseline ships it is compared with itself. None without
             test cases, when it couldn't be afforded, or when every test trial of the champion or the baseline
-            failed (`test_reason` says which).
-        test_reason: Why `test` is None (the `test` event's reason), or under `Pareto` which front members
-            the test report couldn't afford or measured nothing for; None when everything ran.
+            failed (`test_reason` says which). When it couldn't be afforded, or each of the champion and the
+            baseline with no completed test trial has one left `infrastructure_invalid`, the `test` event isn't
+            written, so `Optimizer.resume` on the run runs the test again (with a `Budget` that affords it).
+        test_reason: Why `test` is None, or under `Pareto` which front members the test report couldn't
+            afford or measured nothing for; None when everything ran.
         front_test: Under a `Pareto` objective, each tested front member against the baseline on test
             (`front_test[best.id]` is `test` when the champion is on the validated front; members not afforded
             or with every test trial failed are absent); `{}` otherwise or when the test report was skipped.
+        test_failed_ids: The tested candidates (the champion, the baseline, and under `Pareto` the front members
+            tested) with no completed test trial, so the test measured nothing for them. The champion is in it
+            when every one of its test trials failed, though it ships. `[]` when every tested candidate
+            completed a test trial or the test didn't run, and in a result written before this field existed.
         effects: `effects.json`: per metric and option from the search fit, or empty with the reason.
         objective: The objective as `run.json` records it, e.g. "Maximize(WordCount)".
         constraints: Each constraint as `run.json` records it, e.g. "tokens <= 4000", in declaration order.
@@ -153,14 +159,18 @@ class OptimizationResult(BaseModel):
         rollouts_spent: Rollouts counted against the budget, the end phase's included.
         max_rollouts: The budget's `max_rollouts` the run ended under.
         stop_reason: Why the search stopped: `budget` (what's left after the end-phase reserves can't score
-            one more candidate), `iterations` (the cap), `exhausted` (the schedule had nothing left), or
-            `proposer_error` (a proposer raised). The end phase runs after any of them. Never `setup`: a setup
-            stop raises instead of returning.
+            one more candidate), `iterations` (the cap), or `exhausted` (the schedule had nothing left). The end
+            phase runs after any of them. Never `setup`: a setup stop raises instead of returning, and so does a
+            proposer that raises (`ProposerError`, before the end phase).
         agent_cost: The agent's own usage per split (each trial's last attempt): train = the search,
             validation and test = the end phase.
         search_cost: Total proposer usage.
         judge_cost: Judge usage per trial's last attempt, as `agent_cost` counts the agent's.
         retry_cost: Agent and judge usage in earlier attempts (`TrialRecord.previous_attempts`).
+        benchmark_cost: Usage of the other agents in the rollouts (`TrialRecord.benchmark_usage`: a
+            simulated user, an agent the environment built), in every attempt; never counted in
+            `agent_cost` or `retry_cost`. Zero when the agents can't be told apart (the `build_task` path, a
+            factory that returned something else).
         reports: Candidate id -> split -> the `EvaluationReport` `Experiment` would have returned for those
             trials (every run's rows, each tagged with `run_index`; failed trials as `Experiment`'s score-0
             rows), for every candidate and split it has trials on. Display only: nothing in the run reads it.
@@ -177,6 +187,7 @@ class OptimizationResult(BaseModel):
     test: TestReport | None
     test_reason: str | None
     front_test: dict[str, TestReport]
+    test_failed_ids: list[str] = Field(default_factory=list)
     effects: dict[str, Any]
     objective: str
     constraints: list[str]
@@ -190,6 +201,7 @@ class OptimizationResult(BaseModel):
     search_cost: Usage
     judge_cost: Usage
     retry_cost: Usage
+    benchmark_cost: Usage = Field(default_factory=Usage.zero)
     # Left out of the repr: every trial's rows and evaluation data, hundreds of kilobytes on a real run.
     reports: dict[str, dict[SplitName, EvaluationReport]] = Field(repr=False)
     rows: dict[Grain, list[dict[str, Any]]] = Field(repr=False)
@@ -212,7 +224,12 @@ class OptimizationResult(BaseModel):
 
     @property
     def improved(self) -> bool:
-        """Whether something other than the baseline ships (`best.id != baseline_id`)."""
+        """Whether something other than the baseline ships (`best.id != baseline_id`).
+
+        The validation pick decides it; the test never changes it. Check `test` (None when skipped, with
+        `test_reason`) and `test_failed_ids` (holding `best.id` when every test trial of the champion failed)
+        before applying `best`.
+        """
         return self.validation.champion_id != self.baseline_id
 
     def summary(self) -> str:
@@ -624,6 +641,7 @@ def _proposal_rows(
             estimate = label.estimates.get(m) if label is not None else None
             out[f"estimate.{m}"] = None if estimate is None else estimate.mean
             out[f"estimate_sd.{m}"] = None if estimate is None else estimate.sd
+            out[f"adjusted.{m}"] = label.adjusted_means.get(m) if label is not None else None
         for m in metrics:
             measured = label.measured.get(m) if label is not None else None
             out[f"train.{m}"] = None if measured is None else measured.mean
@@ -832,8 +850,10 @@ def _reports(
 
     Rows in evaluator order, then the split's case order, then run index. A trial whose task raised
     (`agent_failure`, `infrastructure_invalid`) gets a score-0 row per evaluator with `Experiment`'s reason
-    ("An error occurred: <error>") and the case itself as the row; an evaluator in `evaluator_errors` gets a
-    score-0 row with "Evaluator error: <exception type>" (the record keeps only the type). Each row is tagged
+    ("An error occurred: <error>") and the case itself as the row, as does each evaluator without a score in
+    any other trial with `error` set (`Experiment` failed on its case after the task returned, or in a
+    re-judge, which keeps the first pass's scores); an evaluator in `evaluator_errors` gets a score-0 row
+    with "Evaluator error: <exception type>" (the record keeps only the type). Each row is tagged
     `evaluator`, `evaluator_type`, and `run_index`. So `overall_score` is what a plain eval run of the same
     trials reports.
 
@@ -864,7 +884,8 @@ def _reports(
                 for record in ordered:
                     case = by_name[record.case_name]
                     tag = {"evaluator": name, "evaluator_type": type_name, "run_index": record.run_index}
-                    if record.status in (TrialStatus.AGENT_FAILURE, TrialStatus.INFRASTRUCTURE_INVALID):
+                    raised = record.status in (TrialStatus.AGENT_FAILURE, TrialStatus.INFRASTRUCTURE_INVALID)
+                    if raised or (record.error is not None and name not in record.evaluations):
                         rows.append({**case.model_dump(), **tag})
                         scores.append(0.0)
                         passes.append(False)

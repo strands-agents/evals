@@ -4,24 +4,30 @@ from __future__ import annotations
 
 import threading
 import weakref
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import opentelemetry.trace as trace_api
-from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor
+from opentelemetry.sdk.trace import Event, ReadableSpan, SpanProcessor
 from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider
-from opentelemetry.trace import StatusCode
+from opentelemetry.sdk.util.instrumentation import InstrumentationScope
+from opentelemetry.trace import SpanContext, SpanKind, Status, StatusCode, TraceFlags
 
 from ...mappers.strands_in_memory_session_mapper import StrandsInMemorySessionMapper
 from ...telemetry.config import StrandsEvalsTelemetry
-from ...types.optimization import Usage
+from ...types.optimization import CANDIDATE_SPAN_KEY, Usage
 from ...types.trace import Session
 
 # Set on the spans `rollout.py` opens, so they are found by kind, never by a name an agent could share.
 SPAN_KIND = "strands_evals.optimization.span"
 ATTEMPT_SPAN = "attempt"
 ROLLOUT_SPAN = "rollout"
+# True in the `trace_attributes` of each agent the factory builds in a rollout, so its spans are found.
+FACTORY_AGENT = "strands_evals.optimization.factory_agent"
+# On a `rollout` span: True until the factory builds something it can't tag (then False). While True, the
+# attempt's other agents are the benchmark's.
+FACTORY_TAGGED = "strands_evals.optimization.factory_tagged"
 
 
 @dataclass(frozen=True)
@@ -118,17 +124,23 @@ class TraceCapture:
     def session(self, trace_id: str, attempt_span_id: str) -> Session | None:
         """The attempt's agents as a `Session`, judge spans excluded; None without agent spans.
 
+        Every agent in the attempt is kept. When the attempt's agents are told apart (`_candidate_spans`),
+        each span's `metadata[CANDIDATE_SPAN_KEY]` says whether it is the candidate's.
+
         Args:
             trace_id: The trial's trace.
             attempt_span_id: The attempt's span; only its subtree is read.
         """
-        return _session(trace_id, _subtree(self._filter.spans(trace_id), [attempt_span_id]))
+        subtree = _subtree(self._filter.spans(trace_id), [attempt_span_id])
+        return _session(trace_id, subtree, _candidate_spans(subtree))
 
     def usage(self, trace_id: str, attempt_span_id: str) -> Usage:
-        """The attempt's usage, judge spans excluded: the last attempt's, or one in `previous_attempts`.
+        """The candidate's usage in the attempt, judge spans excluded: the last attempt's, or one in
+        `previous_attempts`.
 
-        Sums the subtree's `chat` spans; `seconds` is its `rollout` span's duration, or the attempt span's
-        when there is none (a `build_task` task).
+        Sums the `chat` spans of the agents the factory built and of everything under them
+        (`_candidate_spans`), or of the whole subtree when they can't be told apart; `seconds` is the
+        `rollout` span's duration, or the attempt span's when there is none (a `build_task` task).
 
         Args:
             trace_id: The trial's trace.
@@ -136,7 +148,22 @@ class TraceCapture:
         """
         spans = self._filter.spans(trace_id)
         subtree = _subtree(spans, [attempt_span_id])
-        return _usage(subtree, _attempt_seconds(spans, subtree, attempt_span_id))
+        candidate = _candidate_spans(subtree)
+        seconds = _attempt_seconds(spans, subtree, attempt_span_id)
+        return _usage(subtree if candidate is None else [s for s in subtree if _span_id(s) in candidate], seconds)
+
+    def benchmark_usage(self, trace_id: str, attempt_span_id: str) -> Usage:
+        """The usage of the attempt's other agents: the `chat` spans `usage` leaves out (a simulated user).
+
+        `seconds` is always 0. Zero when the attempt's agents can't be told apart (`_candidate_spans`).
+
+        Args:
+            trace_id: The trial's trace.
+            attempt_span_id: The attempt's span; only its subtree is read.
+        """
+        subtree = _subtree(self._filter.spans(trace_id), [attempt_span_id])
+        candidate = _candidate_spans(subtree)
+        return _usage([] if candidate is None else [s for s in subtree if _span_id(s) not in candidate], 0.0)
 
     def evaluator_view(self, trace_id: str) -> EvaluatorView:
         """One walk over the trial's `evaluator {name}` spans: judge usage, errors, and labels.
@@ -174,9 +201,70 @@ class TraceCapture:
         judge_usage = {name: _usage(spans_by_evaluator[name], seconds[name]) for name in seconds}
         return EvaluatorView(judge_usage=judge_usage, errors=errors, labels=labels)
 
+    def case_error(self, trace_id: str) -> tuple[str | None, str | None]:
+        """The exception `Experiment` caught for the trial's case, read from its `execute_case` span.
+
+        That span is the trial's root. `Experiment` records an exception on it whenever it gives up on the
+        case and writes a placeholder row for every evaluator instead of its result. That includes a task
+        that raised: its own exception is recorded there too, so the result means `Experiment` failed after
+        the task returned only for a trial whose task completed.
+
+        The message is the span event's `exception.message`, so an OTel attribute length limit
+        (`OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT`) can cut it shorter than the reason `Experiment` reported.
+
+        Args:
+            trace_id: The trial's trace.
+
+        Returns:
+            The exception's type name (without its module) and message, or (None, None) if none was recorded.
+        """
+        for span in self._filter.spans(trace_id):
+            if span.parent is not None or not span.name.startswith("execute_case "):
+                continue
+            for event in span.events:
+                if event.name == "exception" and event.attributes:
+                    error_type = str(event.attributes.get("exception.type", "Exception")).rsplit(".", 1)[-1]
+                    return error_type, str(event.attributes.get("exception.message", ""))
+        return None, None
+
     def release(self, trace_ids: Iterable[str]) -> None:
         """Drop only these trials' spans."""
         self._filter.release(trace_ids)
+
+
+def ingest(spans: Iterable[Mapping[str, Any]]) -> None:
+    """Add spans another process recorded (a Node agent's, `node.py`) as if they had finished here.
+
+    Each span is JSON as `node/runner.mjs` writes it: hex ids (its own trace's, so a span of a registered trial
+    trace joins it), attributes, events, status, kind, and times in nanoseconds. Rebuilt as a `ReadableSpan` and
+    given to the trial span filter of the current tracer provider, which keeps it only when its trace is
+    registered. Does nothing outside a run (no filter).
+    """
+    span_filter = _FILTERS.get(trace_api.get_tracer_provider())  # type: ignore[call-overload]
+    if span_filter is None:
+        return
+    for data in spans:
+        trace_id = int(data["trace_id"], 16)
+        parent = data.get("parent_span_id")
+        status = data.get("status") or {}
+        scope = data.get("scope")
+        span_filter.on_end(
+            ReadableSpan(
+                name=str(data["name"]),
+                context=SpanContext(trace_id, int(data["span_id"], 16), is_remote=True, trace_flags=TraceFlags(1)),
+                parent=SpanContext(trace_id, int(parent, 16), is_remote=True) if parent else None,
+                attributes=dict(data.get("attributes") or {}),
+                events=[
+                    Event(str(event["name"]), dict(event.get("attributes") or {}), int(event["time_unix_nano"]))
+                    for event in data.get("events") or ()
+                ],
+                kind=SpanKind(int(data.get("kind") or 0)),
+                status=Status(StatusCode(int(status.get("code") or 0)), status.get("message")),
+                start_time=int(data["start_time_unix_nano"]),
+                end_time=int(data["end_time_unix_nano"]),
+                instrumentation_scope=InstrumentationScope(str(scope)) if scope else None,
+            )
+        )
 
 
 def _span_id(span: ReadableSpan) -> str:
@@ -203,6 +291,25 @@ def _subtree(spans: Sequence[ReadableSpan], root_span_ids: Iterable[str]) -> lis
                 inside.add(child)
                 pending.append(child)
     return [span for span in spans if _span_id(span) in inside]
+
+
+def _candidate_spans(subtree: Sequence[ReadableSpan]) -> set[str] | None:
+    """The span ids of the agents the factory built and of everything under them (sub-agents, conversation
+    managers, tools), or None when the attempt's agents can't be told apart.
+
+    They can when the attempt's `rollout` span says the factory tagged everything it built (`FACTORY_TAGGED`),
+    even if that was nothing; then every other span in the attempt (a simulated user, an agent the environment
+    built, a model call the rollout made itself) is the benchmark's. They can't when there is no `rollout` span
+    (the `build_task` path, or a `make_task` attempt whose environment failed before the rollout began), or
+    when the factory built something it couldn't tag.
+    """
+    if not any(
+        (attributes := span.attributes or {}).get(SPAN_KIND) == ROLLOUT_SPAN and attributes.get(FACTORY_TAGGED)
+        for span in subtree
+    ):
+        return None
+    tagged = [_span_id(span) for span in subtree if (span.attributes or {}).get(FACTORY_AGENT)]
+    return set(tagged) | {_span_id(span) for span in _subtree(subtree, tagged)}
 
 
 def _attempt_seconds(spans: Sequence[ReadableSpan], subtree: Sequence[ReadableSpan], attempt_span_id: str) -> float:
@@ -255,13 +362,14 @@ def _usage(spans: Sequence[ReadableSpan], seconds: float) -> Usage:
     return usage
 
 
-def _session(trace_id: str, spans: Sequence[ReadableSpan]) -> Session | None:
+def _session(trace_id: str, spans: Sequence[ReadableSpan], candidate: set[str] | None) -> Session | None:
     """The spans as a one-trace `Session`; None when none of them is an agent span.
 
     The spans are already exactly one attempt's subtree, so every agent in it is kept, whatever session
     id each one set; `map_to_session` would keep only spans carrying the id it is given. The first id
     found (else the trace id) names the session. The convention is read from the first Strands span (one
-    with `gen_ai.operation.name`), since a span the rollout opened itself may finish first.
+    with `gen_ai.operation.name`), since a span the rollout opened itself may finish first. With
+    `candidate` (from `_candidate_spans`), each span's `metadata[CANDIDATE_SPAN_KEY]` says whether it is in it.
     """
     if not spans:
         return None
@@ -276,6 +384,9 @@ def _session(trace_id: str, spans: Sequence[ReadableSpan]) -> Session | None:
     strands_span = next((span for span in spans if "gen_ai.operation.name" in (span.attributes or {})), spans[0])
     mapper._convention_version = mapper._detect_convention_version(strands_span)
     trace = mapper._convert_trace(trace_id, list(spans), session_id)
+    if candidate is not None:
+        for mapped in trace.spans:
+            mapped.metadata = {**(mapped.metadata or {}), CANDIDATE_SPAN_KEY: mapped.span_info.span_id in candidate}
     return Session(traces=[trace], session_id=session_id) if trace.spans else None
 
 

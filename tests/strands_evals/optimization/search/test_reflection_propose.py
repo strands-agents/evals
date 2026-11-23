@@ -1,17 +1,33 @@
 """Tests for `Reflection.propose`: a scripted model drives the real agent, shell, and submit tool."""
 
 import asyncio
+import json
 import os
 import tempfile
+from types import SimpleNamespace
 
 import pytest
-from strands.types.exceptions import EventLoopException
+from botocore.exceptions import (
+    ClientError,
+    EventStreamError,
+    NoCredentialsError,
+    ReadTimeoutError,
+    TokenRetrievalError,
+)
+from strands.types.exceptions import (
+    ContextWindowOverflowException,
+    EventLoopException,
+    MaxTokensReachedException,
+    ModelThrottledException,
+)
 
 from strands_evals.optimization import Criteria, InfrastructureError, Maximize, Reflection, Space, TextValue
 from strands_evals.optimization.candidate import Candidate
+from strands_evals.optimization.prompt_templates.reflection.reflection_v0 import CUT_OFF
 from strands_evals.optimization.search.proposer import ProposalRequest
+from strands_evals.optimization.search.reflection import _ShortenToolResultsOnOverflow
 from strands_evals.types.trace import TextContent, ToolResultContent, UserMessage
-from tests.strands_evals.optimization.scripted_model import ScriptedModel, ToolUse
+from tests.strands_evals.optimization.scripted_model import CutOff, ScriptedModel, ToolUse
 from tests.strands_evals.optimization.search.test_reflection_evidence import (
     REGISTRY,
     scores_of,
@@ -75,6 +91,25 @@ async def propose(turns, *, warn=False, **kwargs):
 
 
 @pytest.fixture(autouse=True)
+def no_retry_wait(monkeypatch):
+    """Strands' backoff before a failed model call is tried again, made 0 seconds."""
+    monkeypatch.setattr("strands_evals.optimization.search.reflection._RETRY_DELAY", 0)
+
+
+class Recording(ScriptedModel):
+    """A scripted model that keeps the conversation each call was sent."""
+
+    def __init__(self, turns):
+        super().__init__(turns)
+        self.sent = []
+
+    async def stream(self, messages, *args, **kwargs):
+        self.sent.append(list(messages))
+        async for event in super().stream(messages, *args, **kwargs):
+            yield event
+
+
+@pytest.fixture(autouse=True)
 def temp_root(tmp_path, monkeypatch):
     """Every temp folder in `tmp_path/tmp`, so a test can see none is left behind."""
     root = tmp_path / "tmp"
@@ -100,6 +135,14 @@ async def test_the_first_proposal_warns_that_the_shell_is_not_a_sandbox():
     with pytest.warns(UserWarning, match="not a sandbox") as caught:
         await propose(["Nothing to change."], warn=True)
     assert caught[0].filename.endswith("reflection.py")  # not asyncio's: the coroutine's caller is the event loop
+
+
+async def test_the_agents_shell_gets_shell_env_and_not_this_process_environment(monkeypatch):
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "fake-secret")
+    command = 'printf "%s %s" "$GIVEN" "${AWS_SECRET_ACCESS_KEY-unset}" > p.txt'
+    turns = [ToolUse("shell", {"command": command}), submit(prompt="p.txt"), "Done."]
+    (patch,), _, _ = await propose(turns, shell_env={"GIVEN": "given"})
+    assert patch.updates == {"prompt": "given unset\n"}
 
 
 async def test_nothing_submitted_or_nothing_changed_proposes_nothing():
@@ -152,26 +195,184 @@ async def test_every_submission_refused_proposes_nothing():
     assert (await propose(turns, over_limit_retries=1))[0] == []
 
 
-async def test_a_failed_agent_call_is_retried_and_logged():
-    turns = [ValueError("bad stream"), write("p.txt", "Be brief."), submit(prompt="p.txt"), "Done."]
-    (patch,), events, _ = await propose(turns)
-    assert patch.updates == {"prompt": "Be brief.\n"}
-    assert events == [("proposer_retry", {"error_type": "ValueError", "error": "bad stream"})]
+TRANSIENT = [
+    ModelThrottledException("ThrottlingException: Too many tokens, please wait before trying again."),
+    EventStreamError({"Error": {"Code": "modelStreamErrorException", "Message": "Retry."}}, "ConverseStream"),
+    ClientError({"Error": {"Code": "ServiceUnavailableException", "Message": "Unavailable."}}, "ConverseStream"),
+    ReadTimeoutError(endpoint_url="https://bedrock-runtime.us-west-2.amazonaws.com/model/m/converse-stream"),
+]
 
 
-async def test_an_infrastructure_failure_on_every_attempt_raises():
-    with pytest.raises(InfrastructureError):
-        await propose([InfrastructureError("bedrock is down")])
-
-
-async def test_any_failure_on_every_attempt_raises_after_three_retries():
-    """A wrong model id or no access fails every attempt the same way: raised, never hidden as `[]`."""
-    reflection = Reflection(ScriptedModel([ValueError("The provided model identifier is invalid.")]))
+@pytest.mark.parametrize("error", TRANSIENT, ids=lambda error: type(error).__name__)
+async def test_a_transient_model_error_is_retried_in_the_same_conversation(error):
+    model = Recording([write("p.txt", "Be brief."), error, error, submit(prompt="p.txt"), "Done."])
+    reflection = Reflection(model)
     reflection._warned = True
     events = []
-    with pytest.raises(ValueError, match="model identifier"):
+    (patch,) = await reflection.propose(request(events=events))
+    assert patch.updates == {"prompt": "Be brief.\n"} and patch.rationale == "Done."
+    assert events == [("proposer_retry", {"error_type": type(error).__name__, "error": str(error)})] * 2
+    # The task, then the write and its result, sent again after each failure, then the submit and its result.
+    assert [len(sent) for sent in model.sent] == [1, 3, 3, 3, 5]
+
+
+async def test_the_tries_are_counted_per_model_call():
+    error = TRANSIENT[1]
+    turns = [*[error] * 7, write("p.txt", "Be brief."), *[error] * 7, submit(prompt="p.txt"), "Done."]
+    (patch,), events, _ = await propose(turns)
+    assert patch.updates == {"prompt": "Be brief.\n"}
+    assert [e for e, _ in events] == ["proposer_retry"] * 14
+
+
+async def test_a_transient_error_on_every_try_is_raised_after_8_tries():
+    error = EventStreamError({"Error": {"Code": "internalServerException", "Message": "Oops."}}, "ConverseStream")
+    model = ScriptedModel([error])
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    with pytest.raises(EventStreamError):
         await reflection.propose(request(events=events))
-    assert [e for e, _ in events] == ["proposer_retry"] * 3 + ["proposer_usage"]
+    assert model.calls == 8
+    assert [e for e, _ in events] == ["proposer_retry"] * 8 + ["proposer_usage"]  # the 8th failure is raised
+
+
+async def test_an_infrastructure_failure_on_every_try_raises():
+    model = ScriptedModel([InfrastructureError("bedrock is down")])
+    reflection = Reflection(model)
+    reflection._warned = True
+    with pytest.raises(InfrastructureError):
+        await reflection.propose(request())
+    assert model.calls == 8
+
+
+async def test_a_stream_broken_after_it_started_is_retried_in_the_same_conversation():
+    class BreaksMidStream(Recording):
+        """The second call's stream breaks after its first delta."""
+
+        async def stream(self, *args, **kwargs):
+            broken = self.calls == 1
+            async for event in super().stream(*args, **kwargs):
+                yield event
+                if broken and "contentBlockDelta" in event:
+                    raise TRANSIENT[1]
+
+    turns = [ToolUse("shell", {"command": "ls"}), write("p.txt", "Be")]
+    turns += [write("p.txt", "Be brief."), submit(prompt="p.txt"), "Done."]
+    model = BreaksMidStream(turns)
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    (patch,) = await reflection.propose(request(events=events))
+    assert patch.updates == {"prompt": "Be brief.\n"}
+    assert [e for e, _ in events] == ["proposer_retry"]
+    assert [len(sent) for sent in model.sent] == [1, 3, 3, 5, 7]  # the broken reply was never added
+
+
+CREDENTIAL_ERRORS = [
+    NoCredentialsError(),
+    TokenRetrievalError(provider="sso", error_msg="the SSO session has expired"),
+    ClientError(
+        {"Error": {"Code": "ExpiredTokenException", "Message": "The security token is expired."}}, "ConverseStream"
+    ),
+]
+
+
+@pytest.mark.parametrize("error", CREDENTIAL_ERRORS, ids=lambda error: type(error).__name__)
+async def test_a_credential_error_is_raised_at_once(error):
+    """Missing, unloadable, or expired credentials: waiting doesn't fix them, so no try is spent on a retry."""
+    model = ScriptedModel([error])
+    reflection = Reflection(model)
+    reflection._warned = True
+    with pytest.raises(type(error)):
+        await reflection.propose(request())
+    assert model.calls == 1
+
+
+NOT_TRANSIENT = [
+    ClientError(
+        {"Error": {"Code": "AccessDeniedException", "Message": "You don't have access to the model."}},
+        "ConverseStream",
+    ),
+    ClientError(
+        {"Error": {"Code": "ValidationException", "Message": "The provided model identifier is invalid."}},
+        "ConverseStream",
+    ),
+    ValueError("no such model"),
+]
+
+
+@pytest.mark.parametrize("error", NOT_TRANSIENT, ids=lambda error: str(error)[:40])
+async def test_an_error_not_worth_retrying_is_raised_at_once(error):
+    """A wrong model id or no access fails every try the same way: raised at once, never hidden as `[]`."""
+    model = ScriptedModel([error])
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    with pytest.raises(type(error)):
+        await reflection.propose(request(events=events))
+    assert model.calls == 1
+    assert [e for e, _ in events] == ["proposer_usage"]
+
+
+async def test_a_reply_cut_at_the_output_limit_is_sent_back_in_the_same_conversation():
+    model = Recording(
+        [ToolUse("shell", {"command": "ls"}), CutOff(), write("p.txt", "Be brief."), submit(prompt="p.txt"), "Done."]
+    )
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    (patch,) = await reflection.propose(request(events=events))
+    assert patch.updates == {"prompt": "Be brief.\n"} and patch.rationale == "Done."
+    assert events == []
+    after = model.sent[2]  # the task, the `ls` call and its result, the cut reply, then the send-back
+    assert len(after) == 5 and "Write a new version of the parameters" in after[0]["content"][0]["text"]
+    assert after[3]["role"] == "assistant" and not any("toolUse" in block for block in after[3]["content"])
+    assert after[4] == {"role": "user", "content": [{"text": CUT_OFF}]}
+
+
+async def test_a_value_submitted_before_a_cut_reply_is_kept():
+    (patch,), events, _ = await propose([write("p.txt", "Be brief."), submit(prompt="p.txt"), CutOff(), "Done."])
+    assert patch.updates == {"prompt": "Be brief.\n"} and patch.rationale == "Done."
+    assert events == []
+
+
+async def test_a_send_back_cut_at_the_output_limit_is_sent_back_again():
+    turns = [write("p.txt", "x" * 80), submit(prompt="p.txt"), "Done.", CutOff()]
+    turns += [write("p.txt", "Ask for the number."), submit(prompt="p.txt"), "Shortened."]
+    (patch,), events, _ = await propose(turns)
+    assert patch.updates == {"prompt": "Ask for the number.\n"} and patch.state["revised"] == [{"prompt": 80}]
+    assert events == []
+
+
+async def test_the_cut_replies_are_counted_over_the_whole_conversation():
+    """One cut in the first call and two in an over-limit send-back: the third is raised."""
+    model = ScriptedModel([CutOff(), write("p.txt", "x" * 80), submit(prompt="p.txt"), "Done.", CutOff()])
+    reflection = Reflection(model)
+    reflection._warned = True
+    with pytest.raises(MaxTokensReachedException, match="3 times"):
+        await reflection.propose(request())
+    assert model.calls == 6  # the cut, the write, the submit, the answer, then the send-back's two cuts
+
+
+async def test_a_third_cut_discards_an_earlier_submission():
+    model = ScriptedModel([write("p.txt", "Be brief."), submit(prompt="p.txt"), CutOff()])
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    with pytest.raises(MaxTokensReachedException):
+        await reflection.propose(request(events=events))
+    assert [e for e, _ in events] == ["proposer_usage"]
+
+
+async def test_a_reply_cut_at_the_output_limit_every_time_is_raised_after_2_send_backs():
+    model = ScriptedModel([CutOff()])
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    with pytest.raises(MaxTokensReachedException, match="cut at the model's output limit 3 times"):
+        await reflection.propose(request(events=events))
+    assert model.calls == 3
+    assert [e for e, _ in events] == ["proposer_usage"]
 
 
 async def test_a_value_naming_a_shown_case_is_screened():
@@ -261,30 +462,176 @@ async def test_no_trial_to_learn_from_proposes_nothing():
     assert await reflection.propose(request(trials=[trial("a", status="infrastructure_invalid")])) == []
 
 
-async def test_a_send_back_after_a_long_first_turn_still_has_the_task_message():
-    """The window (40 messages) is trimmed at the end of the first call; the task message is pinned through it."""
+class WindowedModel(ScriptedModel):
+    """Records each request, reports its size as a provider does (utilization is read from the reported usage),
+    and rejects one over its 4,000-token window, as a provider does, without using up a scripted turn.
 
-    class Recording(ScriptedModel):
-        def __init__(self, turns):
-            super().__init__(turns)
-            self.first_messages = []
+    `believed` is the window Strands is told (the real one by default)."""
 
-        async def stream(self, messages, *args, **kwargs):
-            self.first_messages.append(messages[0])
-            async for event in super().stream(messages, *args, **kwargs):
-                yield event
+    window = 4000  # tokens: a few large reads fill it
 
-    reads = [ToolUse("shell", {"command": "ls"}) for _ in range(25)]  # 50 messages
+    def __init__(self, turns, *, believed=None):
+        super().__init__(turns)
+        self.config["context_window_limit"] = believed or self.window
+        self.seen, self.tools, self.rejected, self.metadata = [], set(), 0, []
+
+    async def stream(self, messages, tool_specs=None, *args, **kwargs):
+        self.metadata += [m["metadata"] for m in messages if "metadata" in m]
+        request = [json.dumps(m["content"]) for m in messages]
+        tokens = sum(map(len, request)) // 4
+        if tokens > self.window:
+            self.rejected += 1
+            raise ContextWindowOverflowException(f"{tokens} tokens")
+        self.tools.add(tuple(spec["name"] for spec in tool_specs))
+        self.seen.append(request)
+        self.usage = {**self.usage, "inputTokens": tokens}
+        async for event in super().stream(messages, tool_specs, *args, **kwargs):
+            yield event
+
+
+async def test_a_full_context_elides_old_messages_but_keeps_the_task_message():
+    """Past 85% of the context window the oldest messages are elided; the task message stays first through every
+    call, the send-back's included, and the tool outputs that remain are whole."""
+
+    reads = [ToolUse("shell", {"command": "printf 'y%.0s' $(seq 1500)"}) for _ in range(8)]
     turns = [*reads, write("p.txt", "x" * 80), submit(prompt="p.txt"), "Done."]
     turns += [write("p.txt", "Ask for the number."), submit(prompt="p.txt"), "Shortened."]
-    model = Recording(turns)
+    model = WindowedModel(turns)
     reflection = Reflection(model)
     reflection._warned = True
     (patch,) = await reflection.propose(request())
     assert patch.updates == {"prompt": "Ask for the number.\n"}
-    task = model.first_messages[0]
-    assert "Write a new version of the parameters" in task["content"][0]["text"]
-    assert model.first_messages[-1] == task  # the send-back's call starts from the task message too
+    task = model.seen[0][0]
+    assert "Write a new version of the parameters" in task
+    assert all(messages[0] == task for messages in model.seen)  # the send-back's call included
+    elided = next(messages for messages in model.seen if "elided" in "".join(messages[1:2]))
+    assert len(elided) == 5  # the task + the last 4: Reflection's strategy, not the SDK's emergency fallback
+    assert model.tools == {("shell", "submit_optimized_params")}  # no retrieval tool
+    assert all("y" * 1500 in m for messages in model.seen for m in messages if "yyyy" in m)  # outputs not cut
+
+
+async def test_a_send_back_is_pinned_so_elision_keeps_it():
+    """A send-back stays in every request until the agent has answered it, though older messages are elided."""
+    reads = [ToolUse("shell", {"command": "printf 'y%.0s' $(seq 1500)"}) for _ in range(8)]
+    turns = [write("p.txt", "x" * 80), submit(prompt="p.txt"), "Done."]
+    turns += [*reads, write("p.txt", "Ask for the number."), submit(prompt="p.txt"), "Shortened."]
+    model = WindowedModel(turns)
+    reflection = Reflection(model)
+    reflection._warned = True
+    (patch,) = await reflection.propose(request())
+    assert patch.updates == {"prompt": "Ask for the number.\n"}
+    start = next(i for i, messages in enumerate(model.seen) if any("its limit 60" in m for m in messages))
+    after = model.seen[start:]
+    assert any("elided" in m for messages in after for m in messages)  # elided during the send-back's turn
+    assert all(any("its limit 60" in m for m in messages) for messages in after)
+    assert model.metadata == []  # the pin never reaches the model
+
+
+async def test_tool_results_too_large_for_the_window_are_cut_and_the_call_goes_on():
+    """A turn whose tool results alone overflow the window: the provider rejects it once, the results are cut to
+    their first and last 200 characters, and the same call goes on (no retry with a fresh agent)."""
+    big = ToolUse(
+        "shell", {"command": "printf 'a%.0s' $(seq 200); printf 'y%.0s' $(seq 20000); printf 'z%.0s' $(seq 200)"}
+    )
+    turns = [big, write("p.txt", "Ask for the number."), submit(prompt="p.txt"), "Done."]
+    model = WindowedModel(turns)
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    (patch,) = await reflection.propose(request(events=events))
+    assert patch.updates == {"prompt": "Ask for the number.\n"}
+    assert model.rejected == 1 and events == []
+    cut = next(m for messages in model.seen for m in messages if "[cut:" in m)
+    assert "a" * 200 in cut and "z" * 150 in cut and "y" * 200 not in cut  # the tail ends with the exit code
+    assert "characters removed because the context window was full" in cut
+
+
+async def test_a_rejected_request_is_elided_first_then_a_kept_result_is_cut():
+    """Strands believes the window is larger than it is, so nothing is elided until the provider rejects a request;
+    then the elision runs first and the cut lands on a result the elided request keeps."""
+    reads = [ToolUse("shell", {"command": f"printf '{c}%.0s' $(seq 2000)"}) for c in "abcdef"]
+    turns = [*reads, write("p.txt", "Ask for the number."), submit(prompt="p.txt"), "Done."]
+    model = WindowedModel(turns, believed=200_000)
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    (patch,) = await reflection.propose(request(events=events))
+    assert patch.updates == {"prompt": "Ask for the number.\n"}
+    assert model.rejected == 1 and events == []
+    after = next(messages for messages in model.seen if "elided" in "".join(messages[1:2]))
+    assert len(after) == 5  # the task + the last 4: two reads (call, result), the older result cut
+    assert "[cut:" in after[2] and "d" * 200 in after[2] and "e" * 2000 in after[4]
+
+
+async def test_an_unknown_window_is_taken_as_200000_tokens_and_a_rejected_request_still_recovers():
+    """With no `context_window_limit`, Strands assumes 200,000 tokens and warns; the provider's rejection is
+    handled as for a window Strands believes too large."""
+    reads = [ToolUse("shell", {"command": f"printf '{c}%.0s' $(seq 2000)"}) for c in "abcdef"]
+    turns = [*reads, write("p.txt", "Ask for the number."), submit(prompt="p.txt"), "Done."]
+    model = WindowedModel(turns)
+    del model.config["context_window_limit"]
+    reflection = Reflection(model)
+    reflection._warned = True
+    with pytest.warns(UserWarning, match="context_window_limit is not set"):
+        (patch,) = await reflection.propose(request())
+    assert patch.updates == {"prompt": "Ask for the number.\n"}
+    assert model.rejected == 1
+    assert any("[cut:" in m for messages in model.seen for m in messages)
+
+
+async def test_a_request_no_strategy_can_shrink_raises():
+    """The task message alone is over the window: no strategy acts, so the SDK gives up on the first rejection,
+    and Reflection raises with its spend logged."""
+    model = WindowedModel(["unused"])
+    model.window = 50
+    reflection = Reflection(model)
+    reflection._warned = True
+    events = []
+    with pytest.raises(ContextWindowOverflowException):
+        await reflection.propose(request(events=events))
+    assert model.rejected == 1 and model.seen == []  # no overflow retry, since no strategy acted
+    assert [e for e, _ in events] == ["proposer_usage"]
+
+
+async def test_every_large_tool_result_of_the_oldest_message_is_cut_at_once():
+    shorten = _ShortenToolResultsOnOverflow()
+    small = "s" * 800
+    message = {
+        "role": "user",
+        "content": [
+            {"toolResult": {"toolUseId": "t1", "content": [{"text": "o" * 1000}]}},
+            {"toolResult": {"toolUseId": "t2", "content": [{"text": small}, {"text": "p" * 3000}]}},
+        ],
+    }
+    assert await shorten.apply(SimpleNamespace(overflow=True, messages=[message]))
+    texts = [item["text"] for block in message["content"] for item in block["toolResult"]["content"]]
+    assert "[cut: 600 characters removed" in texts[0] and texts[1] == small
+    assert "[cut: 2600 characters removed" in texts[2]
+    assert not await shorten.apply(SimpleNamespace(overflow=True, messages=[message]))
+
+
+async def test_tool_results_are_cut_only_on_overflow_oldest_message_first():
+    shorten = _ShortenToolResultsOnOverflow()
+
+    def result(text):
+        return {"role": "user", "content": [{"toolResult": {"toolUseId": "t", "content": [{"text": text}]}}]}
+
+    small = "s" * 800  # cutting it wouldn't shorten it enough to be worth a retry
+    messages = [
+        {"role": "user", "content": [{"text": "task " * 200}]},
+        result("o" * 1000),
+        result(small),
+        result("n" * 1000),
+    ]
+    assert not await shorten.apply(SimpleNamespace(overflow=False, messages=messages))
+    assert await shorten.apply(SimpleNamespace(overflow=True, messages=messages))
+    texts = [m["content"][0].get("toolResult", {}).get("content", [{}])[0].get("text") for m in messages]
+    assert "[cut: 600 characters removed" in texts[1] and texts[3] == "n" * 1000  # the oldest, alone
+    assert await shorten.apply(SimpleNamespace(overflow=True, messages=messages))  # then the next large one
+    assert messages[3]["content"][0]["toolResult"]["content"][0]["text"].endswith("n" * 200)
+    assert not await shorten.apply(SimpleNamespace(overflow=True, messages=messages))  # a cut result isn't cut again
+    assert messages[2]["content"][0]["toolResult"]["content"][0]["text"] == small
+    assert messages[0]["content"][0]["text"] == "task " * 200
 
 
 async def test_the_three_folders_share_one_folder_of_the_call():
@@ -336,23 +683,23 @@ async def test_a_value_still_over_its_cap_after_the_send_backs_logs_the_total_sp
     assert usage.tokens == 6 * 15  # the first call and its send-back
 
 
-async def test_every_attempt_failing_logs_all_their_spend_then_raises():
-    turns = [ToolUse("shell", {"command": "ls"}), ValueError("stream broke")] * 4
+async def test_a_failing_agent_logs_its_spend_then_raises():
+    turns = [ToolUse("shell", {"command": "ls"}), ValueError("stream broke")]
     reflection = Reflection(ScriptedModel(turns))
     reflection._warned = True
     events = []
     with pytest.raises(EventLoopException, match="stream broke"):  # Strands wraps an error after a tool call
         await reflection.propose(request(events=events))
-    assert [e for e, _ in events] == ["proposer_retry"] * 3 + ["proposer_usage"]
-    assert usage_events(events)[0].tokens == 4 * 15  # each attempt's one model call that answered
+    assert [e for e, _ in events] == ["proposer_usage"]
+    assert usage_events(events)[0].tokens == 15  # the one model call that answered
 
 
 async def test_a_patch_carries_its_calls_spend_and_logs_none():
-    turns = [ToolUse("shell", {"command": "ls"}), ValueError("stream broke")]
+    turns = [ToolUse("shell", {"command": "ls"}), TRANSIENT[1]]
     turns += [write("p.txt", "Be brief."), submit(prompt="p.txt"), "Done."]
     (patch,), events, _ = await propose(turns)
     assert [e for e, _ in events] == ["proposer_retry"]
-    assert patch.usage.tokens == 4 * 15  # the failed attempt's call and the successful attempt's three
+    assert patch.usage.tokens == 4 * 15  # the four model calls that answered, around the one retried
 
 
 async def test_nothing_to_learn_from_logs_no_spend():
@@ -393,6 +740,6 @@ async def test_a_later_slot_raising_logs_the_spend_of_the_patches_never_returned
     events = []
     with pytest.raises(ValueError, match="model gone"):
         await reflection.propose(request(n=2, events=events))
-    assert [e for e, _ in events] == ["proposer_retry"] * 3 + ["proposer_usage"] * 2
+    assert [e for e, _ in events] == ["proposer_usage"] * 2
     failed, first = usage_events(events)
-    assert (failed.tokens, first.tokens) == (0, 45)  # the failing slot's attempts answered nothing; slot 0's patch
+    assert (failed.tokens, first.tokens) == (0, 45)  # the failing slot's call answered nothing; slot 0's patch

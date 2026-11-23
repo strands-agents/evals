@@ -1,7 +1,7 @@
 import pytest
 
 from strands_evals.optimization import Budget
-from strands_evals.optimization.setup.budget import BudgetTracker
+from strands_evals.optimization.setup.budget import BudgetTracker, end_phase_reserve
 
 
 def make_tracker(max_rollouts=100, spent=0, validation_reserve=20, test_reserve=10):
@@ -92,3 +92,24 @@ def test_the_default_budget_is_500_rollouts_and_no_iteration_cap():
 def test_bad_budgets_raise(kwargs):
     with pytest.raises(ValueError):
         Budget(**kwargs)
+
+
+@pytest.mark.parametrize(
+    ("arms", "trials", "rerun_passes", "reserve"),
+    [
+        (2, 0, 2, 0),  # no cases on the split: nothing to reserve
+        (2, 1, 2, 2 * (1 + 2)),  # at least one re-run per pass
+        (4, 20, 2, 4 * (20 + 2)),  # 5% of 20 is exactly 1
+        (4, 21, 2, 4 * (21 + 4)),  # 5% of 21 rounds up to 2
+        (1, 60, 1, 60 + 3),  # 5% of 60 is exactly 3
+        (4, 21, 0, 4 * 21),  # no re-run passes: the first passes only
+    ],
+)
+def test_the_end_phase_reserve_covers_each_arms_first_pass_and_its_re_runs(arms, trials, rerun_passes, reserve):
+    assert end_phase_reserve(arms, trials, rerun_passes) == reserve
+
+
+@pytest.mark.parametrize("arguments", [(-1, 6, 2), (2, -1, 2), (2, 6, -1)])
+def test_a_negative_end_phase_reserve_argument_raises(arguments):
+    with pytest.raises(ValueError, match="must be >= 0"):
+        end_phase_reserve(*arguments)

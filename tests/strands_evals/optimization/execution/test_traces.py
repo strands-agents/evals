@@ -5,14 +5,18 @@ import pytest
 from opentelemetry.context import Context
 from strands import Agent
 from strands.telemetry.tracer import get_tracer as strands_tracer
+from strands.types.exceptions import ModelThrottledException
 
 from strands_evals.optimization.execution.traces import (
     _FILTERS,
     ATTEMPT_SPAN,
+    FACTORY_AGENT,
+    FACTORY_TAGGED,
     ROLLOUT_SPAN,
     SPAN_KIND,
     TraceCapture,
 )
+from strands_evals.types.optimization import CANDIDATE_SPAN_KEY
 from strands_evals.types.trace import AgentInvocationSpan, InferenceSpan, Session
 from tests.strands_evals.optimization.scripted_model import ScriptedModel
 
@@ -173,6 +177,42 @@ def test_spans_without_a_model_id_add_no_model(traces, tracer):
     assert usage.models == []
 
 
+def test_a_rollout_whose_factory_built_an_agent_splits_its_spans_from_the_benchmarks(traces, tracer):
+    with _trial(tracer, traces) as trace_id:
+        with _timed(tracer, "attempt case", 100.0, 110.0, **{SPAN_KIND: ATTEMPT_SPAN}) as attempt:
+            _chat(tracer, total=7, output=1, model="environment")  # environment setup, outside the rollout
+            with _timed(tracer, "rollout case", 101.0, 109.0, **{SPAN_KIND: ROLLOUT_SPAN, FACTORY_TAGGED: True}):
+                agent = {"gen_ai.operation.name": "invoke_agent", FACTORY_AGENT: True}
+                with tracer.start_as_current_span("invoke_agent", attributes=agent):
+                    _chat(tracer, total=15, output=5, model="agent")
+                    with tracer.start_as_current_span("execute_tool"):
+                        _chat(tracer, total=30, output=6, model="sub-agent")  # no tag: under the agent
+                _chat(tracer, total=1000, output=20, model="user")
+
+    usage, benchmark = traces.usage(trace_id, _ids(attempt)[1]), traces.benchmark_usage(trace_id, _ids(attempt)[1])
+
+    assert (usage.model_calls, usage.tokens, usage.output_tokens) == (2, 45, 11)
+    assert usage.models == ["agent", "sub-agent"]
+    assert usage.seconds == pytest.approx(8.0)  # the rollout's duration, as before
+    assert (benchmark.model_calls, benchmark.tokens, benchmark.output_tokens) == (2, 1007, 21)
+    assert benchmark.models == ["environment", "user"]
+    assert benchmark.seconds == 0.0
+
+
+def test_a_rollout_whose_agents_cant_be_told_apart_is_all_the_candidates(traces, tracer):
+    with _trial(tracer, traces) as trace_id:
+        with _attempt(tracer) as attempt:
+            with tracer.start_as_current_span(
+                "rollout case", attributes={SPAN_KIND: ROLLOUT_SPAN, FACTORY_TAGGED: False}
+            ):
+                _chat(tracer, total=15)
+                _chat(tracer, total=1000)
+
+    usage, benchmark = traces.usage(trace_id, _ids(attempt)[1]), traces.benchmark_usage(trace_id, _ids(attempt)[1])
+
+    assert (usage.tokens, benchmark) == (1015, benchmark.zero())
+
+
 def test_seconds_come_from_the_rollout_span(traces, tracer):
     with _trial(tracer, traces) as trace_id:
         with _timed(tracer, "attempt case", 100.0, 110.0, **{SPAN_KIND: ATTEMPT_SPAN}) as attempt:
@@ -225,6 +265,26 @@ async def test_session_reads_the_convention_from_a_strands_span(traces, tracer, 
     assert any(isinstance(span, InferenceSpan) for span in session.traces[0].spans)
 
 
+async def test_session_marks_which_agents_are_the_candidates(traces, tracer):
+    with _trial(tracer, traces) as trace_id:
+        with _attempt(tracer) as attempt:
+            flagged = {SPAN_KIND: ROLLOUT_SPAN, FACTORY_TAGGED: True}
+            with tracer.start_as_current_span("rollout case", attributes=flagged):
+                tagged = Agent(model=ScriptedModel(["mine"]), callback_handler=None)
+                tagged.trace_attributes[FACTORY_AGENT] = True  # as `make_task` tags what the factory builds
+                await tagged.invoke_async("to the candidate")
+                await Agent(model=ScriptedModel(["theirs"]), callback_handler=None).invoke_async("to the user")
+
+    spans = traces.session(trace_id, _ids(attempt)[1]).traces[0].spans
+
+    agents = [(s.user_prompt, s.metadata[CANDIDATE_SPAN_KEY]) for s in spans if isinstance(s, AgentInvocationSpan)]
+    calls = [
+        (s.messages[0].content[0].text, s.metadata[CANDIDATE_SPAN_KEY]) for s in spans if isinstance(s, InferenceSpan)
+    ]
+    assert agents == [("to the candidate", True), ("to the user", False)]
+    assert calls == [("to the candidate", True), ("to the user", False)]
+
+
 def test_no_agent_spans_means_no_session(traces, tracer):
     with _trial(tracer, traces) as trace_id:
         with _attempt(tracer) as attempt:
@@ -274,6 +334,19 @@ def test_evaluator_view_with_no_evaluators_is_empty(traces, tracer):
     assert view.errors == {}
     assert view.labels == {}
     assert view.judge_usage == {}
+
+
+def test_case_error_reads_the_exception_recorded_on_the_case_span(traces, tracer):
+    with _trial(tracer, traces) as trace_id:
+        with pytest.raises(ConnectionError):
+            with tracer.start_as_current_span("task_execution case"):  # a nested span's exception isn't read
+                raise ConnectionError("unreachable")
+        trace_api.get_current_span().record_exception(ModelThrottledException("slow down"))
+    with _trial(tracer, traces) as clean_id:
+        pass
+
+    assert traces.case_error(trace_id) == ("ModelThrottledException", "slow down")  # no module path
+    assert traces.case_error(clean_id) == (None, None)
 
 
 def test_release_drops_only_those_trials(traces, tracer):

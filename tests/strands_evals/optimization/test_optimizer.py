@@ -1,11 +1,16 @@
 import asyncio
+import dataclasses
 import hashlib
 import json
+import math
+import pickle
 import shutil
 import threading
 import warnings
+from copy import deepcopy
 from pathlib import Path
 
+import botocore.exceptions
 import pytest
 
 from strands_evals import Case
@@ -17,6 +22,7 @@ from strands_evals.optimization import (
     AtLeast,
     Block,
     Budget,
+    Evidence,
     FileText,
     FinalPick,
     Float,
@@ -33,6 +39,7 @@ from strands_evals.optimization import (
     Pareto,
     Patch,
     Proposer,
+    ProposerError,
     Schedule,
     ScoreModel,
     Search,
@@ -46,12 +53,14 @@ from strands_evals.optimization import (
     tunable,
 )
 from strands_evals.optimization.declaration.space import Space
-from strands_evals.optimization.optimizer import _slots_used
+from strands_evals.optimization.optimizer import _same_name, _slots_used
 from strands_evals.optimization.record.resume import load_state
 from strands_evals.optimization.record.run_directory import RunDirectory
+from strands_evals.optimization.result import _reports
 from strands_evals.optimization.search.blocks import _saved
 from strands_evals.optimization.selection.top_ranked import TopRanked
 from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
+from strands_evals.types.optimization import CaseSplit, Estimate, TrialRecord, TrialStatus
 
 
 class Score(Evaluator):
@@ -194,27 +203,31 @@ def test_split_shortfall():
 
 
 def test_budget_must_cover_the_baseline_and_the_reserves():
-    # 20 cases: 8 train, 6 validation, 6 test; baseline 8 + validation (3 + 1) x 6 + test 2 x 6 = 44.
-    with pytest.raises(ValueError, match="max_rollouts >= 44"):
-        _optimizer(budget=Budget(max_rollouts=43))
+    # 20 cases: 8 train, 6 validation, 6 test. Each end-phase arm reserves its first pass plus 2 re-run passes
+    # x 1 re-run: baseline 8 + validation (3 + 1) x (6 + 2) + test 2 x (6 + 2) = 56.
+    with pytest.raises(ValueError, match="re-run headroom included\\): give max_rollouts >= 56"):
+        _optimizer(budget=Budget(max_rollouts=55))
     with pytest.warns(UserWarning, match=r"less than one iteration \(32 rollouts\)"):
-        _optimizer(budget=Budget(max_rollouts=44))
+        _optimizer(budget=Budget(max_rollouts=56))
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        _optimizer(budget=Budget(max_rollouts=76))
-    # Twice the runs, twice everything.
-    with pytest.raises(ValueError, match="max_rollouts >= 88"):
-        _optimizer(budget=Budget(max_rollouts=87), runs_per_candidate=2)
+        _optimizer(budget=Budget(max_rollouts=88))
+    # Twice the runs: 16 + 4 x (12 + 2) + 2 x (12 + 2) = 100.
+    with pytest.raises(ValueError, match="max_rollouts >= 100"):
+        _optimizer(budget=Budget(max_rollouts=99), runs_per_candidate=2)
+    # No re-run passes: no headroom, the first passes only.
+    with pytest.raises(ValueError, match="max_rollouts >= 44"):
+        _optimizer(budget=Budget(max_rollouts=43), rerun_passes=0)
     # No test cases: no test reserve.
     optimizer = _optimizer(split=Split(train=0.5, validation=0.5, test=None))
-    assert (optimizer._budget.validation_reserve, optimizer._budget.test_reserve) == (4 * 10, 0)
+    assert (optimizer._budget.validation_reserve, optimizer._budget.test_reserve) == (4 * (10 + 2), 0)
 
 
 def test_pareto_reserves_every_front_member():
     objective = Pareto(Maximize("Score"), Minimize("tokens", scale=1000))
     optimizer = _optimizer(objective=objective)
-    # max(3, 5) finalists + the baseline, on 6 validation and 6 test cases.
-    assert (optimizer._budget.validation_reserve, optimizer._budget.test_reserve) == (36, 36)
+    # max(3, 5) finalists + the baseline, on 6 validation and 6 test cases, each with 2 re-runs of headroom.
+    assert (optimizer._budget.validation_reserve, optimizer._budget.test_reserve) == (48, 48)
 
 
 def test_metrics_record_roles_ranges_and_effective_scale():
@@ -307,6 +320,21 @@ def _events(optimizer):
     return [json.loads(line) for line in (optimizer._run.root / "events.jsonl").read_text().splitlines()]
 
 
+async def test_run_dir_is_set_before_the_baseline_is_scored(tmp_path):
+    seen = []
+    optimizer = _quiet(base_dir=tmp_path, rollout_fn=_rollout(), budget=Budget(max_iterations=1))
+    optimizer._on_iteration = lambda record: seen.append(optimizer.run_dir)
+    assert optimizer.run_dir is None
+    task = asyncio.ensure_future(optimizer.run_async())
+    await asyncio.sleep(0)  # run_async creates the folder before its first await
+    assert optimizer.run_dir is not None and optimizer.run_dir.parent == tmp_path
+    assert not any(e["event"] == "trial" for e in _events(optimizer))  # nothing spent yet
+    result = await task
+    assert seen and set(seen) == {optimizer.run_dir} and result.run_dir == optimizer.run_dir
+    resumed = Optimizer.resume(optimizer.run_dir, experiment=_experiment(), factory=create_agent, rollout_fn=_rollout())
+    assert resumed.run_dir == optimizer.run_dir
+
+
 async def test_the_baseline_is_saved_and_scored_on_train(tmp_path):
     optimizer = _quiet(base_dir=tmp_path, rollout_fn=_rollout(), name="quick")
     optimizer._setup()
@@ -332,6 +360,18 @@ async def test_a_baseline_with_unmeasured_cases_stops_at_setup(tmp_path):
         await optimizer._score_baseline()
     stop = _events(optimizer)[-1]
     assert stop["event"] == "stop" and stop["reason"] == "setup" and "sandbox down" in stop["message"]
+
+
+async def test_a_baseline_experiment_fails_after_its_task_returned_stops_at_setup(tmp_path):
+    async def rollout(agent_factory, case):
+        return {"output": {(0, 1): "x"}}  # Experiment can't serialize it for its span
+
+    optimizer = _quiet(base_dir=tmp_path, rollout_fn=rollout)
+    optimizer._setup()
+    with pytest.raises(
+        RuntimeError, match=r"^8/8 train cases unmeasured .*: trials 8 evaluator_invalid; first error .*: TypeError: "
+    ):
+        await optimizer._score_baseline()
 
 
 async def test_a_crashing_baseline_scores_worst_and_is_eligible(tmp_path):
@@ -581,6 +621,41 @@ def _names(events, start=0):
     return [e["event"] for e in events[start:] if e["event"] != "trial"]
 
 
+async def test_setup_tells_every_block_the_baseline_as_evidence(tmp_path):
+    structure, numbers = Scripted(), Scripted()
+    optimizer = _searching(
+        Block(structure, "manager"), Block(numbers, "temperature", "manager.Window.size"), base_dir=tmp_path
+    )
+    await optimizer._start()
+    events = _events(optimizer)
+    (label,) = [e["label"] for e in events if e["event"] == "label"]
+    shared = [e for e in events if e["event"] == "evidence"]
+    # After the baseline's fit and label, one `evidence` event per block, which resume replays.
+    assert _names(events)[-4:] == ["fit", "label", "evidence", "evidence"]
+    assert [(e["iteration"], e["block"]) for e in shared] == [(0, "structure"), (0, "numbers")]
+    for proposer, event in zip((structure, numbers), shared, strict=True):
+        (evidence,) = proposer.evidenced
+        assert event["evidence"] == evidence.model_dump(mode="json")
+        assert evidence.candidate_id == optimizer._baseline.id and evidence.origin == ["baseline"]
+        assert evidence.outcome == label["outcome"] == "feasible"
+        assert (evidence.objective, evidence.term_values, evidence.violations) == (0.0, [0.0], [])
+
+
+async def test_tpe_counts_the_baseline_toward_its_startup(tmp_path):
+    optimizer = _searching(
+        Block(TPE(n_startup_trials=1), "temperature"),
+        schedule=Alternate(),
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+    )
+    _, events = await _search(optimizer)
+    # The first ask's study already holds the baseline. Only the first patch is checked: one repeating the
+    # baseline is redrawn.
+    first = next(e for e in events if e["event"] == "observe" and e["block"] == "numbers")
+    assert first["observation"]["patch"]["rationale"] == "TPE: modeled on 1 told trials"
+
+
 async def test_one_iteration_writes_its_events_in_order(tmp_path):
     proposer = Scripted({"temperature": 0.5})
     records = []
@@ -636,13 +711,13 @@ async def test_two_slots_of_one_step_with_equal_values_are_scored_once(tmp_path)
 
 
 async def test_a_step_is_cut_to_what_the_budget_can_score(tmp_path):
-    # 44 needed (baseline 8 + reserves 36), so 52 leaves room for one candidate of 8 rollouts, not two.
+    # 56 needed (baseline 8 + reserves 48), so 64 leaves room for one candidate of 8 rollouts, not two.
     proposer = Scripted({"temperature": 0.5}, {"temperature": 1.0})
     optimizer = _searching(
         Block(proposer, "temperature"),
         schedule=Joint(),
         base_dir=tmp_path,
-        budget=Budget(max_rollouts=52, max_iterations=1),
+        budget=Budget(max_rollouts=64, max_iterations=1),
         proposals_per_iteration=2,
     )
     await _search(optimizer)
@@ -696,6 +771,33 @@ async def test_a_candidate_whose_agent_cant_be_built_is_invalid_and_costs_nothin
     assert optimizer._budget.spent == 16  # the baseline and the 0.5 candidate, nothing for the one that can't build
 
 
+async def test_a_factory_failing_on_infrastructure_is_not_invalid(tmp_path):
+    calls = {"0.5": 0}
+
+    @tunable(temperature=OneOf(0.0, 0.5, 1.0))
+    def expiring(temperature):
+        if temperature == 0.5:
+            calls["0.5"] += 1
+            if calls["0.5"] == 1:  # the build check: credentials expired, refreshed before the trials
+                raise botocore.exceptions.CredentialRetrievalError(provider="custom-process", error_msg="expired")
+        return (None, temperature)
+
+    proposer = Scripted({"temperature": 0.5})
+    optimizer = Optimizer(
+        _experiment(evaluators=[Temperature()]),
+        expiring,
+        rollout_fn=_temperature_rollout,
+        search=Search([Block(proposer, "temperature")], schedule=Joint()),
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path,
+    )
+    with pytest.warns(UserWarning, match=r"the agent couldn't be built \(CredentialRetrievalError"):
+        await _search(optimizer)
+    assert [o.outcome for o in proposer.observed] == ["feasible"]
+
+
 async def test_a_factory_needing_a_resource_is_not_build_checked(tmp_path):
     @tunable(temperature=OneOf(0.0, 0.5, 1.0))
     def sandboxed(temperature, sandbox):
@@ -717,18 +819,25 @@ async def test_a_factory_needing_a_resource_is_not_build_checked(tmp_path):
     assert [o.outcome for o in proposer.observed] == ["feasible"]
 
 
-async def test_a_proposer_that_raises_stops_the_run(tmp_path):
+async def test_a_proposer_that_raises_stops_the_search_before_the_end_phase(tmp_path):
     optimizer = _searching(
         Block(Scripted(RuntimeError("model down")), "temperature"), schedule=Alternate(), base_dir=tmp_path
     )
-    reason, events = await _search(optimizer)
-    assert reason == "proposer_error"
+    with pytest.raises(ProposerError, match="block 'numbers' raised RuntimeError: model down") as raised:
+        await optimizer.run_async()
+    assert (raised.value.block, raised.value.run_dir) == ("numbers", optimizer._run.root)
+    assert "Optimizer.resume" in str(raised.value) and str(raised.value.__cause__) == "model down"
+    assert "to end it with what it found" not in str(raised.value)  # no closed iteration to end with
+    copied = pickle.loads(pickle.dumps(raised.value))
+    assert (str(copied), copied.block, copied.run_dir) == (str(raised.value), "numbers", optimizer._run.root)
+    events = _events(optimizer)
     error = next(e for e in events if e["event"] == "proposer_error")
     assert (error["error_type"], error["error"]) == ("RuntimeError", "model down")
-    assert "iteration_end" not in _names(events) and events[-1]["reason"] == "proposer_error"
+    assert events[-1] == error  # no `stop`: the run is left as a kill leaves it
+    assert {e["record"]["split"] for e in events if e["event"] == "trial"} == {"train"}
 
 
-async def test_a_proposer_returning_more_patches_than_asked_stops_the_run(tmp_path):
+async def test_a_proposer_returning_more_patches_than_asked_stops_the_search(tmp_path):
     class Greedy(Scripted):
         async def propose(self, request):
             return [
@@ -739,8 +848,9 @@ async def test_a_proposer_returning_more_patches_than_asked_stops_the_run(tmp_pa
     optimizer = _searching(
         Block(Greedy(), "temperature"), schedule=Alternate(), base_dir=tmp_path, proposals_per_iteration=1
     )
-    reason, events = await _search(optimizer)
-    assert reason == "proposer_error"
+    with pytest.raises(ProposerError, match="returned 2 patches for a request of 1"):
+        await _search(optimizer)
+    events = _events(optimizer)
     assert "returned 2 patches for a request of 1" in next(e for e in events if e["event"] == "proposer_error")["error"]
 
 
@@ -762,7 +872,8 @@ async def test_joint_merges_one_patch_of_every_block_per_candidate(tmp_path):
     assert [r.n for r in numbers.requests] == [1, 1]
     assert [r.parent.values["manager"] for r in numbers.requests] == ["Summary", "Window"]
     assert [o.outcome for o in structure.observed] == ["feasible", "feasible"]
-    assert numbers.evidenced == [] and structure.evidenced == []
+    # Each candidate merges both blocks' patches, so the only evidence is the baseline's.
+    assert [e.candidate_id for e in numbers.evidenced + structure.evidenced] == [optimizer._baseline.id] * 2
 
 
 async def test_a_round_opener_is_told_the_rounds_best_at_its_end(tmp_path):
@@ -785,8 +896,8 @@ async def test_a_round_opener_is_told_the_rounds_best_at_its_end(tmp_path):
     # The round's candidates, opener first, then proposal order: TPE re-values the opener's trial by them.
     round_zero = [p.candidate_id for r in optimizer._iterations[:3] for p in r.proposals]
     assert first.round_candidate_ids == round_zero and first.candidate_id == round_zero[0]
-    # The outer block isn't told the inner candidates as evidence.
-    assert outer.evidenced == []
+    # The outer block is told the baseline as evidence, never the inner candidates.
+    assert [e.candidate_id for e in outer.evidenced] == [optimizer._baseline.id]
 
 
 async def test_every_proposer_calls_spend_counts_on_resume(tmp_path):
@@ -938,7 +1049,7 @@ async def test_a_validation_fit_of_none_says_the_model_returned_no_fit(tmp_path)
 
 
 class _FlaggedFit:
-    """A fit whose held-out check flagged a metric; nothing may decide with it."""
+    """A fit whose held-out check flagged its only goal metric; nothing may decide with it."""
 
     flagged = ["Temperature"]
     diagnostics: dict = {}
@@ -971,7 +1082,7 @@ async def test_a_flagged_validation_fit_is_the_picks_problem(tmp_path):
     assert "Validation fit:  flagged: Temperature" in result.summary()
 
 
-async def test_a_flagged_fit_reaches_no_proposer_and_no_selection(tmp_path):
+async def test_a_flagged_fit_reaches_the_proposers_and_the_selection(tmp_path):
     seen = []
 
     class Watching(TopRanked):
@@ -991,9 +1102,64 @@ async def test_a_flagged_fit_reaches_no_proposer_and_no_selection(tmp_path):
         proposals_per_iteration=1,
     )
     await _search(optimizer)
-    assert optimizer._fit is not None and optimizer._fit.flagged  # kept, but used by nothing
-    assert proposer.requests and all(r.fit is None for r in proposer.requests)
-    assert seen and all(fit is None for fit in seen)
+    # Passed on with its flags: each consumer leaves out the flagged metrics' models, as the ranking does.
+    assert optimizer._fit is not None and optimizer._fit.flagged
+    assert proposer.requests and all(r.fit is not None and r.fit.flagged for r in proposer.requests)
+    assert seen and all(fit is not None and fit.flagged for fit in seen)
+
+
+class _GroundedFlagged:
+    """A fit of `Temperature` (the temperature plus 0.25) and `Grounded` (0.0, though every run scores 1.0) whose
+    held-out check flagged `Grounded`."""
+
+    flagged = ["Grounded"]
+    diagnostics: dict = {}
+    metrics: dict = {}
+
+    def __init__(self, candidates):
+        self.candidates = frozenset(candidates)
+
+    def estimates(self, values, candidate=None):
+        return {
+            "Temperature": Estimate(mean=values["temperature"] + 0.25, sd=0.01),
+            "Grounded": Estimate(mean=0.0, sd=0.01),
+        }
+
+
+class _FlagsGrounded(ScoreModel):
+    name = "flags_grounded"
+
+    def fit(self, data, *, previous=None):
+        return _GroundedFlagged(c for c in data.candidates if data.scores[c].is_eligible)
+
+
+async def test_a_flagged_metric_is_told_by_its_measured_mean_and_the_others_by_the_fit(tmp_path):
+    class Grounded(Evaluator):
+        async def evaluate_async(self, evaluation_case):
+            return [EvaluationOutput(score=1.0, test_pass=True, reason="g")]
+
+    proposer = Scripted({"temperature": 0.5})
+    optimizer = _optimizer(
+        _experiment(evaluators=[Temperature(), Grounded(name="Grounded")]),
+        rollout_fn=_temperature_rollout,
+        search=Search([Block(proposer, "temperature"), Block(Scripted(), "manager")], schedule=Alternate()),
+        max_workers=64,
+        proposals_per_iteration=1,
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=1),
+        objective=WeightedSum(Minimize("Temperature"), Maximize("Grounded")),
+        constraints=[AtLeast("Grounded", 0.5)],
+        score_model=_FlagsGrounded(),
+    )
+    await _search(optimizer)
+    (request,) = proposer.requests
+    (baseline,) = request.candidates
+    assert baseline.estimates == {"Temperature": Estimate(mean=0.25, sd=0.01)}
+    assert baseline.term_values == [0.25, 1.0]  # Temperature from the fit (raw, though minimized), Grounded measured
+    assert baseline.ranking_objective == pytest.approx(0.875) and baseline.is_feasible
+    (observation,) = proposer.observed
+    assert observation.term_values == [0.75, 1.0] and observation.objective == pytest.approx(0.625)
+    assert observation.outcome == "feasible"  # Grounded >= 0.5 judged on the measured 1.0, not the fit's 0.0
 
 
 async def test_a_model_that_returns_none_keeps_the_fit_in_use(tmp_path):
@@ -1012,12 +1178,12 @@ async def test_a_model_that_returns_none_keeps_the_fit_in_use(tmp_path):
 
 
 async def test_the_budget_stops_the_search_before_the_end_phases_reserve(tmp_path):
-    # 44 needed (baseline 8 + reserves 36), so 60 leaves room for two candidates of 8 rollouts.
+    # 56 needed (baseline 8 + reserves 48), so 72 leaves room for two candidates of 8 rollouts.
     optimizer = _searching(
         Block(Scripted({"temperature": 0.5}, {"temperature": 1.0}, {"temperature": 0.5}), "temperature"),
         schedule=Alternate(),
         base_dir=tmp_path,
-        budget=Budget(max_rollouts=60, max_iterations=None),
+        budget=Budget(max_rollouts=72, max_iterations=None),
         proposals_per_iteration=1,
     )
     reason, _ = await _search(optimizer)
@@ -1068,7 +1234,7 @@ async def test_the_end_phase_ships_the_best_finalist_and_writes_the_run_files(tm
     assert (test.champion_id, test.baseline_id) == (result.best.id, result.baseline_id)
     assert test.objective.mean_diff == pytest.approx(1.0) and test.objective.n_cases == 6
     assert test.ratio == {"Temperature": None}  # the baseline's mean is 0
-    assert test.missing == {result.best.id: 0, result.baseline_id: 0}
+    assert test.missing == {result.best.id: 0, result.baseline_id: 0} and result.test_failed_ids == []
     assert result.rollouts_spent == optimizer._budget.spent == 8 * 3 + 6 * 3 + 6 * 2
     assert set(result.agent_cost) == {"train", "validation", "test"}
 
@@ -1108,6 +1274,100 @@ async def test_a_test_arm_with_no_completed_trial_skips_the_report(tmp_path):
     assert result.best.values["temperature"] == 1.0  # picked on validation, where it ran
     assert result.test is None
     assert result.test_reason == "every test trial of the selected candidate failed, so there is nothing to compare"
+    assert _names(_events(optimizer))[-1] == "test"  # agent failures are final: a resume reuses this
+    # The result says which tested candidate measured nothing on test, in result.json and on resume too.
+    assert result.test_failed_ids == [result.best.id]
+    root = optimizer._run.root
+    assert OptimizationResult.from_file(root / "result.json").test_failed_ids == [result.best.id]
+    assert load_state(RunDirectory.open(root), config=optimizer._config()).test_failed_ids == [result.best.id]
+
+
+async def test_a_finalist_with_no_completed_validation_trial_cannot_ship(tmp_path):
+    # A crash counts as 0.5, above the baseline's 0.0, so without the check the crashing finalist would ship.
+    optimizer = _two_steps({"temperature": 1.0}, base_dir=tmp_path, agent_failure_score=0.5)
+    validation_cases = set(optimizer._case_split.validation)
+
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        if temperature == 1.0 and case.name in validation_cases:
+            raise ValueError("crashes on validation")
+        return str(temperature)
+
+    optimizer._rollout_fn = rollout
+    result = await optimizer.run_async()
+    crashed = next(c.id for c in result.candidates.values() if c.values["temperature"] == 1.0)
+    assert result.best.id == result.baseline_id and not result.improved
+    assert result.validation.infeasible[crashed] == "every validation trial failed, so nothing was measured"
+    # Left out of the validation fit as well, so only the baseline is left to fit.
+    assert result.validation.problem == "fewer than 2 eligible candidates with a completed validation trial"
+
+
+@pytest.mark.parametrize("crashes", [1.0, 0.0])
+async def test_the_validation_fit_leaves_out_a_candidate_with_no_completed_validation_trial(tmp_path, crashes):
+    fitted = []
+
+    class Spy(_Sequence):
+        def fit(self, data, *, previous=None):
+            fitted.append((tuple(data.cases), list(data.candidates)))
+            return None
+
+    optimizer = _two_steps({"temperature": 0.5}, {"temperature": 1.0}, base_dir=tmp_path, score_model=Spy())
+    validation_cases = optimizer._case_split.validation
+
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        if temperature == crashes and case.name in validation_cases:
+            raise ValueError("crashes on validation")
+        return str(temperature)
+
+    optimizer._rollout_fn = rollout
+    result = await optimizer.run_async()
+    by_temperature = {c.values["temperature"]: c.id for c in result.candidates.values()}
+    # The baseline, then the finalists in ranking order, without the one that crashed (the baseline included).
+    expected = [by_temperature[t] for t in (0.0, 1.0, 0.5) if t != crashes]
+    assert [ids for cases, ids in fitted if cases == validation_cases] == [expected]
+
+
+@pytest.mark.parametrize("split", ["validation", "test"])
+async def test_the_end_phase_re_runs_a_transient_infrastructure_failure_after_the_search_spent_all_it_may(
+    tmp_path, split
+):
+    # The baseline and two candidates on train, then only the end phase's reserves are left; two finalists, so
+    # validation's reserve has no room for more arms. (On test, validation's unused headroom also reaches the
+    # test arms; the test reserve's own size is pinned in test_budget_must_cover_the_baseline_and_the_reserves.)
+    reserves = _two_steps(final_pick=FinalPick(n_finalists=2))._budget
+    budget = Budget(max_rollouts=8 * 3 + reserves.validation_reserve + reserves.test_reserve, max_iterations=None)
+    optimizer = _two_steps(
+        {"temperature": 0.5},
+        {"temperature": 1.0},
+        base_dir=tmp_path,
+        budget=budget,
+        final_pick=FinalPick(n_finalists=2),
+    )
+    flaky = getattr(optimizer._case_split, split)[0]
+    failed = []
+
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        if temperature == 1.0 and case.name == flaky and not failed:
+            failed.append(case.name)  # fails once, then succeeds when re-run
+            raise InfrastructureError("sandbox failed to start")
+        return str(temperature)
+
+    optimizer._rollout_fn = rollout
+    result = await optimizer.run_async()
+    assert result.stop_reason == "budget" and failed == [flaky]
+    assert result.rollouts_spent <= budget.max_rollouts
+    hottest = next(c.id for c in result.candidates.values() if c.values["temperature"] == 1.0)
+    statuses = [
+        e["record"]["status"]
+        for e in _events(optimizer)
+        if e["event"] == "trial" and e["record"]["candidate_id"] == hottest and e["record"]["case_name"] == flaky
+    ]
+    assert statuses == ["infrastructure_invalid", "completed"]
+    # The best candidate is still eligible on validation and ships, and its test report misses no case.
+    assert result.best.values["temperature"] == 1.0 and result.validation.infeasible == {}
+    assert result.test.missing == {result.best.id: 0, result.baseline_id: 0}
 
 
 async def test_a_finalist_failing_a_constraint_on_validation_cannot_ship(tmp_path):
@@ -1141,6 +1401,89 @@ async def test_a_finalist_failing_a_constraint_on_validation_cannot_ship(tmp_pat
     assert by_temperature[1.0] in result.validation.infeasible
     assert result.best.values["temperature"] == 0.5
     assert result.test is None and result.test_reason == "no test cases"
+
+
+async def test_the_finalists_are_the_candidates_meeting_a_constraint_with_margin(tmp_path):
+    experiment = _experiment(n=33, evaluators=[Temperature()])
+    split = Split(train=experiment.cases[:30], validation=experiment.cases[30:33])
+    # Temperature 0.5 is grounded on 22 of the 30 train cases (0.73, above the floor) and 1 of the 3 validation
+    # cases; 1.0 everywhere; the baseline (0.0) nowhere.
+    met_at_half = {case.name for case in [*split.train[:22], *split.validation[:1]]}
+
+    class Grounded(Evaluator):
+        async def evaluate_async(self, evaluation_case):
+            output = evaluation_case.actual_output
+            met = output == "1.0" or (output == "0.5" and evaluation_case.name in met_at_half)
+            return [EvaluationOutput(score=float(met), test_pass=met, reason="g")]
+
+    blocks = [Block(Scripted({"temperature": 0.5}, {"temperature": 1.0}), "temperature"), Block(Scripted(), "manager")]
+    optimizer = _optimizer(
+        Experiment(cases=experiment.cases, evaluators=[Temperature(), Grounded(name="Grounded")]),
+        rollout_fn=_temperature_rollout,
+        search=Search(blocks, schedule=Joint()),
+        max_workers=64,
+        proposals_per_iteration=1,
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=2),
+        objective=Minimize("Temperature"),
+        constraints=[AtLeast("Grounded", 0.5)],
+        final_pick=FinalPick(n_finalists=1),
+        score_model=_Sequence(),  # no fit: the search ranks and the pick decides by measured means
+        split=split,
+    )
+    result = await optimizer.run_async()
+    by_temperature = {v.values["temperature"]: v.id for v in result.candidates.values()}
+    # 0.5 ranks first on train (feasible and cheaper), but with 3 validation cases 0.73 - 1.28 * 0.45 *
+    # sqrt(1/30 + 1/3) = 0.38 < 0.5 (with 30 it would be 0.58), so the one finalist is 1.0, which meets the floor
+    # on every case.
+    finalists = next(e for e in _events(optimizer) if e["event"] == "finalists")
+    assert finalists["candidate_ids"] == [by_temperature[1.0]]
+    assert result.best.values["temperature"] == 1.0
+
+
+@pytest.mark.parametrize("measured_means", [False, True], ids=["fit", "measured-means"])
+async def test_a_candidate_whose_constraint_is_never_measured_cannot_ship(tmp_path, measured_means):
+    experiment = _experiment(n=14, evaluators=[Temperature()])
+    split = Split(train=experiment.cases[:8], validation=experiment.cases[8:14])
+
+    class Grounded(Evaluator):
+        """Met by every temperature but 1.0, which it finds nothing to judge in, on every case."""
+
+        async def evaluate_async(self, evaluation_case):
+            if evaluation_case.actual_output == "1.0":
+                return [EvaluationOutput(score=0.0, test_pass=True, reason="n/a", label=NOT_APPLICABLE)]
+            return [EvaluationOutput(score=1.0, test_pass=True, reason="g")]
+
+    blocks = [Block(Scripted({"temperature": 0.5}, {"temperature": 1.0}), "temperature"), Block(Scripted(), "manager")]
+    optimizer = _optimizer(
+        Experiment(cases=experiment.cases, evaluators=[Temperature(), Grounded(name="Grounded")]),
+        rollout_fn=_temperature_rollout,
+        search=Search(blocks, schedule=Joint()),
+        max_workers=64,
+        proposals_per_iteration=1,
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=2),
+        objective=Maximize("Temperature"),
+        constraints=[AtLeast("Grounded", 0.5)],
+        split=split,
+        **({"score_model": _Sequence()} if measured_means else {}),  # a model that never fits: measured means
+    )
+    result = await optimizer.run_async()
+    never = next(c.id for c in result.candidates.values() if c.values["temperature"] == 1.0)
+    assert result.best.values["temperature"] == 0.5
+    assert result.validation.infeasible[never] == "Grounded >= 0.5: never measured"
+    (row,) = [r for r in result.to_rows("proposal") if r["candidate_id"] == never]
+    assert row["is_from_fit"] == (not measured_means)
+    assert row["unmet_constraints"] == ["Grounded >= 0.5: never measured"] and row["p_met.Grounded >= 0.5"] is None
+    events = _events(optimizer)
+    (observed,) = [e for e in events if e["event"] == "observe" and e["candidate_id"] == never]
+    assert observed["observation"]["reason"] == "Grounded >= 0.5: never measured"
+    (shared,) = [e for e in events if e["event"] == "evidence" and e["evidence"]["candidate_id"] == never]
+    assert observed["observation"]["violations"] == shared["evidence"]["violations"] == [None]  # infinite, in JSON
+    state = load_state(RunDirectory.open(optimizer._run.root), config=optimizer._config())
+    for event in (observed, shared):
+        (replayed,) = [f for f in state.feedback[event["block"]] if f.candidate_id == never]
+        assert replayed.violations == [math.inf]
 
 
 async def test_validation_and_test_runs_never_reach_the_search(tmp_path):
@@ -1189,14 +1532,39 @@ async def test_the_default_search_runs_end_to_end_and_observes_every_patch_once(
     assert result.best.values["temperature"] >= result.baseline.values["temperature"]
 
 
+async def test_the_default_structure_block_models_from_its_second_round(tmp_path):
+    optimizer = _optimizer(
+        _experiment(evaluators=[Temperature()]),
+        rollout_fn=_temperature_rollout,
+        max_workers=64,
+        base_dir=tmp_path,
+        # A round uses at most 5 slots (its opener and 4 inner steps of 1), so at least 3 rounds open in 11.
+        budget=Budget(max_iterations=11),
+        proposals_per_iteration=1,
+    )
+    await _search(optimizer)
+    structure = next(block.proposer for block, _ in optimizer._blocks if block.name == "structure")
+    assert isinstance(structure, TPE) and structure.n_startup_trials == 2
+    events = _events(optimizer)
+    (first,) = [e for e in events if e["event"] == "evidence" and e["block"] == "structure"]
+    assert (first["iteration"], first["evidence"]["candidate_id"]) == (0, optimizer._baseline.id)
+    # Each round's opener, observed at its round's end. Its study holds the baseline, then one trial per
+    # closed round, so the startup of 2 ends after the first round (without the baseline, after the second).
+    openers = [
+        e["observation"]["patch"]["rationale"] for e in events if e["event"] == "observe" and e["block"] == "structure"
+    ]
+    assert len(openers) >= 3
+    assert openers == ["TPE: random startup"] + [f"TPE: modeled on {k} told trials" for k in range(2, len(openers) + 1)]
+
+
 # resume
 
 
 def _default_search(base_dir, **kwargs):
     kwargs.setdefault("budget", Budget(max_iterations=6))
+    kwargs.setdefault("rollout_fn", _temperature_rollout)
     return _optimizer(
         _experiment(evaluators=[Temperature()]),
-        rollout_fn=_temperature_rollout,
         max_workers=64,
         base_dir=base_dir,
         proposals_per_iteration=2,
@@ -1248,6 +1616,7 @@ def _assert_same(resumed, original, *, rerun=None):
         assert getattr(resumed.validation, field) == getattr(original.validation, field)
     for field in ("champion_id", "objective", "difference", "ratio", "missing"):
         assert getattr(resumed.test, field) == getattr(original.test, field)
+    assert resumed.test_failed_ids == original.test_failed_ids
 
 
 @pytest.mark.parametrize(
@@ -1283,6 +1652,26 @@ async def test_a_killed_run_resumes_to_the_same_result_spending_nothing_twice(tm
     assert new_trials == sum(1 for e in _events(original_optimizer) if e["event"] == "trial") - trials_before
 
 
+async def test_a_run_killed_after_setup_tells_the_baseline_once_on_resume(tmp_path):
+    original_optimizer = _default_search(tmp_path / "runs")
+    original = await original_optimizer.run_async()
+    # Setup's events (the baseline's evidence among them) are written, but no iteration closed.
+    copy = _killed(original_optimizer._run.root, tmp_path, lambda events: _index(events, "select") - 1)
+    resumed_optimizer = _resume(copy)
+    resumed = await resumed_optimizer.run_async()
+    _assert_same(resumed, original)
+    baseline = resumed_optimizer._baseline.id
+    blocks = [block.name for block, _ in resumed_optimizer._blocks]
+    logged = [
+        e["block"] for e in _events_at(copy) if e["event"] == "evidence" and e["evidence"]["candidate_id"] == baseline
+    ]
+    assert logged == blocks * 2  # setup ran again after the resume event
+    state = load_state(RunDirectory.open(copy), config=resumed_optimizer._config())
+    for block in blocks:
+        told = [t for t in state.feedback[block] if isinstance(t, Evidence) and t.candidate_id == baseline]
+        assert len(told) == 1
+
+
 async def test_a_refit_that_raises_on_replay_falls_back_to_measured_means_and_the_resume_goes_on(tmp_path):
     original_optimizer = _default_search(tmp_path / "runs")
     await original_optimizer.run_async()
@@ -1314,6 +1703,34 @@ def _events_at(root):
     return [json.loads(line) for line in (root / "events.jsonl").read_text().splitlines()]
 
 
+@pytest.mark.parametrize("failing", [1, 2])
+async def test_a_search_a_proposer_stopped_resumes_and_ends_as_an_uninterrupted_run(tmp_path, failing):
+    updates = [{"temperature": 0.5}, {"temperature": 1.0}]
+    expected = await _two_steps(*updates, base_dir=tmp_path / "runs").run_async()
+    stopped = _two_steps(*updates[: failing - 1], RuntimeError("throttled"), base_dir=tmp_path / "stopped")
+    with pytest.raises(ProposerError, match="throttled"):
+        await stopped.run_async()
+    assert not [e for e in _events(stopped) if e["event"] == "stop"]
+    search = Search(
+        [Block(Scripted(*updates[failing - 1 :]), "temperature"), Block(Scripted(), "manager")], schedule=Joint()
+    )
+    resumed = await _resume(stopped._run.root, search=search).run_async()
+    _assert_same(resumed, expected)
+    assert len(resumed.iterations) == 2 and resumed.best.values["temperature"] == 1.0
+
+
+async def test_a_search_a_proposer_stopped_can_end_with_what_it_found(tmp_path):
+    """A proposer that can't be fixed: resumed with its closed iterations as the cap, the run goes to the end phase."""
+    stopped = _two_steps({"temperature": 0.5}, RuntimeError("no access"), base_dir=tmp_path)
+    with pytest.raises(ProposerError, match=r"also pass budget=Budget\(max_rollouts=500, max_iterations=1\)"):
+        await stopped.run_async()
+    search = Search([Block(Scripted(), "temperature"), Block(Scripted(), "manager")], schedule=Joint())
+    budget = Budget(max_rollouts=500, max_iterations=1)
+    result = await _resume(stopped._run.root, search=search, budget=budget).run_async()
+    assert result.stop_reason == "iterations" and len(result.iterations) == 1
+    assert result.best.values["temperature"] == 0.5 and result.test is not None
+
+
 async def test_costs_after_resume_count_a_killed_iterations_trials(tmp_path):
     original = _two_steps({"temperature": 0.5}, {"temperature": 1.0}, base_dir=tmp_path / "runs")
     await original.run_async()
@@ -1340,7 +1757,8 @@ async def test_resuming_a_finished_run_returns_its_result_and_spends_nothing(tmp
     root = original_optimizer._run.root
     trials = sum(1 for e in _events_at(root) if e["event"] == "trial")
 
-    resumed = _resume(root, budget=Budget(max_rollouts=2000, max_iterations=50))
+    with pytest.warns(UserWarning, match=r"search already stopped \(iterations\).*returns the finished result"):
+        resumed = _resume(root, budget=Budget(max_rollouts=2000, max_iterations=50))
     assert [e["event"] for e in _events_at(root)][-1] != "resume"  # resume() itself writes nothing
     again = await resumed.run_async()
 
@@ -1352,13 +1770,302 @@ async def test_resuming_a_finished_run_returns_its_result_and_spends_nothing(tmp
 
 async def test_a_smaller_budget_after_the_pick_skips_the_test_report(tmp_path):
     original_optimizer = _default_search(tmp_path / "runs")
-    await original_optimizer.run_async()
+    original = await original_optimizer.run_async()
     copy = _killed(original_optimizer._run.root, tmp_path, lambda events: _index(events, "picked"))
     spent = sum(1 for e in _events_at(copy) if e["event"] == "trial")  # one rollout each, no re-runs here
     with pytest.raises(ValueError, match="already spent"):
         _resume(copy, budget=Budget(max_rollouts=spent - 1))
-    result = await _resume(copy, budget=Budget(max_rollouts=spent)).run_async()
-    assert result.test is None and result.test_reason.startswith("the test report needs")
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="budget= would let")  # a cap that allows no more search
+        resumed = _resume(copy, budget=Budget(max_rollouts=spent))
+    result = await resumed.run_async()
+    assert result.test is None
+    assert result.test_reason == (
+        f"the test report needs 12 rollouts, 0 are left; resume with max_rollouts >= {spent + 12} to run it"
+    )
+    # Not saved as done: resuming with the budget the reason names runs the test report.
+    assert "test" not in [e["event"] for e in _events_at(copy)]
+    again = await _resume(copy, budget=Budget(max_rollouts=spent + 12)).run_async()
+    assert again.test is not None
+    for field in ("champion_id", "objective", "difference", "ratio", "missing"):  # timings differ
+        assert getattr(again.test, field) == getattr(original.test, field)
+
+
+def _two_step_search():
+    """`_two_steps`'s search, for resuming its runs (`Scripted` proposers compare equal whatever they propose)."""
+    return Search([Block(Scripted(), "temperature"), Block(Scripted(), "manager")], schedule=Joint())
+
+
+@pytest.mark.parametrize("pattern", ["infrastructure", "mixed"])
+async def test_a_test_report_lost_to_infrastructure_is_not_saved_and_resume_runs_it(tmp_path, pattern):
+    optimizer = _two_steps({"temperature": 0.5}, {"temperature": 1.0}, base_dir=tmp_path)
+    test_cases = list(optimizer._case_split.test)
+    down = {"sandbox": True}
+
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        if temperature == 1.0 and case.name in test_cases and down["sandbox"]:
+            if pattern == "infrastructure" or case.name == test_cases[0]:
+                raise InfrastructureError("sandbox down")
+            raise ValueError("crashes on test")
+        return str(temperature)
+
+    optimizer._rollout_fn = rollout
+    result = await optimizer.run_async()
+    assert result.best.values["temperature"] == 1.0 and result.test is None
+    n = 6 if pattern == "infrastructure" else 1
+    assert result.test_reason == (
+        f"every test trial of the selected candidate failed, {n} on infrastructure; resume with max_rollouts >= "
+        f"{result.rollouts_spent + n} to run them again"
+    )
+    root = optimizer._run.root
+    assert "test" not in [e["event"] for e in _events_at(root)]
+
+    # The sandbox is back: a resume re-runs the trials left infrastructure_invalid and saves the report.
+    down["sandbox"] = False
+    resumed = Optimizer.resume(
+        root,
+        experiment=_experiment(evaluators=[Temperature()]),
+        factory=create_agent,
+        rollout_fn=rollout,
+        search=_two_step_search(),
+    )
+    again = await resumed.run_async()
+    assert again.best.id == result.best.id and again.test is not None
+    assert again.test.missing == {result.best.id: 0, result.baseline_id: 0}  # an agent failure counts, at worst
+    # Only the trials left infrastructure_invalid ran again; the agent failures stayed final.
+    statuses = {
+        e["record"]["case_name"]: e["record"]["status"]
+        for e in _events_at(root)
+        if e["event"] == "trial" and e["record"]["candidate_id"] == result.best.id and e["record"]["split"] == "test"
+    }
+    assert sorted(statuses.values()) == ["agent_failure"] * (6 - n) + ["completed"] * n
+    assert again.rollouts_spent == result.rollouts_spent + n
+    assert [e["event"] for e in _events_at(root)][-1] == "test"
+
+
+async def test_a_test_report_lost_to_infrastructure_at_a_tight_budget_names_the_budget_a_resume_needs(tmp_path):
+    # The search spends down to the reserves, and the champion's test re-runs use up most of what is left.
+    reserves = _two_steps(final_pick=FinalPick(n_finalists=2))._budget
+    budget = Budget(max_rollouts=8 * 3 + reserves.validation_reserve + reserves.test_reserve, max_iterations=None)
+    optimizer = _two_steps(
+        {"temperature": 0.5},
+        {"temperature": 1.0},
+        base_dir=tmp_path,
+        budget=budget,
+        final_pick=FinalPick(n_finalists=2),
+    )
+    test_cases = set(optimizer._case_split.test)
+    down = {"sandbox": True}
+
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        if temperature == 1.0 and case.name in test_cases and down["sandbox"]:
+            raise InfrastructureError("sandbox down")
+        return str(temperature)
+
+    def resume(**kwargs):
+        return Optimizer.resume(
+            optimizer._run.root,
+            experiment=_experiment(evaluators=[Temperature()]),
+            factory=create_agent,
+            rollout_fn=rollout,
+            search=_two_step_search(),
+            **kwargs,
+        )
+
+    optimizer._rollout_fn = rollout
+    result = await optimizer.run_async()
+    spent = result.rollouts_spent
+    assert result.test is None and spent < budget.max_rollouts < spent + 6
+    assert result.test_reason == (
+        "every test trial of the selected candidate failed, 6 on infrastructure; "
+        f"resume with max_rollouts >= {spent + 6} to run them again"
+    )
+
+    # The sandbox is back, but the saved budget can't afford the 6 trials: still not saved as done.
+    down["sandbox"] = False
+    again = await resume().run_async()
+    assert again.test is None and again.rollouts_spent == spent
+    assert again.test_reason == (
+        f"the test report needs 6 rollouts, {budget.max_rollouts - spent} are left; resume with max_rollouts >= "
+        f"{spent + 6} to run it"
+    )
+    assert "test" not in [e["event"] for e in _events_at(optimizer._run.root)]
+
+    # With the budget the reason names, the resume runs them and saves the report.
+    final = await resume(budget=Budget(max_rollouts=spent + 6)).run_async()
+    assert final.test is not None and final.test.missing == {final.best.id: 0, final.baseline_id: 0}
+    assert final.rollouts_spent == spent + 6
+    assert [e["event"] for e in _events_at(optimizer._run.root)][-1] == "test"
+
+
+async def test_a_test_report_is_final_when_a_failed_arm_has_only_agent_failures(tmp_path):
+    # The champion crashes on every test case and the baseline's test trials hit infrastructure: re-running
+    # the baseline can't give the champion a completed trial, so the outcome is final.
+    optimizer = _two_steps({"temperature": 0.5}, {"temperature": 1.0}, base_dir=tmp_path)
+    test_cases = set(optimizer._case_split.test)
+
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        if case.name in test_cases and temperature == 1.0:
+            raise ValueError("crashes on test")
+        if case.name in test_cases and temperature == 0.0:
+            raise InfrastructureError("sandbox down")
+        return str(temperature)
+
+    optimizer._rollout_fn = rollout
+    result = await optimizer.run_async()
+    assert result.test is None
+    assert result.test_reason == "every test trial of the baseline failed, so there is nothing to compare"
+    assert _names(_events(optimizer))[-1] == "test"
+
+
+def test_a_ctrl_c_during_the_search_stops_run_and_resume_finishes_it(tmp_path, sigint):
+    async def on_iteration(record):
+        if record.iteration == 2:
+            sigint.send()  # a Ctrl-C once iteration 2 is closed
+            await asyncio.sleep(10)  # cancelled; otherwise the search goes on after it
+
+    original_optimizer = _default_search(tmp_path / "original")
+    original = original_optimizer.run()
+    optimizer = _default_search(tmp_path / "runs", on_iteration=on_iteration)
+    with pytest.raises(sigint.error):
+        optimizer.run()
+
+    root = optimizer._run.root
+    events = _events_at(root)
+    names = [e["event"] for e in events]
+    assert names.count("iteration_end") == 2 and "stop" not in names and not (root / "result.json").exists()
+    assert {e["record"]["split"] for e in events if e["event"] == "trial"} == {"train"}
+    resumed_optimizer = _resume(root)
+    _assert_same(resumed_optimizer.run(), original)
+    assert resumed_optimizer._budget.spent == original_optimizer._budget.spent
+
+
+@pytest.mark.parametrize("sync", [False, True], ids=["async rollout", "sync rollout"])
+def test_a_ctrl_c_during_validation_cancels_the_trial_in_flight_and_resume_runs_it(tmp_path, sigint, sync):
+    original_optimizer = _default_search(tmp_path / "original")
+    original = original_optimizer.run()
+    validation = set(original_optimizer._case_split.validation)
+    first, release, returned = threading.Lock(), threading.Event(), threading.Event()
+
+    def interrupts(case):
+        """Send a Ctrl-C from the first validation trial only."""
+        if case.name in validation and first.acquire(blocking=False):
+            sigint.send()
+            return True
+        return False
+
+    async def async_rollout(agent_factory, case):
+        if interrupts(case):
+            await asyncio.sleep(10)  # in flight when the run is cancelled
+        return await _temperature_rollout(agent_factory, case)
+
+    def sync_rollout(agent_factory, case):
+        if interrupts(case):
+            release.wait(10)  # in flight when the run is cancelled; its thread can't be stopped
+            returned.set()
+        _, temperature = agent_factory()
+        return str(temperature)
+
+    optimizer = _default_search(tmp_path / "runs", rollout_fn=sync_rollout if sync else async_rollout)
+    with pytest.raises(sigint.error):
+        optimizer.run()
+    if sync:
+        assert not returned.is_set()  # `run()` didn't wait for the sync rollout
+        release.set()
+        assert returned.wait(10)
+
+    root = optimizer._run.root
+    events = _events_at(root)
+    names = [e["event"] for e in events]
+    assert "finalists" in names and "picked" not in names and not (root / "result.json").exists()
+
+    def validation_trials(events):
+        return sum(1 for e in events if e["event"] == "trial" and e["record"]["split"] == "validation")
+
+    assert validation_trials(events) < validation_trials(_events(original_optimizer))  # the cancelled one isn't saved
+    with pytest.warns(UserWarning, match="differently named agent"):  # resumed with the plain rollout on purpose
+        resumed_optimizer = _resume(root)
+    _assert_same(resumed_optimizer.run(), original)
+    assert resumed_optimizer._budget.spent == original_optimizer._budget.spent
+
+
+async def test_a_budget_that_would_search_further_after_the_search_stopped_warns(tmp_path):
+    original_optimizer = _default_search(tmp_path / "runs")
+    original = await original_optimizer.run_async()
+    root = original_optimizer._run.root
+    copy = _killed(root, tmp_path, lambda events: _index(events, "picked"))
+    with pytest.warns(UserWarning, match=r"search already stopped \(iterations\).*only finishes the end phase"):
+        _resume(copy, budget=Budget(max_iterations=7))
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="budget= would let")
+        _resume(root)  # no budget given
+        _resume(root, budget=Budget(max_iterations=6))  # the cap it stopped under: it would stop where it did
+        tiny = _resume(root, budget=Budget(max_rollouts=1))  # finished: no cover check, nothing left to spend
+    _assert_same(await tiny.run_async(), original)
+
+
+async def test_the_budget_warning_counts_only_the_search_spend_against_a_budget_stop(tmp_path):
+    original_optimizer = _default_search(tmp_path / "runs", budget=Budget(max_rollouts=92))
+    original = await original_optimizer.run_async()
+    assert original.stop_reason == "budget"
+    tracker = original_optimizer._budget
+    searched = sum(1 for e in _events(original_optimizer) if e["event"] == "trial" and e["record"]["split"] == "train")
+    enough = searched + tracker.validation_reserve + tracker.test_reserve + 8  # one more candidate's 8 train cases
+    root = original_optimizer._run.root
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="budget= would let")
+        _resume(root, budget=Budget(max_rollouts=enough - 1))
+    with pytest.warns(UserWarning, match=r"search already stopped \(budget\)"):
+        _resume(root, budget=Budget(max_rollouts=enough))
+
+
+async def test_no_budget_warning_when_the_search_stopped_for_another_reason(tmp_path):
+    optimizer = _default_search(tmp_path)
+    await optimizer.run_async()
+    root = optimizer._run.root
+    events = _events_at(root)
+    for event in events:
+        if event["event"] == "stop":
+            event["reason"] = "exhausted"  # a bigger budget wouldn't have searched further either
+    (root / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="budget= would let")
+        _resume(root, budget=Budget(max_rollouts=5000, max_iterations=50))
+
+
+async def test_a_run_another_optimizer_is_writing_cannot_be_run_again(tmp_path):
+    writer = _default_search(tmp_path)
+    await writer._start()  # scored the baseline; still writing
+    root = writer._run.root
+    resumed = _resume(root)  # resume only reads
+    before = _events_at(root)
+
+    with pytest.raises(RuntimeError, match="is open for writing in another process"):
+        await resumed.run_async()
+    assert _events_at(root) == before  # refused before writing anything
+
+    writer._run.events.append("label", candidate_id="x", label={})  # the writer goes on, then stops
+    writer._run.unlock()
+    with pytest.raises(RuntimeError, match="events.jsonl changed after it was read"):
+        await resumed.run_async()  # what resume read is stale
+
+
+async def test_a_run_whose_on_iteration_raised_resumes_in_the_same_process(tmp_path):
+    def broken(record):
+        raise RuntimeError("callback bug")
+
+    optimizer = _default_search(tmp_path, on_iteration=broken)
+    with pytest.raises(RuntimeError, match="callback bug"):
+        await optimizer.run_async()
+
+    result = await _resume(optimizer._run.root).run_async()  # the failed run released its lock
+    assert result.stop_reason == "iterations"
 
 
 def test_resume_checks_the_cases_and_the_config(tmp_path):
@@ -1384,6 +2091,51 @@ async def test_a_run_stopped_at_setup_cannot_resume(tmp_path):
         Optimizer.resume(optimizer._run.root, experiment=_experiment(), factory=create_agent, rollout_fn=_rollout())
 
 
+@tunable(
+    manager=choice(component(Window, size=Int(1, 100)), component(Summary)),
+    temperature=OneOf(0.0, 0.5, 1.0),
+)
+def renamed_agent(manager, temperature):
+    return (manager, temperature)
+
+
+async def _renamed_rollout(agent_factory, case):
+    return await _temperature_rollout(agent_factory, case)
+
+
+def test_resume_warns_when_the_agent_is_named_differently(tmp_path):
+    optimizer = _default_search(tmp_path)
+    optimizer._setup()
+    root = optimizer._run.root
+    experiment = _experiment(evaluators=[Temperature()])
+
+    with pytest.warns(UserWarning, match=r"factory '[\w.]+:create_agent' -> '[\w.]+:renamed_agent'"):
+        Optimizer.resume(root, experiment=experiment, factory=renamed_agent, rollout_fn=_temperature_rollout)
+    with pytest.warns(UserWarning, match=r"\(rollout_fn '[\w.]+:_temperature_rollout' -> '[\w.]+:_renamed_rollout'\)"):
+        Optimizer.resume(root, experiment=experiment, factory=create_agent, rollout_fn=_renamed_rollout)
+
+    # The script that started the run, run as __main__, may be imported under its name to resume it.
+    log = root / "events.jsonl"
+    events = _events_at(root)
+    agent = events[0]["config"]["agent"]
+    agent.update({k: "__main__:" + v.partition(":")[2] for k, v in agent.items() if v is not None})
+    log.write_text("".join(json.dumps(e) + "\n" for e in events))
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="resuming run .* differently named agent")
+        _resume(root)
+
+
+def test_same_name_compares_module_and_qualname_but_lets_main_match_any_module():
+    assert _same_name("agents:create_agent", "agents:create_agent")
+    assert not _same_name("agents:create_agent", "agents:create_agent_v2")
+    assert not _same_name("agents:create_agent", "other:create_agent")
+    assert _same_name("__main__:create_agent", "optimize:create_agent")
+    assert _same_name("optimize:create_agent", "__main__:create_agent")
+    assert not _same_name("__main__:create_agent", "optimize:other_agent")
+    assert _same_name(None, None)
+    assert not _same_name(None, "agents:rollout") and not _same_name("agents:rollout", None)
+
+
 def test_resume_warns_when_numpy_or_optuna_changed(tmp_path):
     optimizer = _default_search(tmp_path)
     optimizer._setup()
@@ -1393,6 +2145,192 @@ def test_resume_warns_when_numpy_or_optuna_changed(tmp_path):
     log.write_text("".join(json.dumps(e) + "\n" for e in events))
     with pytest.warns(UserWarning, match=r"optuna 0\.0\.1 -> "):
         _resume(optimizer._run.root)
+
+
+# a proposer serves one optimizer
+
+
+def _user_tpe_search():
+    """A search with a user-made proposer (default blocks get fresh proposers on every resolve)."""
+    return Search([Block(TPE(), "temperature")])
+
+
+async def test_resuming_with_the_stopped_runs_proposers_raises_and_a_new_search_resumes_exactly(tmp_path):
+    uninterrupted = await _default_search(tmp_path / "full", search=_user_tpe_search()).run_async()
+
+    def stop_after_three(record):
+        if record.iteration == 3:
+            raise RuntimeError("callback bug")
+
+    search = _user_tpe_search()
+    stopped = _default_search(tmp_path / "stopped", search=search, on_iteration=stop_after_three)
+    with pytest.raises(RuntimeError, match="callback bug"):
+        await stopped.run_async()
+    root = stopped._run.root
+    log = (root / "events.jsonl").read_text()
+    # Its TPE holds the three iterations' history; resume would replay it on top.
+    with pytest.raises(ValueError, match=r"^TPE \(block 'numbers'\) is bound to another Optimizer"):
+        _resume(root, search=search)
+    assert (root / "events.jsonl").read_text() == log
+    fresh = _user_tpe_search()
+    resumed = await _resume(root, search=fresh).run_async()
+    _assert_same(resumed, uninterrupted)
+    # The resumed optimizer bound its proposers before replaying the history into them.
+    with pytest.raises(ValueError, match="is bound to another Optimizer"):
+        _resume(root, search=fresh)
+
+
+async def test_a_proposer_another_optimizer_ran_with_is_rejected_before_anything_is_written(tmp_path):
+    search = _user_tpe_search()
+    first = _default_search(tmp_path / "first", search=search, budget=Budget(max_iterations=1))
+    second = _default_search(tmp_path / "second", search=search)  # constructing both is fine: neither ran
+    await first.run_async()
+    with pytest.raises(ValueError, match="is bound to another Optimizer"):
+        await second.run_async()
+    assert not (tmp_path / "second").exists()
+    # Another Search holding the same instance is caught at construction.
+    with pytest.raises(ValueError, match="is bound to another Optimizer"):
+        _default_search(tmp_path / "third", search=Search([Block(search.blocks[0].proposer, "temperature")]))
+
+
+async def test_two_optimizers_started_at_once_on_one_search_bind_it_to_one(tmp_path):
+    search = _user_tpe_search()
+    optimizers = [_default_search(tmp_path / str(i), search=search, budget=Budget(max_iterations=1)) for i in range(2)]
+    outcomes = await asyncio.gather(*(o.run_async() for o in optimizers), return_exceptions=True)
+    errors = [o for o in outcomes if isinstance(o, BaseException)]
+    results = [o for o in outcomes if not isinstance(o, BaseException)]
+    assert len(errors) == 1 and isinstance(errors[0], ValueError)
+    assert "is bound to another Optimizer" in str(errors[0])
+    assert len(results) == 1 and results[0].stop_reason == "iterations"
+    # The proposers are claimed before anything is written, so the second spent nothing and left no folder.
+    assert sum(o._run is not None for o in optimizers) == 1
+    assert len(list(tmp_path.iterdir())) == 1
+
+
+def test_two_threads_running_optimizers_on_one_search_bind_it_to_one(tmp_path):
+    search = _user_tpe_search()
+    optimizers = [_default_search(tmp_path / str(i), search=search, budget=Budget(max_iterations=1)) for i in range(2)]
+    barrier = threading.Barrier(2)
+    outcomes = []
+
+    def run(optimizer):
+        barrier.wait()
+        try:
+            outcomes.append(optimizer.run())
+        except ValueError as err:
+            outcomes.append(err)
+
+    threads = [threading.Thread(target=run, args=(o,)) for o in optimizers]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sum(isinstance(o, ValueError) for o in outcomes) == 1
+    assert sum(not isinstance(o, ValueError) for o in outcomes) == 1
+
+
+async def test_running_one_optimizer_twice_raises_and_points_to_resume(tmp_path):
+    def stop_after_two(record):
+        if record.iteration == 2:
+            raise RuntimeError("callback bug")
+
+    optimizer = _default_search(tmp_path, search=_user_tpe_search(), on_iteration=stop_after_two)
+    with pytest.raises(RuntimeError, match="callback bug"):
+        await optimizer.run_async()
+    log = (optimizer._run.root / "events.jsonl").read_text()
+    with pytest.raises(RuntimeError, match=r"already started a run .*Optimizer\.resume"):
+        await optimizer.run_async()
+    with pytest.raises(RuntimeError, match="already started a run"):
+        optimizer.run()
+    assert (optimizer._run.root / "events.jsonl").read_text() == log
+
+
+async def test_an_optimizer_that_stops_at_setup_leaves_its_proposers_free(tmp_path):
+    search = _user_tpe_search()
+    broken = _quiet(
+        base_dir=tmp_path, search=search, rollout_fn=_rollout(InfrastructureError("sandbox down")), rerun_passes=0
+    )
+    with pytest.raises(RuntimeError, match="unmeasured"):
+        await broken.run_async()
+    fixed = _quiet(base_dir=tmp_path, search=search, rollout_fn=_rollout(), budget=Budget(max_iterations=1))
+    assert (await fixed.run_async()).stop_reason == "iterations"
+
+
+async def test_a_run_cancelled_during_its_baseline_leaves_its_proposers_free(tmp_path):
+    search = _user_tpe_search()
+    started, never = asyncio.Event(), asyncio.Event()
+
+    async def blocked(agent_factory, case):
+        started.set()
+        await never.wait()
+
+    run = asyncio.create_task(_quiet(base_dir=tmp_path / "first", search=search, rollout_fn=blocked).run_async())
+    await started.wait()
+    run.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run
+    assert "_bound_to" not in vars(search.blocks[0].proposer)  # as it was before the run
+    fixed = _quiet(base_dir=tmp_path / "second", search=search, rollout_fn=_rollout(), budget=Budget(max_iterations=1))
+    assert (await fixed.run_async()).stop_reason == "iterations"
+
+
+async def test_a_run_whose_directory_could_not_be_created_can_be_run_again(tmp_path, monkeypatch):
+    create, calls = RunDirectory.create, []
+
+    def failing_once(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise PermissionError("base_dir is read-only")
+        return create(*args, **kwargs)
+
+    monkeypatch.setattr(RunDirectory, "create", failing_once)
+    search = _user_tpe_search()
+    optimizer = _quiet(base_dir=tmp_path, search=search, rollout_fn=_rollout(), budget=Budget(max_iterations=1))
+    with pytest.raises(PermissionError):
+        await optimizer.run_async()
+    assert optimizer.run_dir is None and "_bound_to" not in vars(search.blocks[0].proposer)
+    assert (await optimizer.run_async()).stop_reason == "iterations"
+
+
+async def test_a_proposer_whose_config_reads_its_own_attributes_can_run(tmp_path):
+    class Fixed(Proposer):
+        kinds = frozenset({"one_of"})
+
+        def __init__(self, value=0.5):
+            self.value = value
+
+        async def propose(self, request):
+            return [Patch(updates={"temperature": self.value}, rationale="fixed")][: request.n]
+
+        def observe(self, observation):
+            pass
+
+        def config(self):
+            return dict(vars(self))
+
+    result = await _searching(Block(Fixed(), "temperature"), base_dir=tmp_path).run_async()
+    assert json.loads((result.run_dir / "run.json").read_text())["search"]["blocks"][0]["config"] == {"value": 0.5}
+
+
+async def test_a_frozen_proposer_is_bound_and_a_copy_of_a_bound_one_is_rejected(tmp_path):
+    @dataclasses.dataclass(frozen=True)
+    class Silent(Proposer):
+        kinds = frozenset({"one_of"})
+
+        async def propose(self, request):
+            return []
+
+        def observe(self, observation):
+            pass
+
+    silent = Silent()
+    unused_copy = deepcopy(silent)
+    await _searching(Block(silent, "temperature"), base_dir=tmp_path / "first").run_async()
+    with pytest.raises(ValueError, match=r"^Silent \(block 'numbers'\) is bound to another Optimizer"):
+        _searching(Block(silent, "temperature"), base_dir=tmp_path / "second")
+    with pytest.raises(ValueError, match="is bound to another Optimizer"):
+        _searching(Block(deepcopy(silent), "temperature"), base_dir=tmp_path / "third")
+    _searching(Block(unused_copy, "temperature"), base_dir=tmp_path / "fourth")
 
 
 # fixes from the gap review and #532
@@ -1457,9 +2395,11 @@ async def test_a_concurrent_proposer_that_raises_cancels_its_sibling_calls(tmp_p
     optimizer = _searching(
         Block(Racing(), "temperature"), schedule=Alternate(), base_dir=tmp_path, proposals_per_iteration=3
     )
-    reason, events = await _search(optimizer)
-    assert reason == "proposer_error" and len(started) == 3 and finished == []
-    assert "screened" not in _names(events) and events[-1]["event"] == "stop"
+    with pytest.raises(ProposerError, match="model gone"):
+        await _search(optimizer)
+    events = _events(optimizer)
+    assert len(started) == 3 and finished == []
+    assert "screened" not in _names(events) and events[-1]["event"] == "proposer_error"
 
 
 async def test_an_openers_duplicate_doesnt_drop_the_rest_of_its_batch(tmp_path):
@@ -1485,8 +2425,8 @@ async def test_a_step_with_no_possible_parents_raises(tmp_path):
 
 
 async def test_a_run_killed_during_validation_resumes_with_its_own_budget(tmp_path):
-    # Stops on the budget, so the search leaves only the reserve: 8 baseline + 36 reserve + 3 steps of 16.
-    original_optimizer = _default_search(tmp_path / "runs", budget=Budget(max_rollouts=92))
+    # Stops on the budget, so the search leaves only the reserve: 8 baseline + 48 reserve + 3 steps of 16.
+    original_optimizer = _default_search(tmp_path / "runs", budget=Budget(max_rollouts=104))
     original = await original_optimizer.run_async()
     assert original.stop_reason == "budget"
     copy = _killed(
@@ -1497,7 +2437,7 @@ async def test_a_run_killed_during_validation_resumes_with_its_own_budget(tmp_pa
     resumed_optimizer = _resume(copy)  # no budget given: the saved one still covers what is left
     resumed = await resumed_optimizer.run_async()
     _assert_same(resumed, original)
-    assert resumed_optimizer._budget.spent == original_optimizer._budget.spent <= 92
+    assert resumed_optimizer._budget.spent == original_optimizer._budget.spent <= 104
 
 
 async def test_resume_rebuilds_scores_as_the_closed_iterations_left_them(tmp_path):
@@ -1547,6 +2487,123 @@ async def test_resume_rebuilds_scores_as_the_closed_iterations_left_them(tmp_pat
     )
     await resumed_optimizer._start()
     assert not resumed_optimizer._train[rescored.candidate_id].is_eligible  # as step 1 left it
+
+
+def test_reports_keep_a_re_judges_earlier_scores():
+    case = Case(name="a", input="question a")
+    split = CaseSplit(train=("a",), validation=(), test=())
+    record = TrialRecord(
+        candidate_id="c",
+        case_name="a",
+        run_index=0,
+        split="train",
+        status=TrialStatus.COMPLETED,
+        error_type="RuntimeError",
+        error="can't dump",  # Experiment failed on the case when "Second" was judged again
+        attempts=2,
+        previous_attempts=[],
+        output="x",
+        trajectory=None,
+        interactions=None,
+        environment_state=None,
+        evaluations={"Score": EvaluationOutput(score=1.0, test_pass=True, reason="right")},
+        details={"Score": []},
+        evaluator_errors={},
+        usage=Usage.zero(),
+        judge_usage={},
+        rollouts=0,
+    )
+    evaluators = [Score(), Score(name="Second")]
+
+    report = _reports({"c": {("a", 0): record}}, cases=[case], evaluators=evaluators, split=split)["c"]["train"]
+
+    assert report.scores == [1.0, 0.0]
+    assert report.reasons == ["right", "An error occurred: can't dump"]
+
+
+async def test_an_ineligible_candidate_a_re_score_cant_change_is_a_duplicate(tmp_path):
+    # temperature 0.5's output can't be serialized for its span, so its trials are evaluator_invalid for good.
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        return {"output": {(0, 1): "x"}} if temperature == 0.5 else str(temperature)
+
+    proposer = Scripted({"temperature": 0.5}, {"temperature": 0.5}, {"temperature": 1.0})
+    optimizer = _optimizer(
+        _experiment(evaluators=[Temperature()]),
+        rollout_fn=rollout,
+        search=Search([Block(proposer, "temperature"), Block(Scripted(), "manager")], schedule=Joint()),
+        max_workers=64,
+        proposals_per_iteration=1,
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=2),
+    )
+    result = await optimizer.run_async()
+
+    first, second = result.iterations[0].proposals, result.iterations[1].proposals
+    assert [p.outcome for p in first] == ["ineligible"]
+    assert [p.outcome for p in second] == ["duplicate", "feasible"]  # 0.5 again isn't scored, the redraw is
+    assert second[0].candidate_id == first[0].candidate_id
+    assert not any(e["event"] == "propose" and e["rescore"] for e in _events(optimizer))
+    assert [o.outcome for o in proposer.observed] == ["ineligible", "duplicate", "feasible"]
+
+
+class _FailsOnHalf(Evaluator):
+    """Scores the temperature, but raises on temperature 0.5's output the first `failures` times."""
+
+    def __init__(self, failures):
+        super().__init__(name="Temperature")
+        self.failures, self.raised = failures, 0
+
+    async def evaluate_async(self, evaluation_case):
+        if evaluation_case.actual_output == "0.5" and self.raised < self.failures:
+            self.raised += 1
+            raise ValueError("bad judge output")
+        return [EvaluationOutput(score=float(evaluation_case.actual_output), test_pass=True, reason="t")]
+
+
+def _repeating_half(tmp_path, evaluator, max_iterations):
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        return str(temperature)
+
+    proposer = Scripted({"temperature": 0.5}, {"temperature": 0.5})
+    optimizer = _optimizer(
+        _experiment(evaluators=[evaluator]),
+        rollout_fn=rollout,
+        search=Search([Block(proposer, "temperature"), Block(Scripted(), "manager")], schedule=Joint()),
+        max_workers=64,
+        proposals_per_iteration=1,
+        rerun_passes=0,
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=max_iterations),
+    )
+    return optimizer, proposer
+
+
+async def test_an_ineligible_repeat_with_a_failed_evaluator_is_judged_again(tmp_path):
+    optimizer, _ = _repeating_half(tmp_path, _FailsOnHalf(failures=8), max_iterations=2)  # every 0.5 trial once
+    result = await optimizer.run_async()
+
+    first, second = result.iterations[0].proposals, result.iterations[1].proposals
+    assert [p.outcome for p in first] == ["ineligible"]
+    assert [p.outcome for p in second] == ["feasible"]  # re-judged on the saved outputs, now measured
+    assert second[0].candidate_id == first[0].candidate_id
+    assert any(e["event"] == "propose" and e["rescore"] for e in _events(optimizer))
+    assert result.iterations[1].rollouts_spent == 0  # judges only
+
+
+async def test_a_re_judge_that_leaves_the_candidate_unmeasured_saves_nothing(tmp_path):
+    evaluator = _FailsOnHalf(failures=10**6)  # fails on 0.5's output every time
+    optimizer, proposer = _repeating_half(tmp_path, evaluator, max_iterations=5)
+    result = await optimizer.run_async()
+
+    first, second = result.iterations[0].proposals, result.iterations[1].proposals
+    assert [p.outcome for p in first] == ["ineligible"]
+    assert [p.outcome for p in second] == ["duplicate"]  # judged again, still unmeasured: nothing saved
+    assert "still unmeasured after its re-judge" in proposer.observed[-1].reason
+    assert any(e["event"] == "propose" and e["rescore"] for e in _events(optimizer))
+    assert len(result.iterations) == 2 and result.stop_reason == "exhausted"  # the step saved nothing
+    assert evaluator.raised == 16  # 8 train trials, judged twice
 
 
 async def test_max_iterations_counts_candidate_slots_not_steps(tmp_path):
@@ -1669,6 +2726,47 @@ async def test_reports_match_what_experiment_returns_for_the_same_trials(tmp_pat
     assert set(result.reports[result.best.id]) == {"train", "validation", "test"}
 
 
+async def test_reports_match_experiment_for_a_case_it_failed_on_after_the_task_returned():
+    case = Case(name="a", input="question a")
+
+    async def task(case):
+        return {"output": {(0, 1): "x"}}  # Experiment can't serialize it for its span
+
+    expected = await Experiment(cases=[case], evaluators=[Score()]).run_evaluations_async(task)
+    record = TrialRecord(
+        candidate_id="c",
+        case_name="a",
+        run_index=0,
+        split="train",
+        status=TrialStatus.EVALUATOR_INVALID,
+        error_type="TypeError",
+        error=expected.reasons[0].removeprefix("An error occurred: "),
+        attempts=1,
+        previous_attempts=[],
+        output=None,
+        trajectory=None,
+        interactions=None,
+        environment_state=None,
+        evaluations={},
+        details={},
+        evaluator_errors={},
+        usage=Usage.zero(),
+        judge_usage={},
+        rollouts=1,
+    )
+
+    split = CaseSplit(train=("a",), validation=(), test=())
+    report = _reports({"c": {("a", 0): record}}, cases=[case], evaluators=[Score()], split=split)["c"]["train"]
+
+    assert expected.reasons[0].startswith("An error occurred: keys must be str")
+    assert (report.scores, report.test_passes, report.reasons) == (
+        expected.scores,
+        expected.test_passes,
+        expected.reasons,
+    )
+    assert [{k: v for k, v in row.items() if k != "run_index"} for row in report.cases] == expected.cases
+
+
 async def test_the_result_reloads_whole_without_the_run_folder_and_summarizes(tmp_path):
     optimizer = _two_steps({"temperature": 0.5}, {"temperature": 1.0}, base_dir=tmp_path / "runs")
     result = await optimizer.run_async()
@@ -1689,6 +2787,38 @@ async def test_the_result_reloads_whole_without_the_run_folder_and_summarizes(tm
     assert "temperature  0.0       1.0" in text and "champion" not in text
     with pytest.raises(ValueError, match="unknown grain"):
         result.to_rows("trial")
+
+
+async def test_the_summary_names_the_flagged_metrics_or_why_there_are_no_effects(tmp_path):
+    result = await _two_steps({"temperature": 0.5}, {"temperature": 1.0}, base_dir=tmp_path).run_async()
+    metrics = {
+        "Temperature": {"diagnostics": {"flagged": False}},
+        "tokens": {"diagnostics": {"flagged": True}},
+        "seconds": {"diagnostics": {"flagged": True}},
+    }
+
+    def effects_lines(effects):
+        text = result.model_copy(update={"effects": {**result.effects, **effects}}).summary()
+        return [line for line in text.splitlines() if line.startswith("Effects:")]
+
+    assert effects_lines({"metrics": metrics, "reason": None}) == [
+        "Effects: the held-out check flagged tokens, seconds; from then on the search ranked them by measured "
+        "means and the other metrics by the fit."
+    ]
+    one = {**metrics, "seconds": {"diagnostics": {"flagged": False}}}
+    assert effects_lines({"metrics": one, "reason": None}) == [
+        "Effects: the held-out check flagged tokens; from then on the search ranked it by measured means and the "
+        "other metrics by the fit."
+    ]
+    every = {m: {"diagnostics": {"flagged": True}} for m in metrics}
+    assert effects_lines({"metrics": every, "reason": None}) == [
+        "Effects: the held-out check flagged Temperature, tokens, seconds; from then on the search ranked by "
+        "measured means, not the fit."
+    ]
+    # Empty effects with a reason (as a flagged fit gave before) print only the reason.
+    empty = {"effects": [], "factors": [], "omitted": [], "metrics": metrics, "reason": "flagged: tokens, seconds"}
+    assert effects_lines(empty) == ["Effects: none (flagged: tokens, seconds)."]
+    assert effects_lines({"metrics": {"tokens": {"diagnostics": {"flagged": False}}}, "reason": None}) == []
 
 
 # ---- concurrent vs. one-at-a-time scoring ---------------------------------------------------------------
@@ -1802,6 +2932,167 @@ async def test_pareto_ships_the_front_s_max_gain_member_and_tests_every_member(t
         (report.champion_id, report.baseline_id) == (member, result.baseline_id)
         for member, report in result.front_test.items()
     )
+
+
+async def test_pareto_a_test_report_the_budget_skipped_names_the_budget_for_every_front_member(tmp_path):
+    def shared():
+        """What the run and its resumes are given alike (fresh proposers each time)."""
+        return {
+            "rollout_fn": _temperature_rollout,
+            "search": Search(
+                [
+                    Block(Scripted({"temperature": 1.0}, {"temperature": 0.5}), "temperature"),
+                    Block(Scripted(), "manager"),
+                ],
+                schedule=Joint(),
+            ),
+            "objective": Pareto(Maximize("Temperature", weight=2), Maximize("Cool")),
+        }
+
+    experiment = _experiment(evaluators=[Temperature(), Cool()])
+    original = await Optimizer(
+        experiment,
+        create_agent,
+        budget=Budget(max_iterations=2),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path / "runs",
+        **shared(),
+    ).run_async()
+    assert len(original.validation.front) == 3  # the champion, the baseline, and one more member
+    copy = _killed(original.run_dir, tmp_path, lambda events: _index(events, "picked"))
+    spent = sum(1 for e in _events_at(copy) if e["event"] == "trial")
+
+    skipped = await Optimizer.resume(
+        copy, experiment=experiment, factory=create_agent, budget=Budget(max_rollouts=spent), **shared()
+    ).run_async()
+    assert skipped.test is None and skipped.test_reason == (
+        f"the test report needs 12 rollouts, 0 are left; resume with max_rollouts >= {spent + 18} to run it with "
+        "every front member"
+    )
+    tested = await Optimizer.resume(
+        copy, experiment=experiment, factory=create_agent, budget=Budget(max_rollouts=spent + 18), **shared()
+    ).run_async()
+    assert list(tested.front_test) == original.validation.front and tested.test_reason is None
+
+
+async def test_a_front_member_with_no_completed_test_trial_is_listed_as_failed(tmp_path):
+    optimizer = _optimizer(
+        _experiment(evaluators=[Temperature(), Cool()]),
+        rollout_fn=_temperature_rollout,
+        search=Search(
+            [Block(Scripted({"temperature": 1.0}, {"temperature": 0.5}), "temperature"), Block(Scripted(), "manager")],
+            schedule=Joint(),
+        ),
+        objective=Pareto(Maximize("Temperature", weight=2), Maximize("Cool")),
+        budget=Budget(max_iterations=2),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path,
+    )
+    test_cases = set(optimizer._case_split.test)
+
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        if temperature == 0.5 and case.name in test_cases:
+            raise ValueError("crashes on test")
+        return str(temperature)
+
+    optimizer._rollout_fn = rollout
+    result = await optimizer.run_async()
+    member = next(c.id for c in result.candidates.values() if c.values["temperature"] == 0.5)
+    assert member in result.validation.front and result.best.id != member and result.test is not None
+    assert result.test_failed_ids == [member] and member not in result.front_test
+
+
+async def test_measured_term_values_are_the_metric_values_under_minimize(tmp_path):
+    proposer = Scripted({"temperature": 0.5})
+    optimizer = _optimizer(
+        _experiment(evaluators=[Temperature(), Cool()]),
+        rollout_fn=_temperature_rollout,
+        search=Search([Block(proposer, "temperature"), Block(Scripted(), "manager")], schedule=Alternate()),
+        objective=Minimize("Cool"),
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path,
+    )
+    await _search(optimizer)
+    (request,) = proposer.requests
+    assert not request.candidates[0].estimates  # no fit yet: measured means
+    assert request.candidates[0].term_values == [1.0]  # the baseline's Cool (temperature 0), not negated
+
+
+class EvenOnly(Evaluator):
+    """At temperature 0, 1.0 on even-numbered cases and 0.5 on odd ones; at any other, 0.9 on even ones and N/A on
+    odd ones."""
+
+    async def evaluate_async(self, evaluation_case):
+        even = int(evaluation_case.input[1:]) % 2 == 0
+        if float(evaluation_case.actual_output) == 0.0:
+            return [EvaluationOutput(score=1.0 if even else 0.5, test_pass=True, reason="e")]
+        if even:
+            return [EvaluationOutput(score=0.9, test_pass=True, reason="e")]
+        return [EvaluationOutput(score=0.0, test_pass=True, reason="nothing to judge", label=NOT_APPLICABLE)]
+
+
+async def test_without_a_fit_n_a_cases_are_filled_for_the_ranking_and_the_term_values(tmp_path):
+    proposer = Scripted({"temperature": 0.5}, {"temperature": 1.0})
+    optimizer = _optimizer(
+        _experiment(evaluators=[EvenOnly()]),
+        rollout_fn=_temperature_rollout,
+        search=Search([Block(proposer, "temperature"), Block(Scripted(), "manager")], schedule=Joint()),
+        objective=Maximize("EvenOnly"),
+        score_model=_Sequence(),  # never fits, so the ranking uses measured means
+        budget=Budget(max_iterations=2),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path,
+    )
+    await _search(optimizer)
+    train = optimizer._case_split.train
+    assert 0 < sum(int(case[4:]) % 2 for case in train) < len(train)  # both judged and N/A cases in train
+    summaries = {c.values["temperature"]: c for c in proposer.requests[1].candidates}
+    baseline, partial = summaries[0.0], summaries[0.5]
+    assert partial.measured_objective == pytest.approx(0.9)  # its even cases only
+    # Its odd cases are filled at the baseline's 0.5 shifted by -0.1, so it ranks below the baseline.
+    assert baseline.ranking_objective == baseline.measured_objective
+    assert partial.ranking_objective == pytest.approx(baseline.ranking_objective - 0.1)
+    assert partial.term_values == [partial.ranking_objective]
+    assert partial.adjusted_means == {"EvenOnly": pytest.approx(partial.ranking_objective)}
+    assert baseline.adjusted_means == {"EvenOnly": baseline.measured_objective}
+    assert (baseline.rank, partial.rank) == (1, 2)
+
+
+async def test_without_a_fit_the_label_rows_and_summary_report_the_adjusted_means(tmp_path):
+    optimizer = _optimizer(
+        _experiment(evaluators=[EvenOnly()]),
+        rollout_fn=_temperature_rollout,
+        search=Search(
+            [Block(Scripted({"temperature": 0.5}), "temperature"), Block(Scripted(), "manager")], schedule=Joint()
+        ),
+        objective=Maximize("EvenOnly"),
+        score_model=_Sequence(),  # never fits: the search and the final pick use measured means
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=tmp_path,
+    )
+    result = await optimizer.run_async()
+    validation = optimizer._case_split.validation
+    assert 0 < sum(int(case[4:]) % 2 for case in validation) < len(validation)  # judged and N/A cases
+    partial = next(c.id for c in result.candidates.values() if c.values["temperature"] == 0.5)
+    (row,) = [r for r in result.to_rows("proposal") if r["candidate_id"] == partial]
+    assert row["train.EvenOnly"] == pytest.approx(0.9)  # its judged cases only
+    assert row["adjusted.EvenOnly"] == pytest.approx(row["objective_at_step"])  # what the ranking used
+    assert row["adjusted.EvenOnly"] < row["train.EvenOnly"]
+    v = result.validation
+    assert v.problem is not None and not any(v.estimates.values())
+    adjusted = v.adjusted_means[partial]["EvenOnly"]
+    assert adjusted == pytest.approx(v.objectives[partial]) and adjusted < v.measured[partial]["EvenOnly"].mean
+    assert v.adjusted_means[result.baseline_id] == {"EvenOnly": v.measured[result.baseline_id]["EvenOnly"].mean}
+    assert f"{adjusted:.3g} adjusted (measured 0.9)" in result.summary()
+    assert f"{v.objectives[result.baseline_id]:.3g} (measured)" in result.summary()
 
 
 # ---- resume inside a two-level Nested -------------------------------------------------------------------

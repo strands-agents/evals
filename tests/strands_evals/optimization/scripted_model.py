@@ -18,11 +18,19 @@ class ToolUse:
     input: dict[str, Any] = field(default_factory=dict)
 
 
-Turn = str | ToolUse | BaseException
+@dataclass(frozen=True)
+class CutOff:
+    """A scripted turn cut at the output limit: some text, then a shell call whose input stops part way."""
+
+    text: str = "Writing the new prompt."
+
+
+Turn = str | ToolUse | CutOff | BaseException
 
 
 class ScriptedModel(Model):
-    """Replays `turns` in order, one per model call: a text reply, a tool call, or an exception to raise.
+    """Replays `turns` in order, one per model call: a text reply, a tool call, a reply cut at the output limit, or
+    an exception to raise.
 
     Every call reports `usage` (Bedrock's keys, e.g. `inputTokens`, `cacheReadInputTokens`). Once the
     script runs out, the last turn repeats.
@@ -39,7 +47,7 @@ class ScriptedModel(Model):
             raise ValueError("a scripted model needs at least one turn")
         self.turns = list(turns)
         self.usage = usage or {"inputTokens": 10, "outputTokens": 5, "totalTokens": 15}
-        self.config: dict[str, Any] = {"model_id": model_id}
+        self.config: dict[str, Any] = {"model_id": model_id, "context_window_limit": 200_000}
         self.calls = 0
 
     def update_config(self, **model_config: Any) -> None:
@@ -64,6 +72,13 @@ class ScriptedModel(Model):
             yield {"contentBlockDelta": {"delta": {"toolUse": {"input": json.dumps(turn.input)}}}}
             yield {"contentBlockStop": {}}
             yield {"messageStop": {"stopReason": "tool_use"}}
+        elif isinstance(turn, CutOff):
+            yield {"contentBlockDelta": {"delta": {"text": turn.text}}}
+            yield {"contentBlockStop": {}}
+            yield {"contentBlockStart": {"start": {"toolUse": {"toolUseId": f"tool-{self.calls}", "name": "shell"}}}}
+            yield {"contentBlockDelta": {"delta": {"toolUse": {"input": '{"command": "cat > p.txt'}}}}
+            yield {"contentBlockStop": {}}
+            yield {"messageStop": {"stopReason": "max_tokens"}}
         else:
             yield {"contentBlockDelta": {"delta": {"text": turn}}}
             yield {"contentBlockStop": {}}
