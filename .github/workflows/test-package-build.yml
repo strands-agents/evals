@@ -97,6 +97,30 @@ jobs:
             "$WORK/venv/bin/python" -c "import strands_evals; from importlib.metadata import version; print('strands-agents-evals version:', version('strands-agents-evals'))"
           fi
 
+          "$WORK/venv/bin/python" - <<'PYEOF'
+          import os
+          from importlib.resources import files
+          from pathlib import Path
+
+          import yaml
+
+          def tree(root):
+              return {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+          source = tree(Path(os.environ["GITHUB_WORKSPACE"]) / ".agents/skills")
+          assert source, "no skills found under .agents/skills"
+          packaged = tree(Path(str(files("strands_evals") / ".agents" / "skills")))
+          # one-directional: installers add files like __pycache__/*.pyc next to packaged scripts
+          differ = sorted(path for path, contents in source.items() if packaged.get(path) != contents)
+          assert not differ, f"packaged skills missing or differ: {differ}"
+          for path, contents in source.items():
+              if path.endswith("/SKILL.md"):
+                  frontmatter = yaml.safe_load(contents.decode().split("---")[1])
+                  assert frontmatter["name"] == path.split("/")[0], f"name does not match folder: {path}"
+                  assert len(frontmatter["description"]) <= 1024, f"description over 1024 chars: {path}"
+          print(f"skills OK: {sorted(source)}")
+          PYEOF
+
       # Upload for release.yml's inspect/publish path to consume.
       # PR-triggered runs also upload (short retention) — harmless.
       - name: Upload wheel + sdist for downstream inspect/publish

@@ -40,7 +40,7 @@ strands-evals depends on **`strands-agents`** (the Python SDK) for all LLM inter
   - `strands.types.content.Message`
   - `strands.types.exceptions` (`EventLoopException`, `ModelThrottledException`)
   - `strands.Skill` (public, exported in `strands.__all__` from `strands.vended_plugins.skills.skill`), used by the skill extractors to read `SKILL.md` frontmatter
-  - `strands.decisions` (`DecisionModel`, `DecisionResult`, `Question`, `Uncertain`), used by `TypedRubricEvaluator`; it reads the per-question `probabilities` in `DecisionResult.metadata`
+  - `strands.decisions` (`DecisionModel`, `DecisionResult`, `Question`, `Uncertain`), used by `TypedRubricEvaluator` (and through it `Cascade`); it reads the per-question `probabilities` in `DecisionResult.metadata`
   - `strands.experimental.context_manager` (`Offload`, `ContextState`), used by the optimizer's `Reflection` for its agent's `context_manager=`; experimental upstream, so a Strands release can change it, and `import strands_evals.optimization` fails when it does
 - **Not used as SDK imports (do not add to the list without verifying a real import):**
   - `strands.types.traces` — this repo defines its own `strands_evals.types.trace` for session/span modeling; the SDK's trace types are not imported.
@@ -53,11 +53,15 @@ strands-evals depends on **`strands-agents`** (the Python SDK) for all LLM inter
 ```
 strands-evals/
 │
-├── .agents/skills/                           # Agent skills (not shipped in the wheel)
-│   └── session-converter/                  # Convert agent sessions into experiments
-│       ├── SKILL.md                          # Locate sessions, extract episodes, write an experiment
-│       ├── assets/segmenter.md               # Subagent steps: split sessions into episodes
-│       └── scripts/synthesize_cases.py       # Append synthetic cases in the existing cases' voice
+├── .agents/skills/                           # Agent skills
+│   ├── optimize/                             # Tune a strands-harness agent with `strands-evals optimize`
+│   │   └── SKILL.md                          # Set up, review, run and report an optimize run
+│   ├── session-converter/                  # Convert agent sessions into experiments
+│   │   ├── SKILL.md                          # Locate sessions, extract episodes, write an experiment
+│   │   ├── assets/segmenter.md               # Subagent steps: split sessions into episodes
+│   │   └── scripts/synthesize_cases.py       # Append synthetic cases in the existing cases' voice
+│   └── strands-evals/                        # Author evaluations with strands-evals
+│       └── SKILL.md                          # Evaluation authoring guidance
 │
 ├── src/strands_evals/                        # Main package source code
 │   ├── __init__.py                           # Public API exports
@@ -71,6 +75,7 @@ strands-evals/
 │   │
 │   ├── evaluators/                           # Evaluator implementations
 │   │   ├── evaluator.py                      # Base Evaluator[InputT, OutputT]
+│   │   ├── cascade.py                        # Cascade: typed rubric first, fallback evaluator for uncertain cases
 │   │   ├── coherence_evaluator.py
 │   │   ├── conciseness_evaluator.py
 │   │   ├── correctness_evaluator.py
@@ -237,6 +242,7 @@ strands-evals/
 │       ├── detector.py                       # FailureItem, RCAItem, DiagnosisResult, ...
 │       ├── multimodal.py
 │       ├── typed_rubric.py                   # Noul / Scale / Choice rubric question types (pydantic dataclasses)
+│       ├── cascade.py                        # Band: the escalation band a Cascade gates on
 │       ├── optimization/                     # Frozen pydantic records the optimizer saves (trials, scores, events)
 │       ├── redteam/
 │       │   ├── config.py                     # AttackGoal, RedTeamConfig, Severity
@@ -280,7 +286,7 @@ strands-evals/
 
 ### Directory Purposes
 
-- **`.agents/skills/`**: Agent skills, one directory per skill containing a `SKILL.md`; the folder name must match the skill's `name` frontmatter
+- **`.agents/skills/`**: Agent skills, one directory per skill containing a `SKILL.md`; the folder name must match the skill's `name` frontmatter.
 - **`src/strands_evals/`**: All production code
 - **`src/strands_evals/cli/`**: `strands-evals` console script — seven subcommands (`run`, `validate`, `report`, `diagnose`, `generate`, `fetch`, `optimize`) plus the `module:attr` resolver and synthesized task wrapper used by `--agent`. `optimize` (`run` / `resume`, built in `_optimize.py`) imports `strands_evals.optimization` only when invoked, since it needs the `optimization` extra. `fetch` has per-provider sub-subcommands (`cloudwatch`, `langfuse`, `opensearch`); langfuse / opensearch are imported lazily so they only fail when invoked without their extra installed.
 - **`tests/strands_evals/`**: Unit tests mirroring src/ structure

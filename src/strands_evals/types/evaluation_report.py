@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from typing_extensions import Self, TypeVar
 
 from ..display.display_console import CollapsibleTableReportDisplay
-from ..types.evaluation import EvaluationOutput
+from ..types.evaluation import EvaluationOutput, all_could_not_evaluate
 
 
 class EvaluationReport(BaseModel):
@@ -44,9 +44,17 @@ class EvaluationReport(BaseModel):
         average and report the run as better than it was. Both evaluators emit the second shape for
         a missing trajectory.
 
+        The one failing exception is a case whose every row is `could_not_evaluate`: the evaluator
+        never ran, so there is no score to average, but the row still fails so gates catch it.
+
         No rows at all is applicable for the same reason. An evaluator that returned nothing failed
         to judge rather than declining to, and `_default_aggregator` scores that `test_pass=False`.
         """
+        if all_could_not_evaluate(outputs):
+            # The evaluator never ran (e.g. the judge's context window overflowed), so its 0.0 is not
+            # a judgment of the agent and stays out of averages. Its `test_pass` is False, so
+            # pass/fail gates still count the case as not passed.
+            return False
         return not outputs or any(not output.not_applicable or not output.test_pass for output in outputs)
 
     @classmethod
@@ -166,7 +174,9 @@ class EvaluationReport(BaseModel):
             # Include evaluator column for flattened reports (right after name)
             if "evaluator" in self.cases[i]:
                 details_dict["evaluator"] = self.cases[i]["evaluator"]
-            details_dict["score"] = f"{self.scores[i]:.2f}"
+            outputs = self.detailed_results[i] if i < len(self.detailed_results) else []
+            # Same as `strands-evals run`: a case with no verdict shows "n/a", not a placeholder 0.00.
+            details_dict["score"] = f"{self.scores[i]:.2f}" if self.is_applicable(outputs) else "n/a"
             details_dict["test_pass"] = self.test_passes[i]
             details_dict["reason"] = reason
             if include_input:

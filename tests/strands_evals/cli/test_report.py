@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import json
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+from rich.console import Console
+
 from strands_evals.cli.main import main
+from strands_evals.display import display_console
+from strands_evals.types.evaluation import EvaluationOutput
+from strands_evals.types.evaluation_report import EvaluationReport
 
 
 def test_report_json_to_stdout(reports_file: Path, capsys):
@@ -90,3 +97,39 @@ def test_report_stdin(reports_file: Path, capsys, monkeypatch):
     assert exit_code == 0
     payload = json.loads(captured.out)
     assert payload["overall_score"] == 0.75
+
+
+def test_report_rich_renders_saved_rubric_and_cascade_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    row = EvaluationOutput(
+        score=0.8,
+        test_pass=True,
+        label="false",
+        metadata={
+            "evaluated_by": "TypedRubricEvaluator",
+            "question_id": "safety",
+            "answer": True,
+            "selected_option": "false",
+            "probabilities": {"true": 0.2, "false": 0.8},
+            "provider_name": "stub",
+            "model_id": "checkpoint-1",
+            "path": "fast",
+            "p_gate": 0.2,
+        },
+    )
+    report = EvaluationReport(
+        overall_score=0.8, scores=[0.8], test_passes=[True], cases=[{"name": "case"}], detailed_results=[[row]]
+    )
+    report_file = tmp_path / "rubric-report.json"
+    report.to_file(str(report_file))
+    console = Console(file=StringIO(), record=True, width=180, color_system=None)
+    monkeypatch.setattr(display_console, "console", console)
+
+    assert main(["--rich", "report", str(report_file)]) == 0
+
+    text = console.export_text()
+    assert "stub / checkpoint-1" in text
+    assert "path" in text and "fast" in text and "p_gate" in text
+    assert "Raw answer: True" in text
+    assert "Selected option: false" in text
+    assert "Probabilities: true=0.2, false=0.8" in text
+    assert EvaluationReport.from_dict(json.loads(report_file.read_text())).model_dump() == report.model_dump()

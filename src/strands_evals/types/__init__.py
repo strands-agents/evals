@@ -1,3 +1,4 @@
+from .cascade import Band
 from .detector import (
     DiagnosisConfig,
     FailureDetectionStructuredOutput,
@@ -8,6 +9,7 @@ from .detector import (
     RCAStructuredOutput,
 )
 from .evaluation import (
+    COULD_NOT_EVALUATE,
     NOT_APPLICABLE,
     EnvironmentState,
     EvaluationData,
@@ -16,6 +18,7 @@ from .evaluation import (
     Interaction,
     OutputT,
     TaskOutput,
+    all_could_not_evaluate,
 )
 from .evaluation_report import ReportT
 from .multimodal import AnyMediaData, ImageData, MultimodalInput, resolve_image_bytes
@@ -23,6 +26,8 @@ from .simulation import ActorProfile, ActorResponse
 from .typed_rubric import Choice, Noul, RubricQuestion, Scale
 
 __all__ = [
+    "COULD_NOT_EVALUATE",
+    "all_could_not_evaluate",
     "NOT_APPLICABLE",
     "EnvironmentState",
     "Interaction",
@@ -49,4 +54,5 @@ __all__ = [
     "Scale",
     "Choice",
     "RubricQuestion",
+    "Band",
 ]

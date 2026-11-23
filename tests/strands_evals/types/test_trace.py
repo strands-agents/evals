@@ -1,5 +1,8 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+from pydantic import ValidationError
+
 from strands_evals.types.trace import (
     AgentInvocationSpan,
     AssistantMessage,
@@ -13,6 +16,7 @@ from strands_evals.types.trace import (
     TextContent,
     ToolCall,
     ToolCallContent,
+    ToolExecution,
     ToolExecutionSpan,
     ToolLevelInput,
     ToolResult,
@@ -427,3 +431,70 @@ class TestFindRootAgentSpan:
             _root_agent("early", parent="p", offset=1, prompt="y"),
         ]
         assert _find_root_agent_span(spans).span_info.span_id == "early"
+
+
+class TestMessageRoleRoundTrip:
+    """Messages must keep their concrete type after a JSON round-trip (issue #480)."""
+
+    @staticmethod
+    def _span_info() -> SpanInfo:
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        return SpanInfo(session_id="s1", start_time=now, end_time=now)
+
+    @staticmethod
+    def _messages() -> list[UserMessage | AssistantMessage]:
+        return [
+            UserMessage(content=[TextContent(text="What's 2+2?")]),
+            AssistantMessage(content=[TextContent(text="4")]),
+        ]
+
+    def test_inference_span_round_trip_preserves_message_types(self):
+        span = InferenceSpan(span_info=self._span_info(), messages=self._messages())
+
+        restored = InferenceSpan.model_validate_json(span.model_dump_json())
+
+        assert type(restored.messages[0]) is UserMessage
+        assert type(restored.messages[1]) is AssistantMessage
+        # role stays a Role enum: evaluators call msg.role.value
+        assert restored.messages[1].role is Role.ASSISTANT
+
+    def test_trace_level_input_round_trip_preserves_message_types(self):
+        tool_execution = ToolExecution(
+            tool_call=ToolCall(name="calc", arguments={"x": 1}),
+            tool_result=ToolResult(content="2"),
+        )
+        trace_input = TraceLevelInput(
+            span_info=self._span_info(),
+            agent_response=TextContent(text="4"),
+            session_history=[*self._messages(), [tool_execution]],
+        )
+
+        restored = TraceLevelInput.model_validate_json(trace_input.model_dump_json())
+
+        assert type(restored.session_history[0]) is UserMessage
+        assert type(restored.session_history[1]) is AssistantMessage
+        assert restored.session_history[2] == [tool_execution]
+
+    def test_tool_level_input_round_trip_preserves_message_types(self):
+        tool_input = ToolLevelInput(
+            span_info=self._span_info(),
+            available_tools=[],
+            tool_execution_details=ToolExecutionSpan(
+                span_info=self._span_info(),
+                tool_call=ToolCall(name="calc", arguments={}),
+                tool_result=ToolResult(content="ok"),
+            ),
+            session_history=self._messages(),
+        )
+
+        restored = ToolLevelInput.model_validate_json(tool_input.model_dump_json())
+
+        assert [type(m) for m in restored.session_history] == [UserMessage, AssistantMessage]
+
+    @pytest.mark.parametrize(
+        ("message_cls", "wrong_role"),
+        [(UserMessage, Role.ASSISTANT), (AssistantMessage, Role.USER)],
+    )
+    def test_message_rejects_mismatched_role(self, message_cls, wrong_role):
+        with pytest.raises(ValidationError):
+            message_cls(role=wrong_role, content=[TextContent(text="x")])

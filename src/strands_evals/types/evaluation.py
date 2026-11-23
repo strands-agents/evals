@@ -119,6 +119,22 @@ mean. Anything reporting an average has to drop them the same way, or the same r
 different numbers depending on where they are displayed.
 """
 
+COULD_NOT_EVALUATE = "could_not_evaluate"
+"""`EvaluationOutput.metadata` key marking a row whose evaluator never produced a verdict.
+
+Set on a `NOT_APPLICABLE` row when the evaluator could not run at all, for example because the
+judge's prompt overflowed its context window. The value names the cause. Unlike a row that had
+nothing to judge, such a row fails (`test_pass=False`), so `--fail-on` gates and summaries count it
+as not passed. The red-team report classifies it as errored and leaves it out of the attack success
+rate. `EvaluationReport.is_applicable` leaves it out of averages, because its 0.0 is not a judgment
+of the agent. Use `all_could_not_evaluate` to test a case's rows.
+"""
+
+
+def all_could_not_evaluate(outputs: "list[EvaluationOutput]") -> bool:
+    """Whether a case has rows and the evaluator never produced a verdict for any of them."""
+    return bool(outputs) and all(output.could_not_evaluate for output in outputs)
+
 
 class EvaluationOutput(BaseModel):
     """
@@ -146,3 +162,8 @@ class EvaluationOutput(BaseModel):
     def not_applicable(self) -> bool:
         """Whether this row had nothing to judge, so its score is not a verdict."""
         return self.label == NOT_APPLICABLE
+
+    @property
+    def could_not_evaluate(self) -> bool:
+        """Whether the evaluator never produced a verdict for this row (see `COULD_NOT_EVALUATE`)."""
+        return self.not_applicable and bool((self.metadata or {}).get(COULD_NOT_EVALUATE))
