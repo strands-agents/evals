@@ -5,7 +5,17 @@ import pytest
 from strands import tool
 from strands.tools.tools import PythonAgentTool
 
-from strands_evals.optimization import Float, Int, OneOf, Space, TextValue, choice, component, tool_descriptions
+from strands_evals.optimization import (
+    Float,
+    Int,
+    JsonChoice,
+    OneOf,
+    Space,
+    TextValue,
+    choice,
+    component,
+    tool_descriptions,
+)
 
 
 class Window:
@@ -378,3 +388,23 @@ def test_a_components_one_of_kwarg_is_a_one_of_key_under_its_alternative():
 def test_resolve_takes_declared_names_not_flat_keys():
     with pytest.raises(KeyError):
         make_space().resolve("manager.Window.size", BASELINE, None)
+
+
+# --- JsonChoice keys ---
+
+
+def test_a_json_choice_key_reads_as_a_one_of_over_canonical_json():
+    space = Space({"tools": JsonChoice([], ["read"], default=[])})
+    info = space.param("tools")
+    assert (info.kind, info.options, info.default) == ("one_of", ("[]", '["read"]'), "[]")
+    assert space.complete({}) == {"tools": "[]"}
+    with pytest.raises(ValueError, match="is not one of"):
+        space.validate({"tools": '["write"]'})
+
+
+def test_a_json_choice_resolves_to_the_decoded_value():
+    space = Space({"tools": JsonChoice([], ["read"], default=[]), "mode": OneOf("a", "b", default="a")})
+    assert space.resolve("tools", {"tools": '["read"]', "mode": "a"}, None) == ["read"]
+    assert space.resolve("tools", {"tools": "[]", "mode": "a"}, None) == []
+    # A plain OneOf still resolves to the value itself, not through a JSON decode.
+    assert space.resolve("mode", {"tools": "[]", "mode": "b"}, None) == "b"

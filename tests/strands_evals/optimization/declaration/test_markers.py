@@ -5,7 +5,7 @@ import pytest
 from strands import tool
 from strands.agent.conversation_manager import SlidingWindowConversationManager
 
-from strands_evals.optimization import Float, Int, OneOf, TextValue, choice, component, tool_descriptions
+from strands_evals.optimization import Float, Int, JsonChoice, OneOf, TextValue, choice, component, tool_descriptions
 from strands_evals.optimization.declaration.markers import _default_size_cap, _ValueMarker
 
 
@@ -455,3 +455,37 @@ def test_value_markers_fill_a_default_into_a_copy(marker, default):
     filled = marker._with_default(default)
     assert type(filled) is type(marker) and filled.default == default
     assert marker.default is not default  # the declared marker is left unfilled
+
+
+# --- JsonChoice ---
+
+
+def test_json_choice_carries_options_as_canonical_json():
+    marker = JsonChoice({"b": 2, "a": 1}, ["read"], "auto", default={"a": 1, "b": 2})
+    assert marker.options == ('{"a":1,"b":2}', '["read"]', '"auto"')
+    assert marker.default == '{"a":1,"b":2}'  # key order never splits one value into two options
+
+
+def test_json_choice_fills_a_parameter_default_as_canonical_json():
+    assert JsonChoice([], ["read"])._with_default(["read"]).default == '["read"]'
+    assert JsonChoice((), ("read",))._with_default(()).default == "[]"  # a tuple reads as its JSON array
+
+
+@pytest.mark.parametrize(
+    ("make", "match"),
+    [
+        (lambda: JsonChoice([], object()), "must be JSON values"),
+        (lambda: JsonChoice([float("nan")]), "must be JSON values"),
+        (lambda: JsonChoice({"a": 1, "b": 2}, {"b": 2, "a": 1}), "distinct"),
+        (lambda: JsonChoice([], ["read"], default=["write"]), "not one of"),
+        (lambda: JsonChoice([], ["read"], default=object()), "must be JSON values"),
+    ],
+)
+def test_json_choice_rejects_bad_declarations(make, match):
+    with pytest.raises(TypeError, match=match):
+        make()
+
+
+def test_component_rejects_a_json_choice_kwarg():
+    with pytest.raises(TypeError, match="JsonChoice.*own marker"):
+        component(Manager, window_size=JsonChoice([1], [2]))
