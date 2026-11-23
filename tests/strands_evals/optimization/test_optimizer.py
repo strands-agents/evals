@@ -3568,6 +3568,17 @@ async def test_a_resumed_run_keeps_counting_patience_where_the_killed_one_was(tm
     assert not [e for e in shorter._run.events.read()[cut:] if e["event"] == "propose"]
 
 
+async def test_a_larger_patience_after_a_patience_stop_warns(tmp_path):
+    optimizer = _patient(_patience_search(*_PATIENCE_UPDATES), base_dir=tmp_path)
+    await optimizer.run_async()
+    root = optimizer._run.root
+    with pytest.warns(UserWarning, match=r"search already stopped \(patience\)"):
+        _resume(root, search=_patience_search(), score_model=_Sequence(), budget=Budget(max_iterations=10, patience=3))
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="budget= would let")  # the patience it stopped under
+        _resume(root, search=_patience_search(), score_model=_Sequence(), budget=Budget(max_iterations=10, patience=2))
+
+
 async def test_a_run_recorded_without_patience_resumes_with_none(tmp_path):
     original_optimizer = _patient(_patience_search(*_PATIENCE_UPDATES), base_dir=tmp_path / "runs")
     await original_optimizer.run_async()

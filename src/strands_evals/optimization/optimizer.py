@@ -1483,9 +1483,7 @@ class Optimizer:
         """Count a closed step for `Budget.patience`: the top-ranked candidate, or under `Pareto` the set of
         front members in `best_after`, compared with the previous step's. An empty `Pareto` front (nothing
         feasible) counts as a change."""
-        best = frozenset(best_after if self._criteria.is_pareto else best_after[:1])
-        self._unchanged = self._unchanged + 1 if best and best == self._best else 0
-        self._best = best
+        self._best, self._unchanged = _patience_step(self._best, self._unchanged, best_after, self._criteria.is_pareto)
 
     async def _draw(
         self,
@@ -2251,8 +2249,11 @@ class Optimizer:
                 UserWarning,
                 stacklevel=2,
             )
-        if requested is not None and state.stop_reason in ("budget", "iterations"):
-            # The search loop's own stop tests, on the train spend it stopped at, under the given budget.
+        if requested is not None and state.stop_reason in ("budget", "iterations", "patience"):
+            # The search loop's own stop tests, on the train spend and patience count it stopped at.
+            best, unchanged = frozenset(state.candidates[:1]), 0  # the baseline, as `_init_state` starts the count
+            for best_after in state.best_after:
+                best, unchanged = _patience_step(best, unchanged, best_after, optimizer._criteria.is_pareto)
             searched = sum(
                 r["rollouts"] + sum(a["rollouts"] for a in r["previous_attempts"])
                 for r in state.trials.values()
@@ -2263,8 +2264,10 @@ class Optimizer:
             )
             per_candidate = len(optimizer._case_split.train) * optimizer._runs_per_candidate
             cap = requested.max_iterations
-            if (cap is None or cap * optimizer._proposals_per_iteration > _slots_used(state.iterations)) and (
-                at_stop.allowance(phase="train") >= per_candidate
+            if (
+                (requested.patience is None or unchanged < requested.patience)
+                and (cap is None or cap * optimizer._proposals_per_iteration > _slots_used(state.iterations))
+                and at_stop.allowance(phase="train") >= per_candidate
             ):
                 warnings.warn(
                     f"budget= would let run {run.run_id} search further, but its search already stopped "
@@ -2285,6 +2288,14 @@ def _same_name(saved: str | None, given: str | None) -> bool:
         return saved == given
     (saved_module, _, saved_name), (given_module, _, given_name) = saved.partition(":"), given.partition(":")
     return saved_name == given_name and (saved_module == given_module or "__main__" in (saved_module, given_module))
+
+
+def _patience_step(
+    best: frozenset[str], unchanged: int, best_after: Sequence[str], pareto: bool
+) -> tuple[frozenset[str], int]:
+    """`Optimizer._watch`'s count after one closed step: the step's best and its unchanged-step count."""
+    after = frozenset(best_after if pareto else best_after[:1])
+    return after, unchanged + 1 if after and after == best else 0
 
 
 def _slots_used(records: Sequence[IterationRecord]) -> int:
