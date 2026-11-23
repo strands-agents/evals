@@ -3,7 +3,6 @@ from ..types.typed_rubric import Choice, Noul, Scale
 from .cascade import Cascade
 from .coherence_evaluator import CoherenceEvaluator
 from .conciseness_evaluator import ConcisenessEvaluator
-from .context_utilization_evaluator import ContextUtilizationEvaluator
 from .correctness_evaluator import CorrectnessEvaluator
 from .deterministic import (
     Contains,
@@ -56,7 +55,6 @@ __all__ = [
     "HelpfulnessEvaluator",
     "HarmfulnessEvaluator",
     "GoalSuccessRateEvaluator",
-    "ContextUtilizationEvaluator",
     "CorrectnessEvaluator",
     "FaithfulnessEvaluator",
     "ResponseRelevanceEvaluator",

@@ -11,13 +11,13 @@ from tenacity import wait_none
 
 from strands_evals import Case, Experiment
 from strands_evals.eval_task_handler import TracedHandler, eval_task
-from strands_evals.evaluators import ContextUtilizationEvaluator
-from strands_evals.evaluators.context_utilization_evaluator import (
+from strands_evals.experimental import ContextUtilizationEvaluator, ContextUtilizationReport
+from strands_evals.experimental.context_utilization_evaluator import (
     _JUDGE_RETRY_WAIT,
     ContextUtilizationRating,
     _JudgeThrottledError,
 )
-from strands_evals.evaluators.context_utilization_evaluator import _estimate_tokens as chars_over_4
+from strands_evals.experimental.context_utilization_evaluator import _estimate_tokens as chars_over_4
 from strands_evals.types import EvaluationData
 from strands_evals.types.evaluation import NOT_APPLICABLE
 from strands_evals.types.evaluation_report import EvaluationReport
@@ -37,7 +37,7 @@ from strands_evals.types.trace import (
 )
 from strands_evals.utils import is_throttling_error
 
-MODULE = "strands_evals.evaluators.context_utilization_evaluator"
+MODULE = "strands_evals.experimental.context_utilization_evaluator"
 MEASURED = {"search", "read"}
 _CALL_IDS = itertools.count(1)  # every tool call gets its own id, as real traces record
 
@@ -156,6 +156,10 @@ def test_init_with_defaults():
     assert evaluator.measured_tools is None
     assert evaluator.chunk_size_tokens == 300
     assert evaluator.max_judge_input_tokens == 900_000
+    assert evaluator.pass_threshold is None
+    assert evaluator.max_concurrent_judge_calls == 8
+    assert evaluator.max_later_turns_tokens == 6000
+    assert evaluator.unmeasured_output_chars is None
     assert evaluator.version == "v0"
     assert evaluator.model is None
     assert evaluator.system_prompt
@@ -171,11 +175,23 @@ def test_judge_gets_the_system_prompt(mock_agent_class, evaluation_data):
     assert mock_agent_class.call_args.kwargs["system_prompt"] == "Custom judge"
 
 
-def test_chunk_size_tokens_and_max_judge_input_tokens_must_be_positive():
+def test_size_and_count_settings_must_be_positive():
     with pytest.raises(ValueError, match="chunk_size_tokens"):
         ContextUtilizationEvaluator(chunk_size_tokens=0)
     with pytest.raises(ValueError, match="max_judge_input_tokens"):
         ContextUtilizationEvaluator(max_judge_input_tokens=0)
+    with pytest.raises(ValueError, match="max_concurrent_judge_calls"):
+        ContextUtilizationEvaluator(max_concurrent_judge_calls=0)
+    with pytest.raises(ValueError, match="max_later_turns_tokens"):
+        ContextUtilizationEvaluator(max_later_turns_tokens=-1)
+    with pytest.raises(ValueError, match="unmeasured_output_chars"):
+        ContextUtilizationEvaluator(unmeasured_output_chars=-1)
+
+
+@pytest.mark.parametrize("threshold", [-0.1, 1.5])
+def test_pass_threshold_must_be_between_zero_and_one(threshold):
+    with pytest.raises(ValueError, match="pass_threshold"):
+        ContextUtilizationEvaluator(pass_threshold=threshold)
 
 
 def test_positional_arguments_follow_the_other_judge_evaluators():
@@ -188,7 +204,14 @@ def test_positional_arguments_follow_the_other_judge_evaluators():
 
 
 def test_experiment_with_evaluator_round_trips_through_a_file(tmp_path):
-    evaluator = ContextUtilizationEvaluator(measured_tools={"search", "read"}, chunk_size_tokens=50)
+    evaluator = ContextUtilizationEvaluator(
+        measured_tools={"search", "read"},
+        chunk_size_tokens=50,
+        pass_threshold=0.4,
+        max_concurrent_judge_calls=2,
+        max_later_turns_tokens=0,
+        unmeasured_output_chars=1300,
+    )
     path = tmp_path / "experiment.json"
 
     Experiment(cases=[Case(input="q")], evaluators=[evaluator]).to_file(path)
@@ -197,6 +220,9 @@ def test_experiment_with_evaluator_round_trips_through_a_file(tmp_path):
     assert isinstance(reloaded, ContextUtilizationEvaluator)
     assert reloaded.measured_tools == ["read", "search"]
     assert reloaded.chunk_size_tokens == 50
+    assert reloaded.pass_threshold == 0.4
+    assert (reloaded.max_concurrent_judge_calls, reloaded.max_later_turns_tokens) == (2, 0)
+    assert reloaded.unmeasured_output_chars == 1300
 
 
 # ---- End to end through evaluate() --------------------------------------------------------
@@ -237,6 +263,7 @@ def test_a_scored_row_has_exactly_this_metadata(mock_agent_class, evaluation_dat
 
     assert (result.score, result.test_pass, result.reason) == (pytest.approx(0.6), True, "used some")
     assert result.metadata == {
+        "evaluated_by": "ContextUtilizationEvaluator",
         "chunk_size_tokens": 300,
         "gathered_tokens": 10,
         "repeat_tokens": 0,
@@ -286,6 +313,16 @@ def test_a_scored_row_has_exactly_this_metadata(mock_agent_class, evaluation_dat
         "judge_output_tokens": 10,
         "assistant_replies": 1,
     }
+
+
+@pytest.mark.parametrize(("threshold", "passes"), [(None, True), (0.6, True), (0.61, False)])
+@patch(f"{MODULE}.Agent")
+def test_a_scored_row_fails_below_the_pass_threshold(mock_agent_class, evaluation_data, threshold, passes):
+    _mock_judge(mock_agent_class, ["S1.1"])  # 6 of 10 gathered tokens
+
+    [result] = ContextUtilizationEvaluator(measured_tools=MEASURED, pass_threshold=threshold).evaluate(evaluation_data)
+
+    assert (result.score, result.test_pass) == (pytest.approx(0.6), passes)
 
 
 # ---- Chunking -----------------------------------------------------------------------------
@@ -411,6 +448,46 @@ def test_prompt_shows_the_run_and_tags_only_measured_tools(evaluation_data):
     assert "[call, not measured] edit" in prompt
     assert "<final_response>\nFixed it.\n</final_response>" in prompt
     assert prompt.endswith("List the ids of the useful pieces.")
+
+
+def _measured_unmeasured_and_failed_calls() -> EvaluationData:
+    return _case(
+        _session(
+            [
+                _agent(0, "Run the tests", "Done."),
+                _tool(1, "read", "abcdefghij" * 3),
+                _tool(2, "Bash", "0123456789" * 3),
+                _tool(3, "Bash", "ABCDEFGHIJ" * 3, error="error"),
+            ]
+        )
+    )
+
+
+def test_unmeasured_output_is_shown_in_full_by_default():
+    prompt, _, _ = _render(
+        ContextUtilizationEvaluator(measured_tools={"read"}), _measured_unmeasured_and_failed_calls()
+    )
+
+    assert "output: " + "0123456789" * 3 in prompt
+    assert "output: " + "ABCDEFGHIJ" * 3 in prompt
+
+
+def test_unmeasured_and_failed_output_is_clipped_to_its_start_and_end():
+    evaluator = ContextUtilizationEvaluator(measured_tools={"read"}, unmeasured_output_chars=10)
+
+    prompt, pieces, _ = _render(evaluator, _measured_unmeasured_and_failed_calls())
+
+    assert "output: 01234\n[... 20 characters not shown ...]\n56789\n" in prompt
+    assert "output: ABCDE\n[... 20 characters not shown ...]\nFGHIJ" in prompt
+    assert [piece.text for piece in pieces] == ["abcdefghij" * 3]  # measured output is never clipped
+
+
+def test_an_unmeasured_output_budget_of_zero_shows_only_the_note():
+    evaluator = ContextUtilizationEvaluator(measured_tools={"read"}, unmeasured_output_chars=0)
+
+    prompt, _, _ = _render(evaluator, _measured_unmeasured_and_failed_calls())
+
+    assert "output: [... 30 characters not shown ...]\n" in prompt
 
 
 def test_the_trace_request_and_answer_win_over_the_case_input_and_output():
@@ -730,11 +807,18 @@ def test_later_turns_stop_at_the_token_budget():
     case = _case(session)
 
     # Each later-turn entry is 6 words here; a budget of 10 fits only the nearest one.
-    with patch(f"{MODULE}._LATER_TURNS_TOKENS", 10):
-        [turn], _ = ContextUtilizationEvaluator()._render(case, case.actual_trajectory)
+    [turn], _ = ContextUtilizationEvaluator(max_later_turns_tokens=10)._render(case, case.actual_trajectory)
 
     assert "[later request 1] Second" in turn.prompt
     assert "Third" not in turn.prompt
+
+
+def test_a_later_turns_budget_of_zero_shows_no_later_turns():
+    case = _case(_two_turns())
+
+    first, _ = ContextUtilizationEvaluator(max_later_turns_tokens=0)._render(case, case.actual_trajectory)[0]
+
+    assert "<later_turns>" not in first.prompt
 
 
 def test_turns_keep_their_session_position_when_an_earlier_turn_gathered_nothing():
@@ -1064,6 +1148,27 @@ async def test_async_turns_are_judged_concurrently_and_matched_to_their_verdicts
 
 
 @patch(f"{MODULE}.Agent")
+async def test_async_judge_calls_in_flight_stay_within_max_concurrent_judge_calls(mock_agent_class):
+    in_flight = peak = 0
+
+    async def judge(prompt, **kwargs):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        return _verdict()
+
+    mock_agent_class.return_value = Mock(invoke_async=judge)
+    session = _session(*[[_agent(10 * i, f"Q{i}", f"A{i}."), _tool(10 * i + 1, "read", f"read {i}")] for i in range(5)])
+
+    [result] = await ContextUtilizationEvaluator(max_concurrent_judge_calls=2).evaluate_async(_case(session))
+
+    assert result.metadata["judge_calls"] == 5
+    assert peak == 2
+
+
+@patch(f"{MODULE}.Agent")
 async def test_async_failures_are_reported_for_the_earliest_failed_turn(mock_agent_class):
     async def judge(prompt, **kwargs):
         if prompt.startswith("<task>\nFix the bug"):
@@ -1184,3 +1289,103 @@ def test_overall_score_leaves_out_nothing_measured_but_counts_rows_that_could_no
 
     assert scored[0].score == 1.0
     assert overall == pytest.approx(1.0 / 3)  # nothing_measured left out; no_session and too_long count as 0
+
+
+# ---- Cross-case rollups -------------------------------------------------------------------
+
+
+def _two_case_report(mock_agent_class, *evaluators, extra_cases=()) -> ContextUtilizationReport:
+    """Case A uses its 2 gathered tokens; case B uses 5 of its 11 (one of three search lines, and the read)."""
+    sessions = {
+        "A": _session([_agent(0, "qA", "aA"), _tool(1, "search", "tiny hit")]),
+        "B": _session([_agent(0, "qB", "aB"), _tool(1, "search", "a b c\nd e f\ng h i"), _tool(2, "read", "tiny hit")]),
+    }
+
+    async def judge(prompt, **kwargs):
+        return _verdict("S1.*") if "qA" in prompt else _verdict("S1.1", "S2.*")
+
+    mock_agent_class.return_value = Mock(invoke_async=judge)
+    cases = [Case(name="A", input="qA"), Case(name="B", input="qB"), *extra_cases]
+    return Experiment(
+        cases=cases, evaluators=list(evaluators) or [ContextUtilizationEvaluator()], report_cls=ContextUtilizationReport
+    ).run_evaluations(lambda case: {"output": "x", "trajectory": sessions.get(case.name)})
+
+
+@patch(f"{MODULE}.Agent")
+def test_the_report_totals_tokens_across_cases_where_overall_score_averages_ratios(
+    mock_agent_class, one_chunk_per_line
+):
+    report = _two_case_report(mock_agent_class, extra_cases=[Case(name="no trajectory", input="qC")])
+
+    assert isinstance(report, ContextUtilizationReport)
+    assert report.overall_score == pytest.approx((1.0 + 5 / 11 + 0.0) / 3)  # the unjudged case counts as 0
+    assert report.utilization() == pytest.approx(7 / 13)  # and adds no tokens
+    assert report.per_tool() == {
+        "search": {
+            "calls": 2,
+            "gathered_tokens": 11,
+            "repeat_tokens": 0,
+            "useful_tokens": 5,
+            "utilization": pytest.approx(5 / 11),
+            "share_of_useful": pytest.approx(5 / 7),
+        },
+        "read": {
+            "calls": 1,
+            "gathered_tokens": 2,
+            "repeat_tokens": 0,
+            "useful_tokens": 2,
+            "utilization": 1.0,
+            "share_of_useful": pytest.approx(2 / 7),
+        },
+    }
+
+
+@patch(f"{MODULE}.Agent")
+def test_a_saved_report_rolls_up_when_reloaded_through_the_report_class(mock_agent_class, tmp_path, one_chunk_per_line):
+    path = str(tmp_path / "report.json")
+    _two_case_report(mock_agent_class).to_file(path)
+
+    assert ContextUtilizationReport.from_file(path).utilization() == pytest.approx(7 / 13)
+
+
+@patch(f"{MODULE}.Agent")
+def test_a_report_with_two_evaluators_is_rolled_up_one_at_a_time(mock_agent_class, one_chunk_per_line):
+    report = _two_case_report(
+        mock_agent_class,
+        ContextUtilizationEvaluator(name="all"),
+        ContextUtilizationEvaluator(name="reads", measured_tools={"read"}),
+    )
+
+    with pytest.raises(ValueError, match="2 evaluators"):
+        report.utilization()
+    assert report.utilization(evaluator="all") == pytest.approx(7 / 13)
+    assert report.per_tool(evaluator="reads") == {
+        "read": {
+            "calls": 1,
+            "gathered_tokens": 2,
+            "repeat_tokens": 0,
+            "useful_tokens": 2,  # with only the read measured, it is S1 in case B, which the judge marks
+            "utilization": 1.0,
+            "share_of_useful": 1.0,
+        }
+    }
+    with pytest.raises(ValueError, match="no rows from evaluator 'missing'"):
+        report.utilization(evaluator="missing")
+
+
+@patch(f"{MODULE}.Agent")
+def test_rows_measured_with_different_chunk_sizes_are_not_merged(mock_agent_class, one_chunk_per_line):
+    report = _two_case_report(mock_agent_class)
+    report.detailed_results[0][0].metadata["chunk_size_tokens"] = 50
+
+    with pytest.raises(ValueError, match="different chunk_size_tokens"):
+        report.per_tool()
+
+
+def test_a_report_without_scored_rows_raises_rather_than_rolling_up_nothing():
+    report = ContextUtilizationReport(
+        overall_score=0.0, scores=[0.0], cases=[{"name": "A"}], test_passes=[False], detailed_results=[[]]
+    )
+
+    with pytest.raises(ValueError, match="no scored context utilization rows"):
+        report.utilization()

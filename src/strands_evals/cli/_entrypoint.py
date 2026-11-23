@@ -20,7 +20,6 @@ from typing import Any, Literal
 from ..evaluators import (
     CoherenceEvaluator,
     ConcisenessEvaluator,
-    ContextUtilizationEvaluator,
     CorrectnessEvaluator,
     Equals,
     FaithfulnessEvaluator,
@@ -37,6 +36,7 @@ from ..evaluators import (
     ToolSelectionAccuracyEvaluator,
 )
 from ..evaluators.evaluator import Evaluator
+from ..experimental import ContextUtilizationEvaluator
 
 # Built-in evaluator shortnames for `--evaluator NAME`. Only evaluators that
 # instantiate cleanly with no required arguments are listed here — anything

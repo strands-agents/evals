@@ -981,15 +981,17 @@ than an error, so confirm `parse_available_skills(trajectory)` returns your skil
 a score. The signals are recovered by `parse_available_skills` and `extract_selected_skills` from
 `strands_evals.extractors`.
 
-### Context Utilization
+### Context Utilization (experimental)
 
 How much of the tool output an agent received (search results, file reads, memory lookups) did it
 actually use, and which tools supplied the useful part? No reference answer is needed: each tool
 output is split into chunks (`chunk_size_tokens` sets their size), an LLM judge marks the chunks the
-agent used in each turn, and the score is `useful tokens / gathered tokens`.
+agent used in each turn, and the score is `useful tokens / gathered tokens`. It lives in
+`strands_evals.experimental` while its parameters and `metadata` settle, so they may change in any
+release; `--evaluator context-utilization` and saved experiments load it by name.
 
 ```python
-from strands_evals.evaluators import ContextUtilizationEvaluator
+from strands_evals.experimental import ContextUtilizationEvaluator
 
 # Every tool call is measured unless `measured_tools` names some (so by default write and edit
 # confirmations count too).
@@ -997,9 +999,15 @@ evaluator = ContextUtilizationEvaluator(measured_tools={"search_docs", "read_fil
 ```
 
 `metadata` breaks the score down by tool (`per_tool`) and by call (`per_call`, which you can regroup
-by any rule), and reports the judge's token usage. With a judge model smaller than the default, set
-`max_judge_input_tokens` below its context window. The `ContextUtilizationEvaluator` docstring lists
-every field and the cases that get a not-applicable row.
+by any rule), and reports the judge's token usage. Every scored case passes unless you set
+`pass_threshold`, since no one threshold suits every set of tools. With a judge model smaller than the
+default, set `max_judge_input_tokens` below its context window. Output of tools outside
+`measured_tools` is still shown to the judge in full; `unmeasured_output_chars` clips it to cut the
+judge's input. The `ContextUtilizationEvaluator` docstring lists every field, the cases that get a
+not-applicable row, and the limits of the score.
+
+Across cases, `overall_score` is the plain mean of the per-case scores, so a small case counts as
+much as a large one; `ContextUtilizationReport` (bound with `report_cls=`) totals the tokens instead.
 
 Before comparing scores:
 - Scores are comparable only between runs with the same `chunk_size_tokens` (300 by default; each
@@ -1095,7 +1103,7 @@ Evaluate the most recent turn in a conversation:
 #### Session-Level Evaluators
 Evaluate entire conversation sessions:
 - **GoalSuccessRateEvaluator**: Measures if user goals were achieved across the full conversation
-- **ContextUtilizationEvaluator**: Measures how much of the information the agent gathered it actually used, per tool
+- **ContextUtilizationEvaluator** (experimental): Measures how much of the information the agent gathered it actually used, per tool
 
 ### Multimodal Evaluators
 These evaluators assess multimodal (image-to-text) responses using MLLM-as-a-Judge, with built-in rubrics that support both reference-based and reference-free evaluation:

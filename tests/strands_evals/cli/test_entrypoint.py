@@ -15,10 +15,10 @@ from strands_evals.cli._entrypoint import (
     resolve_evaluator_spec,
 )
 from strands_evals.evaluators import (
-    ContextUtilizationEvaluator,
     SkillInstructionFollowingEvaluator,
     SkillSelectionAccuracyEvaluator,
 )
+from strands_evals.experimental import ContextUtilizationEvaluator
 
 
 def test_import_attr_resolves_module_function():

@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from strands_evals import Case, Experiment
-from strands_evals.evaluators import ContextUtilizationEvaluator
+from strands_evals.experimental import ContextUtilizationEvaluator
 from strands_evals.types.trace import (
     AgentInvocationSpan,
     AssistantMessage,
@@ -26,7 +26,7 @@ from strands_evals.types.trace import (
     UserMessage,
 )
 
-LOGGER = "strands_evals.evaluators.context_utilization_evaluator"
+LOGGER = "strands_evals.experimental.context_utilization_evaluator"
 
 DOCS = {
     "shipping.md": "Standard shipping takes 3-5 business days. Express shipping takes 1 business day and costs $15.",

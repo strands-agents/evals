@@ -14,7 +14,10 @@ from strands.models.model import Model
 from strands.types.exceptions import ContextWindowOverflowException, EventLoopException
 from tenacity import AsyncRetrying, Retrying, retry_if_exception, stop_after_attempt, wait_random_exponential
 
+from ..evaluators.evaluator import Evaluator
+from ..evaluators.prompt_templates.context_utilization import get_template
 from ..types.evaluation import NOT_APPLICABLE, EvaluationData, EvaluationOutput, InputT, OutputT
+from ..types.evaluation_report import EvaluationReport
 from ..types.trace import (
     AgentInvocationSpan,
     EvaluationLevel,
@@ -29,8 +32,6 @@ from ..types.trace import (
     _to_aware_utc,
 )
 from ..utils import is_throttling_error
-from .evaluator import Evaluator
-from .prompt_templates.context_utilization import get_template
 
 logger = logging.getLogger(__name__)
 
@@ -52,13 +53,16 @@ _MAX_JUDGE_INPUT_TOKENS = 900_000
 # together would all retry at the same moments and keep the judge throttled.
 _JUDGE_RETRY_ATTEMPTS = 6
 _JUDGE_RETRY_WAIT = wait_random_exponential(multiplier=4, max=240)
-# Turns judged at once by `evaluate_async` (`evaluate` judges them one after another).
-_MAX_CONCURRENT_TURNS = 8
+# Default for `max_concurrent_judge_calls`: turns judged at once by `evaluate_async` (`evaluate` judges
+# them one after another).
+_MAX_CONCURRENT_JUDGE_CALLS = 8
 # Each turn is judged on its own; the requests and answers after it are shown, clipped, so content
-# gathered now and used later still counts.
+# gathered now and used later still counts. Default for `max_later_turns_tokens`.
 _LATER_TURNS_TOKENS = 6000
 _LATER_TURN_CHARS = 600
 _COUNTS = ("gathered_tokens", "repeat_tokens", "useful_tokens")
+# `metadata["evaluated_by"]` on a scored row, so a report can pick this evaluator's rows out of a flattened one.
+_MARKER = "ContextUtilizationEvaluator"
 
 
 def _estimate_tokens(text: str) -> int:
@@ -155,14 +159,18 @@ class ContextUtilizationEvaluator(Evaluator[InputT, OutputT]):
     all its tokens. A chunk identical to an earlier one (ignoring whitespace) stays in the
     denominator, since the agent paid for every copy, but counts once in the numerator. Overlapping
     but different chunks, such as two reads of a file from different lines, are counted separately.
-    There is no pass/fail threshold, since a sensible one depends on the tools measured: a scored row
-    always has `test_pass=True`.
+    No threshold suits every setup, since a sensible one depends on the tools measured: without
+    `pass_threshold` the evaluator reports a metric and never fails a case (a scored row always has
+    `test_pass=True`). Across cases, `EvaluationReport.overall_score` averages the per-case scores;
+    `ContextUtilizationReport` totals the tokens instead.
 
     `metadata` on a scored row:
+        evaluated_by: "ContextUtilizationEvaluator", marking the row as this evaluator's.
         chunk_size_tokens: The rough chunk size, in tokens, the row was measured with (the evaluator's
             setting, the same for every row it scores); compare only rows with the same value.
         gathered_tokens, repeat_tokens, useful_tokens: Totals over every measured call;
-            `repeat_tokens` are the tokens of chunks identical (ignoring whitespace) to an earlier one.
+            `repeat_tokens` are the tokens of chunks whose text (ignoring whitespace) already appeared
+            in an earlier chunk; see "Limits of the score" below for what it misses.
         per_call: One row per measured call that returned output (a call with empty output has no
             chunks and no row, though it uses up a source id): `source` (its id, e.g. "S3"),
             `tool_call_id` (from the trace; a warning is logged when it is missing or repeated),
@@ -191,10 +199,21 @@ class ContextUtilizationEvaluator(Evaluator[InputT, OutputT]):
           estimate caught it) and the token usage of the calls that finished. Any other judge error
           is raised.
 
-    Before comparing scores: they depend on chunk size and on how complete the trace is (exporters
-    that truncate tool output show the judge less), so compare runs evaluated the same way. With no
-    assistant text between tool calls (`assistant_replies == 0`) the score is a lower bound. Sub-agent
-    work counts with the main agent's, and token counts are estimates (characters / 4).
+    Limits of the score:
+        - Whole chunks are credited. If the agent used one line of a chunk, every token of that chunk
+          counts as useful. So the score is higher than the share of text the agent actually used,
+          and the larger the chunks, the bigger the gap.
+        - Only exact repeats are found. A chunk counts as a repeat only when the same text appeared in
+          an earlier chunk. Re-reading a file from a different first line, reading part of a file
+          already read, or getting the same search results in a different order moves the chunk
+          boundaries, so none of that counts as a repeat.
+        - Work delegated to a sub-agent counts twice. When a tool runs another agent, both that
+          agent's own tool output and the tool's result (often a summary of it) are gathered.
+        - With no assistant text between tool calls (`assistant_replies == 0`) the judge has less to
+          go on, so the score is a lower bound.
+        - Scores depend on the chunk size and on how complete the trace is (some exporters truncate
+          tool output), so compare only runs evaluated the same way. Token counts are estimates
+          (characters / 4).
     """
 
     evaluation_level = EvaluationLevel.SESSION_LEVEL
@@ -209,6 +228,10 @@ class ContextUtilizationEvaluator(Evaluator[InputT, OutputT]):
         measured_tools: Iterable[str] | None = None,
         chunk_size_tokens: int = _CHUNK_TOKENS,
         max_judge_input_tokens: int = _MAX_JUDGE_INPUT_TOKENS,
+        pass_threshold: float | None = None,
+        max_concurrent_judge_calls: int = _MAX_CONCURRENT_JUDGE_CALLS,
+        max_later_turns_tokens: int = _LATER_TURNS_TOKENS,
+        unmeasured_output_chars: int | None = None,
     ):
         """Initialize the evaluator.
 
@@ -218,9 +241,10 @@ class ContextUtilizationEvaluator(Evaluator[InputT, OutputT]):
             system_prompt: Overrides the template's system prompt.
             name: Instance-level evaluator name.
             measured_tools: Names of the tools whose output is measured (e.g. search, read, memory
-                lookup). Output of other tools is shown to the judge but not measured. None measures
-                every tool, so write and edit confirmations count as gathered too. A failed call
-                (`error` set) is never measured.
+                lookup). Output of other tools is shown to the judge but not measured, so narrowing
+                this changes the score but not the judge's input (see `unmeasured_output_chars`). None
+                measures every tool, so write and edit confirmations count as gathered too. A failed
+                call (`error` set) is never measured.
             chunk_size_tokens: Rough size of a chunk, in tokens (characters / 4, the same estimate as
                 the reported counts): a chunk is consecutive lines of output up to about this many
                 tokens, and a single longer line is split into near-equal parts. Smaller chunks measure
@@ -229,11 +253,32 @@ class ContextUtilizationEvaluator(Evaluator[InputT, OutputT]):
                 prompt, characters / 4) sent in one call; a session with a larger turn gets a
                 not-applicable row before any judge call. Set it below your judge model's context
                 window, or lower to cap the cost of one call.
+            pass_threshold: Lowest score, from 0 to 1, at which a scored row passes. None (the default)
+                passes every scored row. Not-applicable rows keep their own `test_pass`.
+            max_concurrent_judge_calls: Most judge calls (one per turn) `evaluate_async` runs at once.
+                The limit applies per case, so under `Experiment.run_evaluations_async` it multiplies with
+                `max_workers`; lower it if the judge model is throttled. `evaluate` makes one call at a time.
+            max_later_turns_tokens: Budget, in estimated tokens, for the later requests and answers
+                (each clipped) shown with a turn, nearest first; 0 shows none. In a conversation of many
+                small turns they can be most of what the judge reads: a lower budget is cheaper, but
+                content the agent used only in a later turn that no longer fits is not credited.
+            unmeasured_output_chars: Most characters of output shown for a call that is not measured (a
+                tool outside `measured_tools`, or a failed call); a longer output keeps its start and end
+                halves around a note of how much was left out. None (the default) shows it in full.
+                Clipping cuts the judge's input, but the judge then sees less of what the agent saw.
         """
         if chunk_size_tokens < 1:
             raise ValueError(f"chunk_size_tokens must be at least 1, got {chunk_size_tokens}")
         if max_judge_input_tokens < 1:
             raise ValueError(f"max_judge_input_tokens must be at least 1, got {max_judge_input_tokens}")
+        if unmeasured_output_chars is not None and unmeasured_output_chars < 0:
+            raise ValueError(f"unmeasured_output_chars must be at least 0, got {unmeasured_output_chars}")
+        if max_later_turns_tokens < 0:
+            raise ValueError(f"max_later_turns_tokens must be at least 0, got {max_later_turns_tokens}")
+        if max_concurrent_judge_calls < 1:
+            raise ValueError(f"max_concurrent_judge_calls must be at least 1, got {max_concurrent_judge_calls}")
+        if pass_threshold is not None and not 0.0 <= pass_threshold <= 1.0:
+            raise ValueError(f"pass_threshold must be between 0 and 1, got {pass_threshold}")
         if isinstance(measured_tools, str):  # a str is an Iterable[str] too: its characters would be the names
             raise TypeError(f"measured_tools takes a collection of tool names, e.g. [{measured_tools!r}]")
         super().__init__(name=name)
@@ -241,6 +286,10 @@ class ContextUtilizationEvaluator(Evaluator[InputT, OutputT]):
         self.measured_tools = sorted(set(measured_tools)) if measured_tools is not None else None
         self.chunk_size_tokens = chunk_size_tokens
         self.max_judge_input_tokens = max_judge_input_tokens
+        self.pass_threshold = pass_threshold
+        self.max_concurrent_judge_calls = max_concurrent_judge_calls
+        self.max_later_turns_tokens = max_later_turns_tokens
+        self.unmeasured_output_chars = unmeasured_output_chars
         self.system_prompt = system_prompt if system_prompt is not None else get_template(version).SYSTEM_PROMPT
         self.version = version
         self.model = model
@@ -271,7 +320,7 @@ class ContextUtilizationEvaluator(Evaluator[InputT, OutputT]):
         if isinstance(prepared, EvaluationOutput):
             return [prepared]
         turns, assistant_reply_count = prepared
-        limit = asyncio.Semaphore(_MAX_CONCURRENT_TURNS)
+        limit = asyncio.Semaphore(self.max_concurrent_judge_calls)
         calls = 0
 
         async def judge(turn: _Turn) -> AgentResult:
@@ -524,11 +573,11 @@ class ContextUtilizationEvaluator(Evaluator[InputT, OutputT]):
         if span.tool_result.error:
             # A failed call is shown, since the agent saw it, but its output is not gathered context.
             failed = f"[call, failed] {call}\n  error: {span.tool_result.error}"
-            return [failed + (f"\n  output: {output}" if output else "")], []
+            return [failed + (f"\n  output: {self._clip_unmeasured(output)}" if output else "")], []
         lines: list[str] = []
         pieces: list[_Piece] = []
         if sid is None:
-            lines.append(f"[call, not measured] {call}\n  output: {output}")
+            lines.append(f"[call, not measured] {call}\n  output: {self._clip_unmeasured(output)}")
         else:
             lines.append(f"[call {sid}] {call}")
             for n, text in enumerate(self._split(output), start=1):
@@ -536,6 +585,15 @@ class ContextUtilizationEvaluator(Evaluator[InputT, OutputT]):
                 pieces.append(piece)
                 lines.append(f"  <{piece.uid}>\n" + "\n".join(f"    {line}" for line in text.splitlines()))
         return lines, pieces
+
+    def _clip_unmeasured(self, output: str) -> str:
+        """Output of a call that is not measured, clipped to `unmeasured_output_chars` around the middle."""
+        limit = self.unmeasured_output_chars
+        if limit is None or len(output) <= limit:
+            return output
+        keep = limit // 2
+        note = f"[... {len(output) - 2 * keep} characters not shown ...]"
+        return f"{output[:keep]}\n{note}\n{output[len(output) - keep :]}" if keep else note
 
     def _split(self, output: str) -> list[str]:
         """The chunks of one call's output, empty ones dropped."""
@@ -585,11 +643,10 @@ class ContextUtilizationEvaluator(Evaluator[InputT, OutputT]):
             prompt += f"<later_turns>\n{later_text}\n</later_turns>\n\n"
         return prompt + "List the ids of the useful pieces."
 
-    @staticmethod
-    def _later_turns(later: list[tuple[str, str]]) -> str:
-        """The (clipped) requests and answers after a turn, nearest first, up to a token budget."""
+    def _later_turns(self, later: list[tuple[str, str]]) -> str:
+        """The (clipped) requests and answers after a turn, nearest first, up to `max_later_turns_tokens`."""
         entries: list[str] = []
-        budget = _LATER_TURNS_TOKENS
+        budget = self.max_later_turns_tokens
         for k, (request, answer) in enumerate(later, start=1):
             entry = f"[later request {k}] {request}\n[answer {k}] {answer}"
             cost = _estimate_tokens(entry)
@@ -623,6 +680,7 @@ class ContextUtilizationEvaluator(Evaluator[InputT, OutputT]):
                 f"Turn {turn.number}: {rating.reasoning}" for turn, rating in zip(turns, ratings, strict=True)
             )
         metadata: dict[str, Any] = {
+            "evaluated_by": _MARKER,
             "chunk_size_tokens": self.chunk_size_tokens,
             "gathered_tokens": gathered,
             "repeat_tokens": repeated,
@@ -635,7 +693,8 @@ class ContextUtilizationEvaluator(Evaluator[InputT, OutputT]):
             **self._judge_usage(results),
             "assistant_replies": assistant_reply_count,
         }
-        return EvaluationOutput(score=score, test_pass=True, reason=reason, metadata=metadata)
+        test_pass = self.pass_threshold is None or score >= self.pass_threshold
+        return EvaluationOutput(score=score, test_pass=test_pass, reason=reason, metadata=metadata)
 
     @staticmethod
     def _useful_uids(ids: list[str], pieces: list[_Piece]) -> tuple[set[str], list[str]]:
@@ -714,3 +773,104 @@ class ContextUtilizationEvaluator(Evaluator[InputT, OutputT]):
     def _uid_key(uid: str) -> tuple[int, ...]:
         """Sort `S12.3` after `S2.10`: by source number, then chunk number."""
         return tuple(int(n) for n in uid[1:].split("."))
+
+
+class ContextUtilizationReport(EvaluationReport):
+    """An `EvaluationReport` that rolls up `ContextUtilizationEvaluator` rows across cases.
+
+    `overall_score` is the mean of the per-case scores, so a case that used 2 of 2 gathered tokens
+    weighs as much as one that used 291 of 11,562. The rollups total tokens over the cases instead.
+    Bind the report to the experiment and `run_evaluations` returns it:
+
+        report = Experiment(
+            cases=cases,
+            evaluators=[ContextUtilizationEvaluator()],
+            report_cls=ContextUtilizationReport,
+        ).run_evaluations(task)
+
+        report.utilization()  # total useful tokens / total gathered tokens
+        report.per_tool()     # per-tool totals across cases
+
+    Only scored rows count. A not-applicable row gathered nothing or could not be judged, so it adds
+    no tokens; `overall_score` counts one that could not be judged as 0, the rollups leave it out.
+    Nothing binds this class automatically (the CLI writes the base class): reload a saved report
+    through it to roll it up, e.g. `ContextUtilizationReport.from_file("report.json").utilization()`.
+    """
+
+    def utilization(self, *, evaluator: str | None = None) -> float:
+        """Useful tokens over gathered tokens, totalled over every scored case.
+
+        Args:
+            evaluator: Evaluator name to read, for a report carrying more than one.
+
+        Raises:
+            ValueError: See `per_tool`.
+        """
+        rows = self._scored_metadata(evaluator)
+        return sum(row["useful_tokens"] for row in rows) / sum(row["gathered_tokens"] for row in rows)
+
+    def per_tool(self, *, evaluator: str | None = None) -> dict[str, dict[str, Any]]:
+        """The `per_tool` counts of every scored case, totalled per tool.
+
+        Args:
+            evaluator: Evaluator name to read, for a report carrying more than one.
+
+        Returns:
+            Per tool: `calls`, `gathered_tokens`, `repeat_tokens`, `useful_tokens`, `utilization`
+            (its useful / gathered tokens) and `share_of_useful` (its useful tokens / all useful tokens).
+
+        Raises:
+            ValueError: If `evaluator` names no evaluator in the report, if rows from more than one
+                evaluator or chunk size would be merged, or if no row was scored.
+        """
+        totals: dict[str, dict[str, Any]] = {}
+        for row in self._scored_metadata(evaluator):
+            for tool, counts in row["per_tool"].items():
+                total = totals.setdefault(tool, {"calls": 0, **dict.fromkeys(_COUNTS, 0)})
+                for name in ("calls", *_COUNTS):
+                    total[name] += counts[name]
+        used = sum(total["useful_tokens"] for total in totals.values())
+        for total in totals.values():
+            total["utilization"] = (
+                total["useful_tokens"] / total["gathered_tokens"] if total["gathered_tokens"] else 0.0
+            )
+            total["share_of_useful"] = total["useful_tokens"] / used if used else 0.0
+        return totals
+
+    def _scored_metadata(self, evaluator: str | None) -> list[dict[str, Any]]:
+        """The `metadata` of the scored rows both rollups read, for one evaluator when `evaluator` is set.
+
+        Raises instead of returning nothing, since an empty rollup would read like a real one.
+        """
+        if evaluator is not None:
+            present = {str(case["evaluator"]) for case in self.cases if case.get("evaluator") is not None}
+            if evaluator not in present:
+                raise ValueError(
+                    f"no rows from evaluator {evaluator!r}; this report carries: "
+                    f"{', '.join(sorted(present)) or '(none)'}"
+                )
+        rows: list[dict[str, Any]] = []
+        names: set[str] = set()
+        for index, outputs in enumerate(self.detailed_results):
+            case = self.cases[index] if index < len(self.cases) else {}
+            if evaluator is not None and str(case.get("evaluator")) != evaluator:
+                continue
+            for output in outputs:
+                detail = output.metadata or {}
+                if detail.get("evaluated_by") == _MARKER:
+                    rows.append(detail)
+                    names.add(str(case.get("evaluator")))
+        if not rows:
+            source = f"evaluator {evaluator!r}" if evaluator is not None else "this report"
+            raise ValueError(f"{source} has no scored context utilization rows")
+        if len(names) > 1:
+            raise ValueError(
+                f"report carries context utilization rows from {len(names)} evaluators ({', '.join(sorted(names))}); "
+                f"pass evaluator=<name> to roll up one at a time"
+            )
+        sizes = sorted({row["chunk_size_tokens"] for row in rows})
+        if len(sizes) > 1:
+            raise ValueError(
+                f"rows were measured with different chunk_size_tokens {sizes}, so their tokens do not add up"
+            )
+        return rows

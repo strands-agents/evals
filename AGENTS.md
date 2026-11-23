@@ -77,7 +77,6 @@ strands-evals/
 │   │   ├── cascade.py                        # Cascade: typed rubric first, fallback evaluator for uncertain cases
 │   │   ├── coherence_evaluator.py
 │   │   ├── conciseness_evaluator.py
-│   │   ├── context_utilization_evaluator.py  # Useful / gathered tokens over a Session
 │   │   ├── correctness_evaluator.py
 │   │   ├── faithfulness_evaluator.py
 │   │   ├── goal_success_rate_evaluator.py
@@ -158,6 +157,8 @@ strands-evals/
 │   │   └── (data records in types/optimization/)
 │   │
 │   ├── experimental/                         # Experimental features (no stability guarantees)
+│   │   └── context_utilization_evaluator.py  # Useful / gathered tokens over a Session
+│   │                                         # (prompt in evaluators/prompt_templates/)
 │   │
 │   ├── detectors/                            # Failure detection + RCA
 │   │   ├── failure_detector.py               # detect_failures (model.stream text mode)

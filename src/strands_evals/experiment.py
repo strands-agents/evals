@@ -23,7 +23,6 @@ from .evaluation_data_store import EvaluationDataStore
 from .evaluators.cascade import Cascade
 from .evaluators.coherence_evaluator import CoherenceEvaluator
 from .evaluators.conciseness_evaluator import ConcisenessEvaluator
-from .evaluators.context_utilization_evaluator import ContextUtilizationEvaluator
 from .evaluators.correctness_evaluator import CorrectnessEvaluator
 from .evaluators.deterministic import (
     Contains,
@@ -56,6 +55,7 @@ from .evaluators.tool_parameter_accuracy_evaluator import ToolParameterAccuracyE
 from .evaluators.tool_selection_accuracy_evaluator import ToolSelectionAccuracyEvaluator
 from .evaluators.trajectory_evaluator import TrajectoryEvaluator
 from .evaluators.typed_rubric_evaluator import TypedRubricEvaluator
+from .experimental.context_utilization_evaluator import ContextUtilizationEvaluator
 from .telemetry import get_tracer, serialize
 from .telemetry._cloudwatch_logger import _send_to_cloudwatch
 from .types.detector import DiagnosisConfig
