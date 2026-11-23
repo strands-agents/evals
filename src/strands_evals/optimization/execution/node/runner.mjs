@@ -13,7 +13,8 @@
 //                                    -> {ok, session, spans} | {ok: false, status, error_type, error, spans}
 //                                       hold an agent open
 //   turn     {session, input, trace_id, span_id}
-//                                    -> {status, output?, result?, error_type?, error?, spans}  ask it again
+//                                    -> {status, output?, result?, error_type?, error?, spans}  ask it again; the
+//                                       turns of one session run one at a time, a cancelled one finishing first
 //   release  {session}               -> {ok}  let the agent go and remove its folders
 //   cancel   {target}                -> (no reply) abort that run or turn; release the session a start opened
 //
@@ -67,22 +68,31 @@ const setup = (async () => {
 })()
 setup.catch(() => undefined)
 
-/** Keeps the finished spans of the traces a run is waiting on. */
+/**
+ * Keeps the finished spans of the traces requests are waiting on. Requests of one trial share its trace (two sessions
+ * at once, or a session and a run), so each `watch` is matched by one `take`: a take returns the spans finished since
+ * the last one, and the trace is let go only when the last request watching it is done.
+ */
 class Collector {
   constructor() {
     this.traces = new Map()
   }
   watch(traceId) {
-    if (!this.traces.has(traceId)) this.traces.set(traceId, [])
+    const trace = this.traces.get(traceId)
+    if (trace) trace.watching += 1
+    else this.traces.set(traceId, { watching: 1, spans: [] })
   }
   take(traceId) {
-    const spans = this.traces.get(traceId) ?? []
-    this.traces.delete(traceId)
+    const trace = this.traces.get(traceId)
+    if (!trace) return []
+    const spans = trace.spans
+    trace.spans = []
+    if (--trace.watching === 0) this.traces.delete(traceId)
     return withoutRepeatedModelCalls(spans).map(spanJson)
   }
   onStart() {}
   onEnd(span) {
-    this.traces.get(span.spanContext().traceId)?.push(span)
+    this.traces.get(span.spanContext().traceId)?.spans.push(span)
   }
   forceFlush() {
     return Promise.resolve()
@@ -311,8 +321,7 @@ function resultJson(result) {
 }
 
 async function runCase({ attr, index, values, input, trace_id, span_id, trace_attributes }, signal) {
-  const { otel, collector } = await setup
-  if (trace_id) collector.watch(trace_id)
+  const { otel } = await setup
   let built
   try {
     const result = await otel.context.with(parentContext(otel, trace_id, span_id), async () => {
@@ -336,8 +345,7 @@ const sessions = new Map()
 const startedBy = new Map()
 
 async function startSession({ id, attr, index, values, trace_id, span_id, trace_attributes }, signal) {
-  const { otel, collector } = await setup
-  if (trace_id) collector.watch(trace_id)
+  const { otel } = await setup
   let built
   try {
     built = await otel.context.with(parentContext(otel, trace_id, span_id), () =>
@@ -354,15 +362,15 @@ async function startSession({ id, attr, index, values, trace_id, span_id, trace_
     return { ok: false, status: 'agent_failure', error_type: 'Cancelled', error: 'the start was cancelled' }
   }
   const session = randomUUID()
-  sessions.set(session, { built, startId: id })
+  sessions.set(session, { built, startId: id, idle: Promise.resolve() })
   startedBy.set(id, session)
   return { ok: true, session }
 }
 
 async function turn({ session, input, trace_id, span_id }, signal) {
-  const { otel, collector } = await setup
-  const built = sessions.get(session)?.built
-  if (!built) {
+  const { otel } = await setup
+  const open = sessions.get(session)
+  if (!open) {
     // Released, never started, or lost to a worker restart: the Python side reads this as infrastructure.
     return {
       status: 'infrastructure_invalid',
@@ -370,14 +378,25 @@ async function turn({ session, input, trace_id, span_id }, signal) {
       error: `no open session ${session}: it was released, or the worker restarted since it started`,
     }
   }
-  if (trace_id) collector.watch(trace_id)
+  // One invocation at a time: a turn waits for the one before it, including one the caller cancelled, which keeps
+  // running until the agent notices the cancel (an agent asked twice at once raises ConcurrentInvocationError).
+  const before = open.idle
+  let done
+  open.idle = new Promise((resolve) => (done = resolve))
   try {
+    await before
+    if (signal.aborted) return { status: 'agent_failure', error_type: 'Cancelled', error: 'the turn was cancelled' }
+    if (!sessions.has(session)) {
+      return { status: 'infrastructure_invalid', error_type: 'NodeSessionGone', error: `session ${session} was released` }
+    }
     const result = await otel.context.with(parentContext(otel, trace_id, span_id), () =>
-      built.agent.invoke(typeof input === 'string' ? input : JSON.stringify(input), { cancelSignal: signal })
+      open.built.agent.invoke(typeof input === 'string' ? input : JSON.stringify(input), { cancelSignal: signal })
     )
     return { status: 'completed', output: String(result), result: resultJson(result) }
   } catch (error) {
     return { status: classify(error), ...describeError(error) }
+  } finally {
+    done()
   }
 }
 
@@ -458,19 +477,24 @@ async function answer(line) {
   // Registered before anything is awaited, so a cancel that follows the request always finds it.
   const controller = new AbortController()
   running.set(request.id, controller)
+  let watching
   try {
-    await setup
+    const { collector } = await setup
+    if (['run', 'start', 'turn'].includes(request.type) && request.trace_id) {
+      collector.watch(request.trace_id)
+      watching = request.trace_id
+    }
     const handler = { describe, probe, run: runCase, start: startSession, turn, release: releaseSession }[request.type]
     if (!handler) throw new Error(`unknown request type ${request.type}`)
     const reply = await handler(request, controller.signal)
-    if (['run', 'start', 'turn'].includes(request.type) && request.trace_id) {
-      reply.spans = (await setup).collector.take(request.trace_id)
-    }
+    if (watching) reply.spans = collector.take(watching)
+    watching = undefined
     send({ ...reply, id: request.id })
   } catch (error) {
     send({ id: request.id, setup_error: describeError(error).error })
   } finally {
     running.delete(request.id)
+    if (watching) (await setup).collector.take(watching) // a failed request still lets its trace go
   }
 }
 

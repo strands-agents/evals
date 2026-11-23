@@ -239,7 +239,9 @@ class NodeSession:
 
     Built by `NodeAgent.session()`. Entering sends `start` (the agent is built once there; a build the
     values break fails here), each `turn` sends the prompt to that agent, and leaving sends `release`. Entering
-    that is cancelled releases the agent in the worker, whether its build had finished or not.
+    that is cancelled releases the agent in the worker, whether its build had finished or not. The worker asks the
+    agent one turn at a time: a turn sent while another is running (or while a cancelled one is still winding
+    down, e.g. after `asyncio.wait_for` timed it out) waits for it, so the agent is never asked twice at once.
     `last_result` is the latest completed turn's structured result as the worker could write it to JSON
     (the stop reason, the final message, any structured output), or None.
     """

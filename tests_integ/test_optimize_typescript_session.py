@@ -245,3 +245,52 @@ def test_a_start_cancelled_after_it_replied_releases_its_agent(project, tmp_path
         assert reply["error_type"] == "NodeSessionGone"
     finally:
         runner.close()
+
+
+def test_a_turn_after_a_cancelled_one_waits_for_the_agent(project):
+    """A timed-out turn keeps the agent busy in Node until it notices; the next turn, and two at once, wait for it."""
+    runner = NodeRunner(project / "agent.ts")
+    try:
+
+        async def converse() -> tuple[str, list[str]]:
+            async with NodeAgent(runner, "agent", 0, []).session() as session:
+                with pytest.raises(asyncio.TimeoutError):
+                    await asyncio.wait_for(session.turn("slow 1500"), 0.3)
+                after = await session.turn("question 3")  # sent while the slow turn is still running
+                both = await asyncio.gather(session.turn("slow 301"), session.turn("question 6"))
+            return after, list(both)
+
+        after, both = asyncio.run(converse())
+        assert after == "answer 3"  # the cancelled turn's prompt counts: this is the conversation's second turn
+        assert both == ["I'm not sure.", "answer 6"]
+    finally:
+        runner.close()
+
+
+def test_requests_sharing_a_trace_each_get_their_spans(project):
+    """Two sessions of one trial at once share its trace; the one that finishes first doesn't take the other's spans
+    away (they finish later, after its reply), so every span comes back once."""
+    runner = NodeRunner(project / "agent.ts")
+    trace, parent = "0123456789abcdef0123456789abcdef", "0123456789abcdef"
+    try:
+
+        async def spans_of_one_session(slow: int) -> int:
+            traced = {"trace_id": trace, "span_id": parent}
+            start = await runner.call_async({"type": "start", "attr": "agent", "index": 0, "values": [], **traced})
+            count = len(start["spans"])
+            for prompt in (f"slow {slow}", "question 3"):
+                reply = await runner.call_async(
+                    {"type": "turn", "session": start["session"], "input": prompt, **traced}
+                )
+                count += len(reply["spans"])
+            await runner.call_async({"type": "release", "session": start["session"]})
+            return count
+
+        async def together() -> list[int]:
+            return list(await asyncio.gather(spans_of_one_session(50), spans_of_one_session(800)))
+
+        alone = asyncio.run(spans_of_one_session(50))
+        assert alone > 0 and asyncio.run(spans_of_one_session(800)) == alone
+        assert sum(asyncio.run(together())) == 2 * alone
+    finally:
+        runner.close()
