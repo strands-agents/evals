@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import textwrap
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
@@ -30,7 +31,7 @@ from ..types.optimization import (
     ValidationReport,
     Value,
 )
-from .candidate import Candidate, _same, changed_values, diff
+from .candidate import Candidate, changed_keys, changed_values, diff
 from .declaration.files import _write_text_atomically
 from .declaration.space import Space
 from .end_phase import TEST_LEVEL
@@ -151,7 +152,8 @@ class OptimizationResult(BaseModel):
             when every one of its test trials failed, though it ships. `[]` when every tested candidate
             completed a test trial or the test didn't run, and in a result written before this field existed.
         effects: `effects.json`: per metric and option from the search fit, or empty with the reason.
-        objective: The objective as `run.json` records it, e.g. "Maximize(WordCount)".
+        objective: The objective as `run.json` records it, e.g. "Maximize(WordCount)"; None in a result
+            written before this field existed (as for the four fields after it and `max_rollouts`).
         constraints: Each constraint as `run.json` records it, e.g. "tokens <= 4000", in declaration order.
         feasibility_threshold: The P(met) a constraint needs to count as met (`Optimizer(feasibility_threshold=)`).
         proposers: Block name -> its proposer's class name, in the search's block order.
@@ -189,13 +191,13 @@ class OptimizationResult(BaseModel):
     front_test: dict[str, TestReport]
     test_failed_ids: list[str] = Field(default_factory=list)
     effects: dict[str, Any]
-    objective: str
-    constraints: list[str]
-    feasibility_threshold: float
-    proposers: dict[str, str]
+    objective: str | None = None
+    constraints: list[str] = Field(default_factory=list)
+    feasibility_threshold: float | None = None
+    proposers: dict[str, str] = Field(default_factory=dict)
     iterations: list[IterationRecord]
     rollouts_spent: int
-    max_rollouts: int
+    max_rollouts: int | None = None
     stop_reason: StopReason
     agent_cost: dict[SplitName, Usage]
     search_cost: Usage
@@ -234,33 +236,44 @@ class OptimizationResult(BaseModel):
 
     def summary(self) -> str:
         """The run as a header of recorded values, then tables: validation (one row per candidate, or per
-        candidate and goal when there are several goals), the test report, under `Pareto` each front member
-        against the baseline on test, the changed values when a number or choice changed, and the tokens."""
+        candidate and goal when there are several goals), why each candidate that can't ship can't, the test
+        report, under `Pareto` each front member against the baseline on test, the changed values when a number
+        or choice changed, and the tokens; then notes on what the columns hold."""
         v, best = self.validation, self.best
         goals = self.effects["goals"]
-        proposer = "-"
-        if self.improved:
-            proposer = " + ".join(f"{block} ({self.proposers.get(block, '-')})" for block in best.origin)
-        first = [("Objective", self.objective)]
+        first = [("Objective", self.objective or "-")]
         if self.constraints:
-            first += [("Constraints", "; ".join(self.constraints)), ("P(met) >=", f"{self.feasibility_threshold:g}")]
+            threshold = "-" if self.feasibility_threshold is None else f"{self.feasibility_threshold:g}"
+            first += [("Constraints", "; ".join(self.constraints)), ("P(met) >=", threshold)]
+        rollouts = f"{self.rollouts_spent:,}" + ("" if self.max_rollouts is None else f" / {self.max_rollouts:,}")
         pairs = [
-            ("Stop reason", self.stop_reason, "Rollouts", f"{self.rollouts_spent:,} / {self.max_rollouts:,}"),
-            ("Iterations", str(len(self.iterations)), "Pick rule", _rule_name(v.rule)),
-            ("Selected", self._label(best.id), "Outcome", v.outcome),
-            ("Parent", self._label(best.parent_id), "Proposer", proposer),
+            ("Stop reason", self.stop_reason, "Rollouts", rollouts),
+            ("Iterations", str(len(self.iterations)), "Pick rule", "-" if v.rule is None else _rule_name(v.rule)),
+            ("Champion", self._label(best.id), "Outcome", v.outcome),
         ]
         missing = self.test.missing if self.test is not None else {}
         notes = [
             ("Validation fit", v.problem),
             ("Effects", self.effects.get("reason")),
+            ("Held-out check", self._flagged_note()),
             ("Test reason", self.test_reason),
             (
                 "Test missing",
                 "; ".join(f"{self._label(c)} {n}" for c, n in missing.items() if n) or None,
             ),
+            (
+                "Test failed",
+                ", ".join(self._label(c) for c in self.test_failed_ids) + " (every test trial failed)"
+                if self.test_failed_ids
+                else None,
+            ),
         ]
-        last = [("Changed", ", ".join(self._changed_keys()) or "-")]
+        last = [
+            ("Parent", self._label(best.parent_id)),
+            # Every block of the search with its proposer, whichever of them the champion came from.
+            ("Proposers", ", ".join(f"{block} ({name})" for block, name in self.proposers.items()) or "-"),
+            ("Changed", ", ".join(changed_keys(self.baseline.values, best.values)) or "-"),
+        ]
         last += [(label, note.splitlines()[0]) for label, note in notes if note]  # an exception message can run long
         width = max(len(label) for label, *_ in [*first, *pairs, *last]) + 3
 
@@ -275,6 +288,8 @@ class OptimizationResult(BaseModel):
         header = [pair(*item) for item in first] + paired + [pair(*item) for item in last]
 
         tables = [self._validation_table(goals)]
+        if v.infeasible:
+            tables.append(self._infeasible_table())
         lone = sum(goal["role"] == "objective" for goal in goals) == 1
         if self.test is not None:
             tables.append(_test_table(self.test, lone=lone))
@@ -289,7 +304,7 @@ class OptimizationResult(BaseModel):
         lines = [f"Optimization result: {self.run_id}", "=" * rule, *header]
         for table in tables:
             lines += ["=" * rule, table[0], "-" * rule, *table[1:]]
-        return "\n".join([*lines, "=" * rule])
+        return "\n".join([*lines, "=" * rule, *self._notes(tables, width=rule)])
 
     def _label(self, candidate_id: str | None) -> str:
         """How the summary names a candidate: "baseline", "candidate 3", or "-" for none."""
@@ -299,35 +314,54 @@ class OptimizationResult(BaseModel):
             return "baseline"
         return f"candidate {self.candidates[candidate_id].number}"
 
-    def _changed_keys(self) -> list[str]:
-        """The keys whose values differ between what ships and the baseline, text included, compared as
-        `changed_keys` compares them (`1` and `1.0` differ)."""
-        old, new = self.baseline.values, self.best.values
-        return [key for key in sorted({*old, *new}) if not _same(old.get(key, _ABSENT), new.get(key, _ABSENT))]
+    def _flagged_note(self) -> str | None:
+        """Which metrics the held-out check flagged in the search and how the search ranked from then on; None
+        when none was flagged or there are no effects (the `Effects` note says why)."""
+        metrics = self.effects.get("metrics", {})
+        flagged = [m for m, d in metrics.items() if d.get("diagnostics", {}).get("flagged")]
+        if not flagged or self.effects.get("reason"):
+            return None
+        names = ", ".join(flagged)
+        if len(flagged) == len(metrics):
+            return f"flagged {names}; from then on the search ranked by measured means, not the fit"
+        them = "it" if len(flagged) == 1 else "them"
+        return f"flagged {names}; from then on the search ranked {them} by measured means, the other metrics by the fit"
 
     def _validation_table(self, goals: Sequence[Mapping[str, Any]]) -> list[str]:
         """Every candidate on validation, in the pick's order (the baseline, then the finalists): one row each
         with one goal, else one row per candidate and goal (each objective metric, then each constraint with
-        its P(met)). The objective column is left out when it would print its lone metric's value."""
+        its P(met)). The objective column is left out when it would print its lone metric's value; the adjusted
+        column is shown when a metric the fit didn't judge has an adjusted mean other than its measured one."""
         v = self.validation
         objectives = [goal for goal in goals if goal["role"] == "objective"]
         constraints = sorted((g for g in goals if g["role"] == "constraint"), key=lambda g: g["index"])
+        # A result written before `constraints` existed labels each constraint by its metric.
+        texts = self.constraints if len(self.constraints) == len(constraints) else [g["metric"] for g in constraints]
         # Each goal row: its label, its metric, and the constraint it checks.
         rows: list[tuple[str, str, str | None]] = [(g["metric"], g["metric"], None) for g in objectives]
-        rows += [(text, g["metric"], text) for g, text in zip(constraints, self.constraints, strict=True)]
+        rows += [(text, g["metric"], text) for g, text in zip(constraints, texts, strict=True)]
         decimals = {
             metric: _decimals(
                 [e.mean for c in v.objectives if (e := v.estimates.get(c, {}).get(metric)) is not None]
+                + [a for c in v.objectives if (a := v.adjusted_means.get(c, {}).get(metric)) is not None]
                 + [m.mean for c in v.objectives if (m := v.measured.get(c, {}).get(metric)) is not None]
             )
             for _, metric, _ in rows
         }
+        show_adjusted = any(
+            _number(adjusted, decimals[metric]) != _number(measured.mean, decimals[metric])
+            for c in v.objectives
+            for _, metric, _ in rows
+            if (adjusted := v.adjusted_means.get(c, {}).get(metric)) is not None
+            and (measured := v.measured.get(c, {}).get(metric)) is not None
+        )
         objective_decimals = _decimals(list(v.objectives.values()))
         show_objective = len(objectives) != 1 or self._objective_differs(objectives[0], objective_decimals)
         statuses = {c: self._status(c) for c in v.objectives}
         show_status = bool(constraints) or any(status != "feasible" for status in statuses.values())
         head = ["Validation", "id", *(["objective"] if show_objective else []), *(["goal"] if len(rows) > 1 else [])]
-        head += ["estimate", "sd", "measured", "n", *(["P(met)"] if constraints else [])]
+        head += ["estimate", "sd", *(["adjusted"] if show_adjusted else []), "measured", "n"]
+        head += ["P(met)"] if constraints else []
         head += ["status"] if show_status else []
         table = [head]
         for c, objective in v.objectives.items():
@@ -342,6 +376,8 @@ class OptimizationResult(BaseModel):
                 row += (
                     ["-", "-"] if estimate is None else [_number(estimate.mean, places), _number(estimate.sd, places)]
                 )
+                if show_adjusted:
+                    row.append(_number(v.adjusted_means.get(c, {}).get(metric), places))
                 row += ["-", "-"] if measured is None else [_number(measured.mean, places), str(measured.n)]
                 if constraints:
                     p = None if constraint is None else v.p_met.get(c, {}).get(constraint)
@@ -349,19 +385,24 @@ class OptimizationResult(BaseModel):
                 if show_status:
                     row.append(statuses[c] if i == 0 else "")
                 table.append(row)
-        numbers = {"objective", "estimate", "sd", "measured", "n", "P(met)"}
+        numbers = {"objective", "estimate", "sd", "adjusted", "measured", "n", "P(met)"}
         return _columns(table, right=[i for i, name in enumerate(head) if name in numbers])
 
     def _objective_differs(self, goal: Mapping[str, Any], decimals: int) -> bool:
         """Whether a lone objective prints other than its metric's value (negated when lower is better) on any
-        validation row: under `LowerBound`, or when `round_to_sd` moved it at the printed precision."""
+        validation row: under `LowerBound`, or when `round_to_sd` moved it at the printed precision. The value is
+        the one the pick used: the fit's estimate, else the adjusted mean, else the measured mean."""
         v, sign = self.validation, 1 if goal["better"] == "higher" else -1
         for c, objective in v.objectives.items():
             if objective is None:  # ineligible, which the status column shows
                 continue
             estimate = v.estimates.get(c, {}).get(goal["metric"])
+            adjusted = v.adjusted_means.get(c, {}).get(goal["metric"])
             measured = v.measured.get(c, {}).get(goal["metric"])
-            value = estimate.mean if estimate is not None else None if measured is None else measured.mean
+            if estimate is not None:
+                value: float | None = estimate.mean
+            else:
+                value = adjusted if adjusted is not None else None if measured is None else measured.mean
             if _number(objective, decimals) != _number(None if value is None else sign * value, decimals):
                 return True
         return False
@@ -371,6 +412,14 @@ class OptimizationResult(BaseModel):
         if self.validation.objectives.get(candidate_id) is None:
             return "ineligible"
         return "infeasible" if candidate_id in self.validation.infeasible else "feasible"
+
+    def _infeasible_table(self) -> list[str]:
+        """Each candidate that can't ship, in the pick's order, with why (`ValidationReport.infeasible`, its first
+        line): a constraint not met, not eligible on validation, or no validation trial completed."""
+        v = self.validation
+        table = [["Not feasible", "why"]]
+        table += [[self._label(c), v.infeasible[c].splitlines()[0]] for c in v.objectives if c in v.infeasible]
+        return _columns(table, right=())
 
     def _front_table(self, goals: Sequence[Mapping[str, Any]]) -> list[str]:
         """Under `Pareto`, each validated front member against the baseline on test: its objective, then each
@@ -391,10 +440,10 @@ class OptimizationResult(BaseModel):
         return _columns(table, right=range(3, 8))
 
     def _changes_table(self) -> list[str]:
-        """Every changed key with its baseline and selected value: numbers and choices as recorded
+        """Every changed key with its baseline and champion value: numbers and choices as recorded
         (`CandidateView.changed`), text as "text"; "inactive" for a side the key isn't active on."""
-        table = [["Changed", "baseline", "selected"]]
-        for key in self._changed_keys():
+        table = [["Changed", "baseline", "champion"]]
+        for key in changed_keys(self.baseline.values, self.best.values):
             recorded = self.best.changed.get(key)  # None for text, which `changed` leaves out
             cells = []
             for side, values in (("old", self.baseline.values), ("new", self.best.values)):
@@ -407,16 +456,43 @@ class OptimizationResult(BaseModel):
 
     def _tokens_table(self) -> list[str]:
         """Tokens per role and phase (train is the search), from the cost fields: the agent per split, the
-        proposers, who run only in the search, and the judges and retried attempts, whose fields hold run
-        totals only ("-" for each phase)."""
+        proposers, who run only in the search, and the judges, the retried attempts, and the rollouts' other
+        agents, whose fields hold run totals only ("-" for each phase)."""
         agent = [self.agent_cost[split].tokens for split in SPLIT_NAMES]
         proposers = [self.search_cost.tokens, 0, 0]
         table = [["Tokens", "search", "validation", "test", "total"]]
         table.append(["agent", *(f"{n:,}" for n in agent), f"{sum(agent):,}"])
         table.append(["proposers", *(f"{n:,}" for n in proposers), f"{sum(proposers):,}"])
-        for role, usage in [("judges", self.judge_cost), ("retries", self.retry_cost)]:
+        totals = [("judges", self.judge_cost), ("retries", self.retry_cost), ("other agents", self.benchmark_cost)]
+        for role, usage in totals:
             table.append([role, "-", "-", "-", f"{usage.tokens:,}"])
         return _columns(table, right=range(1, 5))
+
+    def _notes(self, tables: Sequence[Sequence[str]], *, width: int) -> list[str]:
+        """What the columns hold, for the tables shown, wrapped to `width`."""
+        heads = [table[0] for table in tables]
+        notes = [
+            "estimate, sd: the validation fit's estimate of the mean and its posterior sd; measured: the mean over "
+            "the cases measured, n of them (the runs, when one case has a value); * the champion."
+        ]
+        if any("adjusted" in head.split() for head in heads):
+            notes.append(
+                "adjusted: the mean the pick used for a metric the fit didn't judge, with the cases N/A for it "
+                "filled in from the other candidates."
+            )
+        if self.test is not None or self.front_test:
+            notes.append(
+                f"Test: baseline and champion are each one's mean over the cases it measured; diff is champion - "
+                f"baseline, paired over the n cases both measured, with its {_LEVEL}% interval; reported only."
+            )
+        notes.append(
+            "Tokens: search is the train split; retries are the agent's and the judges' tokens in attempts run "
+            "again; other agents are the rollouts' agents the factory didn't build (a simulated user)."
+        )
+        lines = ["Notes:"]
+        for i, note in enumerate(notes, 1):
+            lines += textwrap.wrap(note, width=width, initial_indent=f"[{i}] ", subsequent_indent="    ")
+        return lines
 
     def to_rows(self, grain: Grain = "proposal") -> list[dict[str, Any]]:
         """The run as flat rows, built from the event log, so a resumed run's rows cover the whole run.
@@ -464,7 +540,6 @@ class OptimizationResult(BaseModel):
         return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
-_ABSENT = object()  # a key one candidate's values lack
 _LEVEL = round(TEST_LEVEL * 100)
 
 
@@ -535,7 +610,7 @@ def _test_rows(report: TestReport | None, metrics: Sequence[str], *, objective: 
 def _test_table(report: TestReport, *, lone: bool) -> list[str]:
     """The test report: the objective (unless it is a lone metric's), then each compared metric, with both
     test means and the paired difference, each row at its own precision."""
-    table = [["Test vs baseline", "baseline", "selected", "diff", f"{_LEVEL}% CI", "n"]]
+    table = [["Test vs baseline", "baseline", "champion", "diff", f"{_LEVEL}% CI", "n"]]
     for row in _test_rows(report, list(report.difference), objective=not lone):
         table.append([row.metric, *row.cells(_decimals(row.numbers()))])
     return _columns(table, right=range(1, 6))

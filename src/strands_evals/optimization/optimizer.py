@@ -848,8 +848,12 @@ class Optimizer:
                 problem = f"the model raised: {type(error).__name__}: {error}"
             else:
                 problem = None if fit is not None else "the model returned no fit"
-                if fit is not None and fit.flagged:  # `assess` then uses measured means, as effects.json says
+                if fit is not None and fit.flagged:
+                    # As `assess` decides it: every goal metric flagged (or a flagged name that isn't one) ->
+                    # measured means for all of them; else only the flagged ones, the rest by the fit.
                     problem = f"flagged: {', '.join(fit.flagged)}"
+                    if set(fit.flagged) < set(criteria.goal_metrics):
+                        problem += " (by adjusted means; the other metrics by the fit)"
         report = pick(
             baseline_id=baseline,
             finalist_ids=finalists,
@@ -1039,7 +1043,7 @@ class Optimizer:
         # An arm with no completed test trial measured nothing: its scores would be the failure value alone.
         failed = [c for c in chosen if self._completed_count(c, "test") == 0]
         if champion in failed or baseline in failed:
-            arm = "the baseline" if baseline in failed else "the selected candidate"
+            arm = "the baseline" if baseline in failed else "the champion"
             # Trials left `infrastructure_invalid` are what a resume runs again (`TrialRunner.pending`).
             left = {c: runner.pending(c, cases, runs=self._runs_per_candidate) for c in pending}
             if all(left[c] for c in (champion, baseline) if c in failed):
@@ -1319,7 +1323,7 @@ class Optimizer:
             deferred_patches = {b: p for b, p in draw.patches.items() if b in deferred}
             self._run.save_candidate(
                 candidate,
-                changed_keys=changed_keys(parent, candidate),
+                changed_keys=changed_keys(parent.values, candidate.values),
                 round=None if step.round is None else list(step.round),
                 role=step.role,
                 deferred_patches=deferred_patches or None,
@@ -1636,7 +1640,7 @@ class Optimizer:
                     is_eligible=scores.is_eligible,
                     changed_keys=[]
                     if candidate.parent_id is None
-                    else changed_keys(self._candidates[candidate.parent_id], candidate),
+                    else changed_keys(self._candidates[candidate.parent_id].values, candidate.values),
                 )
             )
         return out

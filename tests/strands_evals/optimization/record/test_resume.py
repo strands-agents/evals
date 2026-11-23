@@ -287,7 +287,7 @@ def test_a_stop_keeps_its_partial_iteration_and_the_end_phase_progress(run):
     assert state.front_test == {}
     assert state.test_failed_ids == []
 
-    log.append("test", report=None, reason="every test trial of the selected candidate failed", front={}, failed=["c3"])
+    log.append("test", report=None, reason="every test trial of the champion failed", front={}, failed=["c3"])
     state = load_state(RunDirectory.open(run.root), config=CONFIG)
     assert state.test_failed_ids == ["c3"]
 
@@ -300,10 +300,7 @@ def _validation(champion):
         "estimates": {},
         "infeasible": {},
         "measured": {},
-        "p_met": {},
         "problem": None,
-        "rule": {"kind": "Mean"},
-        "outcome": "top_finalist",
         "reason": "highest estimate",
     }
 

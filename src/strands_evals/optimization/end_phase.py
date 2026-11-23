@@ -17,7 +17,6 @@ from ..types.optimization import (
     CandidateScores,
     Estimate,
     PairedComparison,
-    PickOutcome,
     ValidationReport,
     Values,
     near,
@@ -192,7 +191,7 @@ def pick(
             that failure value alone (and a crash's usage).
         criteria: The objective, constraints, and feasibility threshold.
         rule: `FinalPick.rule`, passed to `assess`.
-        problem: Why `fit` is None or not used (flagged), copied to `ValidationReport.problem`.
+        problem: Why `fit` wasn't used for every goal metric, copied to `ValidationReport.problem`.
     """
     ids = list(dict.fromkeys([baseline_id, *finalist_ids]))
     eligible = [c for c in ids if c in validation and validation[c].is_eligible and completed.get(c, 0) > 0]
@@ -210,7 +209,7 @@ def pick(
         elif not assessments[c].is_feasible:
             infeasible[c] = label_candidate(validation[c], assessments[c], criteria=criteria).reason
     objectives = {c: assessments[c].objective if c in assessments else None for c in ids}
-    return ValidationReport(
+    report = ValidationReport(
         champion_id=champion,
         front=pareto_front(assessments, ranked) if criteria.is_pareto else [],
         objectives=objectives,
@@ -221,41 +220,29 @@ def pick(
         p_met={c: dict(assessments[c].p_met) for c in ids if c in assessments},
         problem=problem,
         rule=rule.config(),
-        outcome=_pick_outcome(champion, baseline_id, finalist_ids, feasible),
-        reason=_pick_reason(champion, baseline_id, finalist_ids, objectives, feasible),
+        reason="",
     )
+    return report.model_copy(update={"reason": _pick_reason(report, feasible)})
 
 
-def _pick_outcome(champion: str, baseline_id: str, finalist_ids: Sequence[str], feasible: Sequence[str]) -> PickOutcome:
-    """Which of `_pick_reason`'s cases the pick ended in."""
-    if not finalist_ids:
-        return "no_finalists"
-    if champion != baseline_id:
-        return "top_finalist"
-    return "baseline_best" if any(c != baseline_id for c in feasible) else "no_feasible_finalist"
-
-
-def _pick_reason(
-    champion: str,
-    baseline_id: str,
-    finalist_ids: Sequence[str],
-    objectives: Mapping[str, float | None],
-    feasible: Sequence[str],
-) -> str:
-    """One sentence on why `champion` ships."""
+def _pick_reason(report: ValidationReport, feasible: Sequence[str]) -> str:
+    """One sentence on why `report.champion_id` ships, for each `report.outcome`; `feasible` in ranking order."""
+    baseline = next(iter(report.objectives))
 
     def shown(c: str) -> str:
-        value = objectives.get(c)
+        value = report.objectives.get(c)
         return "unmeasured" if value is None else f"{value:.4g}"
 
-    if not finalist_ids:
+    outcome = report.outcome
+    if outcome == "no_finalists":
         return "no finalist from the search; the baseline ships"
-    if champion != baseline_id:
-        return f"{champion} highest on validation: {shown(champion)} vs baseline {shown(baseline_id)}"
-    others = [c for c in feasible if c != baseline_id]
-    if not others:
+    if outcome == "top_finalist":
+        champion = report.champion_id
+        return f"{champion} highest on validation: {shown(champion)} vs baseline {shown(baseline)}"
+    if outcome == "no_feasible_finalist":
         return "no finalist meets every constraint on validation; the baseline ships"
-    return f"the baseline is highest on validation: {shown(baseline_id)} vs best finalist {shown(others[0])}"
+    best = next(c for c in feasible if c != baseline)
+    return f"the baseline is highest on validation: {shown(baseline)} vs best finalist {shown(best)}"
 
 
 def paired_interval(

@@ -1082,6 +1082,40 @@ async def test_a_flagged_validation_fit_is_the_picks_problem(tmp_path):
     assert "Validation fit:  flagged: Temperature" in result.summary()
 
 
+class _ScoreFlagged:
+    """A fit that flagged `Score` only and estimates Temperature at the candidate's temperature."""
+
+    flagged = ["Score"]
+    diagnostics: dict = {}
+    candidates = type("_Every", (), {"__contains__": lambda self, _: True})()
+
+    def estimates(self, values, candidate=None):
+        return {"Temperature": Estimate(mean=float(values["temperature"]), sd=0.01)}
+
+
+async def test_a_partly_flagged_validation_fit_says_the_other_metrics_kept_the_fit(tmp_path):
+    optimizer = _optimizer(
+        _experiment(evaluators=[Temperature(), Score()]),
+        rollout_fn=_temperature_rollout,
+        search=Search(
+            [Block(Scripted({"temperature": 0.5}), "temperature"), Block(Scripted(), "manager")], schedule=Alternate()
+        ),
+        objective=Maximize("Temperature"),
+        constraints=[AtLeast("Score", 0.5)],
+        base_dir=tmp_path,
+        score_model=_Sequence(*(_ScoreFlagged() for _ in range(5))),
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+        max_workers=64,
+    )
+    result = await optimizer.run_async()
+    v = result.validation
+    assert v.problem == "flagged: Score (by adjusted means; the other metrics by the fit)"
+    assert all(set(e) == {"Temperature"} for e in v.estimates.values())  # the fit judged the unflagged metric
+    assert all(set(a) == {"Score"} for a in v.adjusted_means.values())
+    assert f"Validation fit:  {v.problem}" in result.summary().splitlines()
+
+
 async def test_a_flagged_fit_reaches_the_proposers_and_the_selection(tmp_path):
     seen = []
 
@@ -1273,7 +1307,7 @@ async def test_a_test_arm_with_no_completed_trial_skips_the_report(tmp_path):
     result = await optimizer.run_async()
     assert result.best.values["temperature"] == 1.0  # picked on validation, where it ran
     assert result.test is None
-    assert result.test_reason == "every test trial of the selected candidate failed, so there is nothing to compare"
+    assert result.test_reason == "every test trial of the champion failed, so there is nothing to compare"
     assert _names(_events(optimizer))[-1] == "test"  # agent failures are final: a resume reuses this
     # The result says which tested candidate measured nothing on test, in result.json and on resume too.
     assert result.test_failed_ids == [result.best.id]
@@ -1815,7 +1849,7 @@ async def test_a_test_report_lost_to_infrastructure_is_not_saved_and_resume_runs
     assert result.best.values["temperature"] == 1.0 and result.test is None
     n = 6 if pattern == "infrastructure" else 1
     assert result.test_reason == (
-        f"every test trial of the selected candidate failed, {n} on infrastructure; resume with max_rollouts >= "
+        f"every test trial of the champion failed, {n} on infrastructure; resume with max_rollouts >= "
         f"{result.rollouts_spent + n} to run them again"
     )
     root = optimizer._run.root
@@ -1879,7 +1913,7 @@ async def test_a_test_report_lost_to_infrastructure_at_a_tight_budget_names_the_
     spent = result.rollouts_spent
     assert result.test is None and spent < budget.max_rollouts < spent + 6
     assert result.test_reason == (
-        "every test trial of the selected candidate failed, 6 on infrastructure; "
+        "every test trial of the champion failed, 6 on infrastructure; "
         f"resume with max_rollouts >= {spent + 6} to run them again"
     )
 
@@ -2782,9 +2816,12 @@ async def test_the_result_reloads_whole_without_the_run_folder_and_summarizes(tm
     assert result.feasibility_threshold == 0.9 and result.proposers == {"numbers": "Scripted", "block": "Scripted"}
     assert (result.validation.outcome, result.validation.rule) == ("top_finalist", {"kind": "Mean"})
     text = result.summary()
-    assert f"Selected:     candidate {result.best.number} " in text and "Proposer:   numbers (Scripted)" in text
+    assert (
+        f"Champion:     candidate {result.best.number} " in text
+        and "Proposers:    numbers (Scripted), block (Scripted)" in text
+    )
     assert f"candidate {result.best.number} *  {result.best.id}" in text and "Test vs baseline" in text
-    assert "temperature  0.0       1.0" in text and "champion" not in text
+    assert "temperature  0.0       1.0" in text
     with pytest.raises(ValueError, match="unknown grain"):
         result.to_rows("trial")
 
@@ -2799,25 +2836,22 @@ async def test_the_summary_names_the_flagged_metrics_or_why_there_are_no_effects
 
     def effects_lines(effects):
         text = result.model_copy(update={"effects": {**result.effects, **effects}}).summary()
-        return [line for line in text.splitlines() if line.startswith("Effects:")]
+        return [line.split(":", 1)[1].strip() for line in text.splitlines() if line.startswith(("Effects:", "Held-"))]
 
     assert effects_lines({"metrics": metrics, "reason": None}) == [
-        "Effects: the held-out check flagged tokens, seconds; from then on the search ranked them by measured "
-        "means and the other metrics by the fit."
+        "flagged tokens, seconds; from then on the search ranked them by measured means, the other metrics by the fit"
     ]
     one = {**metrics, "seconds": {"diagnostics": {"flagged": False}}}
     assert effects_lines({"metrics": one, "reason": None}) == [
-        "Effects: the held-out check flagged tokens; from then on the search ranked it by measured means and the "
-        "other metrics by the fit."
+        "flagged tokens; from then on the search ranked it by measured means, the other metrics by the fit"
     ]
     every = {m: {"diagnostics": {"flagged": True}} for m in metrics}
     assert effects_lines({"metrics": every, "reason": None}) == [
-        "Effects: the held-out check flagged Temperature, tokens, seconds; from then on the search ranked by "
-        "measured means, not the fit."
+        "flagged Temperature, tokens, seconds; from then on the search ranked by measured means, not the fit"
     ]
     # Empty effects with a reason (as a flagged fit gave before) print only the reason.
     empty = {"effects": [], "factors": [], "omitted": [], "metrics": metrics, "reason": "flagged: tokens, seconds"}
-    assert effects_lines(empty) == ["Effects: none (flagged: tokens, seconds)."]
+    assert effects_lines(empty) == ["flagged: tokens, seconds"]
     assert effects_lines({"metrics": {"tokens": {"diagnostics": {"flagged": False}}}, "reason": None}) == []
 
 
@@ -3091,8 +3125,19 @@ async def test_without_a_fit_the_label_rows_and_summary_report_the_adjusted_mean
     adjusted = v.adjusted_means[partial]["EvenOnly"]
     assert adjusted == pytest.approx(v.objectives[partial]) and adjusted < v.measured[partial]["EvenOnly"].mean
     assert v.adjusted_means[result.baseline_id] == {"EvenOnly": v.measured[result.baseline_id]["EvenOnly"].mean}
-    assert f"{adjusted:.3g} adjusted (measured 0.9)" in result.summary()
-    assert f"{v.objectives[result.baseline_id]:.3g} (measured)" in result.summary()
+    lines = result.summary().splitlines()
+    head = next(line for line in lines if line.startswith("Validation  "))
+    assert head.split() == [
+        "Validation",
+        "id",
+        "estimate",
+        "sd",
+        "adjusted",
+        "measured",
+        "n",
+    ]  # the objective = adjusted
+    row = next(line for line in lines if partial in line).split()
+    assert row[-5:] == ["-", "-", f"{adjusted:.3f}", "0.900", "1"]
 
 
 # ---- resume inside a two-level Nested -------------------------------------------------------------------
