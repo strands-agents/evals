@@ -272,6 +272,23 @@ def test_config_round_trips_through_resume(tmp_path):
         load_state(reopened, config=_optimizer(selection=Other())._config())
 
 
+def test_resume_compares_the_alternate_order_and_iterations(tmp_path):
+    def config(*blocks, iterations):
+        return _optimizer(search=Search(schedule=Alternate(*blocks, iterations=iterations)))._config()
+
+    run = RunDirectory.create(tmp_path, config("numbers", "structure", iterations=2))
+    reopened = RunDirectory.open(run.root)
+    assert run.config["search"]["schedule"] == {
+        "name": "alternate",
+        "config": {"blocks": ["numbers", "structure"], "iterations": 2},
+    }
+    load_state(reopened, config=config("numbers", "structure", iterations=2))
+    with pytest.raises(ValueError, match=r"^search\.schedule\.config\.iterations changed: 2 -> 3"):
+        load_state(reopened, config=config("numbers", "structure", iterations=3))
+    with pytest.raises(ValueError, match=r"^search\.schedule\.config\.blocks\[0\] changed: 'numbers' -> 'structure'"):
+        load_state(reopened, config=config("structure", "numbers", iterations=2))
+
+
 def test_reordered_cases_still_resume(tmp_path):
     experiment = _experiment()
     run = RunDirectory.create(tmp_path, _optimizer(experiment)._config())
