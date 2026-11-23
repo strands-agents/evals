@@ -84,11 +84,11 @@ def test_negative_spend_or_reserves_raise():
         make_tracker(test_reserve=-1)
 
 
-def test_the_default_budget_is_500_rollouts_and_no_iteration_cap():
-    assert Budget() == Budget(max_rollouts=500, max_iterations=None)
+def test_the_default_budget_is_500_rollouts_and_no_iteration_cap_or_patience():
+    assert Budget() == Budget(max_rollouts=500, max_iterations=None, patience=None)
 
 
-@pytest.mark.parametrize("kwargs", [{"max_rollouts": 0}, {"max_iterations": 0}])
+@pytest.mark.parametrize("kwargs", [{"max_rollouts": 0}, {"max_iterations": 0}, {"patience": 0}])
 def test_bad_budgets_raise(kwargs):
     with pytest.raises(ValueError):
         Budget(**kwargs)
