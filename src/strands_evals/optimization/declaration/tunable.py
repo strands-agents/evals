@@ -1,0 +1,349 @@
+"""The `tunable` mounts and the factory they return."""
+
+from __future__ import annotations
+
+import functools
+import inspect
+import logging
+import shutil
+import tempfile
+import weakref
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, overload
+
+from ...types.optimization import Value, Values
+from .markers import _fill_default, _ValueMarker
+from .space import Marker, Space
+
+logger = logging.getLogger(__name__)
+
+_KEYWORD_KINDS = (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+
+
+@dataclass(frozen=True)
+class BuildContext:
+    """What `Optimizer(build_task=...)` receives, once per candidate.
+
+    The optimizer builds it. To test a `build_task` on its own, build one with the workspace given
+    positionally: `BuildContext(values, resolve, path)` (the field is private: `workspace` is the
+    property that reads it). A dataclass, not a record: it holds a callable and is never saved.
+    Adding a field doesn't break existing `build_task` functions.
+
+    Attributes:
+        values: The candidate's typed flat values.
+        resolve: `resolve(name)` returns what the factory path would pass for that declared name:
+            a fresh component, a value, or a path inside the candidate's copy.
+        workspace: The candidate's copy of the file-backed folders
+            (`<run>/candidates/<id>/optimization_files/`), or None when the space has no
+            file-backed values. Lets a config-defined agent load the whole edited file, e.g. the
+            `agent.json` a `JsonField` points into. Each file-backed value's whole folder is copied, so
+            the copy is made the first time `workspace` is read (unless a value already reaches the agent
+            as a path); a `build_task` that never reads it copies nothing. Read it in `build_task` itself,
+            not first inside the task, so a copy that fails stops the run instead of failing every trial.
+            The first read makes the copy in the reading thread: `build_task`, and an async task, run on
+            the optimizer's event loop, so other trials wait while it copies (once per candidate; later
+            reads return at once). Keep the tuned file in a small folder of its own: everything beside it is
+            copied for every candidate.
+    """
+
+    values: Values
+    resolve: Callable[[str], Any]
+    _workspace: Path | Callable[[], Path | None] | None = field(default=None, repr=False)
+
+    @property
+    def workspace(self) -> Path | None:
+        """The candidate's copy, made on first read; None when the space has no file-backed values."""
+        return self._workspace() if callable(self._workspace) else self._workspace
+
+
+class _FactoryArgumentError(TypeError):
+    """A bad argument to a bound factory; a setup error, never a trial status.
+
+    Raised for a resource or kwarg named like a declared marker, a call kwarg the user's function
+    doesn't accept, or a required parameter of the function that neither a call kwarg nor a resource
+    supplies (e.g. a misspelled `environment()` key). Never an `agent_failure`: under
+    `agent_failure_score="worst"` that would score every trial at its worst end and the run would go
+    on measuring nothing.
+    """
+
+
+class TunableFactory:
+    """A user's agent factory with declared tunable parameters.
+
+    Built by `tunable`; wraps the user's function (name, docstring, signature) without changing it.
+    """
+
+    space: Space
+
+    def __init__(self, fn: Callable[..., Any], markers: Mapping[str, Marker]):
+        """Check the declared names against `fn` and build the space; raises `TypeError`."""
+        if isinstance(fn, TunableFactory):
+            raise TypeError(f"{fn._label} is already tunable; declare every marker in one tunable(...)")
+        if not callable(fn):
+            raise TypeError(f"tunable() needs a function, got {fn!r}")
+        self._fn = fn
+        self._signature = inspect.signature(fn)
+        # Not every callable has a __name__ (functools.partial); used in error messages and logs.
+        self._label: str = getattr(fn, "__name__", repr(fn))
+        self._names = tuple(markers)
+        parameters = self._signature.parameters
+        self._accepted = frozenset(name for name, p in parameters.items() if p.kind in _KEYWORD_KINDS)
+        self._takes_kwargs = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
+        self.space = Space(_fill_defaults(markers, self._label, parameters, self._takes_kwargs))
+        self._baseline = self.space.complete({})
+        # updated=(): copying fn.__dict__ could overwrite this factory's own attributes.
+        functools.update_wrapper(self, fn, updated=())
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        """Build the baseline (every value at its default); never copies files.
+
+        Like any build, it gets deep copies of the fixed `component()` kwargs and `choice()`
+        alternatives (see `component()`).
+
+        Arguments passed here, by position or by keyword, win over the declared values, as in a
+        plain call of the function.
+        """
+        given = self._signature.bind_partial(*args, **kwargs).arguments
+        resolved = {
+            name: self.space.resolve(name, self._baseline, None)
+            for name in self._names
+            if name not in given and name not in kwargs  # a name caught by **kwargs is only in kwargs
+        }
+        return self._fn(*args, **kwargs, **resolved)
+
+    def validate(self, values: Values) -> None:
+        """Same as `self.space.validate(values)`; raises `ValueError`."""
+        self.space.validate(values)
+
+    def bind(self, values: Values, *, workspace: Path | None = None) -> Callable[..., Any]:
+        """Return a factory that builds fresh components with `values` bound on every call.
+
+        Fills missing keys with defaults but drops nothing (an inactive key raises `ValueError`), and
+        validates before any build. Copies files only if an active value reaches the agent as a path
+        (`as_path=True`, `SkillLibrary`): into `workspace` (cached), or with `workspace=None` into one
+        temp folder per `bind()` call, kept while the bound factory or anything it built is alive (an
+        object that can't be weakly referenced, e.g. a dict, keeps it until the process exits) and
+        deleted after that, or at exit. Only the returned object holds it (for an async function, the
+        object its coroutine returns): keep that object, not something taken out of it, such as a
+        wrapper's `.agent`, while the agent still reads the files. A `workspace` holds one candidate's
+        copy; binding other file values to it raises `FileExistsError`.
+
+        The bound factory takes values for the function's non-tunable parameters, by two rules:
+        resources from `environment()` (handed over through its private `_with_resources(resources)`)
+        are passed only if the function declares that parameter by name; kwargs passed in the call go
+        through as in a normal call, and one the function doesn't accept raises `_FactoryArgumentError`.
+        Either kind named like a declared marker, or a required parameter left unsupplied, raises
+        `_FactoryArgumentError`.
+
+        Args:
+            values: The candidate's values.
+            workspace: Where to write the candidate's file copy; None outside a run.
+
+        Returns:
+            A factory that builds fresh components on every call.
+
+        Raises:
+            ValueError: The values fail validation.
+            FileExistsError: `workspace` holds another candidate's copy, or files that aren't a copy.
+        """
+        # complete() last, for its canonical values; an inactive key it drops stays for validate to report.
+        bound_values = {**values, **self.space.complete(values)}
+        self.space.validate(bound_values)
+        temp: _TempCopy | None = None
+        if self.space._copies_files:
+            if workspace is None:
+                temp = _TempCopy()
+                workspace = temp.directory
+            self.space.create_candidate_copy(bound_values, workspace)
+        return _BoundFactory(self, bound_values, workspace, {}, temp)
+
+
+class _TempCopy:
+    """A temp folder for one `bind()` outside a run.
+
+    Deleted once nothing refers to it: each bound factory from that `bind()` holds it, and so does
+    everything they built (`keep_alive_for`), since an agent may read its files long after the
+    factory is gone, e.g. `agent = factory.bind(values)()`. Deleted at exit in any case.
+    """
+
+    def __init__(self) -> None:
+        self.root = Path(tempfile.mkdtemp(prefix="strands-evals-candidate-"))
+        self.directory = self.root / "optimization_files"
+        self._until_exit = False
+        weakref.finalize(self, shutil.rmtree, self.root, ignore_errors=True)
+
+    def keep_alive_for(self, built: Any) -> None:
+        """Keep this folder until `built` is collected, or until exit if it can't be weakly referenced."""
+        try:
+            # A finalizer holds its arguments until its object dies, so `built` holds this folder.
+            weakref.finalize(built, _keep, self)
+        except TypeError:  # a dict, a str, a tuple, ...
+            if not self._until_exit:
+                self._until_exit = True
+                _KEPT_UNTIL_EXIT.append(self)
+
+
+def _keep(_: _TempCopy) -> None:
+    """Nothing to do: the finalizer only holds the temp copy while the built object lives."""
+
+
+async def _kept_alive(coroutine: Any, temp: _TempCopy) -> Any:
+    """Await an async factory's coroutine, then keep `temp` alive for what it returned."""
+    built = await coroutine
+    temp.keep_alive_for(built)
+    return built
+
+
+# Temp copies used by built objects that can't be weakly referenced; their finalizers run at exit.
+_KEPT_UNTIL_EXIT: list[_TempCopy] = []
+
+
+class _BoundFactory:
+    """What `TunableFactory.bind` returns: builds fresh components with the bound values on every call."""
+
+    def __init__(
+        self,
+        factory: TunableFactory,
+        values: dict[str, Value],
+        workspace: Path | None,
+        resources: Mapping[str, Any],
+        temp: _TempCopy | None = None,
+    ):
+        self._factory = factory
+        self._values = values
+        self._workspace = workspace
+        self._resources = resources
+        self._temp = temp  # held so the temp copy lives as long as any factory built from this bind()
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        """Build with the bound values; `kwargs` go to the function's non-tunable parameters."""
+        factory = self._factory
+        if args:
+            raise _FactoryArgumentError(
+                f"{factory._label}: a bound factory takes keyword arguments only, got {len(args)} positional"
+            )
+        _check_not_markers(factory, kwargs, "arguments")
+        if not factory._takes_kwargs:
+            # The signature check below would catch these too; this one names every bad kwarg at once.
+            unknown = sorted(name for name in kwargs if name not in factory._accepted)
+            if unknown:
+                raise _FactoryArgumentError(f"{factory._label} takes no arguments named {unknown}")
+        resources = {
+            name: value
+            for name, value in self._resources.items()
+            if name in factory._accepted and name not in kwargs  # a call kwarg wins, as passed explicitly
+        }
+        resolved = {name: factory.space.resolve(name, self._values, self._workspace) for name in factory._names}
+        try:
+            # Checked before the call, so a TypeError raised inside the function stays the agent's.
+            factory._signature.bind(**resolved, **resources, **kwargs)
+        except TypeError as error:
+            raise _FactoryArgumentError(f"{factory._label}: {error}") from error
+        built = factory._fn(**resolved, **resources, **kwargs)
+        if self._temp is None:
+            return built
+        if inspect.iscoroutine(built):
+            return _kept_alive(built, self._temp)  # the agent the coroutine returns holds the copy, not the coroutine
+        self._temp.keep_alive_for(built)
+        return built
+
+    def _with_resources(self, resources: Mapping[str, Any]) -> _BoundFactory:
+        """The same bound factory, also passing each resource the function declares by name.
+
+        `**kwargs` doesn't count as declaring one, so one environment can serve factories that take
+        different resources; the rest are dropped.
+
+        Raises:
+            _FactoryArgumentError: A resource is named like a declared marker.
+        """
+        _check_not_markers(self._factory, resources, "resources")
+        dropped = sorted(name for name in resources if name not in self._factory._accepted)
+        if dropped:
+            logger.debug("factory=<%s>, resources=<%s> | factory does not declare them", self._factory._label, dropped)
+        return _BoundFactory(self._factory, self._values, self._workspace, {**self._resources, **resources}, self._temp)
+
+
+@overload
+def tunable(fn: Callable[..., Any], /, *, inject: Mapping[str, Marker]) -> TunableFactory: ...
+
+
+@overload
+def tunable(**markers: Marker) -> Callable[[Callable[..., Any]], TunableFactory]: ...
+
+
+def tunable(
+    fn: Callable[..., Any] | None = None, /, **kwargs: Any
+) -> TunableFactory | Callable[[Callable[..., Any]], TunableFactory]:
+    """Declare tunable parameters: `tunable(fn, inject={...})` or `@tunable(name=marker, ...)`.
+
+    A marker naming no parameter of `fn` (unless `fn` takes `**kwargs`) raises `TypeError`. A marker
+    without `default=` takes the parameter's own default, so `fn()` and the baseline build the same
+    agent; a marker with neither raises `TypeError` (see `_ValueMarker`). A `choice()` is the
+    exception: its first alternative replaces the parameter's default, so list what production
+    builds first (see `choice()`).
+
+    The decorator form doesn't work on a method (the factory isn't bound to the instance, so
+    `self` goes missing); mount a bound method instead: `tunable(obj.method, inject={...})`.
+
+    Args:
+        fn: The factory; omit when used as a decorator.
+        **kwargs: `inject={name: marker}` when `fn` is given, otherwise the markers themselves.
+
+    Returns:
+        A `TunableFactory`, or a decorator returning one.
+
+    Raises:
+        TypeError: No markers (a bare `@tunable`), a marker names no parameter, has no default
+            anywhere, or is of an unknown type; or `fn` is already a `TunableFactory` (declare every
+            marker in one `tunable(...)`).
+    """
+    if fn is not None:
+        if not kwargs:
+            raise TypeError("@tunable needs markers: @tunable(name=marker, ...) or tunable(fn, inject={name: marker})")
+        if set(kwargs) != {"inject"} or not isinstance(kwargs["inject"], Mapping):
+            raise TypeError("tunable(fn, ...) takes only inject={name: marker}")
+        return TunableFactory(fn, kwargs["inject"])
+    if isinstance(kwargs.get("inject"), Mapping):
+        raise TypeError("inject= needs the function: tunable(fn, inject={name: marker})")
+
+    def decorate(function: Callable[..., Any]) -> TunableFactory:
+        return TunableFactory(function, kwargs)
+
+    return decorate
+
+
+def _check_not_markers(factory: TunableFactory, given: Mapping[str, Any], kind: str) -> None:
+    """Raise `_FactoryArgumentError` if any name in `given` is a declared marker's."""
+    conflicts = sorted(name for name in given if name in factory._names)
+    if conflicts:
+        raise _FactoryArgumentError(
+            f"{kind} {conflicts} are named like declared markers of {factory._label}; tunable values come "
+            "only from the candidate"
+        )
+
+
+def _fill_defaults(
+    markers: Mapping[str, Marker], fn_name: str, parameters: Mapping[str, inspect.Parameter], takes_kwargs: bool
+) -> dict[str, Marker]:
+    """Check each name against the function's parameters; a marker without `default=` takes the parameter's."""
+    filled: dict[str, Marker] = {}
+    for name, marker in markers.items():
+        parameter = parameters.get(name)
+        if parameter is not None and parameter.kind not in _KEYWORD_KINDS:
+            raise TypeError(f"{name}: {fn_name} takes {name!r} as {parameter.kind.description}, not by keyword")
+        if parameter is None and not takes_kwargs:
+            raise TypeError(f"{name}: {fn_name} has no parameter {name!r} and takes no **kwargs")
+        if parameter is not None and parameter.default is not inspect.Parameter.empty:
+            filled[name] = _with_parameter_default(name, marker, parameter.default)
+        else:
+            filled[name] = marker
+    return filled
+
+
+def _with_parameter_default(name: str, marker: Marker, default: Any) -> Marker:
+    """`marker` with the parameter's `default` filled in, if the marker has none; raises `TypeError`."""
+    if not isinstance(marker, _ValueMarker):
+        return marker  # components, choices, tools, and files take no parameter default
+    return _fill_default(marker, default, where=name, source="the parameter's default")

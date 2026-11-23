@@ -1,0 +1,54 @@
+"""Per-iteration result records, read by `on_iteration`, resume, the schedule, and the results API."""
+
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict
+
+from .search import ObservationOutcome
+
+StopReason = Literal["setup", "budget", "iterations", "exhausted"]
+
+
+class ProposalOutcome(BaseModel):
+    """One proposal of one iteration.
+
+    `number` is the display number (None for an invalid patch); `origin` names the blocks whose patches the
+    candidate merges, in proposal order (`Candidate.origin`; for an invalid patch, the blocks that proposed it);
+    `objective` is its own objective at its step (for a round's opener, `Observation.objective` is the round's
+    best instead).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    candidate_id: str | None
+    number: int | None
+    parent_id: str
+    origin: list[str]
+    changed_keys: list[str]
+    rationale: str
+    outcome: ObservationOutcome
+    objective: float | None
+
+
+class IterationRecord(BaseModel):
+    """One iteration. `round`, `role`, and `blocks` let `Schedule.next` rebuild where a `Nested` run is.
+
+    `round` is the round path, outermost `Nested` first (`Step.round`); None outside any `Nested`.
+    `n_candidates` is how many candidates the step was given: `Step.n_candidates` (already cut to the room of
+    every round around it), cut again to what the budget can score and the slots `Budget.max_iterations` leaves.
+    Each enclosing `Nested` round, and `max_iterations`, charge it when the step saved a candidate, or, for an
+    opener, unless it repeated a measured candidate.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    iteration: int
+    parent_id: str
+    round: tuple[int, ...] | None
+    role: Literal["opener", "inner"]
+    blocks: list[str]
+    n_candidates: int
+    proposals: list[ProposalOutcome]
+    rollouts_spent: int
