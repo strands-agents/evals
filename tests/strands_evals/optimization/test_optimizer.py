@@ -2841,6 +2841,40 @@ async def test_max_iterations_counts_candidate_slots_not_steps(tmp_path):
     assert reason == "exhausted"
 
 
+async def test_a_step_whose_every_proposal_is_invalid_doesnt_end_a_joint_search(tmp_path):
+    # 0.3 is not an option of temperature: the one-slot step's 4 draws (redraws=3) are all invalid
+    proposer = Scripted(*[{"temperature": 0.3}] * 4, {"temperature": 1.0})
+    optimizer = _searching(
+        Block(proposer, "temperature"),
+        schedule=Joint(),
+        proposals_per_iteration=1,
+        base_dir=tmp_path,
+        budget=Budget(max_iterations=1),
+    )
+    reason, _ = await _search(optimizer)
+    # The invalid-only step uses no slot, so the next one still fits under max_iterations=1 and saves 1.0.
+    assert [[p.outcome for p in r.proposals] for r in optimizer._iterations] == [["invalid"] * 4, ["feasible"]]
+    assert optimizer._candidates[optimizer._iterations[1].proposals[0].candidate_id].values["temperature"] == 1.0
+    assert reason == "iterations" and _slots_used(optimizer._iterations) == 1
+
+
+async def test_steps_that_propose_only_invalid_patches_end_a_joint_search_after_redraws_plus_one(tmp_path):
+    proposer = Scripted(*[{"temperature": 0.3}] * 100)
+    optimizer = _searching(
+        Block(proposer, "temperature"),
+        schedule=Joint(),
+        proposals_per_iteration=1,
+        base_dir=tmp_path,
+        budget=Budget(),
+    )
+    await optimizer._start()
+    spent = optimizer._budget.spent
+    # No iteration cap and no rollouts spent: the schedule's limit ends the search, after 4 steps of 4 draws.
+    assert await optimizer._run_search() == "exhausted"
+    assert len(optimizer._iterations) == 4 and len(proposer.updates) == 100 - 16
+    assert optimizer._budget.spent == spent
+
+
 # the results
 
 

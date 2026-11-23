@@ -118,7 +118,9 @@ class ScheduleContext:
             outside any round. A round orders its candidates by it, since its opener can repeat a candidate
             from an earlier round, which the enclosing round's `ranking` doesn't hold.
         proposals_per_iteration: A step's candidates (an opener's: 1).
-        redraws: `Search.redraws`; `Nested` stops after `redraws + 1` rounds in a row measure nothing new.
+        redraws: `Search.redraws`; `Nested` stops after `redraws + 1` rounds in a row measure nothing new, and
+            `Joint` and `Alternate` after `redraws + 1` cycles of steps in a row that saved nothing (after one
+            such cycle when no step of it proposed only invalid patches).
     """
 
     past: Sequence[IterationRecord]
@@ -151,8 +153,8 @@ class Schedule(ABC):
         `Nested` round, that the round is over.
 
         Must return None once its steps stop saving candidates (e.g. after a step, or a full cycle of steps,
-        that saved none): a step that saves nothing spends no rollouts and uses no `max_iterations` slot, so
-        nothing else ends the run.
+        that saved none, or a bounded number of steps in a row that proposed only invalid patches): a step
+        that saves nothing spends no rollouts and uses no `max_iterations` slot, so nothing else ends the run.
         """
 
     def config(self) -> dict[str, Any]:
@@ -163,7 +165,8 @@ class Schedule(ABC):
 class Joint(Schedule):
     """Every block, every iteration: candidate i of a step merges patch i of every block.
 
-    Ends after a step that saved no candidate.
+    Ends after a step that saved no candidate; when that step's proposals were all invalid, only once
+    `redraws + 1` steps in a row have saved none.
     """
 
     name: ClassVar[str] = "joint"
@@ -171,11 +174,12 @@ class Joint(Schedule):
     def next(self, ctx: ScheduleContext) -> Step | None:
         """Every block of `ctx.blocks`, `ctx.proposals_per_iteration` candidates.
 
-        None when there are no blocks (a round that narrowed them all out) or when the last step saved no
-        candidate (every proposal invalid or a duplicate), since the next one would ask the same proposers
-        the same question.
+        None when there are no blocks (a round that narrowed them all out), when the last step saved no
+        candidate and repeated a measured candidate or proposed nothing, or when the last `ctx.redraws + 1`
+        steps saved none (`_stalled`). A step whose every proposal was invalid doesn't end the search by
+        itself, since the proposers may still have valid patches to propose.
         """
-        if not ctx.blocks or (ctx.past and not _saved(ctx.past[-1])):
+        if not ctx.blocks or _stalled(ctx.past, 1, ctx.redraws):
             return None
         return Step(tuple(ctx.blocks), ctx.proposals_per_iteration, None, None, "inner", ())
 
@@ -183,7 +187,8 @@ class Joint(Schedule):
 class Alternate(Schedule):
     """One block per iteration, in block order, so each candidate changes one block. No arguments.
 
-    Ends after a full cycle of steps (one per block) that saved no candidate.
+    Ends after a full cycle of steps (one per block) that saved no candidate; when a step of that cycle
+    proposed only invalid patches, only once `redraws + 1` cycles in a row have saved none.
     """
 
     name: ClassVar[str] = "alternate"
@@ -192,17 +197,11 @@ class Alternate(Schedule):
         """The next block in turn: block `len(ctx.past) % len(ctx.blocks)`.
 
         Steps that saved nothing still advance the turn, so one stuck block doesn't hold up the others.
-        None when there are no blocks, or when the last `len(ctx.blocks)` steps (a full cycle, every block
-        asked once) saved no candidate.
+        None when there are no blocks, or when the steps since the last one that saved a candidate make a
+        full cycle (every block asked once) and no step of the last cycle proposed only invalid patches.
+        Otherwise also None once they make `ctx.redraws + 1` full cycles (`_stalled`).
         """
-        if not ctx.blocks:
-            return None
-        misses = 0
-        for record in reversed(ctx.past):
-            if _saved(record):
-                break
-            misses += 1
-        if misses >= len(ctx.blocks):
+        if not ctx.blocks or _stalled(ctx.past, len(ctx.blocks), ctx.redraws):
             return None
         block = ctx.blocks[len(ctx.past) % len(ctx.blocks)]
         return Step((block,), ctx.proposals_per_iteration, None, None, "inner", ())
@@ -406,7 +405,11 @@ class Search:
         redraws: Caps re-asks per block per iteration after a duplicate (of an eligible candidate, or an
             ineligible one a re-score can't change), an
             invalid patch, a patch touching keys outside its block, or no patches at all. A round's opener
-            is never re-asked on a duplicate: the round opens on that candidate.
+            is never re-asked on a duplicate: the round opens on that candidate. `Joint` and `Alternate`
+            also use it: when the steps that saved nothing include one whose proposals were all invalid, they
+            end only once `redraws + 1` steps in a row (for `Alternate`, full cycles of one step per block)
+            have saved none. A slot whose patches are always invalid is then drawn up to
+            `(redraws + 1) ** 2` times before they end (inside `Nested`, per round).
     """
 
     blocks: tuple[Block, ...]
@@ -648,6 +651,30 @@ def _saved(record: IterationRecord) -> bool:
     an outage that makes every candidate ineligible doesn't end the search as "exhausted".
     """
     return any(p.outcome not in ("invalid", "duplicate") for p in record.proposals)
+
+
+def _invalid_only(record: IterationRecord) -> bool:
+    """Whether a step proposed something and every proposal was invalid (none a duplicate, none saved)."""
+    return bool(record.proposals) and all(p.outcome == "invalid" for p in record.proposals)
+
+
+def _stalled(past: Sequence[IterationRecord], cycle: int, redraws: int) -> bool:
+    """Whether a schedule that asks every block once per `cycle` steps should end.
+
+    True when the steps since the last one that saved a candidate make at least one full cycle, and either
+    none of the last `cycle` steps proposed only invalid patches (the proposers repeated measured candidates
+    or proposed nothing), or they make `redraws + 1` full cycles. Invalid patches don't show that a proposer
+    has nothing left to try (a later step draws again), so a cycle holding a step whose every proposal was
+    invalid ends the schedule at the latest after `redraws` more cycles.
+    """
+    misses = 0
+    for record in reversed(past):
+        if _saved(record):
+            break
+        misses += 1
+    if misses < cycle:
+        return False
+    return misses >= cycle * (redraws + 1) or not any(_invalid_only(record) for record in past[-cycle:])
 
 
 def _is_structural(info: ParamInfo) -> bool:
