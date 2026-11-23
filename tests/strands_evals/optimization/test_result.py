@@ -238,8 +238,9 @@ def test_a_single_objective_run():
             "Notes:",
             "[1] estimate, sd: the validation fit's estimate of the mean and",
             "    its posterior sd; measured: the mean over the cases measured,",
-            "    n of them (the runs, when one case has a value); * the",
-            "    champion.",
+            "    n of them (the runs, when one case has a value); P(met) is -",
+            "    for a constraint judged by its measured or adjusted mean; *",
+            "    the champion.",
             "[2] Test: baseline, champion, and diff (champion - baseline, with",
             "    its 90% interval) are over the n cases both measured;",
             "    reported only.",
@@ -362,7 +363,8 @@ def test_a_constrained_run_has_a_row_per_candidate_and_goal():
             "========================================================================================================",
             "Notes:",
             "[1] estimate, sd: the validation fit's estimate of the mean and its posterior sd; measured: the mean",
-            "    over the cases measured, n of them (the runs, when one case has a value); * the champion.",
+            "    over the cases measured, n of them (the runs, when one case has a value); P(met) is - for a",
+            "    constraint judged by its measured or adjusted mean; * the champion.",
             "[2] Test: baseline, champion, and diff (champion - baseline, with its 90% interval) are over the n cases",
             "    both measured; reported only.",
             "[3] Tokens: search is the train split; retries are the agent's and the judges' tokens in attempts run",
@@ -469,7 +471,8 @@ def test_a_pareto_run_adds_the_front_on_test():
             "===================================================================================================",
             "Notes:",
             "[1] estimate, sd: the validation fit's estimate of the mean and its posterior sd; measured: the",
-            "    mean over the cases measured, n of them (the runs, when one case has a value); * the champion.",
+            "    mean over the cases measured, n of them (the runs, when one case has a value); P(met) is - for",
+            "    a constraint judged by its measured or adjusted mean; * the champion.",
             "[2] Test: baseline, champion, and diff (champion - baseline, with its 90% interval) are over the n",
             "    cases both measured; reported only.",
             "[3] Tokens: search is the train split; retries are the agent's and the judges' tokens in attempts",
@@ -538,7 +541,8 @@ def test_a_run_without_finalists_prints_the_recorded_reasons():
             "[1] estimate, sd: the validation fit's estimate of the mean",
             "    and its posterior sd; measured: the mean over the cases",
             "    measured, n of them (the runs, when one case has a value);",
-            "    * the champion.",
+            "    P(met) is - for a constraint judged by its measured or",
+            "    adjusted mean; * the champion.",
             "[2] Tokens: search is the train split; retries are the agent's",
             "    and the judges' tokens in attempts run again; other agents",
             "    are the rollouts' agents the factory didn't build (a",
@@ -673,12 +677,6 @@ def test_a_result_written_before_the_summary_fields_loads_and_summarizes():
     assert lines[7] == ["Proposers:", "-"]
     # The constraint rows are labeled by their metric, with no P(met).
     assert ["tokens", "2,480", "190", "2,512", "8", "-"] in lines
-
-
-def test_tested_candidates_with_no_completed_test_trial_are_named():
-    run = _constrained_run()
-    result = run.model_copy(update={"test_failed_ids": [run.validation.champion_id]})
-    assert "Test failed:   candidate 5 (every test trial failed)" in result.summary().splitlines()
 
 
 def test_a_test_rows_means_cover_the_cases_its_difference_does():

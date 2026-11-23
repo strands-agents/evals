@@ -264,12 +264,6 @@ class OptimizationResult(BaseModel):
                 "; ".join(f"{self._label(c)}: {n} case{'' if n == 1 else 's'}" for c, n in missing.items() if n)
                 or None,
             ),
-            (
-                "Test failed",
-                ", ".join(self._label(c) for c in self.test_failed_ids) + " (every test trial failed)"
-                if self.test_failed_ids
-                else None,
-            ),
         ]
         last = [
             ("Parent", self._label(best.parent_id)),
@@ -455,7 +449,7 @@ class OptimizationResult(BaseModel):
         champion value: its repr (a long float to 6 significant digits), cut to 40 characters, and
         "inactive" for a side the key isn't active on. The exact values are in `best.values`."""
         table = [["Changed", "baseline", "champion"]]
-        for key, sides in self.best.changed.items():
+        for key, sides in sorted(self.best.changed.items()):  # sorted, as the header's `Changed:`
             table.append([key, *(_value_cell(sides[side]) if side in sides else "inactive" for side in ("old", "new"))])
         return _columns(table, right=())
 
@@ -478,7 +472,8 @@ class OptimizationResult(BaseModel):
         heads = [table[0] for table in tables]
         notes = [
             "estimate, sd: the validation fit's estimate of the mean and its posterior sd; measured: the mean over "
-            "the cases measured, n of them (the runs, when one case has a value); * the champion."
+            "the cases measured, n of them (the runs, when one case has a value); P(met) is - for a constraint judged "
+            "by its measured or adjusted mean; * the champion."
         ]
         if any("adjusted" in head.split() for head in heads):
             notes.append(
