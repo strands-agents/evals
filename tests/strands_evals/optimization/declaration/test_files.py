@@ -4,6 +4,7 @@ import json
 import os
 import stat
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -366,6 +367,27 @@ def test_concurrent_copies_into_one_empty_folder_all_succeed(project, tmp_path_f
         assert results == [workspace] * 8
         assert copied(space, workspace, project / "prompts" / "system.md").read_text() == "Same.\n"
         assert [p.name for p in workspace.parent.iterdir()] == ["optimization_files"]
+
+
+def test_a_marker_windows_briefly_refuses_to_open_is_read_again(project, tmp_path, monkeypatch):
+    space = make_space(project)
+    values = {**space.complete({}), "system": "Same.\n"}
+    workspace = space.create_candidate_copy(values, tmp_path / "optimization_files")
+    real, refusals = Path.read_bytes, iter([PermissionError(13, "Permission denied")] * 2)
+
+    def read_bytes(path):  # as Windows does while another call's copy is being renamed into place
+        refusal = next(refusals, None)
+        if refusal is not None and path.name == ".candidate-copy":
+            raise refusal
+        return real(path)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes)
+    monkeypatch.setattr("strands_evals.optimization.declaration.space.time.sleep", lambda _: None)
+    assert space.create_candidate_copy(values, workspace) == workspace  # the copy is found, not an error
+
+    monkeypatch.setattr(Path, "read_bytes", lambda path: (_ for _ in ()).throw(PermissionError(13, "denied")))
+    with pytest.raises(PermissionError):  # a marker that stays unreadable still raises
+        space.create_candidate_copy(values, workspace)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows has no POSIX permission bits")
