@@ -3,7 +3,7 @@ import copy
 import pytest
 
 from strands_evals.optimization.record.events import EventLog
-from strands_evals.optimization.record.resume import FitReplay, load_state
+from strands_evals.optimization.record.resume import DrawReplay, FitReplay, load_state
 from strands_evals.optimization.record.run_directory import RunDirectory
 from strands_evals.types.optimization import Patch, Usage
 
@@ -262,6 +262,61 @@ def test_a_second_resume_does_not_replay_the_first_kills_iteration(run):
     assert state.history == ["base", "c1", "base"]
     assert state.candidates == ["base", "c1"]
     assert state.iteration == 3
+
+
+def _draw(log, iteration, parent, *draws):
+    """A `draw` event of the `numbers` block: one list of patches per redraw."""
+    log.append(
+        "draw",
+        iteration=iteration,
+        parent_id=parent,
+        blocks=["numbers"],
+        n_candidates=2,
+        draws=[[{"numbers": patch} for patch in redraw] for redraw in draws],
+    )
+
+
+def test_the_killed_iterations_draw_is_read_back_with_its_patches_as_written(run):
+    one, real, flag = (
+        Patch(updates={"x": 1}, rationale="int"),
+        Patch(updates={"x": 1.0}, rationale="float", state={"seen": [1, 2]}, usage=_usage(4)),
+        Patch(updates={"x": True}, rationale="bool"),
+    )
+    _draw(run.events, 3, "c1", [one, real], [flag])
+
+    state = load_state(RunDirectory.open(run.root), config=CONFIG)
+
+    assert state.draw == DrawReplay(
+        3, "c1", ["numbers"], 2, [[{"numbers": one}, {"numbers": real}], [{"numbers": flag}]]
+    )
+    # Equal values of different types make different candidates, so the types must come back too.
+    assert [type(d["numbers"].updates["x"]) for redraw in state.draw.draws for d in redraw] == [int, float, bool]
+
+
+def test_the_last_draw_of_the_killed_iteration_is_read_across_resumes(run):
+    first, second = _patch(1), _patch(2)
+    _draw(run.events, 3, "c1", [first])
+    run.events.append("resume", spent=5, budget={}, code={})
+
+    # Killed again before the iteration drew: the first attempt's draw.
+    assert load_state(RunDirectory.open(run.root), config=CONFIG).draw.draws == [[{"numbers": first}]]
+
+    run.events.append("select", iteration=3, parent_id="base", strategy="top_ranked")
+    _draw(run.events, 3, "base", [second])
+    state = load_state(RunDirectory.open(run.root), config=CONFIG)
+
+    assert state.draw.parent_id == "base" and state.draw.draws == [[{"numbers": second}]]
+
+
+@pytest.mark.parametrize("closing", ["iteration_end", "stop"])
+def test_a_draw_is_not_replayed_once_its_iteration_closed_or_the_search_stopped(run, closing):
+    _draw(run.events, 3, "c1", [_patch(1)])
+    if closing == "iteration_end":
+        _iteration_end(run.events, 3, "c1", ["numbers"])
+    else:
+        run.events.append("stop", reason="budget", message="")
+
+    assert load_state(RunDirectory.open(run.root), config=CONFIG).draw is None
 
 
 def test_a_stop_keeps_its_partial_iteration_and_the_end_phase_progress(run):

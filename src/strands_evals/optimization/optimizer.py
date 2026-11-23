@@ -1235,6 +1235,10 @@ class Optimizer:
         """Propose `n` candidates (redrawing a slot that is invalid, a duplicate, or empty), score the new
         ones on train at once, refit, label, and tell the proposers; write `iteration_end`.
 
+        The step's proposals are written to a `draw` event before any is saved or scored. A resumed run
+        replays the killed iteration's (`_recorded_draws`) instead of asking its proposers again, so the
+        candidates scored before the kill come back with their trials.
+
         Raises:
             _ProposerFailed: A proposer raised (its `proposer_error` event is written).
         """
@@ -1246,10 +1250,21 @@ class Optimizer:
         accepted: list[_Draw] = []  # in proposal order: new candidates, re-scored ones, and same-step twins
         opened: _Draw | None = None  # an opener repeating a measured candidate: the round opens on it
         need = n
+        recorded = self._recorded_draws(step, parent, n)
+        drawn: list[list[_Draw]] = []  # per redraw, asked or replayed: the step's `draw` event
         for redraw in range(self._search.redraws + 1):
             if need <= 0 or opened is not None:
                 break
-            for draw in await self._draw(step, parent, need, redraw, ranking, assessments, summaries):
+            if recorded is not None and redraw < len(recorded):  # what the killed attempt drew, not asked again
+                fill = self._fill(ranking)
+                drawn.append([self._merge(parent, patches, fill) for patches in recorded[redraw]])
+            else:
+                drawn.append(await self._draw(step, parent, need, redraw, ranking, assessments, summaries))
+            for draw in drawn[-1]:
+                if need <= 0:
+                    # A replayed batch can hold more than the step still needs: the step is narrower on resume,
+                    # or a draw the killed attempt rejected is accepted now. Live batches never do.
+                    break
                 candidate = draw.candidate
                 if (
                     candidate is not None
@@ -1317,6 +1332,15 @@ class Optimizer:
                     continue
                 accepted.append(draw)
                 need -= 1
+        # Recorded before anything is saved or scored, so a resume after a kill replays these proposals.
+        self._run.events.append(
+            "draw",
+            iteration=iteration,
+            parent_id=parent.id,
+            blocks=[_block_name(b) for b in step.blocks],
+            n_candidates=n,
+            draws=[[d.patches for d in batch] for batch in drawn],
+        )
         # Save, then score every new candidate of the step at once (a same-step twin is scored once).
         runner = self._runner()
         to_score: list[tuple[Candidate, bool, int]] = []  # (candidate, rescore, pending trials)
@@ -1420,6 +1444,21 @@ class Optimizer:
             best_objective=assessments[best_after[0]].objective if best_after else None,
         )
         return record
+
+    def _recorded_draws(self, step: Step, parent: Candidate, n: int) -> list[list[dict[str, Patch]]] | None:
+        """The killed iteration's proposals per redraw, from its `draw` event, when resume runs that iteration
+        again with the same parent and blocks and at most as many candidates; else None, and the proposers are
+        asked. A wider step (a larger budget near the cap) asks again, as an uninterrupted run would have."""
+        recorded = None if self._resumed is None else self._resumed.draw
+        if (
+            recorded is None
+            or recorded.iteration != self._iteration
+            or recorded.parent_id != parent.id
+            or recorded.blocks != [_block_name(b) for b in step.blocks]
+            or n > recorded.n_candidates
+        ):
+            return None
+        return recorded.draws
 
     async def _draw(
         self,
@@ -2044,14 +2083,24 @@ class Optimizer:
         with what it found when resumed with a `max_iterations` its closed iterations have already used (the
         `ProposerError` message gives the `Budget`).
         A killed search may get a larger `Budget`, which only moves where it stops; a `budget` that would let a
-        stopped search go further warns that it can't. The resumed run proposes what
-        an uninterrupted one would, with two exceptions: near the rollout cap, what the killed iteration spent
-        counts from the start, while its trials are reused at no cost, so a step can be cut narrower or the
-        search stop a step earlier than without the kill; and a refit that succeeded in the run but raises when
-        replayed (e.g. under another numpy) is replaced by measured means until a refit succeeds, with a
-        warning. If you changed cases,
+        stopped search go further warns that it can't. If you changed cases,
         evaluators, judge settings, or agent code, start a new run instead: resuming would mix results from
         the old and new setups.
+
+        The killed iteration runs again on the proposals its `draw` event recorded, without asking the
+        proposers, so the candidates it scored come back with their trials even from a proposer that answers
+        differently each time (`Reflection`). Killed before that event, it asks them again and pays for those
+        calls twice; none of its candidates was scored yet. It also asks again when the step changed: another
+        parent or blocks, or more candidates (a larger budget). Then, with such a proposer, the candidates the
+        killed attempt scored are in no result, though their trials count in spend.
+
+        With seeded proposers (`TPE`, `Thompson`), the resumed run proposes what an uninterrupted one would,
+        with two exceptions. Near the rollout cap, what the killed iteration spent counts from the start while
+        its trials are reused at no cost, so the search can stop a step earlier than without the kill, or the
+        step can be cut narrower and take only the first recorded proposals it needs; the trials of
+        candidates left out still count in spend. And a refit that succeeded in the run but raises when
+        replayed (e.g. under another numpy) is replaced by measured means until a refit succeeds, with a
+        warning.
 
         `resume` only reads the run directory. `run()` locks it (`RunDirectory.lock`) before it writes, so it
         raises `RuntimeError` while another process or Optimizer is writing the run, or once one wrote to it

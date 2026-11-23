@@ -49,10 +49,29 @@ class OpenRound:
     patch: Patch
 
 
+@dataclass(frozen=True)
+class DrawReplay:
+    """The killed iteration's `draw` event: what its proposers returned, replayed when it runs again.
+
+    Attributes:
+        iteration: The killed iteration.
+        parent_id: The parent the patches apply to.
+        blocks: The step's block names.
+        n_candidates: How many candidates the step was asked for.
+        draws: Per redraw (0 first), each proposal's patches (block name -> `Patch`) in the order returned.
+    """
+
+    iteration: int
+    parent_id: str
+    blocks: list[str]
+    n_candidates: int
+    draws: list[list[dict[str, Patch]]]
+
+
 @dataclass
 class ResumeState:
     """State up to the last closed iteration (one ending in `iteration_end`, or the partial iteration a `stop`
-    ends); a killed iteration is discarded and re-run.
+    ends); a killed iteration is discarded and re-run, on its recorded proposals when it has a `draw` event.
 
     Attributes:
         parents: Candidate id -> parent id (None for the baseline).
@@ -60,7 +79,8 @@ class ResumeState:
             key, `rollouts + sum(a.rollouts for a in previous_attempts)` (re-runs included).
         iteration: The last iteration with an `iteration_end` event (0 = only setup and the baseline).
         candidates: Every candidate proposed in a closed iteration, for duplicate checks (a killed
-            iteration's are proposed again as new); their scores and the fit are rebuilt from their saved trials.
+            iteration's are saved again when it runs again); their scores and the fit are rebuilt from their
+            saved trials.
         exhausted: Blocks that produced zero candidates on their latest turn.
         feedback: Per block name, its `observe` and `evidence` events interleaved in event order; replayed
             through each block's proposer before the first new iteration.
@@ -86,6 +106,9 @@ class ResumeState:
             closed iterations (every trial once the search stopped), so scores are rebuilt as the uninterrupted run
             had them (`RunDirectory.record_from` makes it a `TrialRecord`); a trial a killed iteration replaced is
             still a cache hit when that iteration runs again.
+        draw: The killed iteration's last `draw` event (iteration `iteration + 1`, read across earlier resumes),
+            so it runs again on the same proposals instead of asking its proposers again; None when the search
+            stopped or the kill came before every proposal of that iteration was in.
     """
 
     parents: dict[str, str | None]
@@ -109,6 +132,7 @@ class ResumeState:
     stop_reason: StopReason | None
     stop_max_rollouts: int | None
     trials: dict[tuple[str, int, str], Mapping[str, Any]]
+    draw: DrawReplay | None
 
 
 def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
@@ -129,7 +153,8 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
         The state up to the last closed iteration.
 
     Every search field comes only from closed iterations (`closed_events`), so a killed iteration is
-    discarded and runs again; trials are always read, and `spent` counts every one.
+    discarded and runs again, on the proposals returned in `draw`; trials are always read, and `spent`
+    counts every one.
 
     Raises:
         ValueError: A field that may not change differs, naming the field, e.g.
@@ -168,6 +193,7 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
         stop_reason=None,
         stop_max_rollouts=None,
         trials={},
+        draw=None,
     )
     closed = closed_events(events)
     kept = {id(event) for event in closed}
@@ -238,6 +264,16 @@ def load_state(run: RunDirectory, *, config: Mapping[str, Any]) -> ResumeState:
         elif name == "stop":
             state.stop_reason = event["reason"]
             state.stop_max_rollouts = event.get("max_rollouts")
+    if state.stop_reason is None:  # the killed iteration runs again; a later attempt's draw replaces an earlier one
+        for event in events:
+            if event["event"] == "draw" and event["iteration"] == state.iteration + 1:
+                state.draw = DrawReplay(
+                    event["iteration"],
+                    event["parent_id"],
+                    list(event["blocks"]),
+                    event["n_candidates"],
+                    [[{b: Patch.model_validate(p) for b, p in d.items()} for d in redraw] for redraw in event["draws"]],
+                )
     return state
 
 
