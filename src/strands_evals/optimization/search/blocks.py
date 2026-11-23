@@ -88,7 +88,9 @@ class Step:
             round 0 of the inner `Nested` within the outer's round 2. None outside any `Nested`.
         role: `opener` (a round's first step) or `inner` (every other step, including steps outside any
             `Nested`).
-        observe_at_round_end: Blocks whose `observe` waits for the round's end (the opener's outer block).
+        observe_at_round_end: Blocks whose `observe` waits for the round's end (the opener's outer block). The
+            step's other blocks are observed as in any step (a repeat of a measured candidate at once, as
+            `duplicate`).
     """
 
     blocks: tuple[Block, ...]

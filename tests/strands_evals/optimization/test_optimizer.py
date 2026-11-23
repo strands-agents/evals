@@ -2637,6 +2637,38 @@ async def test_an_openers_duplicate_doesnt_drop_the_rest_of_its_batch(tmp_path):
     assert sorted(o.values["temperature"] for o in proposer.observed) == [0.0, 0.5]
 
 
+async def test_a_repeated_openers_blocks_that_dont_wait_for_the_rounds_end_are_told_at_once(tmp_path):
+    class Opener(Schedule):
+        """One opener step of every block, then None; only the numbers block waits for the round's end."""
+
+        name = "opener"
+
+        def next(self, ctx):
+            return None if ctx.past else Step(tuple(ctx.blocks), 1, None, (0,), "opener", ("numbers",))
+
+    numbers, structure = Scripted({"temperature": 0.0}), Scripted({"manager.Window.size": 10})  # merged: the baseline
+    optimizer = _searching(
+        Block(numbers, "temperature", name="numbers"),
+        Block(structure, "manager", name="structure"),
+        schedule=Opener(),
+        base_dir=tmp_path,
+    )
+    _, events = await _search(optimizer)
+    baseline = optimizer._baseline.id
+    assert [p.outcome for p in optimizer._iterations[0].proposals] == ["duplicate"]
+    # Each patch observed once: the structure block's at once, as a duplicate; the numbers block's at the round's end.
+    told = [(o.outcome, o.candidate_id, o.objective, o.reason) for o in structure.observed]
+    assert told == [("duplicate", baseline, 0.0, "repeats candidate 0")]
+    assert [(o.candidate_id, o.reason) for o in numbers.observed] == [(baseline, "the round's best: candidate 0")]
+    assert sorted(e["block"] for e in events if e["event"] == "observe") == ["numbers", "structure"]
+    assert numbers.evidenced == [] and structure.evidenced == []  # the repeat is no new evidence
+    # Killed with the round still open: resume replays the structure block's observe and keeps the numbers round open.
+    copy = _killed(optimizer._run.root, tmp_path, lambda events: _index(events, "iteration_end"))
+    state = load_state(RunDirectory.open(copy), config=optimizer._config())
+    assert [o.outcome for o in state.feedback["structure"]] == ["duplicate"] and "numbers" not in state.feedback
+    assert [r.block for r in state.open_rounds] == ["numbers"]
+
+
 async def test_a_step_with_no_possible_parents_raises(tmp_path):
     optimizer = _searching(
         Block(Scripted({"temperature": 0.5}), "temperature"), schedule=_OneStep(parents=()), base_dir=tmp_path
