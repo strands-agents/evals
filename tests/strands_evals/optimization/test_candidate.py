@@ -163,14 +163,17 @@ def test_changed_keys_include_keys_on_one_side_only():
     space = make_space()
     baseline = Candidate.baseline(space)
     child = baseline.child(space, {"manager": "Summary", "prompt": "New.\n"}, origin=["structure"], rationale="")
-    assert changed_keys(baseline, child) == ["manager", "manager.Summary.ratio", "manager.Window.size", "prompt"]
-    assert changed_keys(baseline, baseline) == []
+    assert changed_keys(baseline.values, child.values) == [
+        "manager",
+        "manager.Summary.ratio",
+        "manager.Window.size",
+        "prompt",
+    ]
+    assert changed_keys(baseline.values, baseline.values) == []
 
 
 def test_changed_keys_tell_types_apart():
-    assert changed_keys(
-        Candidate({"x": 1}, None, ("baseline",), ""), Candidate({"x": 1.0}, None, ("baseline",), "")
-    ) == ["x"]
+    assert changed_keys({"x": 1}, {"x": 1.0}) == ["x"]
 
 
 # changed_values

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Literal, get_args
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -19,6 +19,7 @@ def near(value: float, end: float) -> bool:
 
 LabelOutcome = Literal["feasible", "infeasible", "ineligible"]  # also the first three ObservationOutcomes
 LABEL_OUTCOMES: tuple[LabelOutcome, ...] = get_args(LabelOutcome)  # the same outcomes, to iterate over
+PickOutcome = Literal["top_finalist", "baseline_best", "no_feasible_finalist", "no_finalists"]  # how the pick ended
 
 
 class CaseSplit(BaseModel):
@@ -109,7 +110,9 @@ class PairedComparison(BaseModel):
     """A paired t-interval on the cases both candidates measured (candidate - reference).
 
     For a ratio, `mean_diff` holds the ratio of means. `ci_low` / `ci_high` are None with one shared case
-    (no interval from one difference).
+    (no interval from one difference). `candidate_mean` and `reference_mean` are each side's mean over the
+    same `n_cases` shared cases, so `mean_diff` is their difference (or ratio); None in a comparison saved
+    before they existed.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -118,6 +121,8 @@ class PairedComparison(BaseModel):
     ci_low: float | None
     ci_high: float | None
     n_cases: int
+    candidate_mean: float | None = None
+    reference_mean: float | None = None
 
 
 class CandidateLabel(BaseModel):
@@ -169,7 +174,8 @@ class ValidationReport(BaseModel):
             order, so the champion is first unless the front is empty; `[]` otherwise.
         objectives: Candidate id -> its validation objective under the validation fit (a flagged metric's
             measured mean instead), or by measured validation means (`Assessment.objective`) when `problem` is
-            set; None when it isn't eligible on validation or no validation trial of it completed.
+            set; None when it isn't eligible on validation or no validation trial of it completed. In the
+            pick's order: the baseline, then the finalists in search ranking order.
         estimates: Candidate id -> goal metric -> the validation fit's estimate (a flagged metric is left out);
             empty when assessed by measured means.
         adjusted_means: Candidate id -> goal metric -> the adjusted validation mean the pick used for a metric
@@ -181,8 +187,15 @@ class ValidationReport(BaseModel):
         infeasible: Candidate id -> why it can't ship (a constraint not met on validation, not eligible
             there, or no validation trial of it completed).
         measured: Candidate id -> every metric measured on validation.
-        problem: Why the validation fit wasn't used, e.g. "fewer than 2 eligible candidates" or
-            "the model raised: <Type>: <message>"; None when it was used.
+        p_met: Candidate id -> constraint (as `run.json` writes it, e.g. "tokens <= 4000") -> P(met) under the
+            validation fit, for each constraint the fit judged (its metric not flagged); `{}` when assessed by
+            measured means, and in a report saved before it existed.
+        problem: Why the validation fit wasn't used for every goal metric: "fewer than 2 eligible candidates",
+            "the model returned no fit", "the model raised: <Type>: <message>", "flagged: <metrics>" (every
+            goal metric flagged), or "flagged: <metrics> (by adjusted means; the other metrics by the fit)";
+            None when the fit judged every goal metric.
+        rule: The pick rule's config (`FinalPick.rule.config()`), e.g. `{"kind": "Mean"}`; None in a report
+            saved before it existed.
         reason: One sentence, e.g. "c3a1 highest on validation: 0.81 vs baseline 0.77".
     """
 
@@ -195,8 +208,23 @@ class ValidationReport(BaseModel):
     adjusted_means: dict[str, dict[str, float]] = Field(default_factory=dict)
     infeasible: dict[str, str]
     measured: dict[str, dict[str, Measured]]
+    p_met: dict[str, dict[str, float]] = Field(default_factory=dict)
     problem: str | None
+    rule: dict[str, Any] | None = None
     reason: str
+
+    @property
+    def outcome(self) -> PickOutcome:
+        """How the pick ended, from `champion_id`, `objectives` (the baseline first), and `infeasible`:
+        `no_finalists` (the search gave none, so the baseline ships), `top_finalist` (a finalist ranks first
+        among the feasible candidates and ships), `baseline_best` (the baseline ranks first and ships), or
+        `no_feasible_finalist` (no finalist is feasible, so the baseline ships)."""
+        baseline, *finalists = self.objectives
+        if not finalists:
+            return "no_finalists"
+        if self.champion_id != baseline:
+            return "top_finalist"
+        return "baseline_best" if any(c not in self.infeasible for c in finalists) else "no_feasible_finalist"
 
 
 class TestReport(BaseModel):

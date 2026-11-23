@@ -212,7 +212,8 @@ def test_a_simulated_users_tokens_are_reported_apart_and_never_count_against_the
     assert result.benchmark_cost.tokens == USER_TOKENS * len(trials)
     # The user's 1,000 tokens alone would break the 450-token limit; the candidate's own calls can meet it.
     assert result.improved and result.best.values["manager"] == "summary"
-    assert f"other agents in the rollouts {result.benchmark_cost.tokens}." in result.summary()
+    other = next(line for line in result.summary().splitlines() if line.startswith("other agents"))
+    assert other.split()[-1] == f"{result.benchmark_cost.tokens:,}"
     older_result = {key: value for key, value in result.to_dict().items() if key != "benchmark_cost"}
     assert OptimizationResult.from_dict(older_result).benchmark_cost.tokens == 0  # a result.json from before
 
