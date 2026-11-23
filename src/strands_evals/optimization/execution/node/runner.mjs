@@ -2,8 +2,9 @@
 //
 // Usage: node runner.mjs <agent file>. One JSON object per line in on stdin, one per line out on stdout, matched by
 // `id`; requests run concurrently. The file builds its agent with `createHarness` from `@strands-agents/harness`, as
-// `/export` writes it. Every request runs the file again as a fresh module, so each trial gets a fresh agent and fresh
-// objects; modules the file imports are loaded once and shared. Requests:
+// `/export` writes it. Every request but `turn` and `release` runs the file again as a fresh module, so each trial gets
+// a fresh agent and fresh objects (a session's turns reuse the agent its `start` built); modules the file imports are
+// loaded once and shared. Requests:
 //
 //   describe {attr, paths}           -> {index, values: [{value} | {missing}]}  the agent's call and its values
 //   probe    {attr, index, values}   -> {ok} | {ok: false, status, error_type, error}  build it once, run nothing
@@ -15,7 +16,8 @@
 //   turn     {session, input, trace_id, span_id}
 //                                    -> {status, output?, result?, error_type?, error?, spans}  ask it again; the
 //                                       turns of one session run one at a time, a cancelled one finishing first
-//   release  {session}               -> {ok}  let the agent go and remove its folders
+//   release  {session, wait_ms?}     -> {ok}  let the agent go and remove its folders, once a turn still running
+//                                       ends (waited for `wait_ms`, 30 s by default, at most)
 //   cancel   {target}                -> (no reply) abort that run or turn; release the session a start opened
 //
 // `values` is a list of [path, value]: set on the `index`-th `createHarness` call of the file's run. Every call gets
@@ -82,12 +84,19 @@ class Collector {
     if (trace) trace.watching += 1
     else this.traces.set(traceId, { watching: 1, spans: [] })
   }
-  take(traceId) {
+  /**
+   * Ends one watch and returns the spans finished since the last take. A request the caller cancelled passes
+   * `leaveToOthers`: while another request of the trace still runs, the spans stay for that one's reply, which the
+   * caller reads for sure; only the last takes them, onto a late reply the caller reads if the trial is still open.
+   */
+  take(traceId, { leaveToOthers = false } = {}) {
     const trace = this.traces.get(traceId)
     if (!trace) return []
+    trace.watching -= 1
+    if (leaveToOthers && trace.watching > 0) return []
     const spans = trace.spans
     trace.spans = []
-    if (--trace.watching === 0) this.traces.delete(traceId)
+    if (trace.watching === 0) this.traces.delete(traceId)
     return withoutRepeatedModelCalls(spans).map(spanJson)
   }
   onStart() {}
@@ -367,7 +376,8 @@ async function startSession({ id, attr, index, values, trace_id, span_id, trace_
   return { ok: true, session }
 }
 
-async function turn({ session, input, trace_id, span_id }, signal) {
+async function turn(request, signal) {
+  const { session, input, trace_id, span_id } = request
   const { otel } = await setup
   const open = sessions.get(session)
   if (!open) {
@@ -379,10 +389,11 @@ async function turn({ session, input, trace_id, span_id }, signal) {
     }
   }
   // One invocation at a time: a turn waits for the one before it, including one the caller cancelled, which keeps
-  // running until the agent notices the cancel (an agent asked twice at once raises ConcurrentInvocationError).
+  // running until the agent notices the cancel (an agent asked twice at once raises ConcurrentInvocationError). The
+  // session is idle again once the turn's reply is sent (`answer` calls `request.replied`), so a `release` waiting
+  // for it replies after it, and the turn's spans reach the caller first.
   const before = open.idle
-  let done
-  open.idle = new Promise((resolve) => (done = resolve))
+  open.idle = new Promise((resolve) => (request.replied = resolve))
   try {
     await before
     if (signal.aborted) return { status: 'agent_failure', error_type: 'Cancelled', error: 'the turn was cancelled' }
@@ -395,18 +406,31 @@ async function turn({ session, input, trace_id, span_id }, signal) {
     return { status: 'completed', output: String(result), result: resultJson(result) }
   } catch (error) {
     return { status: classify(error), ...describeError(error) }
-  } finally {
-    done()
   }
 }
 
-async function releaseSession({ session }) {
+// How long `release` waits for a turn still running (one the caller cancelled that hasn't stopped yet).
+const RELEASE_WAIT_MS = 30_000
+
+async function releaseSession({ session, wait_ms = RELEASE_WAIT_MS }) {
   const open = sessions.get(session)
   sessions.delete(session)
-  if (open) {
-    startedBy.delete(open.startId)
-    await open.built.cleanup()
+  if (!open) return { ok: true }
+  startedBy.delete(open.startId)
+  // A cancelled turn still winding down would write its session snapshot back after the folders go, so wait for it.
+  // One that ignores the cancel (a stuck tool) is waited for `wait_ms` at most: then the agent is let go anyway, and
+  // its folders are removed again once the turn ends.
+  let timer
+  const idle = await Promise.race([
+    open.idle.then(() => true),
+    new Promise((resolve) => (timer = setTimeout(() => resolve(false), wait_ms))),
+  ])
+  clearTimeout(timer)
+  if (!idle) {
+    process.stderr.write(`strands-evals: session ${session} still has a turn running after ${wait_ms} ms; released\n`)
+    void open.idle.then(() => open.built.cleanup())
   }
+  await open.built.cleanup()
   return { ok: true }
 }
 
@@ -487,14 +511,17 @@ async function answer(line) {
     const handler = { describe, probe, run: runCase, start: startSession, turn, release: releaseSession }[request.type]
     if (!handler) throw new Error(`unknown request type ${request.type}`)
     const reply = await handler(request, controller.signal)
-    if (watching) reply.spans = collector.take(watching)
-    watching = undefined
+    if (watching) {
+      reply.spans = collector.take(watching, { leaveToOthers: controller.signal.aborted })
+      watching = undefined
+    }
     send({ ...reply, id: request.id })
   } catch (error) {
     send({ id: request.id, setup_error: describeError(error).error })
   } finally {
     running.delete(request.id)
-    if (watching) (await setup).collector.take(watching) // a failed request still lets its trace go
+    if (watching) (await setup).collector.take(watching, { leaveToOthers: true }) // a failed request carries no spans
+    request.replied?.()
   }
 }
 
@@ -508,7 +535,7 @@ createInterface({ input: process.stdin })
   .on('close', () =>
     void Promise.allSettled([...pending]).then(async () => {
       // Finish what's in flight, then let go of any conversation nobody released, folders included.
-      for (const { built } of sessions.values()) await built.cleanup()
+      await Promise.allSettled([...sessions.values()].map(({ built }) => built.cleanup()))
       process.exit(0)
     })
   )

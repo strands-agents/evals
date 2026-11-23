@@ -14,6 +14,7 @@ import json
 import shutil
 import subprocess
 import time
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -128,9 +129,11 @@ def test_optimize_runs_a_two_turn_rollout_over_sessions(project, experiment_path
     assert best_train.overall_score is not None and best_train.overall_score >= 0.8
 
 
-def _fragile_agent(project: Path, name: str, log: Path, *, build_ms: int = 0, shutdown_throws: bool = False) -> Path:
+def _fragile_agent(
+    project: Path, name: str, log: Path, *, build_ms: int = 0, shutdown_throws: bool = False, memory: bool = True
+) -> Path:
     """An `agent.ts` variant whose build takes `build_ms` and whose shutdown writes "released" to `log`, then throws
-    when `shutdown_throws`."""
+    when `shutdown_throws`; `memory=False` turns the harness's memory off."""
     path = project / f"{name}.ts"
     path.write_text(
         f"""import {{ appendFileSync }} from 'node:fs'
@@ -144,7 +147,7 @@ export const agent = await createHarness({{
   effort: 'auto',
   builtinTools: [],
   builtinPlugins: [],
-  skills: false,
+  skills: false,{"" if memory else " memory: false,"}
 }})
 const shutdown = agent.shutdown?.bind(agent)
 agent.shutdown = async () => {{
@@ -292,5 +295,136 @@ def test_requests_sharing_a_trace_each_get_their_spans(project):
         alone = asyncio.run(spans_of_one_session(50))
         assert alone > 0 and asyncio.run(spans_of_one_session(800)) == alone
         assert sum(asyncio.run(together())) == 2 * alone
+    finally:
+        runner.close()
+
+
+def _trial_folders(tmp: Path) -> list[Path]:
+    return sorted(tmp.glob("strands-evals-trial-*"))
+
+
+def test_a_session_cancelled_mid_turn_leaves_no_folder(project, tmp_path, monkeypatch):
+    """Leaving a session waits for a cancelled turn still running before its folders go, so the turn's session
+    snapshot isn't written back after them; a session nobody released is cleaned up when the worker closes."""
+    node_tmp = tmp_path / "node-tmp"
+    node_tmp.mkdir()
+    for name in ("TMPDIR", "TEMP", "TMP"):  # the worker's os.tmpdir() (TEMP / TMP on Windows), read when it starts
+        monkeypatch.setenv(name, str(node_tmp))
+    runner = NodeRunner(_fragile_agent(project, "no_memory", tmp_path / "released.log", memory=False))
+    try:
+        agent = NodeAgent(runner, "agent", 0, [])
+
+        async def cancelled_mid_turn() -> None:
+            async with agent.session() as session:
+                await session.turn("hello")
+                with pytest.raises(asyncio.TimeoutError):
+                    await asyncio.wait_for(session.turn("slow 1500"), 0.3)
+
+        asyncio.run(cancelled_mid_turn())
+        time.sleep(0.5)  # anything the cancelled turn still had to write
+        assert _trial_folders(node_tmp) == []  # `release` removed them, after the turn ended
+
+        async def left_open() -> None:
+            await agent.session().__aenter__()  # never released
+
+        asyncio.run(left_open())
+        assert len(_trial_folders(node_tmp)) == 1
+    finally:
+        runner.close()
+    assert _trial_folders(node_tmp) == []  # the worker let it go on close
+
+
+def test_a_cancelled_turn_stops_the_agent_rather_than_waiting_it_out(project):
+    """The cancel reaches the agent's model call, so the next turn doesn't wait for the cancelled one's full length."""
+    runner = NodeRunner(project / "agent.ts")
+    try:
+
+        async def converse() -> float:
+            async with NodeAgent(runner, "agent", 0, []).session() as session:
+                with pytest.raises(asyncio.TimeoutError):
+                    await asyncio.wait_for(session.turn("abortable 10000"), 0.3)
+                started = time.monotonic()
+                await session.turn("question 3")
+                return time.monotonic() - started
+
+        assert asyncio.run(converse()) < 5  # the abortable call would take 10 s left alone
+    finally:
+        runner.close()
+
+
+def test_a_cancelled_request_leaves_the_others_spans_to_them(project):
+    """A cancelled turn's reply is thrown away; the spans a run of the same trial finished meanwhile still reach the
+    run's reply."""
+    runner = NodeRunner(project / "agent.ts")
+    traced = {"trace_id": "fedcba9876543210fedcba9876543210", "span_id": "fedcba9876543210"}
+    run = {"type": "run", "attr": "agent", "index": 0, "values": [], "input": "slow 3000", **traced}
+    try:
+
+        async def names_of_a_run(*, beside_a_cancelled_turn: bool) -> Counter:
+            if not beside_a_cancelled_turn:
+                return Counter(span["name"] for span in (await runner.call_async(run))["spans"])
+            start = await runner.call_async({"type": "start", "attr": "agent", "index": 0, "values": [], **traced})
+            running = asyncio.ensure_future(runner.call_async(run))
+            await asyncio.sleep(0.2)  # the run's memory spans have finished; its model call takes 3 s
+            turn = {"type": "turn", "session": start["session"], "input": "slow 1500", **traced}
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(runner.call_async(turn), 0.3)  # finishes in Node at 1.5 s, while the run runs
+            spans = (await running)["spans"]
+            await runner.call_async({"type": "release", "session": start["session"]})
+            return Counter(span["name"] for span in spans)
+
+        alone = asyncio.run(names_of_a_run(beside_a_cancelled_turn=False))
+        together = asyncio.run(names_of_a_run(beside_a_cancelled_turn=True))
+        assert alone and not alone - together  # every span of the run alone is still there (the turn's join them)
+    finally:
+        runner.close()
+
+
+def test_a_cancelled_last_turn_still_brings_its_spans_back(project):
+    """A rollout that times out its last turn and leaves the session: the turn's reply comes back before the release's,
+    and its spans are read off it, so the turn's spend still counts."""
+    runner = NodeRunner(project / "agent.ts")
+    traced = {"trace_id": "00112233445566778899aabbccddeeff", "span_id": "0011223344556677"}
+    try:
+
+        async def cancel_the_last_turn() -> list[dict]:
+            late: list[dict] = []
+            start = await runner.call_async({"type": "start", "attr": "agent", "index": 0, "values": [], **traced})
+            turn = {"type": "turn", "session": start["session"], "input": "slow 1000", **traced}
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(runner.call_async(turn, on_late=late.append), 0.2)
+            await runner.call_async({"type": "release", "session": start["session"]})
+            return late  # read as soon as the release replied
+
+        (reply,) = asyncio.run(cancel_the_last_turn())
+        assert "chat" in {span["name"] for span in reply["spans"]}  # the cancelled turn's model call
+    finally:
+        runner.close()
+
+
+def test_a_release_waits_for_a_stuck_turn_only_so_long(project, tmp_path, monkeypatch):
+    """A turn that ignores the cancel holds `release` up for `wait_ms` at most; its folders still go once it ends."""
+    node_tmp = tmp_path / "node-tmp"
+    node_tmp.mkdir()
+    for name in ("TMPDIR", "TEMP", "TMP"):
+        monkeypatch.setenv(name, str(node_tmp))
+    runner = NodeRunner(_fragile_agent(project, "stuck_turn", tmp_path / "released.log", memory=False))
+    try:
+
+        async def release_beside_a_stuck_turn() -> float:
+            start = await runner.call_async({"type": "start", "attr": "agent", "index": 0, "values": []})
+            turn = {"type": "turn", "session": start["session"], "input": "slow 3000"}
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(runner.call_async(turn), 0.2)
+            began = time.monotonic()
+            await runner.call_async({"type": "release", "session": start["session"], "wait_ms": 300})
+            return time.monotonic() - began
+
+        assert asyncio.run(release_beside_a_stuck_turn()) < 2  # not the turn's 3 s
+        deadline = time.monotonic() + 10
+        while _trial_folders(node_tmp) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        time.sleep(0.5)  # anything the turn still wrote as it ended
+        assert _trial_folders(node_tmp) == []
     finally:
         runner.close()

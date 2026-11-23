@@ -406,7 +406,11 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
         "--rollout",
         metavar="MODULE:ATTR",
         default=None,
-        help="a rollout_fn(agent_factory, case); with --config, agent_factory builds a fresh harness",
+        help=(
+            "a rollout_fn(agent_factory, case); with --config, agent_factory builds a fresh harness; with a .ts or .js "
+            "--agent, it returns an agent whose invoke_async asks a fresh agent each call, and whose session() keeps "
+            "one conversation across turns"
+        ),
     )
     parser.add_argument(
         "--environment", metavar="MODULE:ATTR", default=None, help="with --agent: an environment(case) function"

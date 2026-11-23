@@ -36,10 +36,11 @@ class FakeRunner:
 
     def __init__(self, **reply):
         self.reply = {**REPLY, **reply}
-        self.requests = []
+        self.requests, self.late = [], []
 
-    async def call_async(self, message):
+    async def call_async(self, message, on_late=None):
         self.requests.append(message)
+        self.late.append(on_late)
         text = json.dumps(self.reply)
         if "trace_id" in message:
             text = text.replace(RECORDED_TRACE, message["trace_id"]).replace(RECORDED_PARENT, message["span_id"])
@@ -47,7 +48,7 @@ class FakeRunner:
 
 
 class GoneRunner:
-    async def call_async(self, message):
+    async def call_async(self, message, on_late=None):
         raise NodeRunnerGone("the Node agent runner exited with code 1")
 
 
@@ -139,7 +140,7 @@ class SessionRunner(FakeRunner):
         self.start_reply = start_reply
         self.opened = 0
 
-    async def call_async(self, message):
+    async def call_async(self, message, on_late=None):
         if message.get("type") == "start":
             self.requests.append(message)
             self.opened += 1
@@ -147,7 +148,7 @@ class SessionRunner(FakeRunner):
         if message.get("type") == "release":
             self.requests.append(message)
             return {"ok": True}
-        return await super().call_async(message)
+        return await super().call_async(message, on_late)
 
 
 async def _converse(tracer, traces, agent, prompts):
@@ -221,10 +222,10 @@ async def test_a_failed_turn_raises_and_the_session_is_still_released(traces, tr
 
 async def test_a_worker_that_dies_mid_session_is_infrastructure():
     class DiesOnTurn(SessionRunner):
-        async def call_async(self, message):
+        async def call_async(self, message, on_late=None):
             if message.get("type") in ("turn", "release"):
                 raise NodeRunnerGone("the Node agent runner exited with code 1")
-            return await super().call_async(message)
+            return await super().call_async(message, on_late)
 
     agent = NodeAgent(DiesOnTurn(), "agent", 0, [])
     with pytest.raises(InfrastructureError):
@@ -235,9 +236,9 @@ async def test_a_worker_that_dies_mid_session_is_infrastructure():
 
 async def test_a_start_is_traced_and_its_spans_land_in_the_trial(traces, tracer):
     class SpansOnStart(SessionRunner):
-        async def call_async(self, message):
+        async def call_async(self, message, on_late=None):
             if message.get("type") != "start":
-                return await super().call_async(message)
+                return await super().call_async(message, on_late)
             self.requests.append(message)
             spans = json.dumps(REPLY["spans"])
             spans = spans.replace(RECORDED_TRACE, message["trace_id"]).replace(RECORDED_PARENT, message["span_id"])
@@ -256,6 +257,32 @@ async def test_invoke_async_keeps_the_answers_structured_result(traces, tracer):
     assert agent.last_result is None
     _, _, output = await _invoke(tracer, traces, agent)
     assert output == "answer 7" and agent.last_result == {"stop_reason": "endTurn"}
+
+
+async def test_every_traced_call_reads_its_late_reply_for_spans(traces, tracer):
+    """A cancelled run, start, or turn still has its spans read off the reply the worker sends late."""
+    runner = SessionRunner()
+    agent = NodeAgent(runner, "agent", 0, [])
+    await _invoke(tracer, traces, agent)
+    trace_id, attempt_id, _ = await _converse(tracer, traces, agent, ["question 7"])
+    assert [r["type"] for r in runner.requests] == ["run", "start", "turn", "release"]
+    run_late, turn_late = runner.late[0], runner.late[1]  # SessionRunner records start / release itself
+    assert run_late is turn_late is not None
+    before = traces.usage(trace_id, attempt_id).tokens
+    spans = json.loads(
+        json.dumps(REPLY["spans"])
+        .replace(RECORDED_TRACE, trace_id)
+        .replace(RECORDED_PARENT, runner.requests[2]["span_id"])
+        .replace('"span_id": "', '"span_id": "f')  # another call's spans, not the turn's own
+    )
+    turn_late({"status": "agent_failure", "spans": spans})
+    assert traces.usage(trace_id, attempt_id).tokens == before + 700
+
+
+async def test_a_worker_gone_at_start_is_infrastructure():
+    with pytest.raises(InfrastructureError):
+        async with NodeAgent(GoneRunner(), "agent", 0, []).session():
+            pass
 
 
 async def test_a_turn_outside_the_session_says_to_enter_it():

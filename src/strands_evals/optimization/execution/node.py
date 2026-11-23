@@ -21,6 +21,7 @@ import os
 import shutil
 import subprocess
 import threading
+from collections.abc import Callable
 from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
@@ -67,6 +68,8 @@ class NodeRunner:
         self._command = [found, str(RUNNER), str(agent_file)]
         self._lock = threading.Lock()
         self._pending: dict[int, Future[dict[str, Any]]] = {}
+        # Called with the reply of a call its caller cancelled, should one still come (`call_async(on_late=)`).
+        self._late: dict[int, Callable[[dict[str, Any]], None]] = {}
         self._next_id = 0
         self._process: subprocess.Popen[str] | None = None
         atexit.register(self.close)
@@ -90,18 +93,27 @@ class NodeRunner:
                 continue
             with self._lock:
                 future = self._pending.pop(reply.get("id"), None)
+                late = self._late.pop(reply.get("id"), None)
             if future is not None and not future.done():
                 future.set_result(reply)
+            elif late is not None:
+                try:
+                    late(reply)
+                except Exception:
+                    logger.warning("ignored an error reading a cancelled call's late reply", exc_info=True)
         code = process.wait()
         with self._lock:
             if self._process is process:
                 self._process = None
             gone, self._pending = self._pending, {}
+            self._late = {}
         for future in gone.values():
             if not future.done():
                 future.set_exception(NodeRunnerGone(f"the Node agent runner exited with code {code}"))
 
-    def _send(self, message: dict[str, Any]) -> tuple[int, Future[dict[str, Any]]]:
+    def _send(
+        self, message: dict[str, Any], on_late: Callable[[dict[str, Any]], None] | None = None
+    ) -> tuple[int, Future[dict[str, Any]]]:
         future: Future[dict[str, Any]] = Future()
         with self._lock:
             if self._process is None or self._process.poll() is not None:
@@ -109,12 +121,15 @@ class NodeRunner:
             self._next_id += 1
             request_id = self._next_id
             self._pending[request_id] = future
+            if on_late is not None:
+                self._late[request_id] = on_late
             try:
                 assert self._process.stdin is not None
                 self._process.stdin.write(json.dumps({**message, "id": request_id}) + "\n")
                 self._process.stdin.flush()
             except OSError as error:
                 self._pending.pop(request_id, None)
+                self._late.pop(request_id, None)
                 raise NodeRunnerGone(f"the Node agent runner stopped reading requests: {error}") from error
         return request_id, future
 
@@ -122,9 +137,15 @@ class NodeRunner:
         """Send a request and wait for its reply (`describe`, `probe`)."""
         return _checked(self._send(message)[1].result(timeout=timeout))
 
-    async def call_async(self, message: dict[str, Any]) -> dict[str, Any]:
-        """Send a request and await its reply; a cancelled call cancels the request in Node."""
-        request_id, future = self._send(message)
+    async def call_async(
+        self, message: dict[str, Any], *, on_late: Callable[[dict[str, Any]], None] | None = None
+    ) -> dict[str, Any]:
+        """Send a request and await its reply; a cancelled call cancels the request in Node.
+
+        `on_late` is called (on the reader thread) with the reply of a call that was cancelled, if the worker still
+        sends one: the agent's spans travel on it, so a cancelled turn's spend is still counted.
+        """
+        request_id, future = self._send(message, on_late)
         try:
             return _checked(await asyncio.wrap_future(future))
         except asyncio.CancelledError:
@@ -176,6 +197,11 @@ def _answered(reply: dict[str, Any]) -> str:
     raise failure
 
 
+def _late_spans(reply: dict[str, Any]) -> None:
+    """Ingest the spans on the late reply of a cancelled call (kept only while the trial's trace is registered)."""
+    ingest(reply.get("spans") or [])
+
+
 def _traced(request: dict[str, Any]) -> dict[str, Any]:
     """`request` with the current span's trace context, when there is one, so the agent's spans parent to it."""
     context = trace_api.get_current_span().get_span_context()
@@ -211,7 +237,7 @@ class NodeAgent:
             }
         )
         try:
-            reply = await self._runner.call_async(request)
+            reply = await self._runner.call_async(request, on_late=_late_spans)
         except NodeRunnerGone as error:
             raise InfrastructureError(str(error)) from error
         answer = _answered(reply)
@@ -270,7 +296,7 @@ class NodeSession:
             }
         )
         try:
-            reply = await self._runner.call_async(request)
+            reply = await self._runner.call_async(request, on_late=_late_spans)
         except NodeRunnerGone as error:
             raise InfrastructureError(str(error)) from error
         ingest(reply.get("spans") or [])  # the build's spans, a failed build's included
@@ -288,10 +314,10 @@ class NodeSession:
             raise RuntimeError("the session is not open: enter it first (`async with agent.session() as session`)")
         request = _traced({"type": "turn", "session": self._session, "input": prompt})
         try:
-            reply = await self._runner.call_async(request)
+            reply = await self._runner.call_async(request, on_late=_late_spans)
         except NodeRunnerGone as error:
-            # The worker restarting lost the conversation: later turns would silently start one afresh.
-            self._session = None
+            # The worker exited and the conversation with it; a later turn reaches the restarted worker, which has
+            # no session of this id (ids are random), so it fails as infrastructure too and never reaches another agent.
             raise InfrastructureError(str(error)) from error
         answer = _answered(reply)
         self.last_result = reply.get("result")
