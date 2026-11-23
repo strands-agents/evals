@@ -9,6 +9,7 @@ import os
 import shutil
 import stat
 import tempfile
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -540,11 +541,21 @@ _COPY_MARKER = ".candidate-copy"
 
 
 def _read_marker(directory: Path) -> str | None:
-    """The values key a finished copy at `directory` holds, or None when there is no finished copy."""
-    try:
-        return (directory / _COPY_MARKER).read_bytes().decode("ascii")
-    except (FileNotFoundError, NotADirectoryError):
-        return None
+    """The values key a finished copy at `directory` holds, or None when there is no finished copy.
+
+    Windows can refuse to open the marker for a moment while another call's copy is being renamed into
+    place (`PermissionError`), so that is retried for up to about a second before it is raised.
+    """
+    for attempt in range(7):
+        try:
+            return (directory / _COPY_MARKER).read_bytes().decode("ascii")
+        except (FileNotFoundError, NotADirectoryError):
+            return None
+        except PermissionError:
+            if attempt == 6:
+                raise
+            time.sleep(0.01 * 2**attempt)
+    return None
 
 
 def _relink(building: Path, folder: Path, folders: tuple[Path, ...]) -> None:

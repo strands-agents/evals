@@ -28,8 +28,12 @@ def _node_ok() -> bool:
     node, npm = shutil.which("node"), shutil.which("npm")
     if node is None or npm is None:
         return False
-    major, minor, *_ = subprocess.run([node, "--version"], capture_output=True, text=True).stdout[1:].split(".")
-    return (int(major), int(minor)) >= (22, 18)
+    try:
+        done = subprocess.run([node, "--version"], capture_output=True, text=True, timeout=30)
+        major, minor, *_ = done.stdout.strip().lstrip("v").split(".")
+        return done.returncode == 0 and (int(major), int(minor)) >= (22, 18)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False  # a broken shim or a version manager's stub: skip rather than error at collection
 
 
 pytestmark = pytest.mark.skipif(not _node_ok(), reason="needs Node.js 22.18+ and npm")
