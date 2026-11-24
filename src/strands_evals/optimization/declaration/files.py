@@ -253,11 +253,16 @@ class JsonField(_Marker):
         return self._text
 
     def _render(self, value: Value, text: str) -> str:
-        """The whole file's text with the field at the pointer set to `value`."""
+        """The whole file's text with the field at the pointer set to `value`.
+
+        A field already holding `value` is left as it is, so a `float` key equal to the file's integer
+        keeps the integer, as `write` keeps it in the copy.
+        """
         document = _loads(text)
         # Only to raise when the file lost the field since declaration.
         _get(document, self._tokens, self.pointer, self.path)
-        _set(document, self._tokens, self._json(value))
+        if not self._holds(value, text):
+            _set(document, self._tokens, self._json(value))
         return _dumps(document) + "\n"
 
     def _canonical(self, value: Any) -> Any:

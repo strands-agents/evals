@@ -385,7 +385,7 @@ def test_the_copy_writes_typed_json_fields_as_json_values(settings, tmp_path):
     workspace = tmp_path / "run" / "optimization_files"
     space.create_candidate_copy(space.complete(changed), workspace)
     document = json.loads(copied(space, workspace, settings).read_text())
-    assert {key: document[key] for key in SETTINGS} == changed
+    assert document == {**changed, "tags": ["a"], "seed": 2**53 + 1, "huge": 10**400}
     assert type(document["max_turns"]) is int and document["stream"] is True
 
 

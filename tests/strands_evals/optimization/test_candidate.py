@@ -266,6 +266,24 @@ def test_a_json_number_shows_in_its_files_diff_and_in_changed_values(project):
     assert changed_values(space, baseline, child) == {"turns": {"old": 4, "new": 8}}
 
 
+def test_a_float_over_an_integer_in_the_file_shows_the_files_integer_in_the_diff(tmp_path):
+    (tmp_path / "agent.json").write_text('{\n  "top_p": 1,\n  "temperature": 0.7\n}\n', newline="")
+    space = Space(
+        {
+            "top_p": JsonField(tmp_path / "agent.json", "/top_p", Float(0.0, 1.0)),
+            "temperature": JsonField(tmp_path / "agent.json", "/temperature", Float(0.0, 1.0)),
+        }
+    )
+    baseline = Candidate.baseline(space)
+    child = baseline.child(space, {"temperature": 0.2}, origin=["numbers"], rationale="")
+    assert diff(space, baseline, child, root=tmp_path) == (
+        "--- a/agent.json\n+++ b/agent.json\n@@ -1,4 +1,4 @@\n"
+        ' {\n   "top_p": 1,\n-  "temperature": 0.7\n+  "temperature": 0.2\n }\n'
+    )
+    changed = baseline.child(space, {"top_p": 0.5}, origin=["numbers"], rationale="")
+    assert '-  "top_p": 1,\n+  "top_p": 0.5,\n' in diff(space, baseline, changed, root=tmp_path)
+
+
 def test_diff_heads_non_file_text_with_its_key_and_never_shows_numbers(project):
     space = file_space(project)
     baseline = Candidate.baseline(space)
