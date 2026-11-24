@@ -6,6 +6,7 @@
 """
 
 import json
+import logging
 from pathlib import Path
 
 import opentelemetry.trace as trace_api
@@ -301,3 +302,25 @@ def test_ingest_rebuilds_every_field_the_readers_use(traces, tracer):
     assert [event.name for event in chat.events] == ["gen_ai.system.message", "gen_ai.user.message", "gen_ai.choice"]
     assert chat.end_time > chat.start_time > 1_700_000_000 * 10**9  # nanoseconds, kept exact as strings
     assert chat.instrumentation_scope is not None
+    assert chat.dropped_events == 0
+
+
+def test_events_the_workers_limit_dropped_are_counted_so_session_warns(traces, tracer, caplog):
+    with tracer.start_as_current_span("execute_case case", context=Context()) as root:
+        trace_id = format(root.get_span_context().trace_id, "032x")
+        traces.register(trace_id)
+        parent = format(root.get_span_context().span_id, "016x")
+    spans = json.loads(json.dumps(REPLY["spans"]).replace(RECORDED_TRACE, trace_id).replace(RECORDED_PARENT, parent))
+    for span in spans:
+        if span["name"] == "chat":
+            span["dropped_events"] = 3
+
+    ingest(spans)
+    with caplog.at_level(logging.WARNING, logger="strands_evals.optimization.execution.traces"):
+        traces.session(trace_id, parent)
+
+    (chat,) = [span for span in traces._filter.spans(trace_id) if span.name == "chat"]
+    assert chat.dropped_events == 3
+    assert len(chat.events) == 3
+    assert "span event limit" in caplog.text
+    assert "dropped_events=<3>" in caplog.text

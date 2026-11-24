@@ -11,18 +11,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import shutil
 import subprocess
 import time
 from collections import Counter
 from pathlib import Path
 
+import opentelemetry.trace as trace_api
 import pytest
+from opentelemetry.context import Context
 
 from strands_evals import Case, Experiment
 from strands_evals.cli.main import main
 from strands_evals.optimization import OptimizationResult
 from strands_evals.optimization.execution.node import NodeAgent, NodeRunner
+from strands_evals.optimization.execution.traces import TraceCapture, ingest
 from tests.strands_evals.cli.fixtures.optimize_agents import Correct
 
 FIXTURE = Path(__file__).parent / "typescript_session"
@@ -428,3 +432,53 @@ def test_a_release_waits_for_a_stuck_turn_only_so_long(project, tmp_path, monkey
         assert _trial_folders(node_tmp) == []
     finally:
         runner.close()
+
+
+def _model_calls_of_a_long_conversation(project: Path, turns: int) -> list[dict]:
+    """The `chat` spans of one conversation of `turns` turns over the real runner, as its replies carry them."""
+    runner = NodeRunner(project / "agent.ts")
+    traced = {"trace_id": "0123456789abcdef0123456789abcdef", "span_id": "0123456789abcdef"}
+    try:
+
+        async def talk() -> list[dict]:
+            start = await runner.call_async({"type": "start", "attr": "agent", "index": 0, "values": [], **traced})
+            spans = list(start["spans"])
+            for i in range(turns):
+                turn = {"type": "turn", "session": start["session"], "input": f"question {i}", **traced}
+                spans += (await runner.call_async(turn))["spans"]
+            await runner.call_async({"type": "release", "session": start["session"]})
+            return [span for span in spans if span["attributes"].get("gen_ai.operation.name") == "chat"]
+
+        return asyncio.run(talk())
+    finally:
+        runner.close()
+
+
+def test_a_long_conversations_model_calls_keep_every_message(project, monkeypatch):
+    """OpenTelemetry's default of 128 events per span would drop the start of the conversation."""
+    monkeypatch.delenv("OTEL_SPAN_EVENT_COUNT_LIMIT", raising=False)
+    last = _model_calls_of_a_long_conversation(project, 70)[-1]  # 70 user turns and 69 replies before it
+
+    assert len(last["events"]) > 128
+    assert last["dropped_events"] == 0
+
+
+def test_a_limit_the_user_set_is_kept_and_what_it_dropped_is_reported(project, monkeypatch, caplog):
+    monkeypatch.setenv("OTEL_SPAN_EVENT_COUNT_LIMIT", "50")
+    spans = _model_calls_of_a_long_conversation(project, 70)
+    last = spans[-1]
+    assert len(last["events"]) == 50
+    assert last["dropped_events"] > 0
+
+    traces = TraceCapture()
+    with trace_api.get_tracer("optimization-integ").start_as_current_span("execute_case", context=Context()) as root:
+        trace_id = format(root.get_span_context().trace_id, "032x")
+        parent = format(root.get_span_context().span_id, "016x")
+    traces.register(trace_id)
+    for span in spans:
+        span.update(trace_id=trace_id, parent_span_id=parent)  # each model call straight under the trial
+    ingest(spans)
+    with caplog.at_level(logging.WARNING, logger="strands_evals.optimization.execution.traces"):
+        traces.session(trace_id, parent)
+
+    assert f"dropped_events=<{sum(span['dropped_events'] for span in spans)}>" in caplog.text

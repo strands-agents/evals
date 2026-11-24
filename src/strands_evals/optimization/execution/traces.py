@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import threading
+import time
 import weakref
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import opentelemetry.trace as trace_api
+from opentelemetry.context import Context
 from opentelemetry.sdk.environment_variables import OTEL_SPAN_EVENT_COUNT_LIMIT
-from opentelemetry.sdk.trace import Event, ReadableSpan, SpanLimits, SpanProcessor
+from opentelemetry.sdk.trace import Event, ReadableSpan, Span, SpanLimits, SpanProcessor
 from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider
+from opentelemetry.sdk.util import BoundedList
 from opentelemetry.sdk.util.instrumentation import InstrumentationScope
 from opentelemetry.trace import SpanContext, SpanKind, Status, StatusCode, TraceFlags
 
@@ -33,6 +37,9 @@ FACTORY_AGENT = "strands_evals.optimization.factory_agent"
 # On a `rollout` span: True until the factory builds something it can't tag (then False). While True, the
 # attempt's other agents are the benchmark's.
 FACTORY_TAGGED = "strands_evals.optimization.factory_tagged"
+# How long `settle` waits for an ended attempt's open spans (an agent stream a rollout left early ends its
+# agent span when the event loop closes the generator, a moment after the rollout returned).
+SETTLE_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -51,24 +58,48 @@ class EvaluatorView:
 
 
 class _TrialSpanFilter(SpanProcessor):
-    """Keeps the finished spans of registered traces, keyed by hex trace id; every other span is dropped."""
+    """Keeps the finished spans of registered traces, keyed by hex trace id; every other span is dropped.
+    Also tracks which spans of registered traces have started and not yet ended (`open_under`)."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._spans: dict[str, list[ReadableSpan]] = {}
+        self._open: dict[str, dict[str, str | None]] = {}  # trace id -> open span id -> its parent's span id
 
     def register(self, trace_id: str) -> None:
         with self._lock:
             self._spans.setdefault(trace_id, [])
+            self._open.setdefault(trace_id, {})
 
     def spans(self, trace_id: str) -> list[ReadableSpan]:
         with self._lock:
             return list(self._spans.get(trace_id, ()))
 
+    def open_under(self, trace_id: str, root_span_id: str) -> int:
+        """How many spans under `root_span_id` (at any depth) have started and not yet ended."""
+        with self._lock:
+            open_spans = dict(self._open.get(trace_id, {}))
+            parent_of = {
+                _span_id(span): format(span.parent.span_id, "016x") if span.parent is not None else None
+                for span in self._spans.get(trace_id, ())
+            }
+        parent_of.update(open_spans)
+        count = 0
+        for span_id in open_spans:
+            parent, seen = parent_of.get(span_id), {span_id}
+            while parent is not None and parent not in seen:
+                if parent == root_span_id:
+                    count += 1
+                    break
+                seen.add(parent)
+                parent = parent_of.get(parent)
+        return count
+
     def release(self, trace_ids: Iterable[str]) -> None:
         with self._lock:
             for trace_id in trace_ids:
                 self._spans.pop(trace_id, None)
+                self._open.pop(trace_id, None)
 
     def discard(self, trace_id: str, span_ids: Collection[str]) -> None:
         """Drop these spans of a trace; the trace stays registered, so its later spans are still kept."""
@@ -76,6 +107,15 @@ class _TrialSpanFilter(SpanProcessor):
             kept = self._spans.get(trace_id)
             if kept is not None:
                 kept[:] = [span for span in kept if _span_id(span) not in span_ids]
+
+    def on_start(self, span: Span, parent_context: Context | None = None) -> None:
+        if span.context is None:
+            return
+        trace_id = format(span.context.trace_id, "032x")
+        with self._lock:
+            open_spans = self._open.get(trace_id)
+            if open_spans is not None:
+                open_spans[_span_id(span)] = format(span.parent.span_id, "016x") if span.parent is not None else None
 
     def on_end(self, span: ReadableSpan) -> None:
         if span.context is None:
@@ -85,6 +125,9 @@ class _TrialSpanFilter(SpanProcessor):
             kept = self._spans.get(trace_id)
             if kept is not None:
                 kept.append(span)
+            open_spans = self._open.get(trace_id)
+            if open_spans is not None:
+                open_spans.pop(_span_id(span), None)
 
 
 # One filter per tracer provider, shared by every `TraceCapture` on it: a provider can't drop a processor,
@@ -109,7 +152,10 @@ class TraceCapture:
         one: Strands records each message a model call sends as one event of its span, so OpenTelemetry's
         default of 128 would drop the start of a long conversation from the trial's `Session`. Then attaches
         a span processor keeping only registered traces, so nothing else piles up in memory. A provider
-        installed earlier keeps its own limits (`session` warns when they drop messages).
+        installed earlier keeps its own limits (`session` warns when they drop messages). The no-limit
+        provider stays the global one for the rest of the process, so spans this run doesn't keep, and
+        exporters added to it later, get every event too. The Node worker that runs a TypeScript agent
+        (`node/runner.mjs`) sets the same limit on its own provider and reports what it dropped (`ingest`).
 
         Raises:
             RuntimeError: A global tracer provider that isn't the SDK's is already installed, so spans
@@ -133,6 +179,7 @@ class TraceCapture:
                 _FILTERS[provider] = span_filter
         self._filter = span_filter
         self._warned_dropped = False
+        self._warned_open = False
 
     def register(self, trace_id: str) -> None:
         """Keep this trace's spans; spans of unregistered traces are dropped at export."""
@@ -160,9 +207,9 @@ class TraceCapture:
             self._warned_dropped = True
             logger.warning(
                 "trace_id=<%s>, dropped_events=<%d> | the tracer provider's span event limit dropped the oldest "
-                "messages of model calls, so trajectories of trials past the limit start mid-conversation | create "
-                "the provider with span_limits=SpanLimits(max_events=SpanLimits.UNSET), or set "
-                "OTEL_SPAN_EVENT_COUNT_LIMIT before it is created (empty for no limit)",
+                "messages of model calls so trajectories of trials past the limit start mid-conversation | unset "
+                "OTEL_SPAN_EVENT_COUNT_LIMIT or set it empty for no limit or create your tracer provider with "
+                "span_limits max_events SpanLimits.UNSET",
                 trace_id,
                 dropped,
             )
@@ -276,6 +323,36 @@ class TraceCapture:
         subtree = _subtree(self._filter.spans(trace_id), [attempt_span_id])
         self._filter.discard(trace_id, {attempt_span_id, *(_span_id(span) for span in subtree)})
 
+    async def settle(self, trace_id: str, attempt_span_id: str) -> None:
+        """Wait up to `SETTLE_SECONDS` for the ended attempt's spans that are still open, so `usage` and
+        `session` read them; returns at once when none is.
+
+        A span under the attempt can end after it: an agent whose stream the rollout left early (`break` out
+        of `stream_async`) ends its spans when the event loop closes the generator. Warns once per capture
+        when some are still open after the wait, since their model calls are then left out of the usage.
+
+        Args:
+            trace_id: The trial's trace.
+            attempt_span_id: The attempt's span, already ended.
+        """
+        deadline = time.monotonic() + SETTLE_SECONDS
+        delay = 0.0
+        while open_spans := self._filter.open_under(trace_id, attempt_span_id):
+            if time.monotonic() >= deadline:
+                if not self._warned_open:
+                    self._warned_open = True
+                    logger.warning(
+                        "trace_id=<%s>, open_spans=<%d>, waited_seconds=<%s> | spans the rollout started were "
+                        "still open after it returned so their model calls aren't counted in the trial's usage | "
+                        "let every agent call finish before the rollout returns",
+                        trace_id,
+                        open_spans,
+                        SETTLE_SECONDS,
+                    )
+                return
+            await asyncio.sleep(delay)
+            delay = min(0.05, delay * 2 or 0.001)
+
     def release(self, trace_ids: Iterable[str]) -> None:
         """Drop only these trials' spans."""
         self._filter.release(trace_ids)
@@ -285,7 +362,8 @@ def ingest(spans: Iterable[Mapping[str, Any]]) -> None:
     """Add spans another process recorded (a Node agent's, `node.py`) as if they had finished here.
 
     Each span is JSON as `node/runner.mjs` writes it: hex ids (its own trace's, so a span of a registered trial
-    trace joins it), attributes, events, status, kind, and times in nanoseconds. Rebuilt as a `ReadableSpan` and
+    trace joins it), attributes, events and how many the worker's span event limit dropped, status, kind, and times
+    in nanoseconds. Rebuilt as a `ReadableSpan` and
     given to the trial span filter of the current tracer provider, which keeps it only when its trace is
     registered. Does nothing outside a run (no filter).
     """
@@ -297,16 +375,21 @@ def ingest(spans: Iterable[Mapping[str, Any]]) -> None:
         parent = data.get("parent_span_id")
         status = data.get("status") or {}
         scope = data.get("scope")
+        events = BoundedList.from_seq(
+            None,
+            [
+                Event(str(event["name"]), dict(event.get("attributes") or {}), int(event["time_unix_nano"]))
+                for event in data.get("events") or ()
+            ],
+        )
+        events.dropped = int(data.get("dropped_events") or 0)  # read by `ReadableSpan.dropped_events`
         span_filter.on_end(
             ReadableSpan(
                 name=str(data["name"]),
                 context=SpanContext(trace_id, int(data["span_id"], 16), is_remote=True, trace_flags=TraceFlags(1)),
                 parent=SpanContext(trace_id, int(parent, 16), is_remote=True) if parent else None,
                 attributes=dict(data.get("attributes") or {}),
-                events=[
-                    Event(str(event["name"]), dict(event.get("attributes") or {}), int(event["time_unix_nano"]))
-                    for event in data.get("events") or ()
-                ],
+                events=events,
                 kind=SpanKind(int(data.get("kind") or 0)),
                 status=Status(StatusCode(int(status.get("code") or 0)), status.get("message")),
                 start_time=int(data["start_time_unix_nano"]),

@@ -603,6 +603,50 @@ async def test_a_session_that_cant_be_built_is_raised_with_the_attempt_logged(tr
     assert [span.name for span in traces._filter.spans(entry.trace_id)] == ["execute_case"]
 
 
+async def _leave_the_stream_early(agent_factory, case):
+    agent = agent_factory()
+    async for event in agent.stream_async(case.input):
+        if "result" in event:
+            break  # the agent's span ends only when the event loop closes the generator, after this returns
+    return {"output": "stopped early"}
+
+
+async def test_spans_that_end_just_after_the_rollout_returned_are_still_counted(traces, caplog):
+    log = TrialLog()
+
+    with caplog.at_level(logging.WARNING, logger="strands_evals.optimization.execution.traces"):
+        out = await _run(instrument(make_task(_agent_factory(), _leave_the_stream_early), log, traces), _case(), traces)
+
+    entry = log.records()["case-1"]
+    assert entry.usage.model_calls == 1
+    assert entry.usage.tokens == 15
+    assert entry.benchmark_usage.model_calls == 0
+    assert sum(isinstance(span, AgentInvocationSpan) for trace in out["trajectory"].traces for span in trace.spans) == 1
+    assert "still open" not in caplog.text
+
+
+async def test_a_span_that_never_ends_is_waited_for_once_then_warned_about_once(traces, caplog, monkeypatch):
+    monkeypatch.setattr("strands_evals.optimization.execution.traces.SETTLE_SECONDS", 0.05)
+    left_open = []
+
+    async def rollout(agent_factory, case):
+        left_open.append(trace_api.get_tracer("optimization-tests").start_span("background work"))
+        return await default_rollout(agent_factory, case)
+
+    log = TrialLog()
+    try:
+        with caplog.at_level(logging.WARNING, logger="strands_evals.optimization.execution.traces"):
+            for name in ("case-1", "case-2"):
+                await _run(instrument(make_task(_agent_factory(), rollout), log, traces), _case(name), traces)
+    finally:
+        for span in left_open:
+            span.end()
+
+    assert [entry.usage.model_calls for entry in log.records().values()] == [1, 1]  # what had ended is counted
+    assert [r for r in caplog.records if "still open" in r.getMessage()] and caplog.text.count("still open") == 1
+    assert "open_spans=<1>" in caplog.text
+
+
 async def test_a_sync_task_is_instrumented(traces):
     log = TrialLog()
 
