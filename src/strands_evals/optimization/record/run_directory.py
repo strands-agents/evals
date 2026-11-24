@@ -21,7 +21,7 @@ from typing import Any, BinaryIO
 from pydantic import TypeAdapter
 
 from ...types.optimization import TrialRecord, TrialStatus
-from ...types.trace import AssistantMessage, Session, SpanType, UserMessage
+from ...types.trace import MessageUnion, Session, SpanType
 from ..candidate import Candidate
 from ..declaration.files import _write_text_atomically
 from .events import EventLog, _encode, closed_events
@@ -41,7 +41,7 @@ _LOCK_NAME = "run.lock"
 # copying the file through another handle never touches it.
 _LOCK_OFFSET = 2**30
 # The type of `InferenceSpan.messages`, so a transcript's distinct messages validate as they would in a span.
-_MESSAGES: TypeAdapter[list[UserMessage | AssistantMessage]] = TypeAdapter(list[UserMessage | AssistantMessage])
+_MESSAGES: TypeAdapter[list[MessageUnion]] = TypeAdapter(list[MessageUnion])
 
 
 class RunDirectory:

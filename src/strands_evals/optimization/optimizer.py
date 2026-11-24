@@ -10,7 +10,7 @@ import random
 import threading
 import warnings
 from collections import Counter
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -1275,6 +1275,8 @@ class Optimizer:
         opened: _Draw | None = None  # an opener repeating a measured candidate: the round opens on it
         need = n
         recorded = self._recorded_draws(step, parent, n)
+        # Read back once for the whole step, and only if a proposer reads them.
+        parent_trials = _ParentTrials(lambda: list(self._with_trajectories(parent.id, "train").values()))
         drawn: list[list[_Draw]] = []  # per redraw, asked or replayed: the step's `draw` event
         for redraw in range(self._search.redraws + 1):
             if need <= 0 or opened is not None:
@@ -1283,7 +1285,9 @@ class Optimizer:
                 fill = self._fill(ranking)
                 drawn.append([self._merge(parent, patches, fill) for patches in recorded[redraw]])
             else:
-                drawn.append(await self._draw(step, parent, need, redraw, ranking, assessments, summaries))
+                drawn.append(
+                    await self._draw(step, parent, need, redraw, ranking, assessments, summaries, parent_trials)
+                )
             for draw in drawn[-1]:
                 if need <= 0:
                     # A replayed batch can hold more than the step still needs: the step is narrower on resume,
@@ -1493,17 +1497,17 @@ class Optimizer:
         ranking: list[str],
         assessments: Mapping[str, Assessment],
         summaries: list[CandidateSummary],
+        trials: Sequence[TrialRecord],
     ) -> list[_Draw]:
         """Up to `need` proposals on `parent`, each merging one patch of every block of the step.
 
         One block: its proposer asked once for `need` patches (a concurrent one: `need` calls at once). Several
         blocks: each slot built in turn, structural blocks first (each later block asked for 1 patch on the
         slot's values so far, so it sees the structure chosen for the slot), a block with no key active under
-        those values skipped; the slots drawn at once when any of the step's proposers is concurrent. The
-        parent's train trials are read back with their trajectories once, for every request of the draw.
+        those values skipped; the slots drawn at once when any of the step's proposers is concurrent. Every
+        request gets `trials`, the parent's train trials.
         """
         fill = self._fill(ranking)
-        trials = list(self._with_trajectories(parent.id, "train").values())
         if len(step.blocks) == 1:
             block = step.blocks[0]
             patches = await self._ask(block, parent, parent, need, redraw, summaries, trials)
@@ -1583,7 +1587,7 @@ class Optimizer:
                 space=self._space,
                 keys=dict((_block_name(b), k) for b, k in self._blocks)[name],
                 parent=request_parent,
-                trials=list(trials),
+                trials=trials,
                 scores=self._train[parent.id],
                 inputs={c: cases[c].input for c in train},
                 fit=self._fit,
@@ -2339,6 +2343,31 @@ class ProposerError(RuntimeError):
 class _ProposerFailed(Exception):
     """A proposer raised (the `__cause__`; `args[0]` is the block's name); its `proposer_error` event is written,
     then `_run_search` raises `ProposerError`."""
+
+
+class _ParentTrials(Sequence[TrialRecord]):
+    """A step's parent's train trials, with their trajectories read from the run directory the first time
+    anything reads them (TPE and Thompson never do), once for every request of the step."""
+
+    def __init__(self, load: Callable[[], list[TrialRecord]]) -> None:
+        self._load = load
+        self._trials: list[TrialRecord] | None = None
+        self._lock = threading.Lock()  # Reflection reads them from worker threads, several at once
+
+    def _loaded(self) -> list[TrialRecord]:
+        with self._lock:
+            if self._trials is None:
+                self._trials = self._load()
+            return self._trials
+
+    def __getitem__(self, index: Any) -> Any:
+        return self._loaded()[index]
+
+    def __len__(self) -> int:
+        return len(self._loaded())
+
+    def __iter__(self) -> Iterator[TrialRecord]:
+        return iter(self._loaded())
 
 
 @dataclass(frozen=True)

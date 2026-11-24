@@ -3093,9 +3093,25 @@ async def test_resume_reads_no_transcript_and_proposers_still_get_the_parents(tm
     assert read == [] and len(resumed._records) == 2
     assert all(r.trajectory is None for records in resumed._records.values() for r in records.values())
     await resumed._run_search()
-    # The parent's train trials are read once, for the resumed iteration's one draw.
-    assert sum(t in resumed._transcripts[parent].values() for t in read) == len(resumed._case_split.train)
+    assert read == []  # nothing has read the requests' trials yet
     _assert_parents_trajectories(proposer.requests, resumed._case_split.train)
+    _assert_parents_trajectories(proposer.requests, resumed._case_split.train)
+    # Read when first used, once for the step: exactly the parent's train trials, as the closed iterations left them.
+    assert sorted(map(str, read)) == sorted(
+        str(resumed._transcripts[parent][(c, 0)]) for c in resumed._case_split.train
+    )
+
+
+async def test_a_search_whose_proposers_never_read_trials_reads_no_transcript(tmp_path, monkeypatch):
+    proposer = Scripted({"temperature": 0.5}, {"temperature": 1.0})
+    optimizer = _two_step_optimizer(proposer, tmp_path, rollout_fn=_agent_rollout)
+    read = []
+    await optimizer._start()
+    load_transcript = optimizer._run.load_transcript
+    monkeypatch.setattr(optimizer._run, "load_transcript", lambda t: read.append(t) or load_transcript(t))
+
+    await optimizer._run_search()
+    assert len(proposer.requests) >= 2 and read == []
 
 
 async def test_the_result_reloads_whole_without_the_run_folder_and_summarizes(tmp_path):
