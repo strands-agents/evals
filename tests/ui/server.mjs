@@ -60,7 +60,7 @@ try {
 
   // ── the discovery the server did ──
   ok($('#read-only').hidden && text('.tab.on') === 'Reports', 'boots on Reports, with nothing said of read-only', text('.tab.on'));
-  ok(text('#root-path') === fs.realpathSync(root), 'shows the served directory', text('#root-path'));
+  ok(text('#path') === fs.realpathSync(root), 'the bar names the served directory', text('#path'));
   ok(!$('[data-act="rescan"]').hidden, 'Rescan is offered');
 
   const found = $$('#reports-rows tr.row');

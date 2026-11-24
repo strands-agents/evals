@@ -266,7 +266,6 @@ A diagnosis written by `strands-evals diagnose -o` is shown on the page of the s
 or listed on its own when that session is not in the folder. The directory of a `LocalFileTaskResultStore`
 is named on the lists and its files are left out of the scan.
 
-To see every view with data in it, `python examples/make_ui_demo.py DIR` writes a synthetic folder to serve.
 Pass `--read-only` to browse without the Save path at all, and `--host` to serve beyond this machine
 (for example `0.0.0.0` inside a container).
 

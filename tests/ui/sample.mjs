@@ -8,8 +8,8 @@ const caseCount = () => $$('#case-list li[data-i]').length;
 
 // ── boot ──
 ok(text('.tab.on') === 'Reports' && $$('.view.on').length === 1, 'lands on Reports, the one view showing', text('.tab.on'));
-ok(text('#root-path') === sample.root && $('#read-only').hidden && !$('[data-act="rescan"]').hidden,
-  'over the folder being served, which can be read again, with nothing said of read-only', text('#root-path'));
+ok(text('#path') === sample.root && $('#read-only').hidden && !$('[data-act="rescan"]').hidden,
+  'the bar names the folder being served, which can be read again, with nothing said of read-only', text('#path'));
 
 const report = text('#reports-rows'), experiment = text('#experiments-rows');
 ok($$('#reports-rows tr.row').length === 1 && /0\.92/.test(report) && /5 failing/.test(report)
@@ -103,8 +103,8 @@ await click('#revert');
 // ── served with --read-only ──
 {
   const shut = await served(SAMPLE, { readOnly: true });
-  ok(!shut.$('#read-only').hidden && shut.text('#read-only') === 'read-only', 'a server started with --read-only says so over the lists',
-    shut.text('#folder'));
+  ok(!shut.$('#read-only').hidden && shut.text('#read-only') === 'read-only', 'a server started with --read-only says so in the bar',
+    shut.text('#read-only'));
   await shut.openExperiment();
   await shut.type('#form [data-k="input"]', 'an edit with nowhere to go');
   ok(shut.text('#exp-sub') === 'Read-only: the server was started with --read-only.' && shut.text('#dirty') === '1 unsaved change'

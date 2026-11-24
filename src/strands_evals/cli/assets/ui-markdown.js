@@ -46,6 +46,16 @@ const shellQuote = s => (/^[\w./:=@%+-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\
 const runCommand = (experiment, which) =>
   `strands-evals run ${shellQuote(filePath(experiment))} --case ${shellQuote(String(which))} --agent MODULE:ATTR`;
 
+/* The whole experiment. The report is named so the scan pairs it back: the experiment's name, less `.json`
+   and a trailing `experiment`, plus `.report.json`. Both paths are the file's own, so the command runs from
+   anywhere and writes beside the experiment. */
+function experimentRunCommand(experiment) {
+  const base = experiment.replace(/^.*\//, '');
+  const stem = base.replace(/\.json$/i, '').replace(/(^|[._-])(experiment|exp)$/i, '');
+  const out = experiment.slice(0, experiment.length - base.length) + (stem ? `${stem}.report.json` : 'report.json');
+  return `strands-evals run ${shellQuote(filePath(experiment))} --agent MODULE:ATTR -o ${shellQuote(filePath(out))}`;
+}
+
 const openExperimentOf = () => (repCand || !repMeta ? null : listed(REPORTS, repMeta).experiment);
 /* How the open report and its experiment are named to a reader: a candidate's report is not a file. */
 const reportNames = () => {
@@ -143,41 +153,10 @@ function resultMarkdown(d, run) {
   return mdDocument(parts);
 }
 
-/* ── a comparison ── */
-
-/** The open comparison: each report, each evaluator's mean in each, then what changed from the oldest to the newest. */
-function compareMarkdown() {
-  const no = CMP.map((_, i) => cmpNo(i)), last = CMP.length - 1;
-  const table = (columns, rows) => [`| ${columns.join(' | ')} |`, `|${' --- |'.repeat(columns.length)}`, ...rows].join('\n');
-  const reports = table(['#', 'Report', 'When', 'Overall score', 'Rows', 'Passing', 'Failing'], CMP.map((c, i) => {
-    const n = verdictCounts(c.rows);
-    return `| ${no[i]} | ${mdCell(c.meta.path)} | ${new Date(c.at).toISOString()}${c.dated ? '' : ', by file time'} | `
-      + `${mdScore(c.meta.overall_score)} | ${c.rows.length} | ${n.pass} | ${n.fail} |`;
-  }));
-  const { names, means } = evaluatorMeans();
-  const evaluators = table(['Evaluator', ...no], names.map(name =>
-    `| ${mdCell(mdLine(name))} | ${means.map(m => (m.has(name) ? mdScore(m.get(name)) : 'no row')).join(' | ')} |`));
-  const c = compareEndRows();
-  /* A row that was not applicable at one end has no verdict to have kept. */
-  const verdict = m => (m.flip ? `now ${m.flip === 'fixed' ? 'passes' : 'fails'}`
-    : m.from == null || m.to == null ? { pass: 'passed', fail: 'failed', na: 'not applicable' }[verdictOf(m.row)]
-      : `still ${m.row.pass ? 'passes' : 'fails'}`);
-  const moved = table(['Case', 'Evaluator', no[0], no[last], 'Verdict'], c.moved.map(m =>
-    `| ${mdCell(mdLine(m.row.name))} | ${mdCell(mdLine(evaluatorName(m.row)))} | ${mdScore(m.from)} | ${mdScore(m.to)} | ${verdict(m)} |`));
-  return mdDocument([`# Comparison of ${plural(CMP.length, 'report')}`,
-    'Oldest first. Rows are matched by case and evaluator, so reports of different experiments compare only where they hold the same rows.',
-    reports, '## Evaluator means', names.length ? evaluators : 'No row has a score.',
-    `## From ${no[0]} to ${no[last]}`,
-    [`- Now pass: ${c.fixed}`, `- Now fail: ${c.broke}`, `- Kept their verdict: ${c.same}`, `- Now not applicable: ${c.lapsed}`,
-      `- Only in ${no[last]}: ${c.added}`, `- Only in ${no[0]}: ${c.gone}`].join('\n'),
-    c.moved.length ? moved : c.fixed + c.broke + c.same + c.lapsed ? 'Every row they share scored the same.'
-      : 'The two share no case and evaluator.']);
-}
-
 /* ── the buttons ── */
 
-const mdButton = (kind, label, arg) =>
-  `<button class="btn" data-md="${kind}"${arg == null ? '' : ` data-arg="${esc(arg)}"`}>${label}</button>`;
+const mdButton = (kind, label, arg, tip) =>
+  `<button class="btn" data-md="${kind}"${arg == null ? '' : ` data-arg="${esc(arg)}"`}${tip ? ` data-tip="${esc(tip)}"` : ''}>${label}</button>`;
 
 /* The actions in the page header, for what the view has open. */
 function pageActions(view) {
@@ -187,8 +166,12 @@ function pageActions(view) {
       + (ROWS.some(r => verdictOf(r) === 'fail') ? mdButton('failing', 'Copy failing rows as a prompt') : '')
       + (repCand ? '' : mdButton('path', 'Copy path', repMeta.path));
   }
-  if (view === 'compare' && CMP.length) return mdButton('compare', 'Copy as Markdown');
-  if (view === 'experiment' && EXP) return mdButton('experiment', 'Copy as Markdown') + mdButton('path', 'Copy path', expMeta.path);
+  if (view === 'experiment' && EXP) {
+    /* An experiment with no report offers the command that would make one. */
+    return (reportsOf(listed(EXPERIMENTS, expMeta)).length ? '' : mdButton('run-command', 'Copy run command', null,
+      'The command that runs this experiment and writes its report beside it. Fill in --agent with your agent\'s module:attr.'))
+      + mdButton('experiment', 'Copy as Markdown') + mdButton('path', 'Copy path', expMeta.path);
+  }
   if (view === 'session' && SES) return mdButton('session', 'Copy as Markdown') + mdButton('path', 'Copy path', sesMeta.path);
   if (SECTION_OF[view] === 'optimization' && view !== 'opt-runs' && run) {
     return (OPT ? mdButton('result', 'Copy result as Markdown') : '') + mdButton('path', 'Copy path', run.dir || '.');
@@ -232,13 +215,13 @@ const MD_COPY = {
   row: i => ROWS[i] && writtenMarkdown({ kind: 'row', row: ROWS[i].i, document: reportWith([ROWS[i]]), ...reportNames() }),
   'row-link': i => ROWS[i] && location.origin + `/reports${idPath(repMeta.path)}${rowPath(ROWS[i])}`,
   'row-command': i => ROWS[i] && runCommand(openExperimentOf(), ROWS[i].case.name),
-  compare: () => CMP.length && compareMarkdown(),
   session: () => SES && fileMarkdown(`/sessions${idPath(sesMeta.path)}`),
   experiment: () => EXP && (countDirty()
     ? writtenMarkdown({ kind: 'experiment', path: expMeta.path, document: experimentDocument(), reports: listed(EXPERIMENTS, expMeta).reports || [] })
     : fileMarkdown(`/experiments${idPath(expMeta.path)}`)),
   case: () => cases[sel] && writtenMarkdown({ kind: 'case', document: cases[sel], index: sel, experiment: filePath(expMeta.path) }),
   'case-command': () => cases[sel] && runCommand(expMeta.path, mdPresent(cases[sel].name) ? cases[sel].name : sel),
+  'run-command': () => expMeta && experimentRunCommand(expMeta.path),
   candidate: id => candidateOf(id) && candidateMarkdown(candidateOf(id), OPT, OPT_RUNS[optSel]),
   'candidate-link': id => location.origin + `/optimization${idPath(OPT_RUNS[optSel].id)}/candidates/${encodeURIComponent(id)}`,
   result: () => OPT && resultMarkdown(OPT, OPT_RUNS[optSel]),

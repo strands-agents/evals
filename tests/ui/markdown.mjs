@@ -758,50 +758,6 @@ Metadata:
   await waitFor(() => /No cases/.test(p.text('#form')), 'the empty experiment');
   ok(p.$('#case-acts').hidden, 'with no case there is nothing to copy, and no action offering to');
 
-  // ── a comparison ──
-  await p.click('.tab[data-view="reports"]');
-  await p.openReport('nightly');
-  await p.click('#cmp-with button[data-value="code/weekly.report.json"]');
-  await waitFor(() => p.$('#v-compare').classList.contains('on'), 'the comparison');
-  is(labels(p, '#actions'), 'Copy as Markdown', 'a comparison offers its Markdown');
-  ok(!p.$('#cmp-with').hidden && p.text('#cmp-with summary') === 'Add a report…', 'beside the control that adds a report to it', p.text('#cmp-with summary'));
-  is(await p.copy('#actions [data-md="compare"]'), `# Comparison of 2 reports
-
-Oldest first. Rows are matched by case and evaluator, so reports of different experiments compare only where they hold the same rows.
-
-| # | Report | When | Overall score | Rows | Passing | Failing |
-| --- | --- | --- | --- | --- | --- | --- |
-| #1 | code/nightly.report.json | 2026-11-01T00:00:00.000Z, by file time | 1.00 | 2 | 2 | 0 |
-| #2 | code/weekly.report.json | 2026-11-02T10:00:00.000Z | 0.25 | 2 | 1 | 1 |
-
-## Evaluator means
-
-| Evaluator | #1 | #2 |
-| --- | --- | --- |
-| Equals | 1.00 | 0.25 |
-
-## From #1 to #2
-
-- Now pass: 0
-- Now fail: 1
-- Kept their verdict: 1
-- Now not applicable: 0
-- Only in #2: 0
-- Only in #1: 0
-
-| Case | Evaluator | #1 | #2 | Verdict |
-| --- | --- | --- | --- | --- |
-| a | Equals | 1.00 | 0.00 | now fails |
-| b\\|c | Equals | 1.00 | 0.50 | still passes |
-`, 'which holds each report, each evaluator’s mean in each, then what flipped and what moved between the oldest and the newest');
-  await p.click('#cmp-with button[data-value="support/support.report.json"]');
-  await waitFor(() => p.$$('#pagehead .chip').length === 3, 'the third report');
-  const three = await p.copy('#actions [data-md="compare"]');
-  ok(three.startsWith('# Comparison of 3 reports\n') && three.includes('\n| Evaluator | #1 | #2 | #3 |\n| --- | --- | --- | --- |\n')
-    && /\n\| tone of voice \| no row \| no row \| 0\.13 \|\n/.test(three) && three.includes('\n## From #1 to #3\n')
-    && three.endsWith('- Only in #3: 5\n- Only in #1: 2\n\nThe two share no case and evaluator.\n'),
-  'a third report adds a column, an evaluator a report has no row from says so, and ends that share nothing say that', three);
-
   // ── a session: the header's actions, and the server's Markdown for the same file ──
   await p.click('.tab[data-view="sessions"]');
   await p.openSession('refund.session');

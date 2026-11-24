@@ -86,7 +86,6 @@ function markFileTrees() {
 
 function renderLists() {
   $('read-only').hidden = !READONLY;
-  $('root-path').textContent = ROOT;
   const from = `Everything ${DEPTH != null ? DEPTH + ' levels ' : ''}under the directory the CLI was started in.`;
   $('reports-sub').textContent = `${from} A report is the result of one run, whether it was run from an experiment file or in code.`;
   $('experiments-sub').textContent = `${from} An experiment file holds the cases and evaluators a run uses.`;
@@ -100,8 +99,7 @@ function renderLists() {
   redraw($('reports-rows'), failed + (REPORTS.map(r => {
     const open = !repCand && repMeta && repMeta.path === r.path;
     return `<tr class="row${open ? ' on' : ''}" data-report="${esc(r.path)}" tabindex="0">
-        <td><label class="pickbox"><input type="checkbox" data-pick="${esc(r.path)}"${cmpPick.has(r.path) ? ' checked' : ''}
-          aria-label="Compare ${esc(r.path)}"></label><span>${filed(r)}</span></td>
+        <td>${filed(r)}</td>
         <td class="ev">${scoreBar(r.overall_score)} · ${plural(r.rows, 'row')}`
       + (r.failing ? ` · <span class="vb fail"><i></i>${r.failing} failing</span>` : '') + `</td>
         <td class="ev">${madeFrom(r)}</td>
@@ -123,7 +121,6 @@ function renderLists() {
       + '</ul></details>'
     : '';
   renderFileTrees();
-  renderComparePick();
   renderPageHead(currentView());
 }
 

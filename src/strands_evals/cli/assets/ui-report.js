@@ -90,9 +90,8 @@ function scoresByEvaluator(rows) {
 }
 
 const TAB_MARKS = 80;                     // a chart of more marks than this keeps them out of the tab order
-/** What makes a chart mark open a row of the table: of the open report, or of the report at `path`. */
-const rowLink = (r, tabbable, path) => ` data-row="${r.i}"`
-  + `${path == null ? '' : ` data-row-of="${esc(path)}"`}${tabbable ? ' tabindex="0"' : ''}`;
+/** What makes a chart mark open a row of the table. */
+const rowLink = (r, tabbable) => ` data-row="${r.i}"${tabbable ? ' tabindex="0"' : ''}`;
 
 /* ══════════ the page ══════════ */
 
@@ -284,11 +283,9 @@ function openReportRow(i) {
   if (row && row.scrollIntoView) row.scrollIntoView({ block: 'center' });
 }
 
-app.addEventListener('click', async e => {
+app.addEventListener('click', e => {
   const mark = e.target.closest('[data-row]');
   if (!mark) return;
-  if (mark.dataset.rowOf != null) await openReport(mark.dataset.rowOf);
-  /* A report that would not open leaves the page on a list. */
   if (currentView() === 'report') openReportRow(+mark.dataset.row);
 });
 

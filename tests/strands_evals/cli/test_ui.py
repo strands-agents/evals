@@ -1496,9 +1496,9 @@ def test_a_refusal_says_how_the_token_is_sent_and_nothing_of_the_folder(client: 
             "/experiments/experiment",
             "Did you mean /experiments/experiment.json.md or /experiments/experiment.json.json?",
         ),
-        ("/reports/compare.md?r=report.json&r=report.json", "/reports/compare.md is a page"),
+        ("/reports/elsewhere.md?r=report.json", "/reports/elsewhere.md is a page"),
     ],
-    ids=["a list", "a form with the file's .json left out", "a file with its .json left out", "a comparison"],
+    ids=["a list", "a form with the file's .json left out", "a file with its .json left out", "an .md with no file"],
 )
 @pytest.mark.parametrize("accept", ["*/*", "application/json", None], ids=["anything", "json", "no header"])
 def test_a_page_address_tells_a_reader_with_no_browser_where_the_data_is(client: Client, path, told, accept):
@@ -1573,19 +1573,19 @@ def test_every_address_of_the_page_serves_it_and_survives_the_token_redirect(cli
     assert client.send("GET", path, headers=NO_TOKEN).status == HTTPStatus.UNAUTHORIZED
 
 
-def test_the_token_redirect_keeps_the_reports_a_comparison_names(client: Client):
-    compared = "r=a%2Fone.report.json&r=b%2Ftwo.report.json"
+def test_the_token_redirect_keeps_the_rest_of_the_query(client: Client):
+    query = "r=a%2Fone.report.json&r=b%2Ftwo.report.json"
 
-    first = client.send("GET", f"/reports/compare?t={client.token}&{compared}", headers=NO_TOKEN)
-    last = client.send("GET", f"/reports/compare?{compared}&t={client.token}", headers=NO_TOKEN)
+    first = client.send("GET", f"/reports?t={client.token}&{query}", headers=NO_TOKEN)
+    last = client.send("GET", f"/reports?{query}&t={client.token}", headers=NO_TOKEN)
 
-    assert first.headers["Location"] == last.headers["Location"] == f"/reports/compare?{compared}"
+    assert first.headers["Location"] == last.headers["Location"] == f"/reports?{query}"
 
 
 def test_the_token_redirect_drops_a_token_whose_name_is_encoded(client: Client):
-    redirect = client.send("GET", f"/reports/compare?%74={client.token}&r=one.json", headers=NO_TOKEN)
+    redirect = client.send("GET", f"/reports?%74={client.token}&r=one.json", headers=NO_TOKEN)
 
-    assert redirect.headers["Location"] == "/reports/compare?r=one.json"
+    assert redirect.headers["Location"] == "/reports?r=one.json"
 
 
 @pytest.mark.parametrize("path", ["/reportsheet", "/runs", "/optimizations", "/favicon.ico", "/api"])
@@ -2422,7 +2422,6 @@ def test_llms_txt_describes_every_address_the_server_answers(client: Client):
         "- `/sessions/<session file>.json`: the session file's document",
         "- `/reports/<report file>/rows/<case>/<evaluator>`: one row of it, opened and in view",
         "- `/reports/<report file>/rows/<case>`: the same, for a row whose case has no evaluator named",
-        "- `/reports/compare?r=<report file>&r=<report file>`: two or more reports side by side, oldest first",
         "- `/experiments/<experiment file>/cases/<name>`: the same, on one case",
         "- `/sessions/<session file>`: one session, trace by trace, under the diagnoses made of it",
         "- `/optimization/<run directory>/candidates/<id>`: one candidate of it, opened and in view",

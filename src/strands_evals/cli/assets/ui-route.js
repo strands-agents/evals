@@ -15,10 +15,6 @@ const idOf = segments => segments.join('/') || '.';
 /* A report row is named by its case and its evaluator, the pair that tells it from every other row. */
 const rowPath = r => (r ? `/rows/${encodeURIComponent(r.name)}${r.evaluator == null ? '' : '/' + encodeURIComponent(r.evaluator)}` : '');
 
-/* A comparison names its reports in the query, `?r=<path>&r=<path>`. Every other page is its path alone. */
-const comparedQuery = paths => (paths.length ? '?' + paths.map(path => 'r=' + encodeURIComponent(path)).join('&') : '');
-const comparedIn = query => new URLSearchParams(query).getAll('r');
-
 /** The path for a view, given what is open in it. */
 function routeFor(view) {
   if (view === 'missing') return MISSING.route;
@@ -32,7 +28,6 @@ function routeFor(view) {
     return opt && OPT_SEGMENT[view] ? `/optimization${idPath(opt.id)}/${OPT_SEGMENT[view]}${cand ? '/' + encodeURIComponent(cand) : ''}` : '/optimization';
   }
   if (view === 'report' && repMeta) return `/reports${idPath(repMeta.path)}${rowPath(ROWS[[...openRows].pop()])}`;
-  if (view === 'compare') return '/reports/compare' + comparedQuery(CMP.map(c => c.meta.path));
   if (view === 'experiment' && expMeta) {
     const name = cases[sel] && cases[sel].name;
     return `/experiments${idPath(expMeta.path)}${name ? '/cases/' + encodeURIComponent(name) : ''}`;
@@ -41,13 +36,12 @@ function routeFor(view) {
   return view === 'experiments' ? '/experiments' : view === 'sessions' ? '/sessions' : '/reports';
 }
 
-/** What a path asks for: `{ tab, report, row, evaluator, compare, experiment, case, session, opt, cand, candidate }`,
+/** What a path asks for: `{ tab, report, row, evaluator, experiment, case, session, opt, cand, candidate }`,
     with only the parts it names.
     A path that names nothing leaves `tab` out, for the page to choose its own first view; one that
     names no page the app has gives `missing`. */
 function parseRoute(route) {
-  const [path, query = ''] = route.split('?');
-  if (path.replace(/\/+$/, '') === '/reports/compare') return { tab: 'compare', compare: comparedIn(query) };
+  const [path] = route.split('?');
   const [root, ...rest] = path.split('/').filter(Boolean).map(segment => {
     try { return decodeURIComponent(segment); } catch { return segment; }
   });
@@ -81,7 +75,7 @@ function parseRoute(route) {
   return !root || root === 'index.html' ? {} : { tab: 'missing' };
 }
 
-const currentRoute = () => location.pathname + comparedQuery(comparedIn(location.search));
+const currentRoute = () => location.pathname;
 const readAddress = () => parseRoute(currentRoute());
 
 /* The route the page last wrote or followed, and whether it is following one now. */

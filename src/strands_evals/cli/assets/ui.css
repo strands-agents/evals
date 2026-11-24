@@ -79,7 +79,7 @@ h2, .chart h3, .pane > header .t, .hero .big, .stat .v, .winner .wid {
 
 /* ── chrome: the site's top bar over a docs-style sidebar ── */
 .app {
-  display: grid; grid-template-columns: 248px minmax(0, 1fr); grid-template-rows: var(--bar-h) 1fr;
+  display: grid; grid-template-columns: var(--nav-w, 248px) minmax(0, 1fr); grid-template-rows: var(--bar-h) 1fr;
   grid-template-areas: "bar bar" "nav main";
 }
 .bar {
@@ -118,6 +118,17 @@ h2, .chart h3, .pane > header .t, .hero .big, .stat .v, .winner .wid {
   display: flex; flex-direction: column; gap: 20px;
   padding: 28px 12px; border-right: 1px solid var(--hair);
 }
+/* The sidebar's edge: dragged, it gives long file names in the lists room. It shares the sidebar's
+   grid cell and sits over its border, quiet until the pointer or the keyboard is on it. */
+.nav-resize {
+  grid-area: nav; justify-self: end; z-index: 4;
+  position: sticky; top: var(--bar-h); height: calc(100vh - var(--bar-h));
+  width: 7px; margin-right: -3px; padding: 0 2px;
+  cursor: col-resize; touch-action: none;
+}
+.nav-resize:hover, .nav-resize:focus-visible, .nav-resize.held {
+  background: var(--brand); background-clip: content-box;
+}
 .slug { font: 600 26px var(--mono); color: var(--evals); padding: 0 12px; text-decoration: none; }
 .nav-foot {
   margin-top: auto; padding: 16px 12px 0; border-top: 1px solid var(--hair);
@@ -131,6 +142,10 @@ h2, .chart h3, .pane > header .t, .hero .big, .stat .v, .winner .wid {
   padding: 6px 12px; border-radius: 4px;
 }
 .tab:hover { color: var(--ink1); }
+/* In the sidebar the view rows are the headings over the file rows beneath them: set bold and
+   full-strength so the two levels read apart. The page tabs under `.ptabs` keep the quiet base. */
+.tabs .tab { font-weight: 600; color: var(--ink1); }
+.tabs .tab:hover { background: var(--hair2); }
 /* A section of the sidebar: its name, the view under it, and what that view holds under that. The
    name is a label and not a control — the row under it is what opens the list. */
 .sgroup { display: flex; flex-direction: column; gap: 2px; }
@@ -410,7 +425,6 @@ tr.case:hover .caret, tr.trial:hover .caret { color: var(--ink1); }
 
 /* ── the folder line, the page header, tags and skipped files ── */
 /* The folder being read, over the lists. */
-.folder { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 28px; }
 /* The page header: what is open, where it came from, and the views that belong to it. */
 .pagehead { margin: 0 0 28px; padding-bottom: 16px; border-bottom: 1px solid var(--hair); }
 .crumbs { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font: 13px var(--mono); color: var(--ink3); }
@@ -734,8 +748,8 @@ details.drawer .scroll { margin-bottom: 14px; }
 .cell.na { fill: var(--track); }
 .cell.hot { stroke: var(--ink1); stroke-width: 1.5; }
 /* A mark that opens something. Focus shows as the hover state does: the row lit, the cell or point outlined. */
-.chart [data-row], .chart [data-cmp-row], .chart [data-cand] { cursor: pointer; }
-.chart [data-row]:focus, .chart [data-cmp-row]:focus, .pt:focus { outline: none; }
+.chart [data-row], .chart [data-cand] { cursor: pointer; }
+.chart [data-row]:focus, .pt:focus { outline: none; }
 .bars { display: flex; height: 26px; border-radius: 6px; overflow: hidden; border: 1px solid var(--hair); }
 .bars span { display: block; height: 100%; }
 .optnote { font-size: 12px; color: var(--ink2); margin: 10px 0 0; line-height: 1.5; }
@@ -783,7 +797,7 @@ a.doc { color: var(--accent); text-decoration: underline; text-underline-offset:
 a.doc::after { content: " \2197"; }
 /* ── the guide: a panel beside the content, so it costs the view no height ── */
 .app[data-guide="on"] {
-  grid-template-columns: 248px minmax(0, 1fr) 340px; grid-template-areas: "bar bar bar" "nav main guide";
+  grid-template-columns: var(--nav-w, 248px) minmax(0, 1fr) 340px; grid-template-areas: "bar bar bar" "nav main guide";
 }
 .guide-panel {
   grid-area: guide; align-self: start; position: sticky; top: var(--bar-h);
@@ -868,6 +882,8 @@ th[data-term], th[data-tip], .cap[data-term] {
   .kv { grid-template-columns: 1fr; gap: 1px 0; }
   .kv dt { padding-top: 7px; }
   .app, .app[data-guide="on"] { grid-template-columns: minmax(0, 1fr); grid-template-rows: 56px auto 1fr; grid-template-areas: "bar" "nav" "main"; }
+  /* The sidebar is a strip under the bar here: it has no edge to drag. */
+  .nav-resize { display: none; }
   /* No room beside the content here: the guide slides over it. */
   .guide-panel {
     position: fixed; z-index: 30; top: 56px; right: 0; bottom: 0; height: auto; align-self: stretch;
@@ -896,7 +912,6 @@ th[data-term], th[data-tip], .cap[data-term] {
   main { padding: 22px 16px 48px; }
   /* The header's actions sit under its facts, not beside them. */
   .facts { flex-basis: 100%; }
-  #cmp-with .pick-list { left: 0; right: auto; }
 }
 
 /* ── short windows: the sidebar scrolls with the page, so it never takes the scroll for itself ── */
@@ -940,16 +955,6 @@ tr.grouphead td { padding: 16px 12px 6px; font-weight: 600; border-bottom: 1px s
   .app * { transition: none !important; }
 }
 
-/* ── comparing reports ── */
-.pickbox { float: left; margin: -6px 6px -6px -8px; padding: 8px; cursor: pointer; }
-.pickbox input { display: block; width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer; }
-.pickbox + span { display: block; overflow: hidden; }
-table.cmp { min-width: 600px; }
-table.cmp td { vertical-align: middle; }
-table.cmp a, .facts .chip { overflow-wrap: anywhere; }
-.facts .chip { margin: 2px 0; }
-.facts .chip .ord, .facts .chip .x { flex: none; }
-#cmp-evals td .delta { margin-left: 6px; font-size: 11.5px; }
 /* ── sessions: a session's traces and turns, a diagnosis of one, and the note that a task result store was found ── */
 .tr-trace + .tr-trace { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--hair); }
 .tr-head {

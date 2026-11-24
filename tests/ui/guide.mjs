@@ -151,18 +151,25 @@ const helpLink = p => parse(p.$('.help-pop a'));
     el.dispatchEvent(new p.window.MouseEvent(type, { bubbles: true }));
     await tick();
   };
+  /* The pointer must rest on an element for half a second before its tip shows. */
+  const rested = () => new Promise(resolve => setTimeout(resolve, 600));
   ok(tip.hidden, 'nothing shows until something is pointed at');
 
   await over(p.$('#v-report th[data-term="score"]'));
+  ok(tip.hidden, 'pointing at a column head shows nothing at once: crossing the page pops nothing');
+  await rested();
   ok(!tip.hidden && tip.querySelector('b').textContent === 'Score' && /usually from 0 to 1/.test(tip.textContent),
-    'a column head shows its glossary entry', tip.textContent);
+    'after a rest it shows its glossary entry', tip.textContent);
   await over(p.$('#rep-find'));
   ok(tip.hidden, 'and it goes when the pointer moves on');
+  await rested();
+  ok(tip.hidden, 'a rest on something with nothing to say shows nothing');
 
   await p.openExperiment();
   const chip = p.$('#evs .evchip');
   const title = chip.title;
   await over(chip);
+  await rested();
   ok(title && tip.textContent === title && !chip.hasAttribute('title'),
     'a plain title is shown the same way, and not a second time by the browser', `${title} / ${tip.textContent}`);
 

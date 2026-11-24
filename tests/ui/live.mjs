@@ -217,12 +217,6 @@ ok(input() === 'rewritten a third time', 'Rescan shows the open experiment as it
   await p.openReport('other.json');
   await release();
   ok(p.text('#crumbs') === 'Reports/other.json', 'nor does a session that loads late', p.text('#crumbs'));
-
-  release = hold('r.json');
-  await p.click('#cmp-with button[data-value="r.json"]');
-  await p.click('.tab[data-view="experiments"]');
-  await release();
-  ok(p.$('#v-experiments').classList.contains('on'), 'nor a comparison whose reports load late', p.$('.view.on').id);
 }
 
 // ── a step through history that a click overtakes ──

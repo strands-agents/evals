@@ -3,6 +3,7 @@
 import { SAMPLE, fakeServer, page, runner, served, tick } from './harness.mjs';
 
 const { ok, done } = runner('extras');
+const is = (actual, expected, msg) => ok(actual === expected, msg, `\n--- got\n${actual}\n--- wanted\n${expected}`);
 /** A page over one experiment and its report, opened at an address of its own. */
 const linked = route => served(SAMPLE, { route });
 /** A page with this experiment, and its report if given, read from a folder and opened. */
@@ -92,6 +93,7 @@ const report = (score, ...cases) => ({
     'the experiment named in a report’s row opens the experiment, not the report', `${on()} ${p.text('#crumbs')}`);
   ok(p.text('#facts') === '1 case · 0 evaluators · Report: paired/report.json 0.25', 'whose header links the report made from it',
     p.text('#facts'));
+  ok(!p.$('#copy-acts [data-md="run-command"]'), 'an experiment with a report does not offer the run command');
   await p.click('#facts a[data-report]');
   ok(on() === 'v-report' && p.text('#facts') === '0.25 overall · 1 row · 1 failing · of paired/experiment.json pairing verified',
     'and the report’s header links back to the experiment it is of', p.text('#facts'));
@@ -121,11 +123,16 @@ const report = (score, ...cases) => ({
   ok(p.d.activeElement === row('only-exp/experiment.json'), 'and puts the keyboard back on the row that asked', p.d.activeElement.tagName);
   await p.click(row('only-exp/experiment.json'));
   await p.click('.ask [data-answer="yes"]');
-  ok(on() === 'v-experiment'
-    && p.text('#facts code') === `strands-evals run ${p.root}/only-exp/experiment.json --agent module:attr -o ${p.root}/only-exp/report.json`
-    && /· Not run yet\. To run it: /.test(p.text('#facts')),
-  'Discard and open opens it, and an experiment with no report says how to run it, by its own path and beside itself',
-  p.text('#facts'));
+  ok(on() === 'v-experiment' && /· Not run yet\./.test(p.text('#facts')),
+    'Discard and open opens it, and an experiment with no report says so and offers the command that runs it',
+    p.text('#facts'));
+  let copied = null;
+  Object.defineProperty(p.window.navigator, 'clipboard',
+    { configurable: true, value: { writeText: async text => { copied = text; } } });
+  await p.click('#copy-acts [data-md="run-command"]');
+  is(copied,
+    `strands-evals run ${p.root}/only-exp/experiment.json --agent MODULE:ATTR -o ${p.root}/only-exp/report.json`,
+    'the copied command runs the experiment by its own path and writes the report beside it');
 }
 
 // ── the files under their views in the sidebar, the way the optimizer runs are under Runs ──
@@ -194,11 +201,15 @@ const report = (score, ...cases) => ({
 // ── the report an unrun experiment is told to write is one the scan would pair with it by name ──
 {
   const p = await served({ 'nightly.experiment.json': experiment(CASE), 'smoke.json': experiment(CASE), 'myexperiment.json': experiment(CASE) });
+  let copied = null;
+  Object.defineProperty(p.window.navigator, 'clipboard',
+    { configurable: true, value: { writeText: async text => { copied = text; } } });
   const told = [];
   for (const file of ['nightly.experiment.json', 'smoke.json', 'myexperiment.json']) {
     await p.click('.tab[data-view="experiments"]');
     await p.openExperiment(file);
-    told.push(p.text('#facts code').split(' -o ')[1]);
+    await p.click('#copy-acts [data-md="run-command"]');
+    told.push(copied.split(' -o ')[1]);
   }
   ok(told.join() === [`${p.root}/nightly.report.json`, `${p.root}/smoke.report.json`, `${p.root}/myexperiment.report.json`].join(),
     'it takes the experiment’s name, less a trailing experiment that stands apart', told.join());
@@ -659,6 +670,30 @@ const fake = put => fakeServer({
   const typedCase = await typed(inCase);
   ok(typedCase.view() === 'v-experiment' && typedCase.text('#form-title') === CASE, 'and so does the case\'s',
     `${typedCase.view()} ${typedCase.text('#form-title')}`);
+}
+
+// ── the sidebar's edge: dragged or keyed it moves the width, and double-click puts it back ──
+{
+  const p = await served({ 'experiment.json': experiment(CASE) });
+  const edge = p.$('#nav-resize');
+  const width = () => p.$('.app').style.getPropertyValue('--nav-w');
+  ok(edge && edge.getAttribute('role') === 'separator' && !width(),
+    'the sidebar edge is a separator, and the stylesheet alone sets the width until it is moved', width());
+  await p.key('ArrowRight', edge);
+  ok(width() === '264px' && edge.getAttribute('aria-valuenow') === '264',
+    'a keystroke on the edge moves the width a step from its resting 248px', `${width()} ${edge.getAttribute('aria-valuenow')}`);
+  ok(p.d.cookie.includes('strands-evals-nav=264'), 'and the width is kept for the next page', p.d.cookie);
+  const at = (type, clientX) => edge.dispatchEvent(new p.window.MouseEvent(type, { clientX, bubbles: true }));
+  at('pointerdown', 300); at('pointermove', 360); at('pointerup', 360);
+  await tick();
+  ok(width() === '324px', 'dragging the edge moves the width with the pointer', width());
+  at('pointerdown', 300); at('pointermove', 0); at('pointerup', 0);
+  await tick();
+  ok(width() === '180px', 'and stops at the narrowest the lists are still readable at', width());
+  at('dblclick', 0);
+  await tick();
+  ok(!width() && !/strands-evals-nav=\d/.test(p.d.cookie),
+    'double-click puts the stylesheet back in charge and forgets the kept width', `${width()} ${p.d.cookie}`);
 }
 
 done();

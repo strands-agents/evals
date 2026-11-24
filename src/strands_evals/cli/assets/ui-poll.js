@@ -40,7 +40,7 @@ async function refreshOpen() {
 /** Re-read the folder, then whatever is open from it. */
 async function rereadFolder() {
   if (!await rescan(true)) return;
-  try { await refreshOpen(); await refreshCompare(); } catch (err) { scanError = `could not re-read: ${err.message}`; }
+  try { await refreshOpen(); } catch (err) { scanError = `could not re-read: ${err.message}`; }
   renderLists();
   await retryMissing();
 }

@@ -37,9 +37,6 @@ for (const [route, tab, text, links, what] of [
   ['/reports/report.json/rows/nobody/Judge', 'Reports',
     'No such row in this pondReport report.json has no row for case nobody and evaluator Judge. The report may have been written again since.',
     ['Open the report /reports/report.json', 'All reports /reports'], 'a row the report does not hold'],
-  ['/reports/compare?r=report.json&r=gone.json', 'Reports',
-    `That report hopped awayThis comparison names gone.json, which is not in this folder. ${GONE}`,
-    ['All reports /reports'], 'a comparison naming a report that is not in the folder'],
   ['/optimization/tuning/overview', 'Runs', `That run hopped awayNo optimizer run is at tuning in this folder. ${GONE}`,
     ['All reports /reports'], 'an optimizer run in a folder that has none'],
 ]) {
@@ -47,7 +44,7 @@ for (const [route, tab, text, links, what] of [
   eq([p.view(), here(p), p.text('#missing .nores'), ways(p), marked(p), frog(p, '#missing')],
     ['v-missing', route, text + links.map(l => l.split(' /')[0]).join(''), links, tab, true],
     `${route}: ${what} says so under the frog, keeps its address and marks the list it would be in`);
-  ok(p.$('#pagehead').hidden && p.$('#folder').hidden, `${route}: with no page header and no folder bar`, p.$('#pagehead').hidden);
+  ok(p.$('#pagehead').hidden, `${route}: with no page header`, p.$('#pagehead').hidden);
 }
 
 // ── what was asked for comes from the address, so it is shown as text ──

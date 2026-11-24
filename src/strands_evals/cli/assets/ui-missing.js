@@ -55,18 +55,6 @@ function notThere(want) {
         [wayTo(`/${other.list}${idPath(path)}`, `Open it under ${VIEW_NAME[other.list]}`), listWay(list)]]
       : [list, `That ${key} hopped away`, `No ${key} named ${named(path)} is in this folder. ${GONE}`, [listWay(list)]];
   }
-  const here = [...new Set(want.compare || [])].filter(path => holds(FILE_KINDS[0], path));
-  const gone = (want.compare || []).find(path => !here.includes(path));
-  if (gone) {
-    return ['reports', 'That report hopped away',
-      `This comparison names ${named(gone)}, which is not in this folder. ${GONE}`,
-      (here.length > 1 ? [wayTo('/reports/compare' + comparedQuery(here), 'Compare the others')] : []).concat(listWay('reports'))];
-  }
-  if (want.compare && here.length < 2) {
-    return ['reports', 'It takes two lily pads to compare', 'A comparison sets two or more reports side by side, and this '
-      + `address names ${here.length ? `only ${named(here[0])}` : 'none'}.`,
-    here.map(path => wayTo(`/reports${idPath(path)}`, 'Open the report')).concat(listWay('reports'))];
-  }
   if (want.opt && !OPT_RUNS.some(r => r.id === want.opt)) {
     /* The last part may be a view the page does not have, of a run that is here. */
     const at = want.opt.lastIndexOf('/');

@@ -288,8 +288,6 @@ strands-evals/
 │
 ├── tests_integ/                              # Integration tests (real providers)
 │
-├── examples/                                 # Sample experiments, and `make_ui_demo.py` to fill every `ui` view
-│
 ├── pyproject.toml
 ├── README.md
 ├── CONTRIBUTING.md

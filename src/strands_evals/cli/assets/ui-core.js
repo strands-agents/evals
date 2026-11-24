@@ -214,20 +214,20 @@ async function api(path, opts) {
 
 /* Every view the page has: `show()` knows no other. */
 const SECTION_OF = {
-  reports: 'evals', report: 'evals', compare: 'evals', experiments: 'evals', experiment: 'evals',
+  reports: 'evals', report: 'evals', experiments: 'evals', experiment: 'evals',
   sessions: 'evals', session: 'evals',
   'opt-runs': 'optimization', 'opt-setup': 'optimization', 'opt-overview': 'optimization',
   'opt-progress': 'optimization', 'opt-candidates': 'optimization', 'opt-tunables': 'optimization',
   'opt-trade': 'optimization', missing: 'evals',
 };
 const VIEW_NAME = {
-  reports: 'Reports', report: 'Report', compare: 'Compare', experiments: 'Experiments', experiment: 'Cases',
+  reports: 'Reports', report: 'Report', experiments: 'Experiments', experiment: 'Cases',
   sessions: 'Sessions', session: 'Session', 'opt-runs': 'Runs',
   'opt-setup': 'Setup', 'opt-overview': 'Overview', 'opt-progress': 'Progress',
   'opt-candidates': 'Candidates', 'opt-tunables': 'Tunables', 'opt-trade': 'Trade-off', missing: 'Not found',
 };
 /* The list a page is opened from: the sidebar marks that, since the page itself is not in it. */
-const LIST_OF = { report: 'reports', compare: 'reports', experiment: 'experiments', session: 'sessions' };
+const LIST_OF = { report: 'reports', experiment: 'experiments', session: 'sessions' };
 const listOf = view => (view === 'missing' ? MISSING.list
   : (view === 'report' && repCand) || SECTION_OF[view] === 'optimization' ? 'opt-runs' : LIST_OF[view] || view);
 /* Reports when there are any, since most folders hold results; a folder of experiments alone opens on those,
@@ -247,7 +247,6 @@ function show(view, opts) {
   /* A page with nothing open in it is its list. */
   if (view === 'report' && !REP) view = 'reports';
   if (view === 'experiment' && !EXP) view = 'experiments';
-  if (view === 'compare' && !CMP.length) view = 'reports';
   if (view === 'session' && !sesMeta) view = 'sessions';
   const moved = !$('v-' + view).classList.contains('on');
   app.querySelectorAll('.tab').forEach(t => {
@@ -258,15 +257,14 @@ function show(view, opts) {
   });
   app.querySelectorAll('.view').forEach(v => v.classList.toggle('on', v.id === 'v-' + view));
   const lists = view === 'reports' || view === 'experiments' || view === 'sessions';
-  $('folder').hidden = !lists;
   $('skips').hidden = !lists;
   $('stores').hidden = !lists;
-  /* The bar names the file behind a page, and the folder behind a list. */
+  /* The bar names the file behind a page, and the folder behind anything else: the one place the
+     path is written, so the line over the lists carries only what acts on them. */
   const run = OPT_RUNS[optSel] || {};
   const config = run.dir === '.' ? 'run.json' : `${run.dir}/run.json`, log = run.events_path;
   $('path').textContent = {
     report: repMeta && repMeta.path, experiment: expMeta && expMeta.path, session: sesMeta && sesMeta.path,
-    compare: `${CMP.length} reports`,
     'opt-setup': config, 'opt-tunables': config,
     'opt-overview': log, 'opt-progress': log, 'opt-candidates': log, 'opt-trade': log,
   }[view] || ROOT;

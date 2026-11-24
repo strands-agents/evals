@@ -13,6 +13,7 @@ tip.hidden = true;
 app.appendChild(tip);
 
 let tipFrom = null;
+let tipWait = null, tipNext = null; /* a tip not yet shown: its timer, and the element it waits on */
 const isMark = el => el.namespaceURI === SVG_NS;
 
 function tipTarget(node) {
@@ -71,19 +72,27 @@ function placeTip(x, y) {
   tip.style.left = `${Math.max(8, left)}px`;
   tip.style.top = `${Math.max(8, top)}px`;
 }
-/* A chart mark's tooltip follows the pointer; anything else is explained just under itself. */
+/* A chart mark's tooltip follows the pointer; a sidebar row's sits above the row, clear of the
+   list unfolded under it; anything else is explained just under itself. */
 function anchorTip(el) {
   const box = el.getBoundingClientRect();
-  placeTip(box.left - 14, box.bottom - 8);
+  if (el.closest('.sections')) placeTip(box.left - 14, box.top - tip.getBoundingClientRect().height - 20);
+  else placeTip(box.left - 14, box.bottom - 8);
 }
+
+/* Forgets a tip not yet shown as well as the one showing. */
+const cancelTip = () => { clearTimeout(tipWait); tipNext = null; hideTip(); };
 
 app.addEventListener('mouseover', e => {
   const el = tipTarget(e.target);
-  if (el !== tipFrom) {
-    hideTip();
-    if (el) {
-      showTip(el);
-      if (isMark(el)) placeTip(e.clientX, e.clientY); else anchorTip(el);
+  if (el !== tipFrom) hideTip();
+  if (el !== tipNext) { clearTimeout(tipWait); tipNext = null; }
+  if (el && el !== tipFrom && el !== tipNext) {
+    /* A chart mark explains at once: its tip is the reading of a point. Writing waits for the
+       pointer to rest on the element, so crossing a page pops nothing. */
+    if (isMark(el)) { showTip(el); placeTip(e.clientX, e.clientY); } else {
+      tipNext = el;
+      tipWait = setTimeout(() => { tipNext = null; showTip(el); anchorTip(el); }, 500);
     }
   }
 
@@ -94,19 +103,19 @@ app.addEventListener('mouseover', e => {
   if (kind) entry.closest('.chart').dataset.focus = kind;
 });
 app.addEventListener('mousemove', e => { if (tipFrom && isMark(tipFrom)) placeTip(e.clientX, e.clientY); });
-app.addEventListener('mouseleave', hideTip);
+app.addEventListener('mouseleave', cancelTip);
 
-/* What is reached by keyboard shows the same tooltip. */
+/* What is reached by keyboard shows the same tooltip, at once: focus is already a rest. */
 app.addEventListener('focusin', e => {
   const el = tipTarget(e.target);
-  hideTip();
+  cancelTip();
   if (!el) return;
   showTip(el);
   anchorTip(el);
 });
 app.addEventListener('focusout', hideTip);
-document.addEventListener('keydown', e => { if (e.key === 'Escape') hideTip(); });
-window.addEventListener('scroll', hideTip, { passive: true });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') cancelTip(); });
+window.addEventListener('scroll', cancelTip, { passive: true });
 
 /* ── chart marks ── */
 

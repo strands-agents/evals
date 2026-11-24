@@ -20,7 +20,6 @@ const suites = [
   'charts.mjs',
   'live.mjs',
   'fidelity.mjs',
-  'compare.mjs',
   'lenses.mjs',
   'sessions.mjs',
   'markdown.mjs',

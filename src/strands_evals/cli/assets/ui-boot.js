@@ -14,7 +14,6 @@ async function goTo(want, force) {
   if (want.report && (repCand || !repMeta || repMeta.path !== want.report) && !await openReport(want.report)) return overtaken();
   if (want.experiment && (!expMeta || expMeta.path !== want.experiment)
     && !await openExperiment(want.experiment, { force })) return overtaken();
-  if (want.compare && !await openCompare(want.compare, true)) return overtaken();
   if (want.session && (!sesMeta || sesMeta.path !== want.session) && !await openSession(want.session)) return overtaken();
   const opt = want.opt ? OPT_RUNS.findIndex(r => r.id === want.opt) : -1;
   if (opt >= 0 && opt !== optSel && !await openOptimizerRun(opt)) return overtaken();

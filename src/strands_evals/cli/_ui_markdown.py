@@ -563,7 +563,6 @@ PAGE_ADDRESSES = {
         ("/<report file>", "one report"),
         ("/<report file>/rows/<case>/<evaluator>", "one row of it, opened and in view"),
         ("/<report file>/rows/<case>", "the same, for a row whose case has no evaluator named"),
-        ("/compare?r=<report file>&r=<report file>", "two or more reports side by side, oldest first"),
     ],
     "/experiments": [
         ("", "every experiment file found"),
@@ -623,7 +622,7 @@ def llms_text(
             "## Markdown and JSON",
             "A report, an experiment or a session is read by adding a form to its page address. A file is named "
             "by its path under the served folder, which ends in `.json`; `/api/scan` lists them. A diagnosis file "
-            "is read the same way, under `/sessions/`. A comparison is a page only: read each of its reports.",
+            "is read the same way, under `/sessions/`.",
             "\n".join(forms),
             f"In Markdown a value longer than {VALUE_LIMIT} characters is cut, with a line saying how much was left "
             "out: the JSON form has all of it. A report writes a case that fails under several evaluators once. "

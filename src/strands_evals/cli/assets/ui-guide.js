@@ -134,6 +134,7 @@ const VIEW_GUIDE = {
       'Select an evaluator to see what it checks and change its settings.',
       'Save writes the file back. Cases marked draft can be accepted or dropped in one review pass.',
       '<b>Copy as Markdown</b> at the top copies the experiment as text for a coding agent. The selected case has its own copy, and the command that runs it alone.',
+      'An experiment with no report offers <b>Copy run command</b> at the top: the command that runs it whole, once <code>--agent</code> names your agent.',
     ],
     terms: ['case', 'evaluator', 'trajectory'],
     links: [['how-evaluation-works/#what-an-evaluation-is-made-of', 'What an evaluation is made of'], ['evaluators/#choose-an-evaluator', 'Choosing an evaluator'], ['how-to/serialization/', 'Experiment files']],
@@ -144,23 +145,11 @@ const VIEW_GUIDE = {
       'Open a row to see the input, the expected and actual output, and the reason the evaluator gave.',
       'Filter to Failing to see what to fix first. Rows marked not applicable are left out of the overall score.',
       'The charts show where the failures sit, how scores are spread, and what each case took. Select a mark to open its row.',
-      'Compare with, at the top, sets this report beside another one.',
       'Group by lets you split the rows by anything the cases carry, such as a tag, a red-team category or a chaos condition. A row with a diagnosis says what failed, why, and what to change.',
       'To hand it to a coding agent, <b>Copy as Markdown</b> at the top copies the whole report and <b>Copy failing rows as a prompt</b> only what fails. An open row has its own copy actions and a link.',
     ],
     terms: ['score', 'verdict', 'not_applicable'],
     links: [['how-evaluation-works/#the-levels-an-evaluator-scores-at', 'How evaluators score'], ['detectors/', 'Diagnosing failures'], ['cli/report/', 'The report command']],
-  },
-  compare: {
-    steps: [
-      'The reports you picked, oldest first. Each is numbered; the numbers head the columns below.',
-      'The grid has one line per case and evaluator and one column per report. A line that changes colour is a row that flipped; a gap means that report does not hold the row.',
-      'The last chart sets the oldest against the newest: what now passes, what now fails, and how far each score moved.',
-      'Select a mark to open that row in its report. Add or remove reports at the top.',
-      '<b>Copy as Markdown</b> at the top copies the comparison as text: each report, the evaluator means, and the rows that changed.',
-    ],
-    terms: ['report', 'verdict', 'not_applicable'],
-    links: [['cli/run/#experiment-file-run', 'Running an experiment'], ['cli/report/', 'The report command']],
   },
   sessions: {
     steps: [
