@@ -118,6 +118,11 @@ def test_span_limits_on_the_provider_it_installs_warn_about_nothing(caplog):
     assert "span_limits" not in caplog.text
 
 
+def test_span_limits_is_keyword_only():
+    with pytest.raises(TypeError):
+        StrandsEvalsTelemetry(None, SpanLimits())  # type: ignore[misc]
+
+
 def test_strands_evals_telemetry_span_limits_with_custom_provider_raises():
     """Span limits can't apply to a provider that already exists"""
     with pytest.raises(ValueError, match="span_limits"):

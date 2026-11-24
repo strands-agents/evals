@@ -116,6 +116,7 @@ class StrandsEvalsTelemetry:
     def __init__(
         self,
         tracer_provider: SDKTracerProvider | None = None,
+        *,
         span_limits: SpanLimits | None = None,
     ) -> None:
         """Initialize the StrandsEvalsTelemetry instance.
