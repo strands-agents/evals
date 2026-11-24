@@ -1633,6 +1633,18 @@ def _index(events, name, nth=1, after=0):
     return hits[nth - 1] + 1
 
 
+def _close(value):
+    """`value` with every float replaced by `pytest.approx` at 1e-12, for comparing reported diagnostics: the
+    fit's linear algebra (numpy's BLAS) may round its last bit differently from one run to the next."""
+    if isinstance(value, dict):
+        return {key: _close(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_close(item) for item in value]
+    if isinstance(value, float):
+        return pytest.approx(value, rel=1e-12, abs=1e-12)
+    return value
+
+
 def _assert_same(resumed, original, *, rerun=None):
     """Everything a run decides is the same; timings (seconds) and paths aren't compared. The iteration a kill
     interrupted (`rerun`) is run again on its saved trials, so it spends 0 rollouts the second time."""
@@ -1646,7 +1658,7 @@ def _assert_same(resumed, original, *, rerun=None):
             assert again == first
     assert resumed.stop_reason == original.stop_reason
     assert resumed.rollouts_spent == original.rollouts_spent
-    assert resumed.effects == original.effects
+    assert resumed.effects == _close(original.effects)  # what the fit reports, to the last bit or two
     validation_fields = ("champion_id", "front", "objectives", "estimates", "adjusted_means", "infeasible")
     for field in (*validation_fields, "p_met", "problem", "rule", "outcome", "reason"):
         assert getattr(resumed.validation, field) == getattr(original.validation, field)

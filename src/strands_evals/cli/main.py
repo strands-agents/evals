@@ -12,6 +12,7 @@ from .commands import generate as generate_cmd
 from .commands import optimize as optimize_cmd
 from .commands import report as report_cmd
 from .commands import run as run_cmd
+from .commands import ui as ui_cmd
 from .commands import validate as validate_cmd
 
 
@@ -33,6 +34,7 @@ def _build_parser() -> argparse.ArgumentParser:
     generate_cmd.add_subparser(subparsers, parent)
     fetch_cmd.add_subparser(subparsers, parent)
     optimize_cmd.add_subparser(subparsers, parent)
+    ui_cmd.add_subparser(subparsers, parent)
 
     return parser
 

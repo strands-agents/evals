@@ -1,11 +1,11 @@
 import asyncio
 import contextvars
-import sys
 import threading
 import time
 
 import pytest
 
+from strands_evals import _async
 from strands_evals._async import run_async
 
 _CALLER = contextvars.ContextVar("caller", default=None)
@@ -58,6 +58,55 @@ def test_an_interrupt_cancels_the_function_and_propagates_once_the_cancellation_
     assert raised.value.__cause__ is None
 
 
+def test_an_interrupt_while_the_worker_thread_starts_still_cancels_the_running_function(sigint, monkeypatch):
+    """The interrupt lands in `submit` after the worker began running the function (a starved main thread)."""
+    started, cleaned_up = threading.Event(), []
+
+    class InterruptedWhileStarting(_async.ThreadPoolExecutor):
+        def submit(self, *args, **kwargs):
+            super().submit(*args, **kwargs)
+            assert started.wait(5)
+            raise sigint.error
+
+    async def main():
+        started.set()
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            cleaned_up.append(True)
+            raise
+
+    monkeypatch.setattr(_async, "ThreadPoolExecutor", InterruptedWhileStarting)
+    start = time.monotonic()
+    with pytest.raises(sigint.error):
+        run_async(main)
+    assert time.monotonic() - start < 5 and cleaned_up == [True]
+
+
+def test_an_interrupt_before_the_work_is_queued_propagates_at_once(sigint, monkeypatch):
+    ran, raised = [], []
+
+    class InterruptedBeforeQueuing(_async.ThreadPoolExecutor):
+        def submit(self, *args, **kwargs):
+            raise sigint.error
+
+    async def main():
+        ran.append(True)
+
+    def call():
+        try:
+            run_async(main)
+        except sigint.error:
+            raised.append(True)
+
+    monkeypatch.setattr(_async, "ThreadPoolExecutor", InterruptedBeforeQueuing)
+    caller = threading.Thread(target=call, daemon=True)  # a daemon: if `run_async` hangs, the session still exits
+    caller.start()
+    caller.join(5)
+    assert not caller.is_alive(), "run_async waited for work that was never queued"
+    assert raised == [True] and ran == []
+
+
 def test_an_error_raised_instead_of_the_cancellation_is_the_interrupts_cause(sigint):
     async def main():
         await asyncio.sleep(0.1)  # the caller is waiting
@@ -72,10 +121,6 @@ def test_an_error_raised_instead_of_the_cancellation_is_the_interrupts_cause(sig
     assert isinstance(raised.value.__cause__, RuntimeError)
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="on Windows the second cancellation is sometimes not delivered to the task awaiting asyncio.to_thread",
-)
 def test_a_second_interrupt_cancels_again_and_stops_waiting(sigint):
     release, cancelled, second_handled = threading.Event(), [], threading.Event()
 
@@ -99,10 +144,12 @@ def test_a_second_interrupt_cancels_again_and_stops_waiting(sigint):
     with pytest.raises(sigint.error):
         run_async(main)
     elapsed = time.monotonic() - start
-    release.set()
-    # The second cancellation finishes in the background, after `run_async` raised; joining the leftover threads
-    # can't be relied on to wait for it (3.14 on Windows can enumerate a thread `join` rejects as never started).
+    # The second cancellation is delivered in the background, after `run_async` raised: wait for it while the
+    # function is still blocked. Released first, the function was seen to finish before the cancellation ran.
     assert second_handled.wait(5)
+    release.set()
+    # Joining the leftover threads can't be relied on (3.14 on Windows can enumerate a thread `join` rejects as
+    # never started), hence the `is_alive` check.
     for thread in set(threading.enumerate()) - threads:
         if thread.is_alive():
             thread.join(5)

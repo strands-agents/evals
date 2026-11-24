@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>strands-evals</title>
+<meta name="strands-evals-token" content="">
+<link rel="icon" href="data:image/svg+xml,%3Csvg viewBox='0 0 40 40' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Crect width='40' height='40' fill='%23000000'/%3E%3Cg transform='translate(4 4)'%3E%3Cpath d='M32 15.2402H30.48V25.9102H32V15.2402Z' fill='%2300cc60'/%3E%3Cpath d='M30.4802 25.9102H28.9502V27.4302H30.4802V25.9102Z' fill='%2300cc60'/%3E%3Cpath d='M30.4802 12.1899H28.9502V15.2399H30.4802V12.1899Z' fill='%2300cc60'/%3E%3Cpath d='M28.9502 27.4302H27.4302V28.9602H28.9502V27.4302Z' fill='%2300cc60'/%3E%3Cpath d='M28.9502 9.1499H27.4302V12.1899H28.9502V9.1499Z' fill='%2300cc60'/%3E%3Cpath d='M27.4302 28.96H25.9102V30.48H27.4302V28.96Z' fill='%2300cc60'/%3E%3Cpath d='M27.4302 7.62012H25.9102V9.15012H27.4302V7.62012Z' fill='%2300cc60'/%3E%3Cpath d='M25.9099 3.0498H24.3799V7.6198H25.9099V3.0498Z' fill='%2300cc60'/%3E%3Cpath d='M16.7601 30.4802V28.9602H19.8101V27.4302H15.2401V28.9602H7.62012V30.4802H15.2401V32.0002H25.9101V30.4802H16.7601Z' fill='%2300cc60'/%3E%3Cpath d='M24.3799 1.52979H22.8599V3.04979H24.3799V1.52979Z' fill='%2300cc60'/%3E%3Cpath d='M22.8601 15.2402H19.8101V16.7602H22.8601V15.2402Z' fill='%2300cc60'/%3E%3Cpath d='M21.3401 25.9102H19.8101V27.4302H21.3401V25.9102Z' fill='%2300cc60'/%3E%3Cpath d='M22.86 0H18.29V1.53H22.86V0Z' fill='%2300cc60'/%3E%3Cpath d='M19.81 24.3799H18.29V25.9099H19.81V24.3799Z' fill='%2300cc60'/%3E%3Cpath d='M19.81 16.7598H18.29V18.2898H19.81V16.7598Z' fill='%2300cc60'/%3E%3Cpath d='M21.34 3.0498H18.29V6.0998H21.34V3.0498Z' fill='%2300cc60'/%3E%3Cpath d='M18.2898 18.29H16.7598V24.38H18.2898V18.29Z' fill='%2300cc60'/%3E%3Cpath d='M18.2898 1.52979H16.7598V3.04979H18.2898V1.52979Z' fill='%2300cc60'/%3E%3Cpath d='M16.7602 3.0498H15.2402V6.0998H16.7602V3.0498Z' fill='%2300cc60'/%3E%3Cpath d='M15.2402 25.9102H13.7202V27.4302H15.2402V25.9102Z' fill='%2300cc60'/%3E%3Cpath d='M13.7199 21.3398H12.1899V25.9098H13.7199V21.3398Z' fill='%2300cc60'/%3E%3Cpath d='M15.2399 6.1001H12.1899V7.6201H15.2399V6.1001Z' fill='%2300cc60'/%3E%3Cpath d='M12.1899 19.8101H10.6699V21.3401H12.1899V19.8101Z' fill='%2300cc60'/%3E%3Cpath d='M12.1899 9.1499H10.6699V10.6699H12.1899V9.1499Z' fill='%2300cc60'/%3E%3Cpath d='M12.1899 3.0498H10.6699V6.0998H12.1899V3.0498Z' fill='%2300cc60'/%3E%3Cpath d='M10.6699 1.52979H9.1499V3.04979H10.6699V1.52979Z' fill='%2300cc60'/%3E%3Cpath d='M10.6701 10.6699H6.1001V12.1899H10.6701V10.6699Z' fill='%2300cc60'/%3E%3Cpath d='M7.6201 27.4302H6.1001V28.9602H7.6201V27.4302Z' fill='%2300cc60'/%3E%3Cpath d='M9.14982 0H4.56982V1.53H9.14982V0Z' fill='%2300cc60'/%3E%3Cpath d='M1.53 30.48V28.96H0V32H7.62V30.48H1.53Z' fill='%2300cc60'/%3E%3Cpath d='M10.6698 18.29H3.0498V19.81H10.6698V18.29Z' fill='%2300cc60'/%3E%3Cpath d='M7.61982 3.0498H4.56982V6.0998H7.61982V3.0498Z' fill='%2300cc60'/%3E%3Cpath d='M4.56979 27.4302H6.09978V25.9102H3.04979V27.4302H1.52979V28.9602H4.56979V27.4302Z' fill='%2300cc60'/%3E%3Cpath d='M4.5698 7.62012H3.0498V10.6701H4.5698V7.62012Z' fill='%2300cc60'/%3E%3Cpath d='M4.5698 1.52979H3.0498V3.04979H4.5698V1.52979Z' fill='%2300cc60'/%3E%3Cpath d='M3.04979 24.3799H1.52979V25.9099H3.04979V24.3799Z' fill='%2300cc60'/%3E%3Cpath d='M3.04979 10.6699H1.52979V13.7199H3.04979V10.6699Z' fill='%2300cc60'/%3E%3Cpath d='M3.04979 3.0498H1.52979V7.6198H3.04979V3.0498Z' fill='%2300cc60'/%3E%3Cpath d='M3.05 21.3402V19.8102H1.53V13.7202H0V24.3802H1.53V21.3402H3.05Z' fill='%2300cc60'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="stylesheet" href="ui.css">
+<script src="ui-theme.js"></script>
+</head>
+<body>
+<div class="app">
+  <header class="bar">
+    <div class="brand" role="img" aria-label="Strands">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1512 217" fill="currentColor" aria-hidden="true"><g transform="translate(0 0)"><path d="M30.2558 216.833V186.914H0V148.926H36.9794V179.182H121.023V127.075H30.2558V97.1548H0V29.9197H30.2558V0H127.747V29.9197H158.339V67.5714H121.023V37.9879H36.9794V89.759H127.747V119.006H158.339V186.914H127.747V216.833H30.2558Z"/></g><g transform="translate(30 0)"><path d="M252.894 216.833V37.9879H229.361V67.5714H192.382V29.9197H222.638V0H320.129V29.9197H350.721V67.5714H313.405V37.9879H289.873V216.833H252.894Z"/></g><g transform="translate(60 0)"><path d="M377.87 216.833V29.9197H408.125V0H505.617V29.9197H536.208V127.075H505.617V156.994H490.825V179.182H520.744V216.833H484.101V186.914H453.509V156.994H414.849V216.833H377.87ZM414.849 119.006H498.893V37.9879H414.849V119.006Z"/></g><g transform="translate(90 0)"><path d="M576.818 216.833V59.5031H607.073V29.9197H637.329V0H674.309V29.9197H704.564V59.5031H735.156V216.833H697.841V156.994H613.797V216.833H576.818ZM613.797 119.006H697.841V67.5714H667.921V37.9879H643.717V67.5714H613.797V119.006Z"/></g><g transform="translate(120 0)"><path d="M775.765 216.833V0H812.745V29.9197H842.664V59.5031H873.256V148.926H896.789V0H934.104V216.833H896.789V186.914H866.869V156.994H836.277V67.5714H812.745V216.833H775.765Z"/></g><g transform="translate(150 0)"><path d="M974.713 216.833V0H1072.2V29.9197H1102.46V59.5031H1133.05V156.994H1102.46V186.914H1072.2V216.833H974.713ZM1011.69 179.182H1065.82V148.926H1095.74V67.5714H1065.82V37.9879H1011.69V179.182Z"/></g><g transform="translate(180 0)"><path d="M1203.92 216.833V186.914H1173.66V148.926H1210.64V179.182H1294.68V127.075H1203.92V97.1548H1173.66V29.9197H1203.92V0H1301.41V29.9197H1332V67.5714H1294.68V37.9879H1210.64V89.759H1301.41V119.006H1332V186.914H1301.41V216.833H1203.92Z"/></g></svg>
+    </div>
+    <nav class="navlinks" aria-label="Strands Evals resources">
+      <a data-doc="" data-placement="nav-docs">Docs</a>
+      <a data-doc="quickstart/" data-placement="nav-quickstart">Quickstart</a>
+      <a data-doc="evaluators/" data-placement="nav-evaluators">Evaluators</a>
+    </nav>
+    <div class="grow"></div>
+    <span class="mode" id="read-only" hidden data-tip="Served with --read-only. Cases can be read but not saved.">read-only</span>
+    <div class="path mono" id="path"></div>
+    <a class="navicon" href="https://github.com/strands-agents/evals" target="_blank" rel="noopener" aria-label="strands-agents/evals on GitHub">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 31.0442 29.9737" fill="none" aria-hidden="true"><path fill="currentColor" d="M13.1271 21.9088C9.12527 21.4253 6.30585 18.5545 6.30585 14.8376C6.30585 13.3266 6.85154 11.6948 7.76104 10.6069C7.36691 9.60966 7.42754 7.49433 7.88231 6.61799C9.09497 6.46688 10.7321 7.1015 11.7022 7.97783C12.8542 7.61521 14.0669 7.43389 15.5524 7.43389C17.0379 7.43389 18.2506 7.61521 19.342 7.94763C20.2818 7.1015 21.9492 6.46688 23.1619 6.61799C23.5863 7.43389 23.6469 9.54923 23.2528 10.5767C24.2229 11.725 24.7383 13.2662 24.7383 14.8376C24.7383 18.5545 21.9189 21.3649 17.8564 21.8786C18.8872 22.5434 19.5845 23.9939 19.5845 25.656V28.7989C19.5845 29.7053 20.3424 30.2191 21.2519 29.8564C26.7392 27.7712 31.0442 22.3017 31.0442 15.5326C31.0442 6.98062 24.0714 0 15.4917 0C6.91218 0 0 6.98059 0 15.5326C0 22.2412 4.27462 27.8015 10.0348 29.8867C10.8533 30.1888 11.6416 29.645 11.6416 28.8292V26.4115C11.2171 26.5928 10.6714 26.7137 10.1864 26.7137C8.18547 26.7137 7.00311 25.6258 6.15425 23.6011C5.82078 22.7852 5.45698 22.3017 4.75968 22.211C4.39589 22.1808 4.27462 22.0297 4.27462 21.8484C4.27462 21.4858 4.88095 21.2138 5.48728 21.2138C6.36648 21.2138 7.12438 21.7577 7.91261 22.8759C8.51894 23.7522 9.1556 24.1451 9.9135 24.1451C10.6714 24.1451 11.1565 23.8731 11.8538 23.178C12.3692 22.6643 12.7633 22.211 13.1271 21.9088Z"/></svg>
+    </a>
+    <button class="guide-toggle" type="button" data-guide-toggle aria-controls="guide" aria-expanded="false" data-tip="How to use the view you are on: what to do, what its terms mean, and where the docs say more.">Guide</button>
+    <button class="theme-toggle" type="button" data-theme-toggle aria-label="Toggle color theme" data-tip="Switch between light and dark.">
+      <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+      <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+    </button>
+  </header>
+  <nav class="sections" id="sections" aria-label="Views">
+    <a class="slug" data-doc="" data-placement="nav-slug">/evals</a>
+    <!-- The views, each a kind of thing this folder holds. `data-sec` groups a view with the page
+         tabs that belong to it, which is what hides a run's own tabs until there is a run.
+         What a view lists is listed again right under its row, so opening one thing is a click from
+         any page and the list is not a stop on the way. Each list starts folded away. The row opens
+         the list view and unfolds it, and clicked again on that view folds it back; opening one of
+         the things it lists unfolds it too, so the mark is never hidden; the caret does the same
+         folding without opening anything. -->
+    <div class="tabs">
+      <div class="sgroup">
+        <div class="trow">
+          <button class="tab" data-view="experiments" data-sec="evals" data-tip="Every experiment file found in this folder, and the reports made from each.">Experiments</button>
+          <button class="fold" data-fold="experiments-tree" aria-controls="experiments-tree" aria-expanded="false" aria-label="Show or hide the experiments listed under this row" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+          </button>
+        </div>
+        <div class="runlist folded" id="experiments-tree" hidden></div>
+      </div>
+      <div class="sgroup">
+        <div class="trow">
+          <button class="tab on" data-view="reports" data-sec="evals" data-tip="Every report found in this folder, whether or not an experiment file sits beside it.">Reports</button>
+          <button class="fold" data-fold="reports-tree" aria-controls="reports-tree" aria-expanded="false" aria-label="Show or hide the reports listed under this row" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+          </button>
+        </div>
+        <div class="runlist folded" id="reports-tree" hidden></div>
+      </div>
+      <button class="tab" data-view="sessions" data-sec="evals" hidden data-tip="Every recorded session found in this folder, and what a diagnosis found in each.">Sessions</button>
+      <!-- Optimization, the Runs view under it, and every run under that: three levels, so a run is
+           one click from any page. The heading names what the section is rather than opening
+           anything. Hidden whole until a scan finds a run. -->
+      <div class="sgroup" id="sgroup-opt" hidden>
+        <div class="sec">Optimization</div>
+        <div class="trow">
+          <button class="tab" data-view="opt-runs" data-sec="optimization" hidden data-tip="Optimizer runs found in this folder.">Runs</button>
+          <button class="fold" data-fold="runs-sub" aria-controls="runs-sub" aria-expanded="false" aria-label="Show or hide the runs listed under this row" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+          </button>
+        </div>
+        <div class="runlist folded" id="runs-sub" hidden></div>
+      </div>
+    </div>
+    <div class="nav-foot">
+      <a data-doc="how-evaluation-works/" data-placement="sidebar-how-it-works">How evaluation works</a>
+      <a data-doc="cli/" data-placement="sidebar-cli">CLI reference</a>
+      <a href="https://github.com/strands-agents/evals/issues" target="_blank" rel="noopener">Report an issue</a>
+    </div>
+  </nav>
+  <!-- The sidebar's edge: drag it to give long file names room; double-click puts it back. -->
+  <div class="nav-resize" id="nav-resize" role="separator" aria-orientation="vertical"
+       aria-label="Sidebar width" tabindex="0" aria-valuemin="180" aria-valuemax="560"></div>
+
+  <main>
+    <!-- What is open: where it came from, what it is, and the views that belong to it. -->
+    <header class="pagehead" id="pagehead" hidden>
+      <nav class="crumbs" id="crumbs" aria-label="Where this is"></nav>
+      <div class="headrow">
+        <p class="facts" id="facts"></p>
+        <div class="actions" id="actions">
+          <span class="copy-acts" id="copy-acts"></span>
+        </div>
+      </div>
+      <div class="ptabs" id="opt-tabs" hidden>
+        <button class="tab" data-view="opt-overview" data-sec="optimization" hidden data-tip="The result, and the configuration the run picked.">Result</button>
+        <button class="tab" data-view="opt-setup" data-sec="optimization" hidden data-tip="What the open run was told to do, and the settings it could change.">Setup</button>
+        <button class="tab" data-view="opt-progress" data-sec="optimization" hidden data-tip="How the search went, candidate by candidate.">Iterations</button>
+        <button class="tab" data-view="opt-candidates" data-sec="optimization" hidden data-tip="Every configuration the run tried, and how each case went.">Candidates</button>
+        <button class="tab" data-view="opt-trade" data-sec="optimization" data-multi hidden data-tip="One goal plotted against another.">Trade-off</button>
+      </div>
+    </header>
+
+    <section class="view on" id="v-reports">
+      <h2>Reports</h2>
+      <p class="sub" id="reports-sub"></p>
+      <div class="ctl">
+        <button class="btn" data-act="rescan" data-tip="Read the folder again for new or changed files.">Rescan</button>
+        <span class="grow"></span>
+        <span class="path" id="reports-count"></span>
+      </div>
+      <div class="scroll">
+        <table class="rep">
+          <thead><tr>
+            <th style="width:34%" data-term="report">Report</th><th style="width:26%" data-term="score">Score</th>
+            <th style="width:26%" data-tip="The experiment file this report was made from. A report made in code has none.">Experiment</th><th data-tip="When the report last changed on disk.">Modified</th>
+          </tr></thead>
+          <tbody id="reports-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="view" id="v-experiments">
+      <h2>Experiments</h2>
+      <p class="sub" id="experiments-sub"></p>
+      <div class="ctl">
+        <button class="btn" data-act="rescan" data-tip="Read the folder again for new or changed files.">Rescan</button>
+        <span class="grow"></span>
+        <span class="path" id="experiments-count"></span>
+      </div>
+      <div class="scroll">
+        <table class="rep">
+          <thead><tr>
+            <th style="width:34%" data-term="experiment">Experiment</th><th style="width:22%" data-term="case">Cases</th>
+            <th style="width:30%" data-tip="The reports made from this experiment, newest first.">Reports</th><th data-tip="When the experiment last changed on disk.">Modified</th>
+          </tr></thead>
+          <tbody id="experiments-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="view" id="v-experiment">
+      <h2>Cases</h2>
+      <p class="sub" id="exp-sub"></p>
+      <div class="evhead">
+        <div class="evs" id="evs" style="margin:0"></div>
+        <div class="evnotes" id="evnotes"></div>
+      </div>
+      <div class="evform" id="evform" hidden></div>
+      <div class="review-bar" id="review-bar" hidden></div>
+      <div class="cols">
+        <div>
+          <input class="find" id="case-find" placeholder="Filter cases" aria-label="Filter cases" autocomplete="off">
+          <ul class="list" id="case-list"></ul>
+          <div class="count" id="case-count"></div>
+          <div class="ctl" style="margin:12px 0 0">
+            <button class="btn" id="add-case" data-tip="Add an empty case to this experiment.">+ Case</button>
+            <button class="btn" id="del-case" data-tip="Remove the selected case. Nothing changes on disk until you save.">Delete</button>
+            <button class="btn" id="review-case" disabled data-term="draft">Review drafts</button>
+          </div>
+        </div>
+        <div class="pane">
+          <header>
+            <span class="t" id="form-title"></span>
+            <span class="grow"></span>
+            <span class="path mono" id="form-sid"></span>
+            <span class="mdacts" id="case-acts" hidden><button class="btn" data-md="case">Copy as Markdown</button><button class="btn" data-md="case-command">Copy command</button></span>
+          </header>
+          <div class="body" id="form"></div>
+          <div class="foot">
+            <button class="btn pri" id="save" disabled>Save</button>
+            <button class="btn" id="revert" disabled data-tip="Put every case and evaluator back as last saved.">Revert</button>
+            <span class="saved mono" id="saved" aria-live="polite"></span>
+            <span class="grow"></span>
+            <span class="dirty" id="dirty">No unsaved changes</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" id="v-report">
+      <div class="hero">
+        <div>
+          <div class="big none" id="r-score">&mdash;</div>
+          <div class="cap" data-term="overall">Overall score · mean of applicable rows</div>
+          <div class="passbar" id="r-passbar" hidden><span></span></div>
+        </div>
+        <div class="stats" id="r-stats"></div>
+      </div>
+      <details class="drawer" id="rep-charts" open hidden>
+        <summary>Charts<span class="path">verdicts, scores, and what each case took</span></summary>
+        <div class="charts">
+          <div class="chart wide">
+            <h3>Verdict by case and evaluator</h3>
+            <p class="cap">Cases across, evaluators down. A column of fails is one case failing everywhere; a row of fails is one evaluator. Select a cell to open its row.</p>
+            <div id="rep-heat"></div>
+            <div class="legend"><span><i class="pass"></i>pass</span><span><i class="fail"></i>fail</span><span data-term="not_applicable"><i class="na"></i>not applicable</span></div>
+          </div>
+        </div>
+        <div class="charts">
+          <div class="chart wide" id="rep-spread-card">
+            <h3>Score distribution</h3>
+            <p class="cap">How each evaluator's scores are spread over the rows it applied to. The tick is the mean.</p>
+            <div id="rep-spread"></div>
+          </div>
+        </div>
+        <div class="charts" id="rep-cost-card" hidden>
+          <div class="chart wide">
+            <div class="chead">
+              <h3>Cost per case</h3>
+              <div class="pick" id="rep-cost-pick" role="group" aria-label="Cost measure to chart"></div>
+            </div>
+            <p class="cap" id="rep-cost-cap"></p>
+            <div id="rep-cost"></div>
+          </div>
+        </div>
+      </details>
+      <div class="lens" id="rep-lens" hidden>
+        <div class="chead">
+          <h3>Group by</h3>
+          <div class="pick" id="rep-group-pick" role="group" aria-label="Group the rows by"></div>
+        </div>
+        <p class="cap" id="rep-group-cap"></p>
+        <div id="rep-groups"></div>
+      </div>
+      <div class="ctl">
+        <input class="find" id="rep-find" placeholder="Search cases and reasons" aria-label="Search cases and reasons" autocomplete="off">
+        <div class="seg" id="rep-seg">
+          <button class="on" data-f="all">All</button>
+          <button data-f="fail" data-tip="Cases where at least one evaluator failed.">Failing</button>
+          <button data-f="na" data-term="not_applicable">Not applicable</button>
+          <button data-f="diag" data-tip="Cases with a diagnosis of what went wrong recorded." hidden>Diagnosed</button>
+        </div>
+        <span class="grow"></span>
+        <span class="path" id="rep-count"></span>
+      </div>
+      <div class="scroll">
+        <table class="rep">
+          <thead>
+            <tr><th style="width:30%" data-term="case">Case</th><th style="width:22%" data-term="evaluator">Evaluator</th><th style="width:26%" data-term="score">Score</th><th data-term="verdict">Verdict</th></tr>
+          </thead>
+          <tbody id="rep-rows"></tbody>
+        </table>
+      </div>
+      <button class="more" id="rep-more" hidden></button>
+    </section>
+
+    <section class="view" id="v-sessions">
+      <h2>Sessions</h2>
+      <p class="sub">A session is the recorded traces of one conversation with an agent. A diagnosis made of one is shown on its page.</p>
+      <div class="ctl">
+        <button class="btn" data-act="rescan" data-tip="Read the folder again for new or changed files.">Rescan</button>
+        <span class="grow"></span>
+        <span class="path" id="sessions-count"></span>
+      </div>
+      <div class="scroll">
+        <table class="rep">
+          <thead><tr>
+            <th style="width:34%" data-term="session">Session</th><th style="width:34%" data-tip="How many traces and spans the session holds, and what a diagnosis of it found.">Recorded</th>
+            <th style="width:14%" data-tip="How long its traces ran for, added up. The time between traces is not counted.">Duration</th><th data-tip="When the session last changed on disk.">Modified</th>
+          </tr></thead>
+          <tbody id="sessions-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="view" id="v-session">
+      <div id="ses-found"></div>
+      <div class="trace" id="ses-trace"></div>
+    </section>
+
+    <!-- ── Optimization · Runs ── -->
+    <section class="view" id="v-opt-runs">
+      <h2>Optimization runs in this folder</h2>
+      <p class="sub" id="opt-runs-sub"></p>
+      <div class="ctl">
+        <button class="btn" data-act="rescan" data-tip="Read the folder again for new or changed files.">Rescan</button>
+        <span class="grow"></span>
+        <span class="path" id="opt-runs-count"></span>
+      </div>
+      <div class="scroll">
+        <table class="rep">
+          <thead><tr>
+            <th style="width:28%" data-tip="The directory holding the run's run.json and events.jsonl.">Run</th><th style="width:15%" data-tip="The change in the objective against the baseline. Green or red only when the 95% interval is clear of zero.">Result</th><th style="width:13%" data-term="champion">Champion</th>
+            <th style="width:16%" data-tip="How many candidates the search tried, over how many iterations.">Searched</th><th style="width:15%" data-tip="Why the run stopped.">Finished</th><th data-tip="When the run last wrote to its log.">Modified</th>
+          </tr></thead>
+          <tbody id="opt-runs-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ── Optimization · Setup ── -->
+    <section class="view" id="v-opt-setup">
+      <h2>Setup</h2>
+      <div class="optnone"></div>
+      <p class="sub" id="opt-setup-sub"></p>
+      <p class="explain" id="opt-explain"></p>
+      <!-- Source experiment is matched by case id: the run record does not name it. -->
+      <p class="sub source" id="opt-source" hidden></p>
+      <dl class="kv wide" id="opt-setup-kv"></dl>
+      <details class="drawer" id="opt-mech" hidden>
+        <summary>How the search was run<span class="path" id="opt-mech-sum"></span></summary>
+        <dl class="kv wide" id="opt-mech-kv"></dl>
+      </details>
+      <!-- The search space, under the setup that declares it. -->
+      <h3 class="section">Tunables</h3>
+      <p class="sub" id="opt-space-sub"></p>
+      <div id="opt-space-wrap" hidden>
+        <div class="scroll">
+          <table class="rep">
+            <thead><tr>
+              <th style="width:30%" data-tip="A setting the run was allowed to change.">Key</th><th style="width:22%" data-tip="The values the setting could take.">Range</th>
+              <th style="width:14%" data-tip="The value the baseline started with.">Default</th>
+              <th style="width:18%" title="how many candidates set this key, and how many of those
+                moved it off the default">Candidates</th><th data-tip="The setting exists only while another setting has this value.">Only when</th>
+            </tr></thead>
+            <tbody id="opt-space-rows"></tbody>
+          </table>
+        </div>
+      </div>
+      <p class="optnote" id="opt-space-note"></p>
+      <details class="drawer" id="opt-effects" hidden>
+        <summary>Which setting moved the metric<span class="path" id="opt-eff-sum"></span></summary>
+        <div class="charts">
+          <div class="chart wide">
+            <div class="chead">
+              <h3>Change from each key's reference value</h3>
+              <div class="pick" id="opt-eff-goal" role="group" aria-label="Goal metric to show effects for"></div>
+            </div>
+            <p class="cap" id="opt-eff-cap"></p>
+            <div id="opt-eff-chart"></div>
+            <p class="optnote" id="opt-eff-note"></p>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <!-- ── Optimization · Result ── -->
+    <section class="view" id="v-opt-overview">
+      <h2>Result</h2>
+      <div class="optnone"></div>
+      <p class="sub" id="opt-sub"></p>
+      <p class="sub methodline" id="opt-method-sum"></p>
+
+      <div id="opt-hero"></div>
+      <div class="stats" id="opt-stats"></div>
+
+      <div class="result" id="opt-result"></div>
+      <div class="winner" id="opt-winner"></div>
+      <div class="charts" id="opt-cases" hidden>
+        <div class="chart wide">
+          <div class="chead">
+            <h3>Case by case</h3>
+            <div class="pick" id="opt-cases-pick" role="group" aria-label="Measure to compare case by case"></div>
+          </div>
+          <p class="cap" id="opt-cases-cap"></p>
+          <div id="opt-cases-chart"></div>
+          <div class="legend"><span data-term="baseline"><i class="hollow"></i>baseline</span><span data-term="champion"><i class="dot"></i>champion</span><span><i class="up"></i>better</span><span><i class="down"></i>worse</span></div>
+        </div>
+      </div>
+      <p class="optnote" id="opt-note"></p>
+
+      <details class="drawer" id="opt-cost">
+        <summary>What it cost<span class="path" id="opt-cost-sum"></span></summary>
+        <div class="charts" id="opt-usage-wrap">
+          <div class="chart wide">
+            <div class="chead">
+              <h3>Spend by iteration</h3>
+              <div class="pick" id="opt-usage-pick" role="group" aria-label="Usage measure to chart"></div>
+            </div>
+            <p class="cap" id="opt-usage-cap"></p>
+            <div id="opt-usage-chart"></div>
+          </div>
+        </div>
+        <div class="charts">
+          <div class="chart wide">
+            <h3>Trial outcomes</h3>
+            <p class="cap" id="opt-status-cap"></p>
+            <div id="opt-status-chart"></div>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <!-- ── Optimization · Iterations ── -->
+    <section class="view" id="v-opt-progress">
+      <h2>Iterations</h2>
+      <div class="optnone"></div>
+      <p class="sub">What the search did, in the order it did it: <span id="opt-search-sum"></span>.</p>
+      <div class="charts">
+        <div class="chart wide">
+          <div class="chead">
+            <h3 id="opt-series-head">Objective by candidate</h3>
+            <div class="pick" id="opt-series-pick" role="group" aria-label="Series to chart"></div>
+          </div>
+          <p class="cap" id="opt-series-cap"></p>
+          <div id="opt-series-chart"></div>
+          <div class="legend" id="opt-series-legend"></div>
+        </div>
+      </div>
+      <div class="charts">
+        <div class="chart wide">
+          <h3>Rollouts spent</h3>
+          <p class="cap" id="opt-budget-cap"></p>
+          <div id="opt-budget-chart"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Optimization · Candidates ── -->
+    <section class="view" id="v-opt-candidates">
+      <h2>Candidates</h2>
+      <div class="optnone"></div>
+      <p class="sub" id="opt-cand-sub"></p>
+      <div class="ctl">
+        <input class="find" id="opt-find" placeholder="Search candidates, settings and rationales" aria-label="Search candidates, settings and rationales" autocomplete="off">
+        <div class="seg" id="opt-seg">
+          <button class="on" data-f="all">All</button>
+          <button data-f="feasible" data-term="feasible">Could ship</button>
+          <button data-f="infeasible" data-term="infeasible">Broke a constraint</button>
+          <button data-f="unscored" data-tip="Candidates with no objective: the budget ran out, the change was invalid, or it duplicated another.">Never scored</button>
+        </div>
+        <span class="grow"></span>
+        <span class="path" id="opt-cand-count"></span>
+      </div>
+      <div class="scroll">
+        <table class="rep">
+          <thead><tr>
+            <th style="width:22%" data-term="candidate">Candidate</th><th style="width:8%" data-term="iteration">Iter</th>
+            <th style="width:22%" data-term="objective">Objective</th><th style="width:18%" data-tip="Whether the candidate was measured, and whether it met every constraint.">Outcome</th>
+            <!-- `changed_keys` is the diff against the PARENT. Open a row for the baseline diff. -->
+            <th data-tip="The settings that differ from the candidate it was derived from. Open the row for the difference from the baseline.">What it changed</th>
+          </tr></thead>
+          <tbody id="opt-cands"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ── Optimization · Trade-off ── -->
+    <section class="view" id="v-opt-trade">
+      <h2>Trade-off</h2>
+      <div class="optnone"></div>
+      <div id="opt-to-none" hidden></div>
+      <div id="opt-tradeoff" hidden>
+        <p class="sub">What one goal cost the other: <span id="opt-to-sum"></span></p>
+        <div class="charts">
+          <div class="chart wide">
+            <div class="chead">
+              <h3 id="opt-to-head">Goals against each other</h3>
+              <div class="pick" id="opt-to-x" role="group" aria-label="Goal on the x axis"></div>
+              <div class="pick" id="opt-to-y" role="group" aria-label="Goal on the y axis"></div>
+            </div>
+            <p class="cap" id="opt-to-cap"></p>
+            <div id="opt-to-chart"></div>
+            <div class="legend" id="opt-to-legend"></div>
+            <p class="cap" id="opt-to-stats"></p>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section class="view" id="v-missing">
+      <div id="missing"></div>
+    </section>
+    <div id="stores"></div>
+    <div id="skips"></div>
+  </main>
+  <aside class="guide-panel" id="guide" aria-label="How to use this view" hidden>
+    <div class="guide-head">
+      <span>How to use this view</span>
+      <button class="guide-close" type="button" data-guide-close aria-label="Close the guide">&times;</button>
+    </div>
+    <div id="guide-body"></div>
+  </aside>
+</div>
+
+<!-- Classic scripts sharing one scope, loaded in this order. `ui-core.js` comes first (every later
+     file uses `app` and `$` as it loads) and `ui-boot.js` last (it starts the page). A file may call
+     into a later one from a function, never while it loads. -->
+<script src="ui-core.js"></script>
+<script src="ui-resize.js"></script>
+<script src="ui-route.js"></script>
+<script src="ui-guide.js"></script>
+<script src="ui-plot.js"></script>
+<script src="ui-trace.js"></script>
+<script src="ui-diagnosis.js"></script>
+<script src="ui-lists.js"></script>
+<script src="ui-head.js"></script>
+<script src="ui-missing.js"></script>
+<script src="ui-experiment.js"></script>
+<script src="ui-report.js"></script>
+<script src="ui-report-charts.js"></script>
+<script src="ui-report-lenses.js"></script>
+<script src="ui-sessions.js"></script>
+<script src="ui-optimizer-record.js"></script>
+<script src="ui-charts.js"></script>
+<script src="ui-tips.js"></script>
+<script src="ui-optimizer-result.js"></script>
+<script src="ui-optimizer.js"></script>
+<script src="ui-optimizer-candidates.js"></script>
+<script src="ui-poll.js"></script>
+<script src="ui-markdown.js"></script>
+<script src="ui-boot.js"></script>
+</body>
+</html>
