@@ -63,7 +63,15 @@ const setup = (async () => {
   const load = (name) => import(pathToFileURL(fromHarness.resolve(name)).href)
   const [otel, traceNode] = await Promise.all([load('@opentelemetry/api'), load('@opentelemetry/sdk-trace-node')])
   const collector = new Collector()
-  const provider = new traceNode.NodeTracerProvider({ spanProcessors: [collector] })
+  // Strands records each message a model call sends as one event of its span, so OpenTelemetry's default of 128
+  // events would drop the start of a long conversation: no limit unless OTEL_SPAN_EVENT_COUNT_LIMIT sets one (empty
+  // for none, as in Python). Each span's dropped count goes back with it, so Python warns when that limit drops some.
+  const limit = process.env.OTEL_SPAN_EVENT_COUNT_LIMIT?.trim()
+  const eventCountLimit = !limit ? Infinity : /^\d+$/.test(limit) ? Number(limit) : undefined
+  const provider = new traceNode.NodeTracerProvider({
+    spanProcessors: [collector],
+    ...(eventCountLimit === undefined ? {} : { spanLimits: { eventCountLimit } }), // else the SDK reads the value
+  })
   provider.register() // the global provider, with async context, so the agent's spans parent to the trial's span
   register(new URL('./hooks.mjs', import.meta.url), { data: { harnessURL: pathToFileURL(harnessPath).href } })
   return { otel, collector, harnessURL: pathToFileURL(harnessPath).href }
@@ -141,6 +149,7 @@ const spanJson = (span) => ({
     time_unix_nano: nanos(event.time),
     attributes: { ...(event.attributes ?? {}) },
   })),
+  dropped_events: span.droppedEventsCount ?? 0,
   status: { code: span.status.code, message: span.status.message ?? null },
   start_time_unix_nano: nanos(span.startTime),
   end_time_unix_nano: nanos(span.endTime),

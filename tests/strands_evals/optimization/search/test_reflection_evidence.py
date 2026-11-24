@@ -467,9 +467,8 @@ async def test_a_simulated_users_agents_never_reach_the_rewriter(folders):
 
     traces, log = TraceCapture(), TrialLog()
     with trace_api.get_tracer("optimization-tests").start_as_current_span("execute_case", context=Context()):
-        await instrument(make_task(factory, rollout), log, traces)(case)
-    entry = log.records()["a"]
-    saved = trial("a", score=0.2, trajectory=traces.session(entry.trace_id, entry.attempt_span_id))
+        out = await instrument(make_task(factory, rollout), log, traces)(case)
+    saved = trial("a", score=0.2, trajectory=out["trajectory"])
     reloaded = TrialRecord.model_validate_json(saved.model_dump_json())
 
     evidence = _build_evidence(request([reloaded]), 0.5, *folders)

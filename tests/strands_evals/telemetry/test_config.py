@@ -1,9 +1,11 @@
 """Tests for strands_evals.telemetry.config module."""
 
+import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
 from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import SpanLimits
 from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider
 
 from strands_evals.telemetry.config import StrandsEvalsTelemetry, get_otel_resource
@@ -69,6 +71,62 @@ def test_strands_evals_telemetry_init_without_provider():
 
         # Verify resource was created
         assert isinstance(telemetry.resource, Resource)
+
+
+def test_strands_evals_telemetry_init_with_span_limits():
+    """The tracer provider it creates gets the span limits"""
+    limits = SpanLimits(max_events=SpanLimits.UNSET)
+    with (
+        patch("strands_evals.telemetry.config.trace_api.set_tracer_provider") as mock_set_provider,
+        patch("strands_evals.telemetry.config.trace_api.get_tracer_provider"),
+        patch("strands_evals.telemetry.config.propagate.set_global_textmap"),
+    ):
+        StrandsEvalsTelemetry(span_limits=limits)
+
+    (provider,), _ = mock_set_provider.call_args
+    span = provider.get_tracer("test").start_span("span")
+    for i in range(200):
+        span.add_event(f"event {i}")
+    assert span.dropped_events == 0
+
+
+def test_span_limits_a_provider_already_installed_ignores_are_warned_about(caplog):
+    """Only the first global provider takes effect, so limits meant for a later one would be lost silently"""
+    existing = SDKTracerProvider()
+    with (
+        patch("strands_evals.telemetry.config.trace_api.set_tracer_provider"),
+        patch("strands_evals.telemetry.config.trace_api.get_tracer_provider", return_value=existing),
+        patch("strands_evals.telemetry.config.propagate.set_global_textmap"),
+        caplog.at_level(logging.WARNING, logger="strands_evals.telemetry.config"),
+    ):
+        telemetry = StrandsEvalsTelemetry(span_limits=SpanLimits(max_events=SpanLimits.UNSET))
+
+    assert telemetry.tracer_provider is existing
+    assert "span_limits was not applied" in caplog.text
+
+
+def test_span_limits_on_the_provider_it_installs_warn_about_nothing(caplog):
+    installed = []
+    with (
+        patch("strands_evals.telemetry.config.trace_api.set_tracer_provider", side_effect=installed.append),
+        patch("strands_evals.telemetry.config.trace_api.get_tracer_provider", side_effect=lambda: installed[0]),
+        patch("strands_evals.telemetry.config.propagate.set_global_textmap"),
+        caplog.at_level(logging.WARNING, logger="strands_evals.telemetry.config"),
+    ):
+        StrandsEvalsTelemetry(span_limits=SpanLimits(max_events=SpanLimits.UNSET))
+
+    assert "span_limits" not in caplog.text
+
+
+def test_span_limits_is_keyword_only():
+    with pytest.raises(TypeError):
+        StrandsEvalsTelemetry(None, SpanLimits())  # type: ignore[misc]
+
+
+def test_strands_evals_telemetry_span_limits_with_custom_provider_raises():
+    """Span limits can't apply to a provider that already exists"""
+    with pytest.raises(ValueError, match="span_limits"):
+        StrandsEvalsTelemetry(tracer_provider=MagicMock(spec=SDKTracerProvider), span_limits=SpanLimits())
 
 
 def test_strands_evals_telemetry_init_with_custom_provider():

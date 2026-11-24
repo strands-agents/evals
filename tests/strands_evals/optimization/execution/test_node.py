@@ -5,15 +5,19 @@
 `0123456789abcdef`; each test puts its spans in its own trial's trace.
 """
 
+import asyncio
 import json
+import logging
+import sys
 from pathlib import Path
 
 import opentelemetry.trace as trace_api
 import pytest
 from opentelemetry.context import Context
 
-from strands_evals.optimization.execution.node import NodeAgent, NodeError, NodeRunnerGone
-from strands_evals.optimization.execution.rollout import _tagging
+from strands_evals import Case
+from strands_evals.optimization.execution.node import NodeAgent, NodeError, NodeRunner, NodeRunnerGone
+from strands_evals.optimization.execution.rollout import TrialLog, _tagging, instrument
 from strands_evals.optimization.execution.status import InfrastructureError, classify
 from strands_evals.optimization.execution.traces import (
     ATTEMPT_SPAN,
@@ -301,3 +305,77 @@ def test_ingest_rebuilds_every_field_the_readers_use(traces, tracer):
     assert [event.name for event in chat.events] == ["gen_ai.system.message", "gen_ai.user.message", "gen_ai.choice"]
     assert chat.end_time > chat.start_time > 1_700_000_000 * 10**9  # nanoseconds, kept exact as strings
     assert chat.instrumentation_scope is not None
+    assert chat.dropped_events == 0
+
+
+def test_events_the_workers_limit_dropped_are_counted_so_session_warns(traces, tracer, caplog):
+    with tracer.start_as_current_span("execute_case case", context=Context()) as root:
+        trace_id = format(root.get_span_context().trace_id, "032x")
+        traces.register(trace_id)
+        parent = format(root.get_span_context().span_id, "016x")
+    spans = json.loads(json.dumps(REPLY["spans"]).replace(RECORDED_TRACE, trace_id).replace(RECORDED_PARENT, parent))
+    for span in spans:
+        if span["name"] == "chat":
+            span["dropped_events"] = 3
+
+    ingest(spans)
+    with caplog.at_level(logging.WARNING, logger="strands_evals.optimization.execution.traces"):
+        traces.session(trace_id, parent)
+
+    (chat,) = [span for span in traces._filter.spans(trace_id) if span.name == "chat"]
+    assert chat.dropped_events == 3
+    assert len(chat.events) == 3
+    assert "span event limit" in caplog.text
+    assert "dropped_events=<3>" in caplog.text
+    assert "unset OTEL_SPAN_EVENT_COUNT_LIMIT" in caplog.text  # the worker's limit comes from the variable alone
+
+
+# Stands in for `runner.mjs`: answers a cancelled `run` 0.3 s later with the recorded spans moved into the request's
+# trace under the request's span, as the worker sends a cancelled call's late reply.
+FAKE_WORKER = """
+import json, sys, threading, time
+
+reply = json.load(open(sys.argv[1]))
+requests, lock = {}, threading.Lock()
+
+
+def late(message):
+    time.sleep(0.3)
+    text = json.dumps(reply["spans"]).replace(%r, message["trace_id"]).replace(%r, message["span_id"])
+    answer = {"id": message["id"], "status": "agent_failure", "error": "cancelled", "spans": json.loads(text)}
+    with lock:
+        sys.stdout.write(json.dumps(answer) + "\\n")
+        sys.stdout.flush()
+
+
+for line in sys.stdin:
+    message = json.loads(line)
+    if message["type"] == "run":
+        requests[message["id"]] = message
+    elif message["type"] == "cancel":
+        threading.Thread(target=late, args=(requests.pop(message["target"]),)).start()
+""" % (RECORDED_TRACE, RECORDED_PARENT)
+
+
+async def test_a_cancelled_calls_late_reply_is_counted_in_the_trials_usage(traces, tmp_path, monkeypatch):
+    worker = tmp_path / "worker.py"
+    worker.write_text(FAKE_WORKER)
+    monkeypatch.setattr("strands_evals.optimization.execution.node.RUNNER", worker)
+    runner = NodeRunner(Path(__file__).parent / "strands_ts_reply.json", node=sys.executable)
+    agent = NodeAgent(runner, "agent", 0, [])
+
+    async def gives_up(case):
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(agent.invoke_async("question 7"), 0.05)
+        return "gave up"  # before the cancelled call's late reply has come
+
+    log = TrialLog()
+    try:
+        with trace_api.get_tracer("optimization-tests").start_as_current_span("execute_case", context=Context()):
+            await instrument(gives_up, log, traces)(Case(name="c", input="q"))
+    finally:
+        runner.close()
+
+    entry = log.records()["c"]
+    assert entry.usage.tokens == 700
+    assert entry.usage.model_calls == 1

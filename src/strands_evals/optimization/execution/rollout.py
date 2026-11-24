@@ -19,7 +19,8 @@ from strands.multiagent.base import MultiAgentBase
 
 from ...case import Case
 from ...telemetry import get_tracer
-from ...types.optimization import TrialStatus
+from ...types.optimization import TrialStatus, Usage
+from ...types.trace import Session
 from ..declaration.tunable import _FactoryArgumentError
 from .node import NodeAgent
 from .status import InfrastructureError, classify
@@ -55,9 +56,11 @@ class TrialLogEntry:
         attempts: Every attempt, the last one included.
         trace_id: The trial's trace (its `execute_case` span), which groups its agent and judge spans;
             hex, as in a `Session` (`format(trace_id, "032x")`).
-        attempt_span_id: The last attempt's span, hex (`format(span_id, "016x")`).
-        previous_attempts: `(span id, status, error_type, error)` for each attempt `Experiment` retried
-            (throttling), oldest first.
+        usage: The last attempt's usage (`TraceCapture.usage`), read when the attempt ended.
+        benchmark_usage: The last attempt's other agents' usage (`TraceCapture.benchmark_usage`), read
+            when the attempt ended.
+        previous_attempts: `(usage, benchmark_usage, status, error_type, error)` for each attempt
+            `Experiment` retried (throttling), oldest first.
     """
 
     status: TrialStatus
@@ -65,8 +68,9 @@ class TrialLogEntry:
     error: str | None
     attempts: int
     trace_id: str
-    attempt_span_id: str
-    previous_attempts: list[tuple[str, TrialStatus, str | None, str | None]]
+    usage: Usage
+    benchmark_usage: Usage
+    previous_attempts: list[tuple[Usage, Usage, TrialStatus, str | None, str | None]]
 
 
 @dataclass
@@ -77,7 +81,8 @@ class TrialLog:
 
     Attributes:
         setup_error: The first setup error, else None: a `_FactoryArgumentError` (from the bound factory,
-            or an environment that gave no mapping) or a `RuntimeError` (trial spans not recorded).
+            or an environment that gave no mapping), a `RuntimeError` (trial spans not recorded), or an
+            error reading an ended attempt's spans.
             `TrialRunner.run` raises it once the `Experiment` call returns.
         trace_ids: Every trace `instrument` registered, with or without an entry (a setup error or a
             cancelled attempt records none), so `TrialRunner.run` can release them all in a `finally`.
@@ -286,6 +291,11 @@ def instrument(task: TaskFn, log: TrialLog, traces: TraceCapture) -> TaskFn:
     Attempts `Experiment` retried on throttling go into `TrialLogEntry.previous_attempts`. An
     `InfrastructureError` raised from another error records that error's type and message.
 
+    When an attempt ends, its usage and `Session` are read and its spans dropped, so they aren't held while
+    the judges run; spans still open under it are waited for first (`TraceCapture.settle`). A completed
+    attempt whose spans can't be read stops the run (`log.setup_error`); one whose `Session` can't be built
+    is unmeasured.
+
     Args:
         task: The task from `make_task` or `build_task`.
         log: A fresh log for this run.
@@ -302,50 +312,85 @@ def instrument(task: TaskFn, log: TrialLog, traces: TraceCapture) -> TaskFn:
         if previous is not None:
             earlier = [
                 *previous.previous_attempts,
-                (previous.attempt_span_id, previous.status, previous.error_type, previous.error),
+                (previous.usage, previous.benchmark_usage, previous.status, previous.error_type, previous.error),
             ]
-        with get_tracer().start_as_current_span(
-            f"attempt {case_name}", attributes={SPAN_KIND: ATTEMPT_SPAN}
-        ) as attempt_span:
-            if not attempt_span.is_recording():
-                error = RuntimeError(
-                    "trial spans aren't recorded (OTEL_SDK_DISABLED or a sampler such as OTEL_TRACES_SAMPLER="
-                    "always_off / traceidratio), so the optimizer can't read usage or the trajectory; record every span"
-                )
-                log.setup_error = log.setup_error or error
-                raise error
-            context = attempt_span.get_span_context()
-            trace_id = format(context.trace_id, "032x")
-            attempt_span_id = format(context.span_id, "016x")
-            traces.register(trace_id)
-            log.trace_ids.add(trace_id)
 
-            def record(status: TrialStatus, error: BaseException | None) -> None:
-                if isinstance(error, InfrastructureError) and error.__cause__ is not None:
-                    error = error.__cause__
-                log.record(
-                    case_name,
-                    TrialLogEntry(
-                        status=status,
-                        error_type=type(error).__name__ if error is not None else None,
-                        error=str(error) if error is not None else None,
-                        attempts=len(earlier) + 1,
-                        trace_id=trace_id,
-                        attempt_span_id=attempt_span_id,
-                        previous_attempts=earlier,
-                    ),
-                )
-
+        def end(
+            trace_id: str, attempt_span_id: str, outcome: tuple[TrialStatus, str | None, str | None]
+        ) -> Session | None:
+            """Read the ended attempt's usage (and its `Session` when it returned), drop its spans, log it."""
+            status, error_type, error = outcome
+            mapped: Session | None = None
+            mapping_error: Exception | None = None
             try:
-                output = await _call(task, case)
-            except _FactoryArgumentError as error:
-                log.setup_error = log.setup_error or error
-                raise
-            except Exception as error:
-                record(classify(error), error)
-                raise
-            record(TrialStatus.COMPLETED, None)
-        session = traces.session(trace_id, attempt_span_id)
+                try:
+                    usage = traces.usage(trace_id, attempt_span_id)
+                    benchmark_usage = traces.benchmark_usage(trace_id, attempt_span_id)
+                    if status is TrialStatus.COMPLETED:
+                        try:
+                            mapped = traces.session(trace_id, attempt_span_id)
+                        except Exception as session_error:
+                            mapping_error = session_error
+                finally:
+                    traces.drop_attempt(trace_id, attempt_span_id)
+            except Exception as read_error:
+                log.setup_error = log.setup_error or read_error
+                if status is TrialStatus.COMPLETED:
+                    raise  # no judge runs on an attempt whose spans couldn't be read
+                return None  # the attempt's own error propagates, so `Experiment` can still retry a throttled one
+            log.record(
+                case_name,
+                TrialLogEntry(
+                    status=status,
+                    error_type=error_type,
+                    error=error,
+                    attempts=len(earlier) + 1,
+                    trace_id=trace_id,
+                    usage=usage,
+                    benchmark_usage=benchmark_usage,
+                    previous_attempts=earlier,
+                ),
+            )
+            if mapping_error is not None:
+                # `Experiment` fails the case, so `TrialRunner` reads the error from its span (`case_error`)
+                # and the trial is unmeasured, never judged
+                raise mapping_error
+            return mapped
+
+        # (status, error type, error message) once the task returned or raised: strings only, since the
+        # exception's traceback holds this frame
+        ended: tuple[TrialStatus, str | None, str | None] | None = None
+        session: Session | None = None
+        try:
+            with get_tracer().start_as_current_span(
+                f"attempt {case_name}", attributes={SPAN_KIND: ATTEMPT_SPAN}
+            ) as attempt_span:
+                if not attempt_span.is_recording():
+                    error = RuntimeError(
+                        "trial spans aren't recorded (OTEL_SDK_DISABLED or a sampler such as OTEL_TRACES_SAMPLER="
+                        "always_off / traceidratio), so the optimizer can't read usage or the trajectory; "
+                        "record every span"
+                    )
+                    log.setup_error = log.setup_error or error
+                    raise error
+                context = attempt_span.get_span_context()
+                trace_id = format(context.trace_id, "032x")
+                attempt_span_id = format(context.span_id, "016x")
+                traces.register(trace_id)
+                log.trace_ids.add(trace_id)
+                try:
+                    output = await _call(task, case)
+                except _FactoryArgumentError as error:
+                    log.setup_error = log.setup_error or error
+                    raise
+                except Exception as error:
+                    ended = (classify(error), *_described(error))
+                    raise
+                ended = (TrialStatus.COMPLETED, None, None)
+        finally:
+            if ended is not None:  # the attempt span has ended; `settle` waits for any span still open under it
+                await traces.settle(trace_id, attempt_span_id)
+                session = end(trace_id, attempt_span_id, ended)
         if isinstance(output, dict):
             if output.get("trajectory") is not None or session is None:
                 return output
@@ -353,3 +398,10 @@ def instrument(task: TaskFn, log: TrialLog, traces: TraceCapture) -> TaskFn:
         return {"output": output, "trajectory": session}
 
     return instrumented
+
+
+def _described(error: Exception) -> tuple[str, str]:
+    """The type name and message an attempt's error is logged with: those of the error an
+    `InfrastructureError` was raised from, when there is one."""
+    cause = error.__cause__ if isinstance(error, InfrastructureError) and error.__cause__ is not None else error
+    return type(cause).__name__, str(cause)

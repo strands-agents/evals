@@ -1,8 +1,12 @@
+import json
+import logging
 from contextlib import contextmanager
 
 import opentelemetry.trace as trace_api
 import pytest
 from opentelemetry.context import Context
+from opentelemetry.sdk.trace import SpanLimits
+from opentelemetry.sdk.trace import TracerProvider as SDKTracerProvider
 from strands import Agent
 from strands.telemetry.tracer import get_tracer as strands_tracer
 from strands.types.exceptions import ModelThrottledException
@@ -370,6 +374,157 @@ def test_a_released_trace_keeps_nothing_that_finishes_later(traces, tracer):
             _chat(tracer)
 
     assert traces.usage(trace_id, _ids(attempt)[1]).model_calls == 0
+
+
+def test_drop_attempt_drops_the_attempt_and_keeps_the_judges(traces, tracer):
+    with _trial(tracer, traces) as trace_id:
+        with _attempt(tracer) as attempt:
+            _chat(tracer, total=500, output=50)
+        traces.drop_attempt(trace_id, _ids(attempt)[1])
+        with tracer.start_as_current_span(
+            "evaluator Helpfulness", attributes={"gen_ai.evaluation.name": "Helpfulness"}
+        ):
+            _chat(tracer, total=30, output=3)
+
+    assert traces.usage(trace_id, _ids(attempt)[1]).model_calls == 0
+    assert traces.session(trace_id, _ids(attempt)[1]) is None
+    assert [span.name for span in traces._filter.spans(trace_id)] == [
+        "chat",
+        "evaluator Helpfulness",
+        "execute_case case",
+    ]
+    assert traces.evaluator_view(trace_id).judge_usage["Helpfulness"].tokens == 30
+
+
+def test_drop_attempt_after_release_keeps_nothing_that_finishes_later(traces, tracer):
+    with _trial(tracer, traces) as trace_id:
+        with _attempt(tracer) as attempt:
+            pass
+        traces.release([trace_id])
+        traces.drop_attempt(trace_id, _ids(attempt)[1])
+        with _attempt(tracer) as later:
+            _chat(tracer)
+
+    assert traces.usage(trace_id, _ids(later)[1]).model_calls == 0
+
+
+def test_a_span_of_the_attempt_that_ends_after_the_drop_is_kept_until_release(traces, tracer):
+    with _trial(tracer, traces) as trace_id:
+        with _attempt(tracer) as attempt:
+            late = tracer.start_span("chat", attributes={"gen_ai.operation.name": "chat"})  # e.g. a task not awaited
+        traces.drop_attempt(trace_id, _ids(attempt)[1])
+        late.end()
+
+    assert [span.name for span in traces._filter.spans(trace_id)] == ["chat", "execute_case case"]
+    traces.release([trace_id])
+    assert traces._filter.spans(trace_id) == []
+
+
+@pytest.fixture
+def installed(monkeypatch):
+    """The provider `TraceCapture()` installs in a process with none yet; the real global one is untouched."""
+    providers = []
+    monkeypatch.setattr(
+        trace_api, "get_tracer_provider", lambda: providers[-1] if providers else trace_api.ProxyTracerProvider()
+    )
+    monkeypatch.setattr(trace_api, "set_tracer_provider", providers.append)
+    monkeypatch.setattr("strands_evals.telemetry.config.propagate.set_global_textmap", lambda propagator: None)
+
+    def install():
+        TraceCapture()
+        (provider,) = providers
+        return provider
+
+    return install
+
+
+def _events_kept(provider, count):
+    """Add `count` events to one span of `provider`: (the first event kept, how many were dropped)."""
+    span = provider.get_tracer("optimization-tests").start_span("chat", context=Context())
+    for i in range(count):
+        span.add_event(f"message {i}")
+    span.end()
+    return span.events[0].name, span.dropped_events
+
+
+def test_the_installed_provider_keeps_every_span_event(installed, monkeypatch):
+    monkeypatch.delenv("OTEL_SPAN_EVENT_COUNT_LIMIT", raising=False)
+
+    assert _events_kept(installed(), 300) == ("message 0", 0)
+
+
+@pytest.mark.parametrize(("limit", "kept"), [("5", ("message 295", 295)), ("", ("message 0", 0))])
+def test_the_installed_provider_follows_the_span_event_limit_variable(installed, monkeypatch, limit, kept):
+    monkeypatch.setenv("OTEL_SPAN_EVENT_COUNT_LIMIT", limit)
+
+    assert _events_kept(installed(), 300) == kept
+
+
+def _limited(traces):
+    """A tracer on a provider that keeps 2 events per span, feeding the capture as if it were the global one."""
+    limited = SDKTracerProvider(span_limits=SpanLimits(max_events=2))
+    limited.add_span_processor(traces._filter)
+    return limited.get_tracer("optimization-tests")
+
+
+def test_session_warns_once_when_a_provider_dropped_messages(traces, caplog):
+    tracer = _limited(traces)
+    attempts = []
+    for _ in range(2):
+        with _trial(tracer, traces) as trace_id:
+            with _attempt(tracer) as attempt:
+                with tracer.start_as_current_span("chat", attributes={"gen_ai.operation.name": "chat"}) as chat:
+                    for text in ("question", "first reply", "second question"):
+                        chat.add_event("gen_ai.user.message", {"content": json.dumps([{"text": text}])})
+        attempts.append((trace_id, _ids(attempt)[1]))
+
+    with caplog.at_level(logging.WARNING, logger="strands_evals.optimization.execution.traces"):
+        sessions = [traces.session(trace_id, span_id) for trace_id, span_id in attempts]
+
+    assert [message.content[0].text for message in sessions[0].traces[0].spans[0].messages] == [
+        "first reply",
+        "second question",
+    ]
+    warnings = [record for record in caplog.records if "span event limit" in record.getMessage()]
+    assert len(warnings) == 1
+    assert "dropped_events=<1>" in warnings[0].getMessage()
+
+
+@pytest.mark.parametrize(
+    ("installed", "advice"),
+    [
+        (False, "StrandsEvalsTelemetry(span_limits=SpanLimits(max_events=SpanLimits.UNSET))"),
+        (True, "unset OTEL_SPAN_EVENT_COUNT_LIMIT or set it empty for no limit"),
+    ],
+)
+def test_the_dropped_messages_warning_says_how_to_lift_the_limit_that_applied(traces, caplog, installed, advice):
+    """On a provider the optimizer installed only the variable set a limit; on the user's own, their provider did."""
+    traces._installed = installed
+    tracer = _limited(traces)
+    with _trial(tracer, traces) as trace_id:
+        with _attempt(tracer) as attempt:
+            with tracer.start_as_current_span("chat", attributes={"gen_ai.operation.name": "chat"}) as chat:
+                for text in ("question", "first reply", "second question"):
+                    chat.add_event("gen_ai.user.message", {"content": json.dumps([{"text": text}])})
+
+    with caplog.at_level(logging.WARNING, logger="strands_evals.optimization.execution.traces"):
+        traces.session(trace_id, _ids(attempt)[1])
+
+    assert advice in caplog.text
+
+
+def test_session_ignores_dropped_events_on_spans_that_arent_model_calls(traces, caplog):
+    tracer = _limited(traces)
+    with _trial(tracer, traces) as trace_id:
+        with _attempt(tracer) as attempt:
+            with tracer.start_as_current_span("execute_event_loop_cycle") as cycle:
+                for i in range(3):
+                    cycle.add_event(f"message {i}")
+
+    with caplog.at_level(logging.WARNING, logger="strands_evals.optimization.execution.traces"):
+        traces.session(trace_id, _ids(attempt)[1])
+
+    assert "span event limit" not in caplog.text
 
 
 def test_captures_on_one_provider_share_one_span_processor(traces):
