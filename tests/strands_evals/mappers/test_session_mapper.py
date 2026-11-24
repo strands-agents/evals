@@ -41,6 +41,28 @@ class TestParseTimestamp:
         assert result.tzinfo == timezone.utc
         assert result.year == 2023 and result.month == 11
 
+    def test_millisecond_epoch_int_and_string(self):
+        """Integer and string millisecond epochs are converted to the encoded instant."""
+        expected = datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc)
+        assert self.mapper.parse_timestamp(1700000000000) == expected
+        assert self.mapper.parse_timestamp("1700000000000") == expected
+
+    def test_microsecond_epoch_int_and_string(self):
+        """Integer and string microsecond epochs are converted to the encoded instant."""
+        expected = datetime(2023, 11, 14, 22, 13, 20, tzinfo=timezone.utc)
+        assert self.mapper.parse_timestamp(1700000000000000) == expected
+        assert self.mapper.parse_timestamp("1700000000000000") == expected
+
+    def test_digit_like_unicode_string_falls_back(self):
+        """A non-ASCII digit-like string falls back instead of escaping the parser."""
+        result = self.mapper.parse_timestamp("²")
+        assert result.tzinfo == timezone.utc
+
+    def test_out_of_range_numeric_string_falls_back(self):
+        """An out-of-range numeric string falls back instead of escaping the parser."""
+        result = self.mapper.parse_timestamp("9" * 25)
+        assert result.tzinfo == timezone.utc
+
     def test_aware_datetime_passthrough(self):
         dt = datetime(2024, 1, 1, tzinfo=timezone.utc)
         result = self.mapper.parse_timestamp(dt)

@@ -47,6 +47,26 @@ def test_span_info_creation():
     assert span_info.end_time == now
 
 
+@pytest.mark.parametrize(
+    "boundary_datetime",
+    [
+        datetime.min.replace(tzinfo=timezone(timedelta(hours=5))),
+        datetime.max.replace(tzinfo=timezone(timedelta(hours=-5))),
+    ],
+)
+def test_span_info_serialization_handles_utc_overflow(boundary_datetime):
+    """A boundary datetime serializes even when its UTC conversion would overflow."""
+    span_info = SpanInfo(
+        session_id="session789",
+        start_time=boundary_datetime,
+        end_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
+    )
+
+    serialized = span_info.model_dump(mode="json")
+
+    assert serialized["start_time"].endswith("Z")
+
+
 def test_text_content_creation():
     """Test TextContent model creation"""
     content = TextContent(text="Hello world")

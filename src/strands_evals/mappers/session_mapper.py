@@ -81,8 +81,8 @@ class SessionMapper(ABC):
         - None → current UTC time
         - datetime → converted to UTC
         - ISO 8601 string (with optional trailing Z) → parsed and normalized to UTC
-        - Numeric (int/float) nanosecond epoch → converted to UTC datetime
-        - String-encoded nanosecond epoch → converted to UTC datetime
+        - Numeric (int/float) second, millisecond, microsecond, or nanosecond epoch → converted to UTC datetime
+        - String-encoded epoch → converted to UTC datetime
 
         Naive datetimes and offset-less ISO strings are assumed to be UTC, not
         local time: a source emitting local timestamps is shifted by its offset.
@@ -103,20 +103,29 @@ class SessionMapper(ABC):
             except OverflowError:
                 return datetime.now(timezone.utc)
         if isinstance(value, str):
-            if value.isdigit():
-                return datetime.fromtimestamp(int(value) / 1e9, tz=timezone.utc)
-            try:
-                if value.endswith("Z"):
-                    value = value[:-1] + "+00:00"
-                dt = datetime.fromisoformat(value)
-                if dt.tzinfo is None:
-                    return dt.replace(tzinfo=timezone.utc)
-                return dt.astimezone(timezone.utc)
-            except (ValueError, OverflowError):
-                return datetime.now(timezone.utc)
+            if value.isascii() and value.isdigit():
+                value = int(value)
+            else:
+                try:
+                    if value.endswith("Z"):
+                        value = value[:-1] + "+00:00"
+                    dt = datetime.fromisoformat(value)
+                    if dt.tzinfo is None:
+                        return dt.replace(tzinfo=timezone.utc)
+                    return dt.astimezone(timezone.utc)
+                except (ValueError, OverflowError):
+                    return datetime.now(timezone.utc)
         if isinstance(value, (int, float)):
-            # Handle nanoseconds
-            if value > 1e12:
-                value = value / 1e9
-            return datetime.fromtimestamp(value, tz=timezone.utc)
+            try:
+                magnitude = abs(value)
+                # Epoch units differ by three decimal digits; split their common ranges accordingly.
+                if magnitude >= 1e17:
+                    value = value / 1e9
+                elif magnitude >= 1e14:
+                    value = value / 1e6
+                elif magnitude >= 1e11:
+                    value = value / 1e3
+                return datetime.fromtimestamp(value, tz=timezone.utc)
+            except (ValueError, OverflowError, OSError):
+                return datetime.now(timezone.utc)
         return datetime.now(timezone.utc)

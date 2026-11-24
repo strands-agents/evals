@@ -95,7 +95,10 @@ class SpanInfo(BaseModel):
         """Serialize datetime fields in UTC timezone with ISO format."""
         # Convert to UTC if timezone-aware, otherwise assume it's already UTC
         if dt.tzinfo is not None:
-            utc_dt = dt.astimezone(timezone.utc)
+            try:
+                utc_dt = dt.astimezone(timezone.utc)
+            except (ValueError, OverflowError):
+                utc_dt = dt.replace(tzinfo=timezone.utc)
         else:
             utc_dt = dt.replace(tzinfo=timezone.utc)
         # Return ISO format string with 'Z' suffix for UTC
