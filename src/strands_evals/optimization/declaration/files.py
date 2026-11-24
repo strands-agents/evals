@@ -17,6 +17,7 @@ from ...types.optimization import Value
 from .markers import (
     Float,
     Int,
+    JsonChoice,
     OneOf,
     _check_positive_int,
     _check_str,
@@ -138,10 +139,10 @@ class JsonField(_Marker):
             FileNotFoundError: `path` is not a file.
             TypeError: `size_cap` isn't a positive integer, `edit_instructions` isn't a str, the
                 file isn't UTF-8 JSON, `pointer` isn't a JSON pointer to an existing field, a number
-                has no marker, `marker` isn't an `Int`, `Float`, or `OneOf`, has a `default=`, is given
-                for an array or object, or doesn't fit the file's value (a `Float` takes an integer
-                only up to 2**53, which it holds exactly), or `size_cap` or `edit_instructions` is given
-                for a key that isn't text.
+                has no marker, `marker` isn't an `Int`, `Float`, or `OneOf` or is a `JsonChoice`, has a
+                `default=`, is given for an array or object, or doesn't fit the file's value (a `Float`
+                takes an integer only up to 2**53, which it holds exactly), or `size_cap` or
+                `edit_instructions` is given for a key that isn't text.
         """
         _check_positive_int("size_cap", size_cap)
         _check_str("edit_instructions", edit_instructions)
@@ -169,6 +170,8 @@ class JsonField(_Marker):
         if marker is not None:
             if not isinstance(marker, (Int, Float, OneOf)):
                 raise TypeError(f"{where}: marker must be an Int, Float, or OneOf, got {type(marker).__name__}")
+            if isinstance(marker, JsonChoice):  # its options are JSON text, which would be written as strings
+                raise TypeError(f"{where}: marker must be a OneOf of the field's values, not a JsonChoice")
             if marker._has_default():
                 raise TypeError(f"{where}: the file's value is the baseline; pass the marker without default=")
             if size_cap is not None or edit_instructions is not None:

@@ -8,7 +8,18 @@ from pathlib import Path
 
 import pytest
 
-from strands_evals.optimization import FileText, Float, Int, JsonField, OneOf, SkillLibrary, Space, TextValue, tunable
+from strands_evals.optimization import (
+    FileText,
+    Float,
+    Int,
+    JsonChoice,
+    JsonField,
+    OneOf,
+    SkillLibrary,
+    Space,
+    TextValue,
+    tunable,
+)
 from strands_evals.optimization.declaration.files import _location_in_copy, _write_text_atomically
 from strands_evals.optimization.declaration.tunable import _KEPT_UNTIL_EXIT
 
@@ -324,6 +335,8 @@ def test_a_json_number_without_a_marker_fails_at_declaration(settings):
         ("/huge", Float(0.0, 1.0), "beyond 2\\*\\*53"),
         ("/max_turns", Int(1, 20, default=3), "pass the marker without default="),
         ("/model", TextValue(), "marker must be an Int, Float, or OneOf"),
+        ("/model", JsonChoice("small", "large"), "not a JsonChoice"),
+        ("/temperature", JsonChoice(0.5, 0.7), "not a JsonChoice"),
     ],
 )
 def test_a_marker_that_does_not_fit_the_field_fails_at_declaration(settings, pointer, marker, message):
