@@ -258,6 +258,32 @@ def test_diff_shows_a_json_field_on_its_whole_file(project):
     assert '"turns"' in text  # context from the rest of the file
 
 
+def test_a_json_number_shows_in_its_files_diff_and_in_changed_values(project):
+    space = Space({"turns": JsonField(project / "agent.json", "/agent/turns", Int(1, 20))})
+    baseline = Candidate.baseline(space)
+    child = baseline.child(space, {"turns": 8}, origin=["numbers"], rationale="")
+    assert '-    "turns": 4\n+    "turns": 8\n' in diff(space, baseline, child, root=project)
+    assert changed_values(space, baseline, child) == {"turns": {"old": 4, "new": 8}}
+
+
+def test_a_float_over_an_integer_in_the_file_shows_the_files_integer_in_the_diff(tmp_path):
+    (tmp_path / "agent.json").write_text('{\n  "top_p": 1,\n  "temperature": 0.7\n}\n', newline="")
+    space = Space(
+        {
+            "top_p": JsonField(tmp_path / "agent.json", "/top_p", Float(0.0, 1.0)),
+            "temperature": JsonField(tmp_path / "agent.json", "/temperature", Float(0.0, 1.0)),
+        }
+    )
+    baseline = Candidate.baseline(space)
+    child = baseline.child(space, {"temperature": 0.2}, origin=["numbers"], rationale="")
+    assert diff(space, baseline, child, root=tmp_path) == (
+        "--- a/agent.json\n+++ b/agent.json\n@@ -1,4 +1,4 @@\n"
+        ' {\n   "top_p": 1,\n-  "temperature": 0.7\n+  "temperature": 0.2\n }\n'
+    )
+    changed = baseline.child(space, {"top_p": 0.5}, origin=["numbers"], rationale="")
+    assert '-  "top_p": 1,\n+  "top_p": 0.5,\n' in diff(space, baseline, changed, root=tmp_path)
+
+
 def test_diff_heads_non_file_text_with_its_key_and_never_shows_numbers(project):
     space = file_space(project)
     baseline = Candidate.baseline(space)
@@ -303,9 +329,9 @@ def test_diff_never_reads_the_files_again(project):
 
 
 def test_a_reformatted_json_value_is_the_same_candidate(tmp_path):
-    (tmp_path / "agent.json").write_text('{"temperature": 0.5}\n', newline="")
-    space = Space({"temperature": JsonField(tmp_path / "agent.json", "/temperature")})
+    (tmp_path / "agent.json").write_text('{"stop": ["a", "b"]}\n', newline="")
+    space = Space({"stop": JsonField(tmp_path / "agent.json", "/stop")})
     baseline = Candidate.baseline(space)
-    same = baseline.child(space, {"temperature": "0.50"}, origin=["text"], rationale="")
+    same = baseline.child(space, {"stop": '[ "a",\n"b" ]'}, origin=["text"], rationale="")
     assert same.id == baseline.id
     assert diff(space, baseline, same, root=tmp_path) == ""

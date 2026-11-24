@@ -488,7 +488,7 @@ class Search:
         flat key) goes to that block even when another block's declared name reaches it, so
         `Block(TPE(), "manager")` next to `Block(TPE(), "manager.window.window_size")` gives the first
         block the rest of `manager`.
-        Keys in no block go to their kind's default block, key by key: text/file keys ->
+        Keys in no block go to their kind's default block, key by key: text keys ->
         `Reflection()` ("text"); a `choice()`'s selector key -> `TPE(n_startup_trials=2)` ("structure");
         `int`, `float`, and `one_of` keys, those under a choice's alternatives included -> `TPE()`
         ("numbers"). So `manager` goes to "structure" and `manager.window.window_size` to "numbers". A

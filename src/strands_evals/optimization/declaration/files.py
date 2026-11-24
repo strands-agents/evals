@@ -9,11 +9,23 @@ import shutil
 import uuid
 from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from strands import Skill
 
-from .markers import _check_positive_int, _check_str, _Marker
+from ...types.optimization import Value
+from .markers import (
+    Float,
+    Int,
+    JsonChoice,
+    OneOf,
+    _check_positive_int,
+    _check_str,
+    _fill_default,
+    _is_finite_number,
+    _is_int,
+    _Marker,
+)
 
 
 class FileText(_Marker):
@@ -88,16 +100,26 @@ class FileText(_Marker):
 class JsonField(_Marker):
     """One field of a JSON file, addressed by JSON pointer (RFC 6901).
 
-    A string field's value is its text. Any other field's value is its JSON text (2-space indent),
-    and a proposed value must parse as JSON; `Space.complete` rewrites it in that form, so "0.50" and
-    "0.5" are one candidate. Writing a changed field rewrites the whole file as JSON
-    with a 2-space indent.
+    The field's value in the file is the baseline, and its kind decides the key's:
+
+    - a number needs the `Int` or `Float` to search it with, which holds its bounds:
+      `JsonField("agent.json", "/temperature", Float(0.0, 1.0))`.
+    - a boolean is a `OneOf(False, True)`.
+    - a string is a text value, its text.
+    - an array, an object, or null is a text value holding its JSON text (2-space indent). A proposed
+      value must parse as JSON of the baseline's kind (a null baseline takes any kind);
+      `Space.complete` rewrites it in that form, so "[1,2]" and "[1, 2]" are one candidate.
+
+    A `OneOf` may also be given for a string, a number, a boolean, or null, to search it among those
+    options. The factory receives the key's value: the number, the boolean, the text, or the JSON
+    text. Writing a changed field rewrites the whole file as JSON with a 2-space indent.
     """
 
     def __init__(
         self,
         path: str | Path,
         pointer: str,
+        marker: Int | Float | OneOf | None = None,
         *,
         size_cap: int | None = None,
         edit_instructions: str | None = None,
@@ -107,13 +129,20 @@ class JsonField(_Marker):
         Args:
             path: The JSON file; a relative path is taken from the current working directory.
             pointer: JSON pointer to the field, e.g. "/agent/system_prompt".
-            size_cap: Max characters; None means `max(2000, 3 * len(baseline))`.
-            edit_instructions: Shown to the proposer next to this value.
+            marker: The `Int`, `Float`, or `OneOf` to search the field with, without `default=` (the
+                file's value is the baseline); required for a number. None for a boolean is
+                `OneOf(False, True)`, and for any other field a text value.
+            size_cap: Max characters of a text value; None means `max(2000, 3 * len(baseline))`.
+            edit_instructions: Shown to the proposer next to a text value.
 
         Raises:
             FileNotFoundError: `path` is not a file.
             TypeError: `size_cap` isn't a positive integer, `edit_instructions` isn't a str, the
-                file isn't UTF-8 JSON, or `pointer` isn't a JSON pointer to an existing field.
+                file isn't UTF-8 JSON, `pointer` isn't a JSON pointer to an existing field, a number
+                has no marker, `marker` isn't an `Int`, `Float`, or `OneOf` or is a `JsonChoice`, has a
+                `default=`, is given for an array or object, or doesn't fit the file's value (a `Float`
+                takes an integer only up to 2**53, which it holds exactly), or `size_cap` or
+                `edit_instructions` is given for a key that isn't text.
         """
         _check_positive_int("size_cap", size_cap)
         _check_str("edit_instructions", edit_instructions)
@@ -128,18 +157,51 @@ class JsonField(_Marker):
         field = _get(document, self._tokens, pointer, self.path)
         self._is_text = isinstance(field, str)
         self._kind = _json_kind(field)
-        self.default: str = field if isinstance(field, str) else _dumps(field)
+        where = f"JsonField: {pointer!r} in {self.path}"
+        if marker is None and self._kind == "number":
+            raise TypeError(
+                f"{where} is a number ({field!r}); pass the Int or Float to search it with, "
+                "e.g. JsonField(path, pointer, Float(0.0, 1.0))"
+            )
+        if marker is None and self._kind == "boolean":
+            marker = OneOf(False, True)
+        # The marker the key is checked and searched as; None for a text value.
+        self._typed: Int | Float | OneOf | None = None
+        if marker is not None:
+            if not isinstance(marker, (Int, Float, OneOf)):
+                raise TypeError(f"{where}: marker must be an Int, Float, or OneOf, got {type(marker).__name__}")
+            if isinstance(marker, JsonChoice):  # its options are JSON text, which would be written as strings
+                raise TypeError(f"{where}: marker must be a OneOf of the field's values, not a JsonChoice")
+            if marker._has_default():
+                raise TypeError(f"{where}: the file's value is the baseline; pass the marker without default=")
+            if size_cap is not None or edit_instructions is not None:
+                raise TypeError(f"{where}: size_cap and edit_instructions apply only to a text value")
+            if self._kind in ("array", "object"):
+                raise TypeError(
+                    f"{where} is a JSON {self._kind}; a marker applies to a string, number, boolean, or null"
+                )
+            if field is None and not isinstance(marker, OneOf):
+                raise TypeError(f"{where} is null, which only a OneOf listing None can hold")
+            if isinstance(marker, Float) and _is_int(field) and abs(field) > 2**53:
+                raise TypeError(
+                    f"{where} holds {field}, beyond 2**53, where a float stops holding every integer; use an Int"
+                )
+            self._typed = _fill_default(marker, field, where=where, source="the file's value")
+        self.default: Value = (
+            self._typed.default if self._typed is not None else field if self._is_text else _dumps(field)
+        )
         self.size_cap = size_cap
         self.edit_instructions = edit_instructions
 
-    def write(self, value: str, target: Path) -> None:
-        """Set the field at the pointer; a non-string baseline means `value` is parsed as JSON.
+    def write(self, value: Value, target: Path) -> None:
+        """Set the field at the pointer to `value`; JSON text is parsed, any other value set as is.
 
         A `target` whose field already equals `value` is left untouched, so its bytes (formatting
         included) stay the original's.
 
         Args:
-            value: The field's new value as text.
+            value: The key's value: a text, number, boolean, or `OneOf` option as is, or the JSON text
+                of an array, an object, or null without a marker.
             target: The JSON file inside the copy.
 
         Raises:
@@ -159,52 +221,76 @@ class JsonField(_Marker):
             return
         _write_text_atomically(target, self._render(value, text))
 
-    def _holds(self, value: str, text: str) -> bool:
-        """Whether the field at the pointer in `text` already equals `value` (same JSON, same type)."""
+    def _holds(self, value: Value, text: str) -> bool:
+        """Whether the field at the pointer in `text` already equals `value` (same JSON, same type).
+
+        A `float` key also matches an integer in the file, e.g. 1.0 and the 1 of `{"temperature": 1}`.
+        """
         try:
             field = _get(_loads(text), self._tokens, self.pointer, self.path)
         except (TypeError, ValueError):
             return False
+        # A marker first: a `OneOf` on a string field may also list numbers, booleans, or None.
+        if self._typed is not None:
+            same_type = type(field) is type(value) or (isinstance(self._typed, Float) and _is_finite_number(field))
+            return same_type and field == value
         if self._is_text:
             return isinstance(field, str) and field == value
-        return not isinstance(field, str) and _dumps(field) == _dumps(_loads(value))
+        new = self._json(value)
+        return not isinstance(field, str) and _dumps(field) == _dumps(new)
+
+    def _json(self, value: Value) -> Any:
+        """The value to set at the pointer: a JSON-text value parsed, any other value as is.
+
+        Raises:
+            ValueError: A JSON-text value that isn't valid JSON.
+        """
+        if self._is_text or self._typed is not None:
+            return value
+        return _loads(cast(str, value))
 
     def _original(self) -> str:
         """The whole file's text at declaration."""
         return self._text
 
-    def _render(self, value: str, text: str) -> str:
-        """The whole file's text with the field at the pointer set to `value`."""
+    def _render(self, value: Value, text: str) -> str:
+        """The whole file's text with the field at the pointer set to `value`.
+
+        A field already holding `value` is left as it is, so a `float` key equal to the file's integer
+        keeps the integer, as `write` keeps it in the copy.
+        """
         document = _loads(text)
         # Only to raise when the file lost the field since declaration.
         _get(document, self._tokens, self.pointer, self.path)
-        _set(document, self._tokens, value if self._is_text else _loads(value))
+        if not self._holds(value, text):
+            _set(document, self._tokens, self._json(value))
         return _dumps(document) + "\n"
 
     def _canonical(self, value: Any) -> Any:
-        """A non-string field's value as `_dumps` writes it, so equal JSON gives one candidate id.
+        """A JSON-text value as `_dumps` writes it, so equal JSON gives one candidate id.
 
-        E.g. "0.50", " 0.5" and "5e-1" all become "0.5". Object key order is kept, as written to the
-        file. A string field's text, and a value that isn't valid JSON (left for `_format_problem`), are
+        E.g. "[1,2]" and " [1, 2]" become one text. Object key order is kept, as written to the file.
+        A text, number, or boolean, and a value that isn't valid JSON (left for `_format_problem`), are
         returned as is.
         """
-        if self._is_text or not isinstance(value, str):
+        if self._is_text or self._typed is not None or not isinstance(value, str):
             return value
         try:
             return _dumps(_loads(value))
         except ValueError:
             return value
 
-    def _format_problem(self, value: str) -> str | None:
+    def _format_problem(self, value: Value) -> str | None:
         """A one-line format problem with `value`, or None.
 
-        A non-string field must get JSON of its baseline's kind (a number for a number, int or
-        float); a `null` baseline takes any kind.
+        A JSON-text value must parse as JSON of its baseline's kind (an array for an array, an object
+        for an object); a `null` baseline takes any kind. A number or boolean is checked by `Space`
+        against its bounds or options instead.
         """
-        if self._is_text:
+        if self._is_text or self._typed is not None:
             return None
         try:
-            parsed = _loads(value)
+            parsed = _loads(cast(str, value))
             _dumps(parsed)  # e.g. 1e400 parses as infinity, which no JSON file can hold
         except ValueError as error:
             return f"not valid JSON ({error})"
