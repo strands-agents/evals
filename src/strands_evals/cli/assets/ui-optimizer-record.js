@@ -97,11 +97,24 @@ function deriveOptimization(events, config) {
   const metricNames = [];
   const seeMetric = name => { if (!metricNames.includes(name)) metricNames.push(name); };
 
+  /* What a run spent, as `OptimizationResult.cost` counts it: every role (the agent, its judges, the
+     rollouts' other agents, the proposers) and every attempt, the ones run again included. */
   const blankUsage = () => ({ tokens: 0, model_calls: 0, seconds: 0, trials: 0 });
-  const addUsage = (into, usage) => {
-    into.trials += 1;
+  const addSpend = (into, usage) => {
     for (const key of ['tokens', 'model_calls', 'seconds']) {
-      if (typeof usage[key] === 'number' && isFinite(usage[key])) into[key] += usage[key];
+      if (usage && typeof usage[key] === 'number' && isFinite(usage[key])) into[key] += usage[key];
+    }
+  };
+  const addUsage = (into, rec) => {
+    into.trials += 1;
+    /* The record holds one judge spend per evaluator; an earlier attempt holds their total. */
+    Object.values(rec.judge_usage && typeof rec.judge_usage === 'object' ? rec.judge_usage : {})
+      .forEach(u => addSpend(into, u));
+    for (const spent of [rec, ...(Array.isArray(rec.previous_attempts) ? rec.previous_attempts : [])]) {
+      if (!spent || typeof spent !== 'object') continue;
+      addSpend(into, spent.usage);
+      addSpend(into, spent.benchmark_usage);
+      if (spent !== rec) addSpend(into, spent.judge_usage);
     }
   };
   let pending = blankUsage();
@@ -120,7 +133,7 @@ function deriveOptimization(events, config) {
         statuses[status] = (statuses[status] || 0) + 1;
         const split = rec.split || 'unknown';
         bySplit[split] = (bySplit[split] || 0) + 1;
-        addUsage(pending, rec.usage || {});
+        addUsage(pending, rec);
 
         const cid = rec.candidate_id;
         if (cid) {
@@ -158,6 +171,9 @@ function deriveOptimization(events, config) {
         measured.set(e.candidate_id, Object.assign(measured.get(e.candidate_id) || {}, means));
         break;
       }
+      case 'proposer_usage':
+        addSpend(pending, e.usage);
+        break;
       case 'iteration_end': {
         const rec = e.record || {};
         const rollouts = typeof rec.rollouts_spent === 'number' ? rec.rollouts_spent : 0;

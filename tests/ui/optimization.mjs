@@ -996,6 +996,20 @@ const WRITTEN = configWith(c => {
     'usage is summed over the iteration, with no caveat when nothing follows it', q.text('#opt-usage-cap'));
 }
 
+// ── the cost counts every role and every attempt, as the result's `cost` does ──
+{
+  const q = await openLog({ objective: 'Maximize(H)' }, [START,
+    { event: 'proposer_usage', iteration: 0, block: 'b', usage: { tokens: 7 } },
+    { event: 'trial', iteration: 0, record: { candidate_id: 'c0', case_name: 'a', run_index: 0, split: 'train',
+      status: 'completed', evaluations: { H: { score: 0.8 } }, usage: { tokens: 100 },
+      judge_usage: { H: { tokens: 10 }, K: { tokens: 4 } }, benchmark_usage: { tokens: 20 },
+      previous_attempts: [{ status: 'infrastructure_invalid', usage: { tokens: 30 }, judge_usage: { tokens: 2 },
+        benchmark_usage: { tokens: 5 } }] } },
+    iterationEnd(0, [prop('c0', 0, 0.8)], 1)]);
+  eq(q.text('#opt-cost-sum'), '178 tokens · 1 trial',
+    'the agent, its judges, the other agents and the proposer, earlier attempts included');
+}
+
 // ── a trial recorded again replaces the earlier record ──
 {
   const trial = (status, score, more) => ({

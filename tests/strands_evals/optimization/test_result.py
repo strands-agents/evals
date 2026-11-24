@@ -3,6 +3,8 @@
 import statistics
 from pathlib import Path
 
+import pytest
+
 from strands_evals.optimization import (
     AgentSpend,
     AtMost,
@@ -135,7 +137,8 @@ def _result(criteria, candidates, validation, *, test, steps, **fields):
     splits = ("train", "validation", "test")
     cost = RunCost(
         agent={
-            s: AgentSpend(usage=_usage(n), failed=0, trials=0, attempts=0) for s, n in zip(splits, agent, strict=True)
+            s: AgentSpend(usage=_usage(n), failed=0, trials=0, attempts=0, infrastructure=0)
+            for s, n in zip(splits, agent, strict=True)
         },
         judges={
             s: Spend(usage=_usage(n), failed=0) for s, n in zip(splits, fields.pop("judges", (0, 0, 0)), strict=True)
@@ -268,11 +271,11 @@ def test_a_single_objective_run():
             "    its 90% interval) are over the n cases both measured;",
             "    reported only.",
             "[3] Tokens: search is the train split; every attempt counts, the",
-            "    ones run again included; failed: the agent's attempts that",
-            "    raised, the judges' attempts with a failed evaluator, a",
-            "    proposer's retried failures and requests that raised; other",
-            "    agents are the rollouts' agents the factory didn't build (a",
-            "    simulated user).",
+            "    ones run again included; failed: the agent's own failures",
+            "    (never infrastructure's, throttling included), the judges'",
+            "    attempts with a failed evaluator, a proposer's retried",
+            "    failures and requests that failed; other agents are the",
+            "    rollouts' agents the factory didn't build (a simulated user).",
         ]
     )
 
@@ -393,9 +396,9 @@ def test_a_constrained_run_has_a_row_per_candidate_and_goal():
             "[2] Test: baseline, champion, and diff (champion - baseline, with its 90% interval) are over the n cases",
             "    both measured; reported only.",
             "[3] Tokens: search is the train split; every attempt counts, the ones run again included; failed: the",
-            "    agent's attempts that raised, the judges' attempts with a failed evaluator, a proposer's retried",
-            "    failures and requests that raised; other agents are the rollouts' agents the factory didn't build (a",
-            "    simulated user).",
+            "    agent's own failures (never infrastructure's, throttling included), the judges' attempts with a",
+            "    failed evaluator, a proposer's retried failures and requests that failed; other agents are the",
+            "    rollouts' agents the factory didn't build (a simulated user).",
         ]
     )
 
@@ -503,9 +506,9 @@ def test_a_pareto_run_adds_the_front_on_test():
             "[2] Test: baseline, champion, and diff (champion - baseline, with its 90% interval) are over the n",
             "    cases both measured; reported only.",
             "[3] Tokens: search is the train split; every attempt counts, the ones run again included; failed:",
-            "    the agent's attempts that raised, the judges' attempts with a failed evaluator, a proposer's",
-            "    retried failures and requests that raised; other agents are the rollouts' agents the factory",
-            "    didn't build (a simulated user).",
+            "    the agent's own failures (never infrastructure's, throttling included), the judges' attempts",
+            "    with a failed evaluator, a proposer's retried failures and requests that failed; other agents",
+            "    are the rollouts' agents the factory didn't build (a simulated user).",
         ]
     )
 
@@ -573,11 +576,12 @@ def test_a_run_without_finalists_prints_the_recorded_reasons():
             "    P(met) is - for a constraint judged by its measured or",
             "    adjusted mean; * the champion.",
             "[2] Tokens: search is the train split; every attempt counts,",
-            "    the ones run again included; failed: the agent's attempts",
-            "    that raised, the judges' attempts with a failed evaluator,",
-            "    a proposer's retried failures and requests that raised;",
-            "    other agents are the rollouts' agents the factory didn't",
-            "    build (a simulated user).",
+            "    the ones run again included; failed: the agent's own",
+            "    failures (never infrastructure's, throttling included),",
+            "    the judges' attempts with a failed evaluator, a proposer's",
+            "    retried failures and requests that failed; other agents",
+            "    are the rollouts' agents the factory didn't build (a",
+            "    simulated user).",
         ]
     )
 
@@ -708,6 +712,14 @@ def test_a_result_written_before_the_summary_fields_loads_and_summarizes():
     assert lines[7] == ["Proposers:", "-"]
     # The constraint rows are labeled by their metric, with no P(met).
     assert ["tokens", "2,480", "190", "2,512", "8", "-"] in lines
+
+
+def test_a_result_written_before_cost_names_the_resume_that_rewrites_it():
+    data = _constrained_run().to_dict()
+    del data["cost"]
+    data.update(agent_cost={}, search_cost={}, judge_cost={}, retry_cost={})
+    with pytest.raises(ValueError, match="resume the run to rewrite it"):
+        OptimizationResult.from_dict(data)
 
 
 def test_a_test_rows_means_cover_the_cases_its_difference_does():
@@ -845,10 +857,13 @@ def test_the_agent_and_the_judges_count_every_attempt_each_in_its_own_role():
     ]
     cost = _run_cost(trials, [], blocks=[])
 
-    assert {split: (s.usage.tokens, s.trials, s.attempts, s.failed) for split, s in cost.agent.items()} == {
-        "train": (100 + 30 + 60 + 5, 2, 4, 2),
-        "validation": (50 + 40, 2, 2, 0),  # judge-only re-runs don't run the agent
-        "test": (20 + 15 + 15, 2, 3, 3),
+    agent = {
+        split: (s.usage.tokens, s.trials, s.attempts, s.failed, s.infrastructure) for split, s in cost.agent.items()
+    }
+    assert agent == {
+        "train": (100 + 30 + 60 + 5, 2, 4, 0, 2),
+        "validation": (50 + 40, 2, 2, 0, 0),  # judge-only re-runs don't run the agent
+        "test": (20 + 15 + 15, 2, 3, 1, 2),  # infrastructure failures are never the agent's
     }
     assert {split: (s.usage.tokens, s.failed) for split, s in cost.judges.items()} == {
         "train": (10 + 10 + 4, 1),
@@ -880,7 +895,7 @@ def test_each_block_gets_its_proposers_spend_and_failed_attempts():
     }
     assert list(cost.proposers) == ["numbers", "structure", "text", "other"]
     assert cost.total.tokens == 18
-    assert cost.agent["train"] == AgentSpend(usage=Usage.zero(), failed=0, trials=0, attempts=0)
+    assert cost.agent["train"] == AgentSpend(usage=Usage.zero(), failed=0, trials=0, attempts=0, infrastructure=0)
 
 
 def test_the_rollouts_other_agents_count_per_split_in_every_attempt():

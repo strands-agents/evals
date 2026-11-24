@@ -10,7 +10,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal, NamedTuple
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..case import Case
 from ..evaluators.evaluator import Evaluator
@@ -42,7 +42,6 @@ from .scoring.metrics import USAGE_METRICS
 
 Grain = Literal["iteration", "proposal", "case"]
 
-_AGENT_FAILED = (TrialStatus.AGENT_FAILURE, TrialStatus.INFRASTRUCTURE_INVALID)
 _JUDGED = (TrialStatus.COMPLETED, TrialStatus.EVALUATOR_INVALID)  # statuses of an attempt whose judges ran
 
 
@@ -137,11 +136,8 @@ class Spend(BaseModel):
     Attributes:
         usage: The model usage, summed; `usage.model_calls` counts its model calls (chat spans, or a proposer
             agent's event-loop cycles), not its attempts.
-        failed: How many of its attempts failed. The agent: trial attempts that raised (`agent_failure`, or
-            `infrastructure_invalid`, then run again or left so). The judges: trial attempts with at least one
-            failed evaluator (an earlier attempt keeps one judge total, not which evaluators failed). A
-            proposer block: failures its proposer retried (`proposer_retry` events) and `propose` requests that
-            raised (`proposer_error` events).
+        failed: How many of its attempts failed; what an attempt and a failure are depends on the role (each
+            `RunCost` field says).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -151,7 +147,8 @@ class Spend(BaseModel):
 
 
 class AgentSpend(Spend):
-    """The agent's `Spend` on one split, with what it ran.
+    """The agent's `Spend` on one split, with what it ran. `failed` counts its `agent_failure` attempts, the
+    agent's own failures, as `CandidateScores.failures` does; infrastructure failures are never the agent's.
 
     Attributes:
         trials: The split's trials (candidate x case x run), each once.
@@ -159,10 +156,13 @@ class AgentSpend(Spend):
             re-run judged again), plus each earlier attempt that ended `infrastructure_invalid` (one a re-run
             pass replaced, or one `Experiment` retried on throttling). `attempts - trials` is how many times the
             agent was run again.
+        infrastructure: The attempts that ended `infrastructure_invalid` (throttling, a sandbox that failed, an
+            evaluator's infrastructure error), run again or left so.
     """
 
     trials: int
     attempts: int
+    infrastructure: int
 
 
 class RunCost(BaseModel):
@@ -174,12 +174,17 @@ class RunCost(BaseModel):
 
     Attributes:
         agent: Split -> the agent's usage on that split's trials (train = the search, validation and test = the
-            end phase): `TrialRecord.usage` plus every earlier attempt's (`previous_attempts`).
+            end phase): `TrialRecord.usage` plus every earlier attempt's (`previous_attempts`). `failed` is its
+            `agent_failure` attempts; `infrastructure` its `infrastructure_invalid` ones.
         judges: Split -> the evaluators' usage on those trials: `TrialRecord.judge_usage` plus every earlier
-            attempt's failed judges.
-        proposers: Block name -> what its proposer reported spending, all of it in the search: the `usage` of
+            attempt's failed judges. `failed` is the trial attempts with at least one failed evaluator (an earlier
+            attempt keeps one judge total, not which evaluators failed).
+        proposers: Block name -> what its proposer reported spending (`OptimizationResult.proposers` holds each
+            block's proposer class), all of it in the search: the `usage` of
             the patches each successful `propose` request returned, and its own `proposer_usage` events. Every
-            block of the search, zero when its proposer reported nothing.
+            block of the search, zero when its proposer reported nothing. `failed` is the failures its proposer
+            retried (`proposer_retry` events) and the `propose` requests that failed (`proposer_error` events: the
+            proposer raised, or the optimizer rejected what it returned).
         benchmark: Split -> the usage of the rollouts' other agents on those trials (`TrialRecord.benchmark_usage`:
             a simulated user, an agent the environment built), every attempt included; never in `agent`. Zero when
             the agents can't be told apart (the `build_task` path, a factory that returned something else).
@@ -271,6 +276,18 @@ class OptimizationResult(BaseModel):
     # Left out of the repr: every trial's rows and evaluation data, hundreds of kilobytes on a real run.
     reports: dict[str, dict[SplitName, EvaluationReport]] = Field(repr=False)
     rows: dict[Grain, list[dict[str, Any]]] = Field(repr=False)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_the_old_cost_fields(cls, data: Any) -> Any:
+        """A result saved before `cost` replaced the five cost fields can't be split by role; resuming rewrites it."""
+        if isinstance(data, Mapping) and "cost" not in data and "agent_cost" in data:
+            raise ValueError(
+                "this result was written before `cost` replaced `agent_cost`, `search_cost`, `judge_cost`, "
+                "`retry_cost`, and `benchmark_cost`; resume the run to rewrite it (`Optimizer.resume`, or "
+                "`strands-evals optimize resume` after moving result.json aside)"
+            )
+        return data
 
     @property
     def baseline(self) -> CandidateView:
@@ -558,9 +575,9 @@ class OptimizationResult(BaseModel):
             )
         notes.append(
             "Tokens: search is the train split; every attempt counts, the ones run again included; failed: the "
-            "agent's attempts that raised, the judges' attempts with a failed evaluator, a proposer's retried "
-            "failures and requests that raised; other agents are the rollouts' agents the factory didn't build "
-            "(a simulated user)."
+            "agent's own failures (never infrastructure's, throttling included), the judges' attempts with a failed "
+            "evaluator, a proposer's retried failures and requests that failed; other agents are the rollouts' agents"
+            " the factory didn't build (a simulated user)."
         )
         lines = ["Notes:"]
         for i, note in enumerate(notes, 1):
@@ -743,7 +760,8 @@ def _run_cost(
         statuses = [a.status for a in attempts] + [TrialStatus(saved["status"])]
         count["trials"] += 1
         count["attempts"] += 1 + sum(a.status is TrialStatus.INFRASTRUCTURE_INVALID for a in attempts)
-        count["agent_failed"] += sum(status in _AGENT_FAILED for status in statuses)
+        count["agent_failed"] += sum(status is TrialStatus.AGENT_FAILURE for status in statuses)
+        count["infrastructure"] += sum(status is TrialStatus.INFRASTRUCTURE_INVALID for status in statuses)
         # Only a judge-only re-run replaces a judged attempt, and only when one of its evaluators failed.
         count["judges_failed"] += sum(a.status in _JUDGED for a in attempts) + bool(saved["evaluator_errors"])
     proposers = dict.fromkeys(blocks, Usage.zero())
@@ -762,6 +780,7 @@ def _run_cost(
                 failed=counts[split]["agent_failed"],
                 trials=counts[split]["trials"],
                 attempts=counts[split]["attempts"],
+                infrastructure=counts[split]["infrastructure"],
             )
             for split in SPLIT_NAMES
         },

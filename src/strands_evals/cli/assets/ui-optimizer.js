@@ -334,7 +334,8 @@ function renderCost(d) {
     const unit = d.usageKeys.find(u => u.key === optUsage);
     $('opt-usage-pick').hidden = d.usageKeys.length < 2;
     /* Trials after the last `iteration_end` are the end phase or an iteration still in flight. */
-    $('opt-usage-cap').textContent = `Summed over that iteration's own trials, not cumulative`
+    $('opt-usage-cap').textContent = `Summed over that iteration's own trials and proposer calls, every role and `
+      + `every attempt (the agent, its judges, the rollouts' other agents, the proposers), not cumulative`
       + (d.endPhase.trials
         ? `, excluding the ${plural(d.endPhase.trials, 'trial')} recorded after the last finished iteration.`
         : '.');
