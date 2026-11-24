@@ -96,11 +96,10 @@
         </div>
       </div>
       <div class="ptabs" id="opt-tabs" hidden>
-        <button class="tab" data-view="opt-setup" data-sec="optimization" hidden data-tip="What the open run was told to do.">Setup</button>
-        <button class="tab" data-view="opt-overview" data-sec="optimization" hidden data-tip="The result, and the configuration the run picked.">Overview</button>
-        <button class="tab" data-view="opt-progress" data-sec="optimization" hidden data-tip="How the search went, candidate by candidate.">Progress</button>
+        <button class="tab" data-view="opt-overview" data-sec="optimization" hidden data-tip="The result, and the configuration the run picked.">Result</button>
+        <button class="tab" data-view="opt-setup" data-sec="optimization" hidden data-tip="What the open run was told to do, and the settings it could change.">Setup</button>
+        <button class="tab" data-view="opt-progress" data-sec="optimization" hidden data-tip="How the search went, candidate by candidate.">Iterations</button>
         <button class="tab" data-view="opt-candidates" data-sec="optimization" hidden data-tip="Every configuration the run tried, and how each case went.">Candidates</button>
-        <button class="tab" data-view="opt-tunables" data-sec="optimization" hidden data-tip="The settings the run could change, and which ones mattered.">Tunables</button>
         <button class="tab" data-view="opt-trade" data-sec="optimization" data-multi hidden data-tip="One goal plotted against another.">Trade-off</button>
       </div>
     </header>
@@ -306,11 +305,42 @@
         <summary>How the search was run<span class="path" id="opt-mech-sum"></span></summary>
         <dl class="kv wide" id="opt-mech-kv"></dl>
       </details>
+      <!-- The search space, under the setup that declares it. -->
+      <h3 class="section">Tunables</h3>
+      <p class="sub" id="opt-space-sub"></p>
+      <div id="opt-space-wrap" hidden>
+        <div class="scroll">
+          <table class="rep">
+            <thead><tr>
+              <th style="width:30%" data-tip="A setting the run was allowed to change.">Key</th><th style="width:22%" data-tip="The values the setting could take.">Range</th>
+              <th style="width:14%" data-tip="The value the baseline started with.">Default</th>
+              <th style="width:18%" title="how many candidates set this key, and how many of those
+                moved it off the default">Candidates</th><th data-tip="The setting exists only while another setting has this value.">Only when</th>
+            </tr></thead>
+            <tbody id="opt-space-rows"></tbody>
+          </table>
+        </div>
+      </div>
+      <p class="optnote" id="opt-space-note"></p>
+      <details class="drawer" id="opt-effects" hidden>
+        <summary>Which setting moved the metric<span class="path" id="opt-eff-sum"></span></summary>
+        <div class="charts">
+          <div class="chart wide">
+            <div class="chead">
+              <h3>Change from each key's reference value</h3>
+              <div class="pick" id="opt-eff-goal" role="group" aria-label="Goal metric to show effects for"></div>
+            </div>
+            <p class="cap" id="opt-eff-cap"></p>
+            <div id="opt-eff-chart"></div>
+            <p class="optnote" id="opt-eff-note"></p>
+          </div>
+        </div>
+      </details>
     </section>
 
-    <!-- ── Optimization · Overview ── -->
+    <!-- ── Optimization · Result ── -->
     <section class="view" id="v-opt-overview">
-      <h2>Overview</h2>
+      <h2>Result</h2>
       <div class="optnone"></div>
       <p class="sub" id="opt-sub"></p>
       <p class="sub methodline" id="opt-method-sum"></p>
@@ -355,9 +385,9 @@
       </details>
     </section>
 
-    <!-- ── Optimization · Progress ── -->
+    <!-- ── Optimization · Iterations ── -->
     <section class="view" id="v-opt-progress">
-      <h2>Progress</h2>
+      <h2>Iterations</h2>
       <div class="optnone"></div>
       <p class="sub">What the search did, in the order it did it: <span id="opt-search-sum"></span>.</p>
       <div class="charts">
@@ -407,41 +437,6 @@
           <tbody id="opt-cands"></tbody>
         </table>
       </div>
-    </section>
-
-    <!-- ── Optimization · Tunables ── -->
-    <section class="view" id="v-opt-tunables">
-      <h2>Tunables</h2>
-      <div class="optnone"></div>
-      <p class="sub" id="opt-space-sub"></p>
-      <div id="opt-space-wrap" hidden>
-        <div class="scroll">
-          <table class="rep">
-            <thead><tr>
-              <th style="width:30%" data-tip="A setting the run was allowed to change.">Key</th><th style="width:22%" data-tip="The values the setting could take.">Range</th>
-              <th style="width:14%" data-tip="The value the baseline started with.">Default</th>
-              <th style="width:18%" title="how many candidates set this key, and how many of those
-                moved it off the default">Candidates</th><th data-tip="The setting exists only while another setting has this value.">Only when</th>
-            </tr></thead>
-            <tbody id="opt-space-rows"></tbody>
-          </table>
-        </div>
-      </div>
-      <p class="optnote" id="opt-space-note"></p>
-      <details class="drawer" id="opt-effects" hidden>
-        <summary>Which setting moved the metric<span class="path" id="opt-eff-sum"></span></summary>
-        <div class="charts">
-          <div class="chart wide">
-            <div class="chead">
-              <h3>Change from each key's reference value</h3>
-              <div class="pick" id="opt-eff-goal" role="group" aria-label="Goal metric to show effects for"></div>
-            </div>
-            <p class="cap" id="opt-eff-cap"></p>
-            <div id="opt-eff-chart"></div>
-            <p class="optnote" id="opt-eff-note"></p>
-          </div>
-        </div>
-      </details>
     </section>
 
     <!-- ── Optimization · Trade-off ── -->

@@ -577,7 +577,7 @@ PAGE_ADDRESSES = {
         ("", "the optimizer runs found"),
         (
             "/<run directory>/<view>",
-            "one run; the view is setup, overview, progress, candidates, tunables or trade-off",
+            "one run; the view is result, setup, iterations, candidates or trade-off",
         ),
         ("/<run directory>/candidates/<id>", "one candidate of it, opened and in view"),
         ("/<run directory>/candidates/<id>/report", "the cases that candidate ran, as a report"),

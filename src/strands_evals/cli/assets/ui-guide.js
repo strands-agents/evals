@@ -180,9 +180,11 @@ const VIEW_GUIDE = {
   'opt-setup': {
     steps: [
       'What the run was told to do, as its run.json records it: the objective, the constraints, the cases and the budget.',
+      'Tunables, below, are the settings the run was allowed to change, what each could be, and how many candidates changed it.',
+      'When the run has an effects model beside it, the chart estimates which setting moved the metric.',
       'Nothing here can be edited. It is the record of a finished run.',
     ],
-    terms: ['objective', 'split', 'rollout'],
+    terms: ['objective', 'split', 'rollout', 'candidate', 'baseline', 'interval'],
   },
   'opt-overview': {
     steps: [
@@ -208,13 +210,6 @@ const VIEW_GUIDE = {
       'An open candidate has <b>Copy as Markdown</b> and a link of its own.',
     ],
     terms: ['candidate', 'feasible', 'infeasible', 'ineligible', 'invalid', 'unscored', 'duplicate'],
-  },
-  'opt-tunables': {
-    steps: [
-      'The settings the run was allowed to change, what each could be, and how many candidates changed it.',
-      'When the run has an effects model beside it, the chart estimates which setting moved the metric.',
-    ],
-    terms: ['candidate', 'baseline', 'interval'],
   },
   'opt-trade': {
     steps: [

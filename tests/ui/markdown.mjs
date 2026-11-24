@@ -801,7 +801,7 @@ ${JSON.stringify(LOST, null, 2)}
 
 - Run: support-tuning-20261110-091500-7af3e1
 - Directory: \`${ROOT}/tuning\`
-- Status: stopped: `) && /\n- Champion: c10\n- Derived from: c10 ← [^\n]*c0\n- Compared with: c0, the baseline, on \d+ held-out cases\n- Objective change: \+0\.143, 95% interval \[/.test(result),
+- Status: finished: `) && /\n- Champion: c10\n- Derived from: c10 ← [^\n]*c0\n- Compared with: c0, the baseline, on \d+ held-out cases\n- Objective change: \+0\.143, 95% interval \[/.test(result),
   'the result names the run, the champion, what it descends from and what it gained', result.slice(0, 500));
   ok(/\n## Metrics\n\n\| Metric \| Baseline \| Champion \| Change \|\n\| --- \| --- \| --- \| --- \|\n\| /.test(result)
     && /\n## Changes against c0\n\n### [^\n]+\n\n```diff\n/.test(result) && /\n### temperature\n\n```diff\n- 0\.7\n\+ 0\.2\n```\n/.test(result),
