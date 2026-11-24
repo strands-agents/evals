@@ -1190,6 +1190,28 @@ for (const [name, objective, verdict, bar, listed, read] of [
   eq(panel(q).Output, 'empty', 'and an empty output is told apart from none recorded');
 }
 
+// ── Candidates: a packed transcript, each message stored once ──
+{
+  const msg = (role, text) => ({ role, content: [{ content_type: 'text', text }] });
+  const inference = ranges => ({ span_type: 'inference', span_info: { session_id: 's' }, messages: ranges });
+  const packed = {
+    messages: [msg('user', 'Where is NW-1?'), msg('assistant', 'Looking it up.'), msg('user', 'Thanks'),
+      msg('assistant', 'Delivered.')],
+    session: { session_id: 's', traces: [{ trace_id: 't', spans: [inference([[0, 2]]), inference([[0, 4]])] }] },
+  };
+  const q = await openLog({ objective: 'Maximize(H)' }, [START, {
+    event: 'trial', iteration: 0,
+    record: { candidate_id: 'c0', case_name: 'packed', split: 'train', status: 'completed', output: 'Delivered.',
+      transcript: { hash: 'packed', format: 'packed_session' } },
+  }, iterationEnd(0, [prop('c0', 0, 0.5)])], { 'r/transcripts/packed.json': packed });
+  await go(q, 'candidates');
+  await openTrial(q, 'c0', 'packed');
+  eq([q.$('#opt-cands .tr-count') && flat(q.$('#opt-cands .tr-count')), speakers(q)],
+    ['2 spans of a recorded session', '#0 inference | user | assistant | #1 inference | user | assistant | user | assistant'],
+    'a packed transcript is drawn as the session it holds, each span with its messages');
+  has(flat(q.$('#opt-cands details.raw')), /"session"/, 'and its file is shown as written, one disclosure away');
+}
+
 // ── Trade-off ──
 const labelled = (id, measured) => ({
   event: 'label', iteration: 1, candidate_id: id,
