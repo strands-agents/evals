@@ -625,7 +625,7 @@ async def test_spans_that_end_just_after_the_rollout_returned_are_still_counted(
     assert "still open" not in caplog.text
 
 
-async def test_a_span_that_never_ends_is_waited_for_once_then_warned_about_once(traces, caplog, monkeypatch):
+async def test_a_span_that_never_ends_is_waited_for_then_warned_about_once(traces, caplog, monkeypatch):
     monkeypatch.setattr("strands_evals.optimization.execution.traces.SETTLE_SECONDS", 0.05)
     left_open = []
 
@@ -635,7 +635,7 @@ async def test_a_span_that_never_ends_is_waited_for_once_then_warned_about_once(
 
     log = TrialLog()
     try:
-        with caplog.at_level(logging.WARNING, logger="strands_evals.optimization.execution.traces"):
+        with caplog.at_level(logging.DEBUG, logger="strands_evals.optimization.execution.traces"):
             for name in ("case-1", "case-2"):
                 await _run(instrument(make_task(_agent_factory(), rollout), log, traces), _case(name), traces)
     finally:
@@ -643,8 +643,8 @@ async def test_a_span_that_never_ends_is_waited_for_once_then_warned_about_once(
             span.end()
 
     assert [entry.usage.model_calls for entry in log.records().values()] == [1, 1]  # what had ended is counted
-    assert [r for r in caplog.records if "still open" in r.getMessage()] and caplog.text.count("still open") == 1
-    assert "open_spans=<1>" in caplog.text
+    timeouts = [r for r in caplog.records if "open_spans=<1>" in r.getMessage()]
+    assert [r.levelno for r in timeouts] == [logging.WARNING, logging.DEBUG]  # every later timeout is still logged
 
 
 async def test_a_sync_task_is_instrumented(traces):

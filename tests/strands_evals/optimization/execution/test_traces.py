@@ -490,6 +490,29 @@ def test_session_warns_once_when_a_provider_dropped_messages(traces, caplog):
     assert "dropped_events=<1>" in warnings[0].getMessage()
 
 
+@pytest.mark.parametrize(
+    ("installed", "advice"),
+    [
+        (False, "StrandsEvalsTelemetry(span_limits=SpanLimits(max_events=SpanLimits.UNSET))"),
+        (True, "unset OTEL_SPAN_EVENT_COUNT_LIMIT or set it empty for no limit"),
+    ],
+)
+def test_the_dropped_messages_warning_says_how_to_lift_the_limit_that_applied(traces, caplog, installed, advice):
+    """On a provider the optimizer installed only the variable set a limit; on the user's own, their provider did."""
+    traces._installed = installed
+    tracer = _limited(traces)
+    with _trial(tracer, traces) as trace_id:
+        with _attempt(tracer) as attempt:
+            with tracer.start_as_current_span("chat", attributes={"gen_ai.operation.name": "chat"}) as chat:
+                for text in ("question", "first reply", "second question"):
+                    chat.add_event("gen_ai.user.message", {"content": json.dumps([{"text": text}])})
+
+    with caplog.at_level(logging.WARNING, logger="strands_evals.optimization.execution.traces"):
+        traces.session(trace_id, _ids(attempt)[1])
+
+    assert advice in caplog.text
+
+
 def test_session_ignores_dropped_events_on_spans_that_arent_model_calls(traces, caplog):
     tracer = _limited(traces)
     with _trial(tracer, traces) as trace_id:

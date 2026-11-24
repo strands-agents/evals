@@ -125,7 +125,8 @@ class StrandsEvalsTelemetry:
                 If None, a new one will be created and set as global.
             span_limits: Optional limits (events, attributes, links per span) for the tracer provider
                 created when `tracer_provider` is None. If None, OpenTelemetry's defaults and its
-                `OTEL_SPAN_*` environment variables apply.
+                `OTEL_SPAN_*` environment variables apply. Only the first global tracer provider takes
+                effect, so when one is already installed these limits aren't applied, and a warning says so.
 
         The instance is ready to use immediately after initialization, though
         trace exporters must be configured separately using the setup methods.
@@ -157,6 +158,13 @@ class StrandsEvalsTelemetry:
 
         # Get the global tracer provider (may be wrapped in a proxy)
         self.tracer_provider = trace_api.get_tracer_provider()
+        if span_limits is not None and self.tracer_provider is not tracer_provider:
+            logger.warning(
+                "provider=<%s> | a global tracer provider was already installed so span_limits was not applied | "
+                "create StrandsEvalsTelemetry(span_limits=...) before anything else sets up tracing or set the "
+                "limits on that provider",
+                type(self.tracer_provider).__name__,
+            )
 
         # Set up propagators
         propagate.set_global_textmap(

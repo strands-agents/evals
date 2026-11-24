@@ -291,13 +291,10 @@ def instrument(task: TaskFn, log: TrialLog, traces: TraceCapture) -> TaskFn:
     Attempts `Experiment` retried on throttling go into `TrialLogEntry.previous_attempts`. An
     `InfrastructureError` raised from another error records that error's type and message.
 
-    Once an attempt that returned or raised has ended, and its spans still open have ended too or 1 second
-    has passed (`TraceCapture.settle`), its usage (the candidate's and the benchmark's) and
-    its `Session` are read and its spans are dropped (`TraceCapture.drop_attempt`), so they aren't held
-    while the judges run or while `Experiment` retries the case. An error reading the usage is stored as
-    `log.setup_error`; a completed attempt raises it too, so no judge runs, while a failed attempt raises
-    its own error, so `Experiment` still retries a throttled one. A completed attempt whose `Session` can't
-    be built is logged and raises that error, so `Experiment` fails the case and the trial is unmeasured.
+    When an attempt ends, its usage and `Session` are read and its spans dropped, so they aren't held while
+    the judges run; spans still open under it are waited for first (`TraceCapture.settle`). A completed
+    attempt whose spans can't be read stops the run (`log.setup_error`); one whose `Session` can't be built
+    is unmeasured.
 
     Args:
         task: The task from `make_task` or `build_task`.

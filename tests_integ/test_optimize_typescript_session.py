@@ -26,6 +26,7 @@ from strands_evals import Case, Experiment
 from strands_evals.cli.main import main
 from strands_evals.optimization import OptimizationResult
 from strands_evals.optimization.execution.node import NodeAgent, NodeRunner
+from strands_evals.optimization.execution.rollout import TrialLog, instrument
 from strands_evals.optimization.execution.traces import TraceCapture, ingest
 from tests.strands_evals.cli.fixtures.optimize_agents import Correct
 
@@ -482,3 +483,28 @@ def test_a_limit_the_user_set_is_kept_and_what_it_dropped_is_reported(project, m
         traces.session(trace_id, parent)
 
     assert f"dropped_events=<{sum(span['dropped_events'] for span in spans)}>" in caplog.text
+
+
+def test_a_cancelled_calls_late_reply_lands_in_the_trials_usage(project):
+    """A rollout that gives up on a call returns before the worker's late reply; the trial still counts its spend."""
+    traces = TraceCapture()
+    runner = NodeRunner(project / "agent.ts")
+    agent = NodeAgent(runner, "agent", 0, [])
+
+    async def gives_up(case: Case) -> str:
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(agent.invoke_async("slow 600"), 0.2)  # the worker finishes it at about 0.6 s
+        return "gave up"
+
+    async def trial() -> TrialLog:
+        await agent.invoke_async("question 1")  # the worker is up before the trial starts
+        log = TrialLog()
+        with trace_api.get_tracer("optimization-integ").start_as_current_span("execute_case", context=Context()):
+            await instrument(gives_up, log, traces)(Case(name="c", input="q"))
+        return log
+
+    try:
+        log = asyncio.run(trial())
+    finally:
+        runner.close()
+    assert log.records()["c"].usage.model_calls == 1

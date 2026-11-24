@@ -29,7 +29,7 @@ from typing import Any
 import opentelemetry.trace as trace_api
 
 from .status import InfrastructureError
-from .traces import ingest
+from .traces import hold_open, ingest
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +70,8 @@ class NodeRunner:
         self._pending: dict[int, Future[dict[str, Any]]] = {}
         # Called with the reply of a call its caller cancelled, should one still come (`call_async(on_late=)`).
         self._late: dict[int, Callable[[dict[str, Any]], None]] = {}
+        # Lets go of the trial a cancelled call's late reply is still owed to (`hold_open`), once it comes.
+        self._holds: dict[int, Callable[[], None]] = {}
         self._next_id = 0
         self._process: subprocess.Popen[str] | None = None
         atexit.register(self.close)
@@ -94,6 +96,7 @@ class NodeRunner:
             with self._lock:
                 future = self._pending.pop(reply.get("id"), None)
                 late = self._late.pop(reply.get("id"), None)
+                hold = self._holds.pop(reply.get("id"), None)
             if future is not None and not future.done():
                 future.set_result(reply)
             elif late is not None:
@@ -101,12 +104,17 @@ class NodeRunner:
                     late(reply)
                 except Exception:
                     logger.warning("ignored an error reading a cancelled call's late reply", exc_info=True)
+            if hold is not None:
+                hold()
         code = process.wait()
         with self._lock:
             if self._process is process:
                 self._process = None
             gone, self._pending = self._pending, {}
             self._late = {}
+            holds, self._holds = self._holds, {}
+        for hold in holds.values():
+            hold()
         for future in gone.values():
             if not future.done():
                 future.set_exception(NodeRunnerGone(f"the Node agent runner exited with code {code}"))
@@ -143,7 +151,8 @@ class NodeRunner:
         """Send a request and await its reply; a cancelled call cancels the request in Node.
 
         `on_late` is called (on the reader thread) with the reply of a call that was cancelled, if the worker still
-        sends one: the agent's spans travel on it, so a cancelled turn's spend is still counted.
+        sends one: the agent's spans travel on it, so a cancelled turn's spend is still counted. Until it comes, the
+        trial the message is traced under counts it as an open span (`hold_open`), so its usage waits for it.
         """
         request_id, future = self._send(message, on_late)
         try:
@@ -151,6 +160,8 @@ class NodeRunner:
         except asyncio.CancelledError:
             with self._lock:
                 self._pending.pop(request_id, None)
+                if request_id in self._late and message.get("trace_id") and message.get("span_id"):
+                    self._holds[request_id] = hold_open(str(message["trace_id"]), str(message["span_id"]))
                 process = self._process
             if process is not None and process.stdin is not None:
                 try:

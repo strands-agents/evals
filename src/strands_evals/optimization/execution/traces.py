@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import threading
 import time
 import weakref
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -59,12 +60,15 @@ class EvaluatorView:
 
 class _TrialSpanFilter(SpanProcessor):
     """Keeps the finished spans of registered traces, keyed by hex trace id; every other span is dropped.
-    Also tracks which spans of registered traces have started and not yet ended (`open_under`)."""
+    Also tracks which spans of registered traces have started and not yet ended (`open_under`), and work
+    another process still owes a trace (`hold`)."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._spans: dict[str, list[ReadableSpan]] = {}
-        self._open: dict[str, dict[str, str | None]] = {}  # trace id -> open span id -> its parent's span id
+        # trace id -> open span id (or a `hold` key) -> its parent's span id
+        self._open: dict[str, dict[str, str | None]] = {}
+        self._holds = 0
 
     def register(self, trace_id: str) -> None:
         with self._lock:
@@ -94,6 +98,24 @@ class _TrialSpanFilter(SpanProcessor):
                 seen.add(parent)
                 parent = parent_of.get(parent)
         return count
+
+    def hold(self, trace_id: str, parent_span_id: str) -> str | None:
+        """Count one more open span under `parent_span_id` until `unhold`; the key to pass it, or None when the
+        trace isn't registered."""
+        with self._lock:
+            open_spans = self._open.get(trace_id)
+            if open_spans is None:
+                return None
+            self._holds += 1
+            key = f"hold-{self._holds}"
+            open_spans[key] = parent_span_id
+            return key
+
+    def unhold(self, trace_id: str, key: str) -> None:
+        with self._lock:
+            open_spans = self._open.get(trace_id)
+            if open_spans is not None:
+                open_spans.pop(key, None)
 
     def release(self, trace_ids: Iterable[str]) -> None:
         with self._lock:
@@ -134,6 +156,8 @@ class _TrialSpanFilter(SpanProcessor):
 # so a filter per run would pile up for the life of the process.
 _FILTERS: weakref.WeakKeyDictionary[SDKTracerProvider, _TrialSpanFilter] = weakref.WeakKeyDictionary()
 _FILTERS_LOCK = threading.Lock()
+# The providers `TraceCapture` installed itself, so its warnings know whose span limits apply.
+_INSTALLED: weakref.WeakSet[SDKTracerProvider] = weakref.WeakSet()
 
 
 class TraceCapture:
@@ -147,15 +171,11 @@ class TraceCapture:
         """Install an SDK tracer provider if needed and attach the trial span filter; must run before any
         `Experiment` is built.
 
-        With no OpenTelemetry SDK tracer provider installed, installs one (`StrandsEvalsTelemetry`) as the
-        global provider, with no limit on the events of a span unless `OTEL_SPAN_EVENT_COUNT_LIMIT` sets
-        one: Strands records each message a model call sends as one event of its span, so OpenTelemetry's
-        default of 128 would drop the start of a long conversation from the trial's `Session`. Then attaches
-        a span processor keeping only registered traces, so nothing else piles up in memory. A provider
-        installed earlier keeps its own limits (`session` warns when they drop messages). The no-limit
-        provider stays the global one for the rest of the process, so spans this run doesn't keep, and
-        exporters added to it later, get every event too. The Node worker that runs a TypeScript agent
-        (`node/runner.mjs`) sets the same limit on its own provider and reports what it dropped (`ingest`).
+        With no SDK tracer provider installed, it installs one as the global provider for the rest of the
+        process, keeping every event of a span (each message a model call sends) unless
+        `OTEL_SPAN_EVENT_COUNT_LIMIT` sets a limit, so a long conversation's `Session` keeps its start. A
+        provider installed earlier keeps its own limits, and `session` warns when they drop messages.
+        TypeScript agents follow the same rule.
 
         Raises:
             RuntimeError: A global tracer provider that isn't the SDK's is already installed, so spans
@@ -166,6 +186,8 @@ class TraceCapture:
             unset = OTEL_SPAN_EVENT_COUNT_LIMIT not in os.environ
             StrandsEvalsTelemetry(span_limits=SpanLimits(max_events=SpanLimits.UNSET) if unset else SpanLimits())
             provider = trace_api.get_tracer_provider()
+            if isinstance(provider, SDKTracerProvider):
+                _INSTALLED.add(provider)
         if not isinstance(provider, SDKTracerProvider):
             raise RuntimeError(
                 f"the global tracer provider is a {type(provider).__name__}, not opentelemetry-sdk's "
@@ -178,6 +200,7 @@ class TraceCapture:
                 provider.add_span_processor(span_filter)
                 _FILTERS[provider] = span_filter
         self._filter = span_filter
+        self._installed = provider in _INSTALLED
         self._warned_dropped = False
         self._warned_open = False
 
@@ -200,18 +223,27 @@ class TraceCapture:
             attempt_span_id: The attempt's span; only its subtree is read.
         """
         subtree = _subtree(self._filter.spans(trace_id), [attempt_span_id])
-        dropped = sum(
-            span.dropped_events for span in subtree if (span.attributes or {}).get("gen_ai.operation.name") == "chat"
-        )
-        if dropped and not self._warned_dropped:
+        clipped = [
+            span
+            for span in subtree
+            if span.dropped_events and (span.attributes or {}).get("gen_ai.operation.name") == "chat"
+        ]
+        if clipped and not self._warned_dropped:
             self._warned_dropped = True
+            # Spans from the Node worker (`ingest`) are remote; the worker's limit comes from the variable alone.
+            by_users_provider = not self._installed and any(
+                span.context is not None and not span.context.is_remote for span in clipped
+            )
             logger.warning(
-                "trace_id=<%s>, dropped_events=<%d> | the tracer provider's span event limit dropped the oldest "
-                "messages of model calls so trajectories of trials past the limit start mid-conversation | unset "
-                "OTEL_SPAN_EVENT_COUNT_LIMIT or set it empty for no limit or create your tracer provider with "
-                "span_limits max_events SpanLimits.UNSET",
+                "trace_id=<%s>, dropped_events=<%d> | the span event limit dropped the oldest messages of model "
+                "calls so trajectories of trials past the limit start mid-conversation | %s",
                 trace_id,
-                dropped,
+                sum(span.dropped_events for span in clipped),
+                "create your tracer provider with SpanLimits(max_events=SpanLimits.UNSET) as in "
+                "StrandsEvalsTelemetry(span_limits=SpanLimits(max_events=SpanLimits.UNSET)) or set "
+                "OTEL_SPAN_EVENT_COUNT_LIMIT empty before creating it"
+                if by_users_provider
+                else "unset OTEL_SPAN_EVENT_COUNT_LIMIT or set it empty for no limit",
             )
         return _session(trace_id, subtree, _candidate_spans(subtree))
 
@@ -328,8 +360,10 @@ class TraceCapture:
         `session` read them; returns at once when none is.
 
         A span under the attempt can end after it: an agent whose stream the rollout left early (`break` out
-        of `stream_async`) ends its spans when the event loop closes the generator. Warns once per capture
-        when some are still open after the wait, since their model calls are then left out of the usage.
+        of `stream_async`) ends its spans when the event loop closes the generator, and a TypeScript call the
+        rollout cancelled sends its spans on a late reply (`hold_open`). Warns once per capture when some are still
+        open after the wait, since their model calls are then left out of the usage; later timeouts are
+        logged at debug level.
 
         Args:
             trace_id: The trial's trace.
@@ -349,6 +383,14 @@ class TraceCapture:
                         open_spans,
                         SETTLE_SECONDS,
                     )
+                else:
+                    logger.debug(
+                        "trace_id=<%s>, open_spans=<%d>, waited_seconds=<%s> | spans still open after the rollout "
+                        "returned are left out of the trial's usage",
+                        trace_id,
+                        open_spans,
+                        SETTLE_SECONDS,
+                    )
                 return
             await asyncio.sleep(delay)
             delay = min(0.05, delay * 2 or 0.001)
@@ -356,6 +398,19 @@ class TraceCapture:
     def release(self, trace_ids: Iterable[str]) -> None:
         """Drop only these trials' spans."""
         self._filter.release(trace_ids)
+
+
+def hold_open(trace_id: str, parent_span_id: str) -> Callable[[], None]:
+    """Count work another process still owes a trial (a cancelled Node call's late reply) as a span open under
+    `parent_span_id`, so `TraceCapture.settle` waits for it; returns the function that lets it go.
+
+    Does nothing outside a run (no filter) or for a trace that isn't registered.
+    """
+    span_filter = _FILTERS.get(trace_api.get_tracer_provider())  # type: ignore[call-overload]
+    key = None if span_filter is None else span_filter.hold(trace_id, parent_span_id)
+    if span_filter is None or key is None:
+        return lambda: None
+    return functools.partial(span_filter.unhold, trace_id, key)
 
 
 def ingest(spans: Iterable[Mapping[str, Any]]) -> None:
