@@ -389,6 +389,15 @@ def test_the_copy_writes_typed_json_fields_as_json_values(settings, tmp_path):
     assert type(document["max_turns"]) is int and document["stream"] is True
 
 
+@pytest.mark.parametrize("value, held", [(3, "3"), (None, "null"), ("large", '"large"')])
+def test_a_one_of_on_a_string_field_leaves_a_file_that_holds_its_value(settings, tmp_path, value, held):
+    field = JsonField(settings, "/model", OneOf("small", "large", 3, None))
+    target = tmp_path / "copy.json"
+    target.write_text(f'{{"model":{held}}}', newline="")
+    field.write(value, target)
+    assert target.read_text() == f'{{"model":{held}}}'
+
+
 def test_an_unchanged_float_over_an_integer_keeps_the_files_integer(settings, tmp_path):
     space = typed_space(settings)
     workspace = tmp_path / "run" / "optimization_files"

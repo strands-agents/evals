@@ -230,12 +230,13 @@ class JsonField(_Marker):
             field = _get(_loads(text), self._tokens, self.pointer, self.path)
         except (TypeError, ValueError):
             return False
+        # A marker first: a `OneOf` on a string field may also list numbers, booleans, or None.
+        if self._typed is not None:
+            same_type = type(field) is type(value) or (isinstance(self._typed, Float) and _is_finite_number(field))
+            return same_type and field == value
         if self._is_text:
             return isinstance(field, str) and field == value
         new = self._json(value)
-        if self._typed is not None:
-            same_type = type(field) is type(new) or (isinstance(self._typed, Float) and _is_finite_number(field))
-            return same_type and field == new
         return not isinstance(field, str) and _dumps(field) == _dumps(new)
 
     def _json(self, value: Value) -> Any:
