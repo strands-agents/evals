@@ -84,7 +84,7 @@ def test_an_interrupt_while_the_worker_thread_starts_still_cancels_the_running_f
 
 
 def test_an_interrupt_before_the_work_is_queued_propagates_at_once(sigint, monkeypatch):
-    ran = []
+    ran, raised = [], []
 
     class InterruptedBeforeQueuing(_async.ThreadPoolExecutor):
         def submit(self, *args, **kwargs):
@@ -93,10 +93,18 @@ def test_an_interrupt_before_the_work_is_queued_propagates_at_once(sigint, monke
     async def main():
         ran.append(True)
 
+    def call():
+        try:
+            run_async(main)
+        except sigint.error:
+            raised.append(True)
+
     monkeypatch.setattr(_async, "ThreadPoolExecutor", InterruptedBeforeQueuing)
-    with pytest.raises(sigint.error):
-        run_async(main)
-    assert ran == []
+    caller = threading.Thread(target=call, daemon=True)  # a daemon: if `run_async` hangs, the session still exits
+    caller.start()
+    caller.join(5)
+    assert not caller.is_alive(), "run_async waited for work that was never queued"
+    assert raised == [True] and ran == []
 
 
 def test_an_error_raised_instead_of_the_cancellation_is_the_interrupts_cause(sigint):
