@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import _common
+from . import _common, _usage
 from .commands import diagnose as diagnose_cmd
 from .commands import fetch as fetch_cmd
 from .commands import generate as generate_cmd
@@ -54,4 +54,20 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help(sys.stderr)
         return _common.EXIT_BAD_INPUT
 
-    return _common.run_command(func, args)
+    # Only the top-level subparser uses the `command` dest, so a nested subcommand never overwrites it.
+    command = _usage.command_name(getattr(args, "command", None))
+
+    # `ui` serves until someone stops it, so it reports that it started and never reports an end.
+    if command == "ui":
+        _usage.report(command, "started")
+        return _common.run_command(func, args)
+
+    try:
+        exit_code = _common.run_command(func, args)
+    except KeyboardInterrupt:
+        # `run_command` catches `Exception`, which this is not, so a Ctrl-C or a cancelled CI job lands here.
+        _usage.report(command, "interrupted")
+        raise
+
+    _usage.report(command, _usage.outcome_for(exit_code))
+    return exit_code

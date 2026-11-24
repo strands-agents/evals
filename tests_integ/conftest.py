@@ -17,6 +17,12 @@ from strands_evals.types.trace import AgentInvocationSpan, Session, SpanInfo, Tr
 logger = logging.getLogger(__name__)
 
 
+@pytest.fixture(autouse=True)
+def no_usage_telemetry(monkeypatch):
+    """Turn usage reporting off, so a test that runs the CLI never sends a real event."""
+    monkeypatch.setenv("STRANDS_EVALS_TELEMETRY", "0")
+
+
 def _load_api_keys_from_secrets_manager():
     """Load API keys as environment variables from AWS Secrets Manager."""
     session = boto3.session.Session()
