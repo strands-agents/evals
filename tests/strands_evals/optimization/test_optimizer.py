@@ -3051,6 +3051,9 @@ async def test_trial_records_drop_their_trajectories_and_proposers_read_the_pare
     assert all(r.trajectory is None for records in optimizer._records.values() for r in records.values())
     inputs = {case.name: case.input for case in optimizer._cases}
     assert proposer.requests
+    # Read only now, after the run: from the records as each step started, not as the optimizer holds them later.
+    optimizer._records.clear()
+    optimizer._transcripts.clear()
     for request in proposer.requests:
         temperature = str(request.parent.values["temperature"])
         assert sorted(t.case_name for t in request.trials) == sorted(optimizer._case_split.train)

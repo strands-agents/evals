@@ -27,7 +27,9 @@ class ProposalRequest:
             values so far (the parent with the earlier blocks' structural patches merged; not yet scored).
         trials: The step's parent's train trial records (Reflection builds its evidence from them); it
             always has them, since every candidate is scored on train. Each trajectory is as the run
-            directory reads it back from its transcript, in a fresh run and after a resume alike.
+            directory reads it back from its transcript, in a fresh run and after a resume alike. They are
+            read the first time anything reads `trials`, once for every request of the step, so read them
+            during `propose`: afterwards the run folder may be gone.
         scores: The step's parent's train scores (`SplitScores.train`).
         inputs: Train case name -> `case.input`, for the cases in `trials`. Inputs only: no expected field
             (`expected_output`, `expected_trajectory`, ...) and no `metadata` is ever passed.

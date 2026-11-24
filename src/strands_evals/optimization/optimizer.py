@@ -953,7 +953,7 @@ class Optimizer:
             retry_cost=retry_cost,
             benchmark_cost=benchmark_cost,
             reports=_reports(
-                {c: self._with_trajectories(c) for c in self._records},
+                {c: self._with_trajectories(records, self._transcripts[c]) for c, records in self._records.items()},
                 cases=self._cases,
                 evaluators=self._evaluators,
                 split=self._case_split,
@@ -1235,17 +1235,17 @@ class Optimizer:
         )
 
     def _with_trajectories(
-        self, candidate_id: str, split: SplitName | None = None
+        self,
+        records: Mapping[tuple[str, int], TrialRecord],
+        transcripts: Mapping[tuple[str, int], dict[str, str] | None],
     ) -> dict[tuple[str, int], TrialRecord]:
-        """The candidate's records (on `split`, or all of them), each with its trajectory read from its transcript."""
+        """`records` (a candidate's, from `_records`), each with its trajectory read from its transcript."""
         assert self._run is not None
-        transcripts = self._transcripts[candidate_id]
         return {
             key: record
             if (transcript := transcripts[key]) is None
             else record.model_copy(update={"trajectory": self._run.load_transcript(transcript)})
-            for key, record in self._records[candidate_id].items()
-            if split is None or record.split == split
+            for key, record in records.items()
         }
 
     async def _step(
@@ -1275,8 +1275,10 @@ class Optimizer:
         opened: _Draw | None = None  # an opener repeating a measured candidate: the round opens on it
         need = n
         recorded = self._recorded_draws(step, parent, n)
-        # Read back once for the whole step, and only if a proposer reads them.
-        parent_trials = _ParentTrials(lambda: list(self._with_trajectories(parent.id, "train").values()))
+        # Read back once for the whole step, only if a proposer reads them, from the records as the step starts.
+        held = {k: r for k, r in self._records[parent.id].items() if r.split == "train"}
+        transcripts = dict(self._transcripts[parent.id])
+        parent_trials = _ParentTrials(lambda: list(self._with_trajectories(held, transcripts).values()))
         drawn: list[list[_Draw]] = []  # per redraw, asked or replayed: the step's `draw` event
         for redraw in range(self._search.redraws + 1):
             if need <= 0 or opened is not None:

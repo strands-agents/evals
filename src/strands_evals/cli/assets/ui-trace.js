@@ -204,10 +204,17 @@ const rawView = (doc, label) => `<details class="raw"><summary>${esc(label)}</su
 
 /** The `Session` a packed optimizer transcript holds, else `doc` as it is. A packed one is
     `{ messages, session }`: each distinct message stored once, and each inference span's `messages` a
-    list of half-open `[start, stop]` ranges into `messages`. */
+    list of half-open `[start, stop]` ranges into `messages`. The same file always gives the same object,
+    so what is keyed by the document drawn (`traceCopy`) holds it once however often it is drawn. */
+const UNPACKED = new WeakMap();
 function unpackedSession(doc) {
   const session = doc && typeof doc === 'object' && !Array.isArray(doc) && doc.session;
   if (!Array.isArray(doc && doc.messages) || !sessionTraces(session)) return doc;
+  if (!UNPACKED.has(doc)) UNPACKED.set(doc, unpack(doc, session));
+  return UNPACKED.get(doc);
+}
+
+function unpack(doc, session) {
   const expand = ranges => (Array.isArray(ranges) ? ranges.flatMap(r => (Array.isArray(r)
     ? doc.messages.slice(r[0], r[1]) : [r])) : ranges);
   return {

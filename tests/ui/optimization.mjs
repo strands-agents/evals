@@ -1210,6 +1210,10 @@ for (const [name, objective, verdict, bar, listed, read] of [
     ['2 spans of a recorded session', '#0 inference | user | assistant | #1 inference | user | assistant | user | assistant'],
     'a packed transcript is drawn as the session it holds, each span with its messages');
   has(flat(q.$('#opt-cands details.raw')), /"session"/, 'and its file is shown as written, one disclosure away');
+  const slot = () => q.$('#opt-cands .tr-copy') && q.$('#opt-cands .tr-copy').dataset.arg;
+  const first = slot();
+  for (let i = 0; i < 3; i += 1) { await openTrial(q, 'c0', 'packed'); await openTrial(q, 'c0', 'packed'); }
+  eq(slot(), first, 'drawn again, it is the same document to copy, not one more kept each time');
 }
 
 // ── Trade-off ──
