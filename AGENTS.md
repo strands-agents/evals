@@ -40,6 +40,8 @@ strands-evals depends on **`strands-agents`** (the Python SDK) for all LLM inter
   - `strands.types.content.Message`
   - `strands.types.exceptions` (`EventLoopException`, `ModelThrottledException`)
   - `strands.Skill` (public, exported in `strands.__all__` from `strands.vended_plugins.skills.skill`), used by the skill extractors to read `SKILL.md` frontmatter
+  - `strands.decisions` (`DecisionModel`, `DecisionResult`, `Question`, `Uncertain`), used by `TypedRubricEvaluator` (and through it `Cascade`); it reads the per-question `probabilities` in `DecisionResult.metadata`
+  - `strands.experimental.context_manager` (`Offload`, `ContextState`), used by the optimizer's `Reflection` for its agent's `context_manager=`; experimental upstream, so a Strands release can change it, and `import strands_evals.optimization` fails when it does
 - **Not used as SDK imports (do not add to the list without verifying a real import):**
   - `strands.types.traces` — this repo defines its own `strands_evals.types.trace` for session/span modeling; the SDK's trace types are not imported.
   - `strands.telemetry` — the evals repo has its own `strands_evals.telemetry` module. The only reference to `strands.telemetry` is the literal string `"strands.telemetry.tracer"` used as an OpenTelemetry scope name in `mappers/constants.py`.
@@ -50,6 +52,16 @@ strands-evals depends on **`strands-agents`** (the Python SDK) for all LLM inter
 
 ```
 strands-evals/
+│
+├── .agents/skills/                           # Agent skills
+│   ├── optimize/                             # Tune a strands-harness agent with `strands-evals optimize`
+│   │   └── SKILL.md                          # Set up, review, run and report an optimize run
+│   ├── session-converter/                  # Convert agent sessions into experiments
+│   │   ├── SKILL.md                          # Locate sessions, extract episodes, write an experiment
+│   │   ├── assets/segmenter.md               # Subagent steps: split sessions into episodes
+│   │   └── scripts/synthesize_cases.py       # Append synthetic cases in the existing cases' voice
+│   └── strands-evals/                        # Author evaluations with strands-evals
+│       └── SKILL.md                          # Evaluation authoring guidance
 │
 ├── src/strands_evals/                        # Main package source code
 │   ├── __init__.py                           # Public API exports
@@ -63,6 +75,7 @@ strands-evals/
 │   │
 │   ├── evaluators/                           # Evaluator implementations
 │   │   ├── evaluator.py                      # Base Evaluator[InputT, OutputT]
+│   │   ├── cascade.py                        # Cascade: typed rubric first, fallback evaluator for uncertain cases
 │   │   ├── coherence_evaluator.py
 │   │   ├── conciseness_evaluator.py
 │   │   ├── correctness_evaluator.py
@@ -79,6 +92,7 @@ strands-evals/
 │   │   ├── tool_parameter_accuracy_evaluator.py
 │   │   ├── tool_selection_accuracy_evaluator.py
 │   │   ├── trajectory_evaluator.py
+│   │   ├── typed_rubric_evaluator.py         # TypedRubricEvaluator (DecisionModel-backed) + scoring formulas
 │   │   ├── multimodal_*.py                   # Multimodal evaluators (MLLM-as-a-Judge)
 │   │   ├── chaos/                            # Chaos-aware evaluators
 │   │   │   ├── failure_communication_evaluator.py
@@ -125,6 +139,23 @@ strands-evals/
 │   │   │   ├── prompt_strategy/              # PromptStrategy + gradual_escalation template
 │   │   │   └── sequentialbreak/              # SequentialBreakStrategy
 │   │   └── (evaluator in evaluators/redteam/, types in types/redteam/)
+│   │
+│   ├── optimization/                         # Optimizer: searches declared agent changes, picks one on validation
+│   │   ├── declaration/                      # Markers, tunable / TunableFactory, Space (flat typed keys), files, tools
+│   │   ├── candidate.py                      # Candidate (typed values, content id, parent), diff
+│   │   ├── execution/                        # Trial statuses, default rollout, trace capture, TrialRunner
+│   │   ├── scoring/                          # Metric registry, objectives (incl. Pareto), constraints
+│   │   ├── score_model/                      # ScoreModel / Fit protocols, BayesBenchModel, effects, the ranking
+│   │   ├── bayesbench/                       # Factor encoder, conjugate posterior, prior-scale averaging, contrasts, held-out
+│   │   │                                     # diagnostics; numpy/scipy only, imported only by score_model/bayesbench.py
+│   │   ├── search/                           # Proposer, Block / Search / schedules, TPE, Reflection, Thompson
+│   │   ├── selection/                        # Selection, TopRanked (picks the parent)
+│   │   ├── setup/                            # Split, Budget
+│   │   ├── end_phase.py                      # FinalPick: finalists on validation, champion (and Pareto front) vs baseline on test
+│   │   ├── record/                           # Run directory, events.jsonl, resume
+│   │   ├── optimizer.py / result.py
+│   │   ├── prompt_templates/reflection/
+│   │   └── (data records in types/optimization/)
 │   │
 │   ├── experimental/                         # Experimental features (no stability guarantees)
 │   │
@@ -191,13 +222,25 @@ strands-evals/
 │   │   ├── _entrypoint.py                    # `module:attr` resolver + classifier
 │   │   ├── _agent_task.py                    # synthesize_task_function (baggage-tagged)
 │   │   ├── _io.py                            # stdin/stdout/file helpers
+│   │   ├── _optimize.py                      # `optimize`: flags -> Optimizer, cli.json, the .toml run file
+│   │   ├── _harness.py                       # `optimize --config`: a strands-harness portable config as the agent
+│   │   ├── _ui_server.py                     # loopback HTTP server behind `ui`: token and Host rules, routes, guarded writes
+│   │   ├── _ui_discovery.py                  # what `ui` finds in a folder and how it pairs it
+│   │   ├── _ui_evaluators.py                 # the evaluator catalogue the `ui` editor offers
+│   │   ├── _ui_markdown.py                   # the Markdown of a report, experiment or session, which nothing else writes
+│   │   ├── assets/                           # the `ui` page; no build step, inlined into one document when served
+│   │   │   ├── ui.html                       # markup
+│   │   │   ├── ui.css                        # Strands theme tokens and components
+│   │   │   └── ui-*.js                       # one classic script per concern, loaded in the order ui.html lists
 │   │   └── commands/                         # subcommand implementations
 │   │       ├── run.py
 │   │       ├── validate.py
 │   │       ├── report.py
 │   │       ├── diagnose.py
 │   │       ├── generate.py
-│   │       └── fetch.py                      # pull Session JSON from a TraceProvider
+│   │       ├── fetch.py                      # pull Session JSON from a TraceProvider
+│   │       ├── optimize.py                   # `optimize run` / `optimize resume`
+│   │       └── ui.py                         # browse and edit experiments, reports and optimizer runs
 │   │
 │   ├── __main__.py                           # `python -m strands_evals` shim → cli.main
 │   │
@@ -207,6 +250,9 @@ strands-evals/
 │       ├── trace.py                          # Session, Trace, SpanUnion
 │       ├── detector.py                       # FailureItem, RCAItem, DiagnosisResult, ...
 │       ├── multimodal.py
+│       ├── typed_rubric.py                   # Noul / Scale / Choice rubric question types (pydantic dataclasses)
+│       ├── cascade.py                        # Band: the escalation band a Cascade gates on
+│       ├── optimization/                     # Frozen pydantic records the optimizer saves (trials, scores, events)
 │       ├── redteam/
 │       │   ├── config.py                     # AttackGoal, RedTeamConfig, Severity
 │       │   ├── risk_category.py              # RISK_CATEGORIES, DEFAULT_SEVERITY
@@ -224,6 +270,7 @@ strands-evals/
 │   ├── detectors/
 │   ├── experimental/
 │   ├── redteam/                          # Mirrors src/strands_evals/redteam/
+│   ├── optimization/                     # Mirrors src/strands_evals/optimization/
 │   ├── simulation/
 │   ├── extractors/
 │   ├── generators/
@@ -234,7 +281,10 @@ strands-evals/
 │   ├── cli/
 │   │   └── fixtures/                         # local agent / task / evaluator fixtures
 │   └── types/
+│       ├── optimization/
 │       └── redteam/
+│
+├── tests/ui/                                 # jsdom suites for the `ui` page over the real server (Node; see its README)
 │
 ├── tests_integ/                              # Integration tests (real providers)
 │
@@ -247,10 +297,12 @@ strands-evals/
 
 ### Directory Purposes
 
+- **`.agents/skills/`**: Agent skills, one directory per skill containing a `SKILL.md`; the folder name must match the skill's `name` frontmatter.
 - **`src/strands_evals/`**: All production code
-- **`src/strands_evals/cli/`**: `strands-evals` console script — six subcommands (`run`, `validate`, `report`, `diagnose`, `generate`, `fetch`) plus the `module:attr` resolver and synthesized task wrapper used by `--agent`. `fetch` has per-provider sub-subcommands (`cloudwatch`, `langfuse`, `opensearch`); langfuse / opensearch are imported lazily so they only fail when invoked without their extra installed.
+- **`src/strands_evals/cli/`**: `strands-evals` console script — eight subcommands (`run`, `validate`, `report`, `diagnose`, `generate`, `fetch`, `optimize`, `ui`) plus the `module:attr` resolver and synthesized task wrapper used by `--agent`. `optimize` (`run` / `resume`, built in `_optimize.py`) imports `strands_evals.optimization` only when invoked, since it needs the `optimization` extra. `fetch` has per-provider sub-subcommands (`cloudwatch`, `langfuse`, `opensearch`); langfuse / opensearch are imported lazily so they only fail when invoked without their extra installed.
 - **`tests/strands_evals/`**: Unit tests mirroring src/ structure
 - **`tests/strands_evals/cli/`**: CLI tests; fixtures live under `cli/fixtures/` and are referenced by tests via `tests.strands_evals.cli.fixtures.*:attr` specs
+- **`tests/ui/`**: jsdom suites that drive the `ui` page; Node, not pytest, run by the `UI Tests` job in CI
 - **`tests_integ/`**: Integration tests using real trace providers and model endpoints
 - **`docs are not vendored yet`**: CONTRIBUTING.md and STYLE_GUIDE.md are the canonical references
 
@@ -474,6 +526,7 @@ If you are an agent opening a PR on behalf of a contributor, the human is the au
 - When editing `detectors/`, keep the three-tier RCA fallback and the `model.stream()` text-mode path for failure detection intact unless the PR explicitly targets those behaviors.
 - When editing `chaos/`, keep the `ContextVar`-based plugin dispatch and the discriminated-union effect serialization intact; `ChaosPlugin` should remain a thin reader of the active `ChaosCase`.
 - When editing `redteam/`, keep `AttackStrategy` instances stateless across cases (clear in `reset()`) and prefer extending the strategy library over modifying `RedTeamExperiment`'s cross-product loop.
+- When editing `optimization/`, a layer imports only the layers before it (`declaration → candidate → execution / scoring → score_model → search | selection | end_phase → record → optimizer`); `search`, `selection`, and `end_phase` never import each other, `setup/` imports only `types/` and `Case`, and only `optimizer.py` sees every layer. The search reads train data only; validation is read only by the end phase's pick and test only by its report. Agents are always rebuilt through `bind(values)`, never patched.
 
 ## Things NOT to Do
 
@@ -491,7 +544,7 @@ If you are an agent opening a PR on behalf of a contributor, the human is the au
 
 When reviewing a PR in this repo, scan for all of the following:
 
-1. **Evaluator changes**: confirm the class still extends `Evaluator[InputT, OutputT]`, still returns `list[EvaluationOutput]`, and still uses `Agent(...)` for LLM calls. Confirm the default model has not silently regressed from the current default.
+1. **Evaluator changes**: confirm the class still extends `Evaluator[InputT, OutputT]`, still returns `list[EvaluationOutput]`, and still uses `Agent(...)` for LLM calls. Decision-model evaluators (`TypedRubricEvaluator`) are the exception: they call a `strands.decisions.DecisionModel` and make no `Agent` call. Confirm the default model has not silently regressed from the current default.
 2. **Prompt changes**: check that a new version module (`{name}_v1.py`) was added rather than overwriting `_v0.py`, if the PR is billed as a prompt change rather than a bugfix.
 3. **Detector changes**: preserve the text-mode streaming in `failure_detector.py` and the three-tier fallback in `root_cause_analyzer.py` unless explicitly targeted.
 4. **Session/trace schema**: if the PR changes fields on `Session`, `Trace`, or `SpanUnion`, every mapper in `mappers/` must still produce valid instances. Check each.

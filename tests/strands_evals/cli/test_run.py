@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from strands_evals.cli.commands.run import _display_expanded, _print_summary
+from strands_evals.cli.commands.run import EXIT_FAILURES, _decide_exit_code, _display_expanded, _print_summary
 from strands_evals.cli.main import main
-from strands_evals.types import NOT_APPLICABLE, EvaluationOutput
+from strands_evals.types import COULD_NOT_EVALUATE, NOT_APPLICABLE, EvaluationOutput
 from strands_evals.types.evaluation_report import EvaluationReport
 
 
@@ -806,7 +806,7 @@ def test_summary_reports_zero_when_every_case_is_not_applicable(capsys):
     _print_summary(report)
 
     summary = capsys.readouterr().err
-    assert "SkillInstructionFollowingEvaluator: 1/1 passed (0.00)" in summary
+    assert "SkillInstructionFollowingEvaluator: 1/1 passed (n/a)" in summary
     assert "overall: 0.00" in summary
 
 
@@ -828,3 +828,139 @@ def test_expanded_display_shows_na_instead_of_a_placeholder_zero(monkeypatch):
     _display_expanded(_report_with_one_not_applicable_case(), include_recommendations=False)
 
     assert [row["details"]["score"] for row in captured["items"].values()] == ["1.00", "n/a"]
+
+
+@pytest.fixture
+def multi_case_experiment_file(tmp_path: Path) -> Path:
+    """Three cases (one literally named "0", one unnamed) scored by two deterministic evaluators."""
+    path = tmp_path / "multi.json"
+    data = {
+        "cases": [
+            {"name": "alpha", "input": "a"},
+            {"name": "0", "input": "zero"},
+            {"input": "unnamed"},
+        ],
+        "evaluators": [
+            {"evaluator_type": "AlwaysPasses"},
+            {"evaluator_type": "Contains", "value": "answered"},
+        ],
+    }
+    path.write_text(json.dumps(data))
+    return path
+
+
+def _run_case(experiment_path: Path, selector: str, out_path: Path) -> int:
+    return main(
+        [
+            "--json",
+            "run",
+            str(experiment_path),
+            "--task",
+            "tests.strands_evals.cli.fixtures.tasks:answer",
+            "--custom-evaluator",
+            "tests.strands_evals.cli.fixtures.evaluators:AlwaysPasses",
+            "--case",
+            selector,
+            "-o",
+            str(out_path),
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    ("selector", "expected_name"),
+    [("0", "0"), ("2", None)],
+    ids=["name-beats-index", "by-index-unnamed-stays-unnamed"],
+)
+def test_run_case_runs_only_selected_case_against_all_evaluators(
+    multi_case_experiment_file: Path, tmp_path: Path, selector: str, expected_name: str | None
+):
+    out_path = tmp_path / "reports.json"
+    assert _run_case(multi_case_experiment_file, selector, out_path) == 0
+    rows = json.loads(out_path.read_text())["cases"]
+    assert [(row["name"], row["evaluator"]) for row in rows] == [
+        (expected_name, "AlwaysPasses"),
+        (expected_name, "Contains"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("cases", "selector", "message"),
+    [
+        (
+            [{"input": "x"}, {"name": "b", "input": "y"}],
+            "2",
+            "matches no case name or index 0-1; available cases: 0: (unnamed), 1: 'b'",
+        ),
+        ([{"input": "x"}, {"name": "b", "input": "y"}], "+1", "matches no case name or index 0-1"),
+        (
+            [{"name": "a", "input": "x"}, {"name": "a", "input": "y"}],
+            "a",
+            "matches 2 cases with that name; select one by index: 0, 1",
+        ),
+        ([], "0", "the experiment has no cases"),
+    ],
+    ids=["index-out-of-range", "non-digit-index", "duplicate-name", "empty"],
+)
+def test_run_case_invalid_selector_exits_bad_input(tmp_path: Path, capsys, cases, selector: str, message: str):
+    path = tmp_path / "exp.json"
+    path.write_text(json.dumps({"cases": cases, "evaluators": [{"evaluator_type": "AlwaysPasses"}]}))
+    assert _run_case(path, selector, tmp_path / "reports.json") == 2
+    assert message in capsys.readouterr().err
+
+
+def test_run_case_requires_experiment_file(capsys):
+    assert main(["run", "--task", "tests.strands_evals.cli.fixtures.tasks:answer", "--case", "0"]) == 2
+    assert "--case requires EXPERIMENT_FILE" in capsys.readouterr().err
+
+
+def _report_with_one_unjudged_case() -> EvaluationReport:
+    """One judged pass and one case whose judge overflowed its context window."""
+    unjudged = [
+        EvaluationOutput(
+            score=0.0,
+            test_pass=False,
+            reason="Could not evaluate: judge context window exceeded",
+            label=NOT_APPLICABLE,
+            metadata={COULD_NOT_EVALUATE: "judge_context_window_exceeded"},
+        )
+    ]
+    detailed = [[EvaluationOutput(score=1.0, test_pass=True, reason="judged")], unjudged]
+    return EvaluationReport(
+        overall_score=EvaluationReport.calculate_overall_score([1.0, 0.0], detailed),
+        scores=[1.0, 0.0],
+        cases=[
+            {"name": "small", "evaluator": "HelpfulnessEvaluator"},
+            {"name": "huge", "evaluator": "HelpfulnessEvaluator"},
+        ],
+        test_passes=[True, False],
+        reasons=["judged", "Could not evaluate: judge context window exceeded"],
+        detailed_results=detailed,
+    )
+
+
+def test_fail_on_any_fails_when_a_judge_could_not_evaluate():
+    """A case nothing judged must not pass `--fail-on=any`."""
+    assert _decide_exit_code(_report_with_one_unjudged_case(), ("any", None)) == EXIT_FAILURES
+
+
+def test_summary_counts_unjudged_cases_as_not_passed_and_names_them(capsys):
+    """The unjudged case is not counted as passed, is named separately, and stays out of the average."""
+    report = _report_with_one_unjudged_case()
+
+    _print_summary(report)
+
+    summary = capsys.readouterr().err
+    assert "HelpfulnessEvaluator: 1/2 passed, 1 could not evaluate (1.00)" in summary
+    assert "overall: 1.00" in summary
+
+
+def test_summary_prints_na_when_every_case_was_unjudged(capsys):
+    """An evaluator with no judged case has no average, so it prints "n/a" rather than "(0.00)"."""
+    report = _report_with_one_unjudged_case()
+    report.cases, report.scores, report.test_passes = report.cases[1:], report.scores[1:], report.test_passes[1:]
+    report.reasons, report.detailed_results = report.reasons[1:], report.detailed_results[1:]
+
+    _print_summary(report)
+
+    assert "HelpfulnessEvaluator: 0/1 passed, 1 could not evaluate (n/a)" in capsys.readouterr().err

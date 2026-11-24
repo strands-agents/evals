@@ -16,4 +16,6 @@ report_files
 .venv
 *.DS_Store*
 uv.lock
-.claude
+
+# Session and memory folders a harness agent writes when run locally
+.agent/

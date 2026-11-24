@@ -16,6 +16,7 @@ from ...evaluators.output_evaluator import OutputEvaluator
 from ...experiment import Experiment
 from ...local_file_task_result_store import LocalFileTaskResultStore
 from ...types.detector import ConfidenceLevel, DiagnosisConfig, DiagnosisTrigger
+from ...types.evaluation import all_could_not_evaluate
 from ...types.evaluation_report import EvaluationReport
 from ...types.trace import EvaluationLevel
 from .._agent_task import synthesize_task_function
@@ -136,6 +137,34 @@ def _build_ad_hoc_experiment(
     return Experiment(cases=[case], evaluators=evaluators, diagnosis_config=diagnosis_config)
 
 
+def _select_case(cases: list[Case], selector: str) -> Case:
+    """Pick one case by exact name, falling back to a 0-based index.
+
+    Name wins so a case literally named `"1"` stays addressable by name.
+
+    Raises:
+        ValueError: If the selector matches no case or a duplicated name.
+    """
+    if not cases:
+        raise ValueError(f"--case '{selector}' cannot be selected: the experiment has no cases.")
+    matches = [i for i, case in enumerate(cases) if case.name == selector]
+    if len(matches) == 1:
+        return cases[matches[0]]
+    if len(matches) > 1:
+        indices = ", ".join(map(str, matches))
+        raise ValueError(
+            f"--case '{selector}' matches {len(matches)} cases with that name; select one by index: {indices}"
+        )
+    if selector.isascii() and selector.isdigit() and int(selector) < len(cases):
+        return cases[int(selector)]
+    available = ", ".join(
+        f"{i}: {case.name!r}" if case.name is not None else f"{i}: (unnamed)" for i, case in enumerate(cases)
+    )
+    raise ValueError(
+        f"--case '{selector}' matches no case name or index 0-{len(cases) - 1}; available cases: {available}"
+    )
+
+
 _TRACE_DEPENDENT_LEVELS = {
     EvaluationLevel.SESSION_LEVEL,
     EvaluationLevel.TRACE_LEVEL,
@@ -175,13 +204,15 @@ def _check_ad_hoc_evaluator_compat(args: argparse.Namespace, evaluators: list[Ev
 def _validate_args(args: argparse.Namespace) -> str | None:
     """Return an error string if argument combinations are invalid, else None.
 
-    Three rules:
+    Rules:
       1. EXPERIMENT_FILE and any ad-hoc flag are mutually exclusive — pick a
          mode.
       2. Without EXPERIMENT_FILE the user must supply `--input` or
          `--input-file`; otherwise there is nothing to evaluate.
       3. In ad-hoc mode at least one evaluator must be derivable: an explicit
          `--evaluator` or an `--expected-output` (which defaults to `Contains`).
+      4. `--case` requires EXPERIMENT_FILE, since there are no cases to select
+         from otherwise.
     """
     ad_hoc = _ad_hoc_flags_set(args)
     if args.experiment_file is not None and ad_hoc:
@@ -191,6 +222,8 @@ def _validate_args(args: argparse.Namespace) -> str | None:
             f"either pass an experiment file or use --input + --evaluator/--expected-output."
         )
     if args.experiment_file is None:
+        if args.case is not None:
+            return "--case requires EXPERIMENT_FILE."
         if args.input is None and args.input_file is None:
             return "EXPERIMENT_FILE or --input/--input-file is required."
         if not args.evaluator and args.expected_output is None and args.rubric is None:
@@ -224,15 +257,21 @@ def _print_summary(report: EvaluationReport) -> None:
     summary still reads `<evaluator>: P/T passed (avg)` per evaluator.
 
     Each average is computed the same way as `report.overall_score`, dropping cases that had
-    nothing to judge. Averaging their placeholder 0.0 instead would print a lower per-evaluator
-    number than the overall score computed from the very same rows.
+    nothing to judge or that the evaluator could not judge. The latter still count as not passed
+    and are listed separately as "could not evaluate". Averaging their placeholder 0.0 instead
+    would print a lower per-evaluator number than the overall score computed from the same rows.
     """
     by_eval: dict[str, list[int]] = {}
     by_eval_scores: dict[str, list[float]] = {}
+    by_eval_unjudged: dict[str, int] = {}
     for i, case in enumerate(report.cases):
         name = case.get("evaluator", "unknown")
         by_eval.setdefault(name, []).append(int(report.test_passes[i]))
         outputs = report.detailed_results[i] if i < len(report.detailed_results) else []
+        # Cases the evaluator never judged (e.g. the judge's context window overflowed) count as
+        # not passed, and are named separately so they don't read as the agent failing.
+        unjudged = all_could_not_evaluate(outputs)
+        by_eval_unjudged[name] = by_eval_unjudged.get(name, 0) + int(unjudged)
         if EvaluationReport.is_applicable(outputs):
             by_eval_scores.setdefault(name, []).append(report.scores[i])
         else:
@@ -243,8 +282,10 @@ def _print_summary(report: EvaluationReport) -> None:
         passed = sum(passes)
         total = len(passes)
         scores = by_eval_scores[name]
-        avg = sum(scores) / len(scores) if scores else 0.0
-        parts.append(f"{name}: {passed}/{total} passed ({avg:.2f})")
+        # No judged case means no average to print, so "n/a" rather than a placeholder 0.00.
+        avg = f"{sum(scores) / len(scores):.2f}" if scores else "n/a"
+        unjudged_note = f", {by_eval_unjudged[name]} could not evaluate" if by_eval_unjudged.get(name) else ""
+        parts.append(f"{name}: {passed}/{total} passed{unjudged_note} ({avg})")
 
     parts.append(f"overall: {report.overall_score:.2f}")
     print(" | ".join(parts), file=sys.stderr)  # noqa: T201
@@ -313,11 +354,18 @@ def _run(args: argparse.Namespace) -> int:
     if args.experiment_file is not None:
         custom_evaluators = resolve_custom_evaluators(args.custom_evaluator or [])
         loaded = Experiment.from_file(args.experiment_file, custom_evaluators=custom_evaluators)
+        cases = loaded.cases
+        if args.case is not None:
+            try:
+                cases = [_select_case(cases, args.case)]
+            except ValueError as e:
+                emit_error(str(e))
+                return EXIT_BAD_INPUT
         # Experiment.from_file does not accept diagnosis_config; rebuild via the
         # public constructor so we don't poke private attrs. Cases are deep-copied
         # by the property accessor, which is fine for a one-shot CLI run.
         experiment = Experiment(
-            cases=loaded.cases,
+            cases=cases,
             evaluators=loaded.evaluators,
             diagnosis_config=diagnosis_config,
         )
@@ -418,6 +466,13 @@ def add_subparser(
         ),
     )
 
+    parser.add_argument(
+        "--case",
+        metavar="NAME_OR_INDEX",
+        default=None,
+        help="run only the case with this name, or its 0-based index if no case has that name",
+    )
+
     ad_hoc = parser.add_argument_group("ad-hoc case (no experiment file)")
     ad_hoc_input = ad_hoc.add_mutually_exclusive_group()
     ad_hoc_input.add_argument(
@@ -485,7 +540,9 @@ def add_subparser(
             "Per-case freshness is enforced for strands.Agent only — other "
             "callables (custom agent classes, partials, instances with __call__) "
             "are accepted but cross-case isolation becomes the factory's "
-            "responsibility. For non-standard task shapes use --task instead."
+            "responsibility. Cases with metadata['actor_profile'] run multi-turn "
+            "against a simulated user on the Strands default model. "
+            "For non-standard task shapes use --task instead."
         ),
     )
     target.add_argument(
