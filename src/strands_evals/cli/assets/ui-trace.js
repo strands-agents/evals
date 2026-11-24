@@ -202,10 +202,35 @@ function traceSection(trace, at, of, first) {
 const rawView = (doc, label) => `<details class="raw"><summary>${esc(label)}</summary>`
   + `<pre class="out">${esc(JSON.stringify(doc, null, 1).slice(0, 200000))}</pre></details>`;
 
+/** The `Session` a packed optimizer transcript holds, else `doc` as it is. A packed one is
+    `{ messages, session }`: each distinct message stored once, and each inference span's `messages` a
+    list of half-open `[start, stop]` ranges into `messages`. The same file always gives the same object,
+    so what is keyed by the document drawn (`traceCopy`) holds it once however often it is drawn. */
+const UNPACKED = new WeakMap();
+function unpackedSession(doc) {
+  const session = doc && typeof doc === 'object' && !Array.isArray(doc) && doc.session;
+  if (!Array.isArray(doc && doc.messages) || !sessionTraces(session)) return doc;
+  if (!UNPACKED.has(doc)) UNPACKED.set(doc, unpack(doc, session));
+  return UNPACKED.get(doc);
+}
+
+function unpack(doc, session) {
+  const expand = ranges => (Array.isArray(ranges) ? ranges.flatMap(r => (Array.isArray(r)
+    ? doc.messages.slice(r[0], r[1]) : [r])) : ranges);
+  return {
+    ...session,
+    traces: session.traces.map(tr => (tr && Array.isArray(tr.spans) ? {
+      ...tr,
+      spans: tr.spans.map(s => (s && s.span_type === 'inference' ? { ...s, messages: expand(s.messages) } : s)),
+    } : tr)),
+  };
+}
+
 /* Two shapes: a strands-evals `Session` (traces of spans) or a list of Strands messages. Read
    off the document, not the pointer's `format`, because the two can disagree. */
 function traceView(doc, rawLabel = 'the file as written') {
   const raw = rawView(doc, rawLabel);
+  doc = unpackedSession(doc);
   const cost = costText(traceStats(doc));
   const sum = cost ? `<div class="tr-sum">${esc(cost)}</div>` : '';
   const traces = sessionTraces(doc);
