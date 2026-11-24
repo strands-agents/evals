@@ -229,7 +229,7 @@ try {
     picking.text('#opt-runs-rows tr.on'));
   await picking.click(picking.$$('#opt-runs-rows tr[data-opt-run]').find(r => /older-run/.test(r.textContent)));
   await waitFor(() => picking.$('#v-opt-overview').classList.contains('on'), 'the picked run to open');
-  ok(/older-run/.test(picking.text('#crumbs')) && picking.window.location.pathname === '/optimization/older-tuning/overview',
+  ok(/older-run/.test(picking.text('#crumbs')) && picking.window.location.pathname === '/optimization/older-tuning/result',
     'picking another opens it and names it in the address', picking.window.location.pathname);
   await picking.travel(-1);
   await waitFor(() => picking.$('#v-opt-runs').classList.contains('on'), 'Back to return to the list');
@@ -237,7 +237,7 @@ try {
   await picking.travel(1);
   await waitFor(() => picking.$('#v-opt-overview').classList.contains('on'), 'Forward to reopen the run');
 
-  const linked = await served('/optimization/older-tuning/overview');
+  const linked = await served('/optimization/older-tuning/result');
   ok(/older-run/.test(linked.text('#crumbs')), 'and a link naming that run opens it, not the newest',
     linked.text('#crumbs'));
   const effects = requested.filter(url => url.includes('effects.json')).map(url => decodeURIComponent(url.split('path=')[1]));
@@ -248,7 +248,7 @@ try {
   await waitFor(() => /support-tuning/.test(linked.text('#crumbs')), 'the other run to open');
   await linked.travel(-2);
   await waitFor(() => /older-run/.test(linked.text('#crumbs')), 'Back to reopen the run the address names');
-  ok(linked.window.location.pathname === '/optimization/older-tuning/overview', 'Back to a run\'s address reopens that run',
+  ok(linked.window.location.pathname === '/optimization/older-tuning/result', 'Back to a run\'s address reopens that run',
     linked.window.location.pathname);
 
   // ── the folder changes under an open page: the next poll shows it, and what was open stays open ──

@@ -4,8 +4,8 @@
    The URL's path names what is open. */
 
 const OPT_SEGMENT = {
-  'opt-setup': 'setup', 'opt-overview': 'overview', 'opt-progress': 'progress',
-  'opt-candidates': 'candidates', 'opt-tunables': 'tunables', 'opt-trade': 'trade-off',
+  'opt-setup': 'setup', 'opt-overview': 'result', 'opt-progress': 'iterations',
+  'opt-candidates': 'candidates', 'opt-trade': 'trade-off',
 };
 const OPT_VIEW = Object.fromEntries(Object.entries(OPT_SEGMENT).map(([view, segment]) => [segment, view]));
 
@@ -54,7 +54,7 @@ function parseRoute(route) {
     if (rest.length >= 2 && rest[rest.length - 2] === 'candidates') {
       return { tab: 'opt-candidates', opt: idOf(rest.slice(0, -2)), candidate: last };
     }
-    /* A run directory with no view named opens on its Overview. */
+    /* A run directory with no view named opens on its Result view. */
     return rest.length ? { tab: 'opt-overview', opt: idOf(rest) } : { tab: 'opt-runs' };
   }
   if (root === 'reports') {

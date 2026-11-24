@@ -665,6 +665,11 @@ table.trials tr:last-child td { border-bottom: 0; }
 .ask-card p { margin: 0 0 18px; }
 .ask-acts { display: flex; justify-content: flex-end; gap: 10px; }
 .chipin { width: 160px; padding: 3px 10px; font-size: 12.5px; border-radius: 999px; }
+/* A titled section inside a view, under the view's own heading. */
+.view h3.section {
+  margin: 34px 0 10px; padding-top: 20px; border-top: 1px solid var(--hair);
+  font: 600 16px var(--mono);
+}
 details.drawer { border-top: 1px solid var(--hair); margin: 24px 0 0; }
 details.drawer > summary {
   cursor: pointer; padding: 11px 2px; font-size: 12.5px; font-weight: 600; color: var(--ink1);

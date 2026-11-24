@@ -217,14 +217,14 @@ const SECTION_OF = {
   reports: 'evals', report: 'evals', experiments: 'evals', experiment: 'evals',
   sessions: 'evals', session: 'evals',
   'opt-runs': 'optimization', 'opt-setup': 'optimization', 'opt-overview': 'optimization',
-  'opt-progress': 'optimization', 'opt-candidates': 'optimization', 'opt-tunables': 'optimization',
+  'opt-progress': 'optimization', 'opt-candidates': 'optimization',
   'opt-trade': 'optimization', missing: 'evals',
 };
 const VIEW_NAME = {
   reports: 'Reports', report: 'Report', experiments: 'Experiments', experiment: 'Cases',
   sessions: 'Sessions', session: 'Session', 'opt-runs': 'Runs',
-  'opt-setup': 'Setup', 'opt-overview': 'Overview', 'opt-progress': 'Progress',
-  'opt-candidates': 'Candidates', 'opt-tunables': 'Tunables', 'opt-trade': 'Trade-off', missing: 'Not found',
+  'opt-setup': 'Setup', 'opt-overview': 'Result', 'opt-progress': 'Iterations',
+  'opt-candidates': 'Candidates', 'opt-trade': 'Trade-off', missing: 'Not found',
 };
 /* The list a page is opened from: the sidebar marks that, since the page itself is not in it. */
 const LIST_OF = { report: 'reports', experiment: 'experiments', session: 'sessions' };
@@ -265,7 +265,7 @@ function show(view, opts) {
   const config = run.dir === '.' ? 'run.json' : `${run.dir}/run.json`, log = run.events_path;
   $('path').textContent = {
     report: repMeta && repMeta.path, experiment: expMeta && expMeta.path, session: sesMeta && sesMeta.path,
-    'opt-setup': config, 'opt-tunables': config,
+    'opt-setup': config,
     'opt-overview': log, 'opt-progress': log, 'opt-candidates': log, 'opt-trade': log,
   }[view] || ROOT;
   renderPageHead(view);

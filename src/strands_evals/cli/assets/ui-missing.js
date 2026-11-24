@@ -61,7 +61,7 @@ function notThere(want) {
     const run = OPT_RUNS.find(r => r.id === (at < 0 ? '.' : want.opt.slice(0, at)));
     return ['opt-runs', 'That run hopped away', `No optimizer run is at ${named(want.opt)} in this folder. `
       + (run ? `Did you mean run <b>${esc(run.run_id)}</b>?` : GONE),
-    (run ? [wayTo(`/optimization${idPath(run.id)}/overview`, `Open ${run.run_id}`)] : [])
+    (run ? [wayTo(`/optimization${idPath(run.id)}/result`, `Open ${run.run_id}`)] : [])
       .concat(listWay(OPT_RUNS.length ? 'opt-runs' : 'reports'))];
   }
   return null;

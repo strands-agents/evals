@@ -230,7 +230,7 @@ function renderOptimization() {
   }
 
   /* The page header names the run and its status: here, only what the stop said for itself. */
-  $('opt-sub').textContent = (d.stop && d.stop.message) || '';
+  $('opt-sub').textContent = d.stop && d.stop.message ? `Stop reason: ${d.stop.message}` : '';
   $('opt-method-sum').innerHTML = methodLine(d);
   $('opt-hero').innerHTML = championHero(d);
   $('opt-stats').innerHTML = [
@@ -266,7 +266,7 @@ function renderOptimization() {
   $('opt-to-none').hidden = d.goals.length >= 2;
   $('opt-to-none').innerHTML = d.goals.length >= 2 ? '' : emptyState('One goal, so nothing to trade off',
     `This run optimized one goal${d.goals.length ? `, ${esc(d.goals[0].metric)}, ` : ', '}`
-      + 'so it has a best value rather than a trade-off. Progress charts it by candidate.');
+      + 'so it has a best value rather than a trade-off. Iterations charts it by candidate.');
   if (d.goals.length >= 2) renderTradeoff(d);
 
   renderOptimizerSetup(d, run);
@@ -279,18 +279,13 @@ function renderOptimization() {
   if (!d.proposals.length && !d.iterations.length) {
     optNothing('opt-progress', emptyState('The search has not made its first hop',
       'No candidate has been proposed and no iteration has finished, so there is nothing to chart. '
-        + (d.stop ? `The run stopped: ${esc(d.stop.reason)}.` : 'This fills in as the run writes to its log.')));
-  }
-  if (!d.space.length && $('opt-effects').hidden) {
-    optNothing('opt-tunables', emptyState('No tunables on record',
-      'This run.json declares no search space: it was written before the field existed. Setup names the keys '
-        + 'the log changed, which is as close as the record gets.'));
+        + (d.stop ? `The run finished: ${esc(stopPhrase(d.stop))}.` : 'This fills in as the run writes to its log.')));
   }
   $('opt-cand-sub').textContent = 'Each one is a configuration the optimizer built and ran your cases against.';
   renderCandidates();
 }
 
-/* ── Overview ── */
+/* ── Result ── */
 
 function optStat(value, key, hint, title) {
   return `<div class="stat"${title ? ` title="${esc(title)}"` : ''}>`
@@ -330,7 +325,7 @@ function renderCaseChart(d) {
   })), { axis: m.axis, better: m.better });
 }
 
-/* Overview: what the run spent, by iteration and by how each trial ended. */
+/* Result: what the run spent, by iteration and by how each trial ended. */
 function renderCost(d) {
   $('opt-cost').hidden = false;
   $('opt-usage-wrap').hidden = d.usageKeys.length === 0;
@@ -352,7 +347,7 @@ function renderCost(d) {
     .filter(Boolean).join(' · ');
 }
 
-/* Overview: what a reader should know before trusting the figures above. */
+/* Result: what a reader should know before trusting the figures above. */
 function renderRunNotes(d, run) {
   const notes = [];
   if (run.truncated) {
@@ -378,9 +373,9 @@ $('opt-cases-pick').onchange = e => { optCases = e.target.value; renderCaseChart
 
 $('opt-usage-pick').onchange = e => { optUsage = e.target.value; renderCost(OPT); };
 
-/* ── Progress ── */
+/* ── Iterations ── */
 
-/* Progress: one chart over the objective or a metric, by candidate. */
+/* Iterations: one chart over the objective or a metric, by candidate. */
 function renderSeries(d) {
   /* Metric values are prefixed `m:` so a metric named "objective" cannot collide with the objective. */
   const series = [{ value: 'objective', label: 'Objective' },
@@ -585,8 +580,8 @@ function renderOptimizerSpace(d) {
   $('opt-space-sub').textContent = space.length
     ? `${plural(space.length, 'key')} the optimizer could set, as run.json declares them. `
       + 'A key with no candidate behind it was never varied.'
-    : 'This run.json declares no search space: it was written before the field existed. Setup '
-      + 'names the keys the log changed, which is as close as the record gets.';
+    : 'This run.json declares no search space: it was written before the field existed. The '
+      + 'configuration above names the keys the log changed, which is as close as the record gets.';
   if (!space.length) {
     $('opt-space-note').textContent = '';
     $('opt-space-note').className = 'optnote';

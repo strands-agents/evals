@@ -37,7 +37,7 @@ function runHead(view) {
     return [trail.concat([['Candidates', 'opt-candidates'], [repCand]]), 'The cases this candidate ran, as a report.'
       + (why ? ` <span class="tag warn">${esc(p.outcome)}</span> ${esc(why)}` : '')];
   }
-  const status = !OPT ? '' : OPT.stop ? `stopped: ${OPT.stop.reason}` : 'still running';
+  const status = !OPT ? '' : OPT.stop ? `finished: ${stopPhrase(OPT.stop)}` : 'still running';
   return [trail.slice(0, 1).concat([[run.run_id]]),
     [status, OPT && OPT.champion ? `champion ${OPT.champion}` : ''].filter(Boolean).map(esc).join(' · ')];
 }

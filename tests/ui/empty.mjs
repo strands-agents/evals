@@ -37,7 +37,7 @@ for (const [route, tab, text, links, what] of [
   ['/reports/report.json/rows/nobody/Judge', 'Reports',
     'No such row in this pondReport report.json has no row for case nobody and evaluator Judge. The report may have been written again since.',
     ['Open the report /reports/report.json', 'All reports /reports'], 'a row the report does not hold'],
-  ['/optimization/tuning/overview', 'Runs', `That run hopped awayNo optimizer run is at tuning in this folder. ${GONE}`,
+  ['/optimization/tuning/result', 'Runs', `That run hopped awayNo optimizer run is at tuning in this folder. ${GONE}`,
     ['All reports /reports'], 'an optimizer run in a folder that has none'],
 ]) {
   const p = await served(SAMPLE, { route });
@@ -83,8 +83,8 @@ const RUN = {
   const p = await served(RUN);
   for (const [route, text, links, what] of [
     ['/optimization/r/bogus', 'That run hopped awayNo optimizer run is at r/bogus in this folder. Did you mean run tune-1?',
-      ['Open tune-1 /optimization/r/overview', 'All optimizer runs /optimization'], 'a view the run does not have'],
-    ['/optimization/elsewhere/overview', `That run hopped awayNo optimizer run is at elsewhere in this folder. ${GONE}`,
+      ['Open tune-1 /optimization/r/result', 'All optimizer runs /optimization'], 'a view the run does not have'],
+    ['/optimization/elsewhere/result', `That run hopped awayNo optimizer run is at elsewhere in this folder. ${GONE}`,
       ['All optimizer runs /optimization'], 'a run that is not in the folder'],
     ['/optimization/r/candidates/c9', 'That candidate hopped awayRun tune-1 has no candidate named c9. The link may be from another run.',
       ['Candidates of this run /optimization/r/candidates', 'All optimizer runs /optimization'], 'a candidate the run does not hold'],
@@ -102,8 +102,8 @@ const RUN = {
   eq([p.view(), here(p), p.$('#opt-cands tr.case').getAttribute('aria-expanded')],
     ['v-opt-candidates', '/optimization/r/candidates/c1', 'true'], 'and the way to the candidate opens its row');
   await p.visit('/optimization/r');
-  eq([p.view(), here(p)], ['v-opt-overview', '/optimization/r/overview'],
-    'the address of a run with no view named opens its Overview');
+  eq([p.view(), here(p)], ['v-opt-overview', '/optimization/r/result'],
+    'the address of a run with no view named opens its Result view');
 }
 
 // ── a run with nothing in it yet ──
@@ -113,18 +113,18 @@ const RUN = {
   const blank = view => [p.$(`#v-${view}`).classList.contains('blank'), p.text(`#v-${view} .optnone`)];
   eq([p.text('#opt-result'), frog(p, '#opt-result')],
     ['No result yetNo candidate has been picked yet. The comparison appears once the run reaches its end phase.', true],
-    'Overview says there is no result yet, and why');
+    'Result says there is no result yet, and why');
   eq(blank('opt-progress'), [true, 'The search has not made its first hopNo candidate has been proposed and no iteration has '
     + 'finished, so there is nothing to chart. This fills in as the run writes to its log.'],
-  'Progress says the search has not started, in place of its empty charts');
+  'Iterations says the search has not started, in place of its empty charts');
   eq([p.text('#opt-cands'), frog(p, '#opt-cands')], ['No candidate yetCandidates appear here as each iteration finishes.', true],
     'Candidates says none has been built');
-  eq(blank('opt-tunables'), [true, 'No tunables on recordThis run.json declares no search space: it was written before the '
-    + 'field existed. Setup names the keys the log changed, which is as close as the record gets.'],
-  'Tunables says the run declares no search space');
+  eq(p.text('#opt-space-sub'), 'This run.json declares no search space: it was written before the '
+    + 'field existed. The configuration above names the keys the log changed, which is as close as the record gets.',
+  'the Tunables section of Setup says the run declares no search space');
   eq([p.$('#opt-to-none').hidden, p.text('#opt-to-none'), frog(p, '#opt-to-none')],
     [false, 'One goal, so nothing to trade offThis run optimized one goal, so it has a best value rather than a trade-off. '
-      + 'Progress charts it by candidate.', true], 'Trade-off says a run with one goal has none');
+      + 'Iterations charts it by candidate.', true], 'Trade-off says a run with one goal has none');
   eq(blank('opt-setup'), [false, ''], 'and Setup, which has a run.json to show, is drawn');
 
   for (const [file, held] of Object.entries(RUN)) p.write(file, held);
@@ -145,12 +145,12 @@ const RUN = {
   const run = { id: 'tuning', dir: 'tuning', run_id: 'tune-2', name: 'tune-2', events_path: 'tuning/events.jsonl', config: {},
     candidates: 0, iterations: 0, modified: 1, has_effects: false };
   const server = fakeServer({ scan: { optimizer_runs: [run] } });
-  const p = await page({ url: 'http://127.0.0.1:9999/optimization/tuning/progress',
+  const p = await page({ url: 'http://127.0.0.1:9999/optimization/tuning/iterations',
     fetchImpl: (url, opts) => (String(url).startsWith('/api/events')
       ? { ok: false, status: 500, statusText: '', json: async () => ({ error: 'the log is not UTF-8' }) } : server(url, opts)) });
   const said = 'This run would not surfaceCould not read tuning/events.jsonl: the log is not UTF-8All optimizer runs';
   eq([p.view(), p.window.location.pathname, p.$$('.view.blank').length, p.text('#v-opt-progress .optnone'), frog(p, '#v-opt-progress .optnone')],
-    ['v-opt-progress', '/optimization/tuning/progress', 6, said, true],
+    ['v-opt-progress', '/optimization/tuning/iterations', 5, said, true],
     'every view of a run that could not be read says so, with the error the server gave');
   await p.click('#v-opt-progress .ways a');
   eq([p.view(), p.window.location.pathname], ['v-opt-runs', '/optimization'], 'and leads back to the list of runs');

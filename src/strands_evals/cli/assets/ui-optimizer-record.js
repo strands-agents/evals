@@ -6,6 +6,15 @@
 
 const STATUSES = ['completed', 'agent_failure', 'evaluator_invalid', 'infrastructure_invalid'];
 
+/* Every named stop reason ends a run on purpose: the search finished, it did not fail.
+   An unknown reason is shown as the log wrote it. */
+const STOP_PHRASES = {
+  budget: 'it used its rollout budget',
+  iterations: 'it used its iteration cap',
+  exhausted: 'the schedule had nothing left to try',
+};
+const stopPhrase = stop => STOP_PHRASES[stop.reason] || stop.reason;
+
 /* The case names of one split, in either shape a record writes them: `split.cases.<part>` or `split.<part>`. */
 const splitCases = (split, part) => {
   const s = split || {};

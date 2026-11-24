@@ -2433,7 +2433,7 @@ def test_llms_txt_describes_every_address_the_server_answers(client: Client):
     for root in PAGE_ROOTS:
         assert any(line.startswith(f"- `{root}`: ") for line in lines)
     assert not any(line.endswith(": ") for line in lines)
-    assert len(views) == 6
+    assert len(views) == 5
     view_line = next(line for line in lines if line.startswith("- `/optimization/<run directory>/<view>`: "))
     assert all(re.search(rf"\b{view}\b", view_line) for view in views)
 
