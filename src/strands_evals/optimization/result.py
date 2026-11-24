@@ -42,6 +42,7 @@ from .scoring.metrics import USAGE_METRICS
 
 Grain = Literal["iteration", "proposal", "case"]
 
+_AGENT_FAILED = (TrialStatus.AGENT_FAILURE, TrialStatus.INFRASTRUCTURE_INVALID)
 _JUDGED = (TrialStatus.COMPLETED, TrialStatus.EVALUATOR_INVALID)  # statuses of an attempt whose judges ran
 
 
@@ -147,8 +148,7 @@ class Spend(BaseModel):
 
 
 class AgentSpend(Spend):
-    """The agent's `Spend` on one split, with what it ran. `failed` counts its `agent_failure` attempts, the
-    agent's own failures, as `CandidateScores.failures` does; infrastructure failures are never the agent's.
+    """The agent's `Spend` on one split, with what it ran.
 
     Attributes:
         trials: The split's trials (candidate x case x run), each once.
@@ -156,13 +156,10 @@ class AgentSpend(Spend):
             re-run judged again), plus each earlier attempt that ended `infrastructure_invalid` (one a re-run
             pass replaced, or one `Experiment` retried on throttling). `attempts - trials` is how many times the
             agent was run again.
-        infrastructure: The attempts that ended `infrastructure_invalid` (throttling, a sandbox that failed, an
-            evaluator's infrastructure error), run again or left so.
     """
 
     trials: int
     attempts: int
-    infrastructure: int
 
 
 class RunCost(BaseModel):
@@ -175,7 +172,8 @@ class RunCost(BaseModel):
     Attributes:
         agent: Split -> the agent's usage on that split's trials (train = the search, validation and test = the
             end phase): `TrialRecord.usage` plus every earlier attempt's (`previous_attempts`). `failed` is its
-            `agent_failure` attempts; `infrastructure` its `infrastructure_invalid` ones.
+            attempts that failed: `agent_failure`, or `infrastructure_invalid` (throttling, a lost sandbox), run
+            again or left so.
         judges: Split -> the evaluators' usage on those trials: `TrialRecord.judge_usage` plus every earlier
             attempt's failed judges. `failed` is the trial attempts with at least one failed evaluator (an earlier
             attempt keeps one judge total, not which evaluators failed).
@@ -575,9 +573,9 @@ class OptimizationResult(BaseModel):
             )
         notes.append(
             "Tokens: search is the train split; every attempt counts, the ones run again included; failed: the "
-            "agent's own failures (never infrastructure's, throttling included), the judges' attempts with a failed "
-            "evaluator, a proposer's retried failures and requests that failed; other agents are the rollouts' agents"
-            " the factory didn't build (a simulated user)."
+            "agent's attempts that failed, infrastructure failures such as throttling included; the judges' attempts "
+            "with a failed evaluator; a proposer's retried failures and requests that failed; other agents are the "
+            "rollouts' agents the factory didn't build (a simulated user)."
         )
         lines = ["Notes:"]
         for i, note in enumerate(notes, 1):
@@ -760,8 +758,7 @@ def _run_cost(
         statuses = [a.status for a in attempts] + [TrialStatus(saved["status"])]
         count["trials"] += 1
         count["attempts"] += 1 + sum(a.status is TrialStatus.INFRASTRUCTURE_INVALID for a in attempts)
-        count["agent_failed"] += sum(status is TrialStatus.AGENT_FAILURE for status in statuses)
-        count["infrastructure"] += sum(status is TrialStatus.INFRASTRUCTURE_INVALID for status in statuses)
+        count["agent_failed"] += sum(status in _AGENT_FAILED for status in statuses)
         # Only a judge-only re-run replaces a judged attempt, and only when one of its evaluators failed.
         count["judges_failed"] += sum(a.status in _JUDGED for a in attempts) + bool(saved["evaluator_errors"])
     proposers = dict.fromkeys(blocks, Usage.zero())
@@ -780,7 +777,6 @@ def _run_cost(
                 failed=counts[split]["agent_failed"],
                 trials=counts[split]["trials"],
                 attempts=counts[split]["attempts"],
-                infrastructure=counts[split]["infrastructure"],
             )
             for split in SPLIT_NAMES
         },

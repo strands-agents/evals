@@ -286,16 +286,13 @@ def test_retried_agent_and_judge_spend_counts_in_their_own_roles(tmp_path):
     every_attempt = sum(r.usage.tokens + sum(a.usage.tokens for a in r.previous_attempts) for r in records)
     assert sum(s.usage.tokens for s in agent) == every_attempt > sum(r.usage.tokens for r in records)
     assert (sum(s.trials for s in agent), sum(s.attempts for s in agent)) == (len(records), len(records) + 1)
-    assert (sum(s.failed for s in agent), sum(s.infrastructure for s in agent)) == (
-        0,
-        1,
-    )  # the sandbox's, not the agent's
+    assert sum(s.failed for s in agent) == 1  # the lost sandbox
     # Every judgment, the failed one included, and nothing of the agent's.
     assert sum(s.usage.tokens for s in judges) == JUDGE_TOKENS * (len(records) + 1)
     assert sum(s.failed for s in judges) == 1
     assert all(s.usage.models == ["scripted-judge"] for s in judges if s.usage.model_calls)
     rows = [line.split() for line in result.summary().splitlines() if line.startswith(("agent ", "judges "))]
-    assert [(row[0], row[-1]) for row in rows] == [("agent", "0"), ("judges", "1")]  # the `failed` column
+    assert [(row[0], row[-1]) for row in rows] == [("agent", "1"), ("judges", "1")]  # the `failed` column
 
 
 # text, through a file, to a reviewable diff
