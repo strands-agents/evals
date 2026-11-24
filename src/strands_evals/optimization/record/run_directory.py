@@ -129,9 +129,13 @@ class RunDirectory:
         Every candidate is indexed, a killed iteration's too (so its number and values stay); those are
         marked, so proposing one again writes a full `propose` event (`save_candidate`).
 
+        Every trial event's transcript file must exist (each is checked, not read), since transcripts are read
+        only later: when a step asks for proposals, and when the result is built.
+
         Raises:
             ValueError: The log doesn't start with a `config` event, or was written by another
                 `schema_version`.
+            FileNotFoundError: A transcript file a trial event refers to is missing.
         """
         log = EventLog(path / "events.jsonl")
         events = log.read()
@@ -145,6 +149,7 @@ class RunDirectory:
             )
         run = cls(path, config, log)
         closed = {id(event) for event in closed_events(events)}
+        missing: set[str] = set()
         for event in events:
             if event["event"] == "propose" and not event["rescore"]:
                 candidate_id = event["candidate_id"]
@@ -156,6 +161,14 @@ class RunDirectory:
             elif event["event"] == "trial":
                 record = event["record"]
                 run._trials[(record["candidate_id"], record["run_index"], record["case_name"])] = record
+                transcript = record.get("transcript")
+                if transcript is not None and not (path / "transcripts" / f"{transcript['hash']}.json").exists():
+                    missing.add(transcript["hash"])
+        if missing:
+            raise FileNotFoundError(
+                f"{path}: {len(missing)} transcript file(s) its trial events refer to are missing from transcripts/"
+                f" (e.g. {sorted(missing)[0]}.json)"
+            )
         return run
 
     def lock(self) -> None:

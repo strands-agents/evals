@@ -215,10 +215,10 @@ def test_a_trial_round_trips_with_its_session_transcript(tmp_path):
 def test_trial_status_reads_the_index_without_the_transcript(tmp_path):
     run = RunDirectory.create(tmp_path, CONFIG)
     run.save_trial(_trial("c1", trajectory=["read", "answer"]))
+    reopened = RunDirectory.open(run.root)
     for path in (run.root / "transcripts").iterdir():
         path.unlink()
 
-    reopened = RunDirectory.open(run.root)
     assert reopened.trial_status("c1", 0, "a") is TrialStatus.COMPLETED
     assert reopened.trial_status("c1", 1, "a") is None
 
@@ -371,6 +371,20 @@ def test_a_later_trial_event_replaces_the_earlier_one_on_reload(tmp_path):
     loaded = RunDirectory.open(run.root).load_trial("c1", 0, "a")
     assert loaded.evaluations["Helpfulness"].score == 1.0
     assert loaded.attempts == 2
+
+
+def test_open_fails_when_a_transcript_any_trial_event_refers_to_is_missing(tmp_path):
+    run = RunDirectory.create(tmp_path, CONFIG)
+    run.save_trial(_trial("c1", "a", trajectory=["first"]))
+    first = run.transcript("c1", 0, "a")
+    run.save_trial(_trial("c1", "a", trajectory=["second"]))  # replaces it in the index, not in the log
+    run.save_trial(_trial("c1", "b", trajectory=None))
+    RunDirectory.open(run.root)  # every file present
+
+    (run.root / "transcripts" / f"{first['hash']}.json").unlink()
+
+    with pytest.raises(FileNotFoundError, match=rf"1 transcript file.*{first['hash']}\.json"):
+        RunDirectory.open(run.root)
 
 
 def test_a_trial_event_cut_off_mid_write_counts_as_not_run(tmp_path):
