@@ -136,8 +136,8 @@ def test_a_second_interrupt_cancels_again_and_stops_waiting(sigint):
     with pytest.raises(sigint.error):
         run_async(main)
     elapsed = time.monotonic() - start
-    # The second cancellation is delivered in the background, after `run_async` raised: wait for it before
-    # releasing the thread, or the thread's result can reach the function first and it returns uncancelled.
+    # The second cancellation is delivered in the background, after `run_async` raised: wait for it while the
+    # function is still blocked. Released first, the function was seen to finish before the cancellation ran.
     assert second_handled.wait(5)
     release.set()
     # Joining the leftover threads can't be relied on (3.14 on Windows can enumerate a thread `join` rejects as
