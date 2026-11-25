@@ -926,6 +926,7 @@ def test_discover_optimizer_runs_summarises_what_the_log_records(tmp_path: Path)
             "champion_id": "c0",
             "result": None,
             "stop_reason": "iterations",
+            "state": "unknown",  # no run.lock to tell
             "bad_lines": [],
             "truncated": False,
             "tuned_against": None,
@@ -1006,6 +1007,84 @@ def test_discover_optimizer_runs_counts_iterations_that_are_not_numbers(tmp_path
     _optimizer_run(tmp_path / "run-a", *ends)
 
     assert discover_optimizer_runs(tmp_path)[0]["iterations"] == 3
+
+
+@pytest.mark.parametrize(
+    ("events", "result", "state"),
+    [
+        # Killed or cancelled mid-search: no `stop`, nobody holds the lock.
+        ([{"event": "config"}, {"event": "iteration_end", "iteration": 0}], False, "interrupted"),
+        # Killed in its end phase, after the `stop` event.
+        ([{"event": "config"}, {"event": "stop", "reason": "budget"}, {"event": "finalists"}], False, "interrupted"),
+        ([{"event": "config"}, {"event": "proposer_error", "block": "text"}], False, "halted"),
+        # The baseline couldn't be measured: the run is over, with no end phase.
+        ([{"event": "config"}, {"event": "stop", "reason": "setup"}], False, "finished"),
+        # Resumed after a proposer error, then killed again.
+        ([{"event": "proposer_error"}, {"event": "resume"}, {"event": "iteration_end"}], False, "interrupted"),
+        ([{"event": "config"}, {"event": "stop", "reason": "budget"}, {"event": "test"}], False, "finished"),
+        # The test report skipped for the budget: no `test` event, but the end phase wrote its result.
+        ([{"event": "config"}, {"event": "stop", "reason": "budget"}, {"event": "picked"}], True, "finished"),
+    ],
+)
+def test_a_run_no_process_holds_reads_from_its_log(tmp_path: Path, events, result, state):
+    from strands_evals.optimization.record.run_directory import _acquire, _release
+
+    run = _optimizer_run(tmp_path / "run-a", *events)
+    _release(_acquire(run))  # the run was locked once, as every run the optimizer writes is
+    if result:
+        _write(run / "result.json", {})
+
+    assert discover_optimizer_runs(tmp_path)[0]["state"] == state
+
+
+@pytest.mark.parametrize(
+    ("events", "once_freed"),
+    [
+        ([{"event": "config"}], "interrupted"),
+        # Resumed to finish its end phase.
+        ([{"event": "stop", "reason": "budget"}, {"event": "test"}], "finished"),
+        # Resumed after a proposer error, before it writes its `resume` event.
+        ([{"event": "proposer_error"}], "halted"),
+    ],
+)
+def test_a_run_whose_lock_is_held_is_running_whatever_its_log_says(tmp_path: Path, events, once_freed):
+    from strands_evals.optimization.record.run_directory import _acquire, _release
+
+    run = _optimizer_run(tmp_path / "run-a", *events)
+    held = _acquire(run)
+    try:
+        assert discover_optimizer_runs(tmp_path)[0]["state"] == "running"
+        # The probe took nothing: the writer still holds the lock.
+        with pytest.raises(RuntimeError, match="open for writing"):
+            _acquire(run)
+    finally:
+        _release(held)
+    assert discover_optimizer_runs(tmp_path)[0]["state"] == once_freed
+
+
+def test_a_run_with_no_lock_file_is_unknown_until_it_finishes(tmp_path: Path):
+    _optimizer_run(tmp_path / "old", {"event": "config"})
+    _optimizer_run(tmp_path / "done", {"event": "stop", "reason": "budget"}, {"event": "test"})
+    (tmp_path / "linked").mkdir()
+    _optimizer_run(tmp_path / "linked", {"event": "config"})
+    (tmp_path / "elsewhere.lock").write_text("")
+    (tmp_path / "linked" / "run.lock").symlink_to(tmp_path / "elsewhere.lock")
+
+    found = {run["id"]: run["state"] for run in discover_optimizer_runs(tmp_path)}
+
+    assert found == {"old": "unknown", "done": "finished", "linked": "unknown"}
+    assert not (tmp_path / "old" / "run.lock").exists()  # the probe never makes one
+
+
+def test_fingerprint_moves_when_a_runs_process_exits(tmp_path: Path):
+    from strands_evals.optimization.record.run_directory import _acquire, _release
+
+    run = _optimizer_run(tmp_path / "run-a", {"event": "config"})
+    held = _acquire(run)
+    while_running = fingerprint(tmp_path)
+    _release(held)  # as the OS frees it when the process dies: no file changes
+
+    assert fingerprint(tmp_path) != while_running
 
 
 def test_discover_optimizer_runs_says_whether_an_effects_model_sits_beside_the_run(tmp_path: Path):
@@ -2746,8 +2825,8 @@ def test_ui_list_prints_what_it_found_as_text(tmp_path: Path, capsys):
         "(not paired: 2 experiments hold every case of this report and are equally near: "
         "tied/one/experiment.json, tied/two/experiment.json)  ->  tied/nightly.json (1.00)",
         "experiment.json (1 cases)  ->  report.json (1.00)",
-        "optimizer run tuning (1 candidates, 1 iterations)  ->  champion c0, stopped: budget",
-        "optimizer run tuning/unfinished (0 candidates, 0 iterations)  ->  no champion",
+        "optimizer run tuning (1 candidates, 1 iterations)  ->  champion c0, not finished, stopped: budget",
+        "optimizer run tuning/unfinished (0 candidates, 0 iterations)  ->  no champion, not finished",
         "session recorded/checkout.json (2 traces, 3 spans)  ->  recorded/checkout.diagnosis.json",
         "session recorded/quiet.json (1 traces, 1 spans)  ->  (not diagnosed)",
         "spare/unrun.json (1 cases)  ->  (not run)",

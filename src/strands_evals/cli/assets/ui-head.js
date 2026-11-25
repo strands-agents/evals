@@ -46,7 +46,7 @@ function runHead(view) {
       + (why ? ` <span class="tag ${OUTCOME_TAG[p.outcome] || 'warn'}">${esc(p.outcome)}</span> ${esc(why)}` : '')];
   }
   /* Why it stopped is said once, on the Result view. */
-  const status = !OPT ? '' : OPT.stop ? 'finished' : 'still running';
+  const status = !OPT ? '' : runState(run);
   return [trail.slice(0, 1).concat([[run.run_id]]),
     [status, OPT && OPT.champion ? `champion ${OPT.champion}` : ''].filter(Boolean).map(esc).join(' · ')];
 }

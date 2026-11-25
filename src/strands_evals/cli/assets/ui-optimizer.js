@@ -108,13 +108,21 @@ function runResultCell(r) {
     + `<br><span class="path">${res.held_out ? 'held out' : 'validation'} · ${reading}</span>`;
 }
 
+/** The runs list's status cell: why a finished run stopped, else where it is, with how to go on where it can. */
+function runStateCell(r) {
+  if (r.state === 'finished' && r.stop_reason) return esc(stopPhrase({ reason: r.stop_reason }).replace(/^it /, ''));
+  const resumable = r.state === 'halted' || r.state === 'interrupted';
+  return `<span class="empty">${esc(runState(r))}</span>`
+    + (resumable ? '<br><span class="path">resume it to continue</span>' : '');
+}
+
 function renderOptimizerRuns() {
   const any = OPT_RUNS.length > 0;
-  /* The Optimization section, the Runs view in it, and the run's own page tabs: all of them wait
-     for a run to be found, so a folder with none is never told it has a section. */
-  $('sgroup-opt').hidden = !any;
+  /* The Optimization section and its Runs list show in every folder, as Reports and Experiments do, so a
+     folder with no run says so there. A run's own page tabs wait for a run to be found. */
   app.querySelectorAll('.tab[data-sec="optimization"]').forEach(t => {
-    t.hidden = !any || (t.dataset.multi !== undefined && !(OPT && OPT.goals.length >= 2));
+    t.hidden = t.dataset.view !== 'opt-runs'
+      && (!any || (t.dataset.multi !== undefined && !(OPT && OPT.goals.length >= 2)));
   });
 
   $('opt-runs-sub').textContent = any
@@ -132,9 +140,7 @@ function renderOptimizerRuns() {
         <td class="ev">${r.champion_id ? esc(r.champion_id) : '<span class="empty">none picked</span>'}</td>
         <td class="ev">${plural(r.candidates, 'candidate')}`
       + `<br><span class="path">${plural(r.iterations, 'iteration')}</span></td>
-        <td class="ev">${r.stop_reason
-        ? esc(stopPhrase({ reason: r.stop_reason }).replace(/^it /, ''))
-        : '<span class="empty">still running</span>'}</td>
+        <td class="ev">${runStateCell(r)}</td>
         <td class="ev">${when(r.modified)}</td></tr>`;
   }).join('') || noMatch('opt-runs', 6) : `<tr><td colspan="6">${emptyState('No optimizer runs here yet',
     `No directory under ${esc(ROOT)} holds a run.json with an events.jsonl beside it.`)}</td></tr>`;
@@ -291,7 +297,8 @@ function renderOptimization() {
   if (!d.proposals.length && !d.iterations.length) {
     optNothing('opt-progress', emptyState('The search has not started',
       'No candidate has been proposed and no iteration has finished, so there is nothing to chart. '
-        + (d.stop ? `The run finished: ${esc(stopPhrase(d.stop))}.` : 'This fills in as the run writes to its log.')));
+        + (run.state === 'running' ? 'This fills in as the run writes to its log.'
+          : d.stop ? `The run stopped: ${esc(stopPhrase(d.stop))}.` : `The run is ${esc(runState(run))}.`)));
   }
   $('opt-cand-sub').textContent = 'Each one is a configuration the optimizer built and ran your cases against.';
   renderCandidates();

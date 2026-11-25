@@ -8,14 +8,20 @@ import json
 import os
 import re
 import stat
+import sys
 from collections import Counter
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from ._ui_evaluators import check_evaluators
+
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
 
 DEFAULT_DEPTH = 3
 MAX_SCAN_FILES = 2000
@@ -32,6 +38,11 @@ DIAGNOSIS = "diagnosis"
 
 EVENT_LOG_NAME = "events.jsonl"
 RUN_CONFIG_NAME = "run.json"
+# Locked by the optimizer for as long as it writes the run, and freed by the OS when that process exits. Windows
+# locks the byte at this offset, as `optimization/record/run_directory.py` does.
+RUN_LOCK_NAME = "run.lock"
+RUN_LOCK_OFFSET = 2**30
+RUN_RESULT_NAME = "result.json"
 
 SKIPPED_DIRS = frozenset({"node_modules", "__pycache__"})
 
@@ -91,6 +102,8 @@ def fingerprint(root: Path, depth: int = DEFAULT_DEPTH) -> str:
         names = [name for name in filenames if name.lower().endswith((".json", ".jsonl"))]
         if RUN_CONFIG_NAME in filenames and EVENT_LOG_NAME in filenames:
             names += sorted(RUN_OWN_FILES)
+            # A run whose process exits changes no file, only who holds its lock.
+            digest.update(f"{where}\0{RUN_LOCK_NAME}\0{_writer_holds(here)}\n".encode(errors="surrogateescape"))
         for name in names:
             try:
                 info = (here / name).stat()
@@ -639,16 +652,77 @@ def read_event_log(path: Path, max_lines: int = MAX_EVENT_LINES) -> EventLog:
     return log
 
 
+def _writer_holds(directory: Path) -> bool | None:
+    """Whether a process is writing the optimizer run in `directory`, told by whether it holds `run.lock`.
+
+    The lock is taken and freed at once, so an optimizer starting on the run in that instant fails to lock it and
+    says another process holds it. None when it can't be told: no `run.lock` (a run made before runs were locked,
+    or one being created), a lock file that isn't a regular file or can't be opened, or a filesystem that can't
+    lock files.
+    """
+    path = directory / RUN_LOCK_NAME
+    try:
+        if not stat.S_ISREG(path.lstat().st_mode):
+            return None
+        file: BinaryIO
+        try:
+            file = path.open("r+b")  # NFS grants an exclusive lock only to a writer
+        except PermissionError:
+            file = path.open("rb")
+    except OSError:
+        return None
+    with file:
+        try:
+            if sys.platform == "win32":
+                file.seek(RUN_LOCK_OFFSET)
+                msvcrt.locking(file.fileno(), msvcrt.LK_NBLCK, 1)
+                file.seek(RUN_LOCK_OFFSET)
+                msvcrt.locking(file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(file.fileno(), fcntl.LOCK_UN)
+        except (BlockingIOError, PermissionError):  # held: EWOULDBLOCK (flock), EACCES (Windows)
+            return True
+        except OSError:
+            return None
+    return False
+
+
+def _run_state(log: EventLog, held: bool | None, has_result: bool) -> str:
+    """Where an optimizer run is, for the runs list.
+
+    `running` while a process holds its lock, whatever the log says (a resumed run, or one in its end phase after
+    the `stop` event). Otherwise `finished` once the end phase wrote `result.json` or a `test` event, or the setup
+    stopped the run (a `stop` event with reason `setup`); `halted` when a proposer raised and nothing resumed it
+    since (a `proposer_error` event, no `stop`); `interrupted` when no process holds the lock and the run didn't
+    finish (killed, cancelled, or stopped in its end phase), so `Optimizer.resume` can continue it; `unknown` when
+    the lock can't be checked and the run didn't finish.
+    """
+    if held:
+        return "running"
+    if has_result or any(e.get("event") == "test" for e in log.events):
+        return "finished"
+    ends = [e for e in log.events if e.get("event") in ("proposer_error", "resume", "stop")]
+    last = ends[-1] if ends else {}
+    if last.get("event") == "stop" and last.get("reason") == "setup":
+        return "finished"  # the baseline couldn't be measured, so the run ended without an end phase
+    if last.get("event") == "proposer_error":
+        return "halted"
+    return "interrupted" if held is False else "unknown"
+
+
 def _optimizer_run_summary(
     directory: str,
     config: dict,
     events_stat: os.stat_result,
     config_stat: os.stat_result,
     log: EventLog,
+    state: str,
 ) -> dict:
     """What the runs list shows for one optimizer run.
 
-    Only values read from the log. Derived series (best-so-far, the budget curve) are computed in the page.
+    Only values read from the log, and the run's `state` (`_run_state`). Derived series (best-so-far, the budget
+    curve) are computed in the page.
     """
     # Distinct, so an iteration recorded twice counts once. As text, so one that is not a number still counts.
     iterations = {str(e.get("iteration")) for e in log.events if e.get("event") == "iteration_end"}
@@ -692,6 +766,7 @@ def _optimizer_run_summary(
         "champion_id": champion,
         "result": result,
         "stop_reason": stop_reason,
+        "state": state,
         "bad_lines": log.bad_lines,
         "truncated": log.truncated,
         # Filled in by `discover`, which holds the experiments to match the split against.
@@ -748,7 +823,10 @@ def discover_optimizer_runs(root: Path, depth: int = DEFAULT_DEPTH) -> list[dict
             continue
 
         log = read_event_log(events_path)
-        summary = _optimizer_run_summary(where, config, events_stat, config_stat, log)
+        result_path = here / RUN_RESULT_NAME
+        has_result = result_path.is_file() and not _leaves(root, result_path)
+        state = _run_state(log, _writer_holds(here), has_result)
+        summary = _optimizer_run_summary(where, config, events_stat, config_stat, log, state)
         # Most runs have no effects model, so the page is told rather than left to ask for a file that is not there.
         summary["has_effects"] = (here / "effects.json").is_file() and not _leaves(root, here / "effects.json")
         found.append(summary)

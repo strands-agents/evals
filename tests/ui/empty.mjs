@@ -115,7 +115,7 @@ const RUN = {
     ['No result yetNo candidate has been picked yet. The comparison appears once the run reaches its end phase.', true],
     'Result says there is no result yet, and why');
   eq(blank('opt-progress'), [true, 'The search has not startedNo candidate has been proposed and no iteration has '
-    + 'finished, so there is nothing to chart. This fills in as the run writes to its log.'],
+    + 'finished, so there is nothing to chart. The run is not finished.'],
   'Iterations says the search has not started, in place of its empty charts');
   eq([p.text('#opt-cands'), frog(p, '#opt-cands')], ['No candidate yetCandidates appear here as each iteration finishes.', true],
     'Candidates says none has been built');
@@ -174,8 +174,8 @@ const RUN = {
   const p = await page({ fetchImpl: fakeServer(), url: 'http://127.0.0.1:9999/optimization' });
   eq([p.view(), p.window.location.pathname, p.text('#opt-runs-rows'), frog(p, '#opt-runs-rows'), p.$('.tab[data-view="opt-runs"]').hidden],
     ['v-opt-runs', '/optimization', 'No optimizer runs here yetNo directory under /served holds a run.json with an '
-      + 'events.jsonl beside it.', true, true],
-    'the address of the runs list in a folder with no run shows it empty, and says what a run is');
+      + 'events.jsonl beside it.', true, false],
+    'the address of the runs list in a folder with no run shows it empty, says what a run is, and keeps its tab');
 }
 
 // ── a report with no rows, an experiment with no cases ──

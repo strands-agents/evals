@@ -126,7 +126,8 @@ function candidateMarkdown(p, d, run) {
 /** The result of a run: the champion, what it gained on the baseline, and its configuration. */
 function resultMarkdown(d, run) {
   const r = d.result, w = d.winner;
-  const facts = mdRunFacts(run).concat([`- Status: ${d.stop ? `finished: ${stopPhrase(d.stop)}` : 'still running'}`,
+  const status = run.state === 'finished' && d.stop ? `finished: ${stopPhrase(d.stop)}` : runState(run);
+  const facts = mdRunFacts(run).concat([`- Status: ${status}`,
     `- Champion: ${d.champion || 'not picked yet'}`]);
   if (w && w.lineage.length > 1) facts.push(`- Derived from: ${w.lineage.join(' ← ')}`);
   if (r && r.baselineId) {

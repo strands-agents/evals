@@ -14,6 +14,14 @@ from .._ui_discovery import DEFAULT_DEPTH, SCAN_SCHEMA_VERSION, discover
 from .._ui_server import build_server, finite, is_loopback, server_url
 
 TOKEN_ENV = "STRANDS_EVALS_UI_TOKEN"
+# An optimizer run's `state` from the scan, in the words the page uses.
+_RUN_STATES = {
+    "running": "still running",
+    "finished": "finished",
+    "halted": "halted by a proposer error",
+    "interrupted": "interrupted",
+    "unknown": "not finished",
+}
 
 
 def _print_listing(root: Path, args: argparse.Namespace) -> None:
@@ -38,8 +46,9 @@ def _print_listing(root: Path, args: argparse.Namespace) -> None:
     for run in result.optimizer_runs:
         search = f"{run['candidates']} candidates, {run['iterations']} iterations"
         champion = f"champion {run['champion_id']}" if run.get("champion_id") else "no champion"
+        state = _RUN_STATES.get(run["state"], _RUN_STATES["unknown"])
         stopped = f", stopped: {run['stop_reason']}" if run.get("stop_reason") else ""
-        print(f"optimizer run {run['dir']} ({search})  ->  {champion}{stopped}")  # noqa: T201
+        print(f"optimizer run {run['dir']} ({search})  ->  {champion}, {state}{stopped}")  # noqa: T201
     for session in result.sessions:
         made = ", ".join(session["diagnoses"]) or "(not diagnosed)"
         print(f"session {session['path']} ({session['traces']} traces, {session['spans']} spans)  ->  {made}")  # noqa: T201

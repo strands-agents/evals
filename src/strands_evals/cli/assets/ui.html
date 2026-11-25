@@ -68,11 +68,11 @@
       <button class="tab" data-view="sessions" data-sec="evals" hidden data-tip="Every recorded session found in this folder, and what a diagnosis found in each.">Sessions</button>
       <!-- Optimization, the Runs view under it, and every run under that: three levels, so a run is
            one click from any page. The heading names what the section is rather than opening
-           anything. Hidden whole until a scan finds a run. -->
-      <div class="sgroup" id="sgroup-opt" hidden>
+           anything. Shown in every folder, as Reports and Experiments are; a run's own tabs wait for a run. -->
+      <div class="sgroup" id="sgroup-opt">
         <div class="sec">Optimization</div>
         <div class="trow">
-          <button class="tab" data-view="opt-runs" data-sec="optimization" hidden data-tip="Optimizer runs found in this folder.">Runs</button>
+          <button class="tab" data-view="opt-runs" data-sec="optimization" data-tip="Optimizer runs found in this folder.">Runs</button>
           <button class="fold" data-fold="runs-sub" aria-controls="runs-sub" aria-expanded="false" aria-label="Show or hide the runs listed under this row" hidden>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
           </button>

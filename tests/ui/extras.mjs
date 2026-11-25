@@ -145,8 +145,8 @@ const report = (score, ...cases) => ({
   const tree = id => p.$$(`#${id} .runrow`).map(el => el.textContent).join();
   const marked = id => p.$$(`#${id} .runrow.on`).map(el => el.textContent).join();
 
-  ok(p.$$('#sections .tab:not([hidden])').map(t => t.dataset.view).join() === 'experiments,reports',
-    'Experiments sits first in the sidebar, before Reports', p.$$('#sections .tab').map(t => t.dataset.view).join());
+  ok(p.$$('#sections .tab:not([hidden])').map(t => t.dataset.view).join() === 'experiments,reports,opt-runs',
+    'Experiments sits first in the sidebar, before Reports, and Runs shows though this folder has no run', p.$$('#sections .tab').map(t => t.dataset.view).join());
 
   /* Each list starts folded away. The view's own row unfolds it; so does the caret beside it. */
   const caret = id => p.$(`.fold[data-fold="${id}"]`);
