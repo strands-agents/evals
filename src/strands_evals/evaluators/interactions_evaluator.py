@@ -1,7 +1,7 @@
 from typing import cast
 
 from strands import Agent
-from strands.agent.conversation_manager import SlidingWindowConversationManager
+from strands.context_manager import Offload
 from strands.models.model import Model
 
 from ..types.evaluation import EvaluationData, EvaluationOutput, InputT, OutputT
@@ -185,12 +185,17 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
                 )
             ]
 
-        conversation_manager = SlidingWindowConversationManager(window_size=num_interactions)
+        # Before each model call the judge's history keeps its first message (the first interaction's
+        # prompt, which alone may carry the input) and the newest `num_interactions` messages; the ones
+        # between become one "[Dropped]" marker.
         evaluator_agent = Agent(
             model=self.model,
             system_prompt=self.system_prompt,
             callback_handler=None,
-            conversation_manager=conversation_manager,
+            context_manager={
+                "strategies": [Offload.drop("*").when(preserve_recent=num_interactions)],
+                "archive": False,
+            },
         )
 
         results = []
@@ -225,12 +230,17 @@ class InteractionsEvaluator(Evaluator[InputT, OutputT]):
                 )
             ]
 
-        conversation_manager = SlidingWindowConversationManager(window_size=num_interactions)
+        # Before each model call the judge's history keeps its first message (the first interaction's
+        # prompt, which alone may carry the input) and the newest `num_interactions` messages; the ones
+        # between become one "[Dropped]" marker.
         evaluator_agent = Agent(
             model=self.model,
             system_prompt=self.system_prompt,
             callback_handler=None,
-            conversation_manager=conversation_manager,
+            context_manager={
+                "strategies": [Offload.drop("*").when(preserve_recent=num_interactions)],
+                "archive": False,
+            },
         )
 
         results = []

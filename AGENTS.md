@@ -35,7 +35,7 @@ strands-evals depends on **`strands-agents`** (the Python SDK) for all LLM inter
 - Key SDK surfaces actually imported by this repo (grep-verified):
   - `strands.Agent`, called as `Agent(model=..., system_prompt=..., callback_handler=None)` and invoked via `agent(prompt, structured_output_model=PydanticModel)`
   - `strands.models.model.Model` and provider classes
-  - `strands.agent.agent_result.AgentResult`, `strands.agent.conversation_manager.SlidingWindowConversationManager` (`InteractionsEvaluator`), `strands.context_manager` (`ContextState`, `Offload`; Reflection)
+  - `strands.agent.agent_result.AgentResult`, `strands.context_manager` (`Offload`, `ContextState`; `InteractionsEvaluator` and Reflection pass `context_manager=`, never a conversation manager)
   - `strands.tools.decorator` (`DecoratedFunctionTool`, `FunctionToolMetadata`) and the `@tool` decorator from `strands`
   - `strands.types.content.Message`
   - `strands.types.exceptions` (`EventLoopException`, `ModelThrottledException`)

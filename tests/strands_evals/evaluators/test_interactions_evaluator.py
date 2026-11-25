@@ -1,9 +1,12 @@
+import asyncio
+import json
 from unittest.mock import Mock, patch
 
 import pytest
 
 from strands_evals.evaluators.interactions_evaluator import InteractionsEvaluator
 from strands_evals.types.evaluation import EvaluationData, EvaluationOutput
+from tests.strands_evals.optimization.scripted_model import ScriptedModel, ToolUse
 
 
 @pytest.fixture
@@ -399,3 +402,34 @@ def test_interactions_evaluator_compose_prompt_with_mismatched_list_input():
     prompt_1 = evaluator._compose_prompt(evaluation_data, 1, True)
     assert "<Input>" not in prompt_1
     assert "Second response" in prompt_1
+
+
+class _Recording(ScriptedModel):
+    """Records the messages each judge call is sent."""
+
+    def __init__(self, turns):
+        super().__init__(turns)
+        self.seen = []
+
+    async def stream(self, messages, tool_specs=None, system_prompt=None, **kwargs):
+        self.seen.append([json.dumps(message["content"]) for message in messages])
+        async for event in super().stream(messages, tool_specs, system_prompt, **kwargs):
+            yield event
+
+
+@pytest.mark.parametrize("run_async", [False, True])
+def test_the_judge_keeps_the_first_prompt_and_the_newest_messages(run_async):
+    verdict = ToolUse("EvaluationOutput", {"score": 1.0, "test_pass": True, "reason": "fine"})
+    model = _Recording([verdict])
+    steps = [{"node_name": f"step{i}", "dependencies": [], "messages": [f"message {i}"]} for i in range(4)]
+    data = EvaluationData(input="the task input", actual_output="done", actual_interactions=steps)
+    evaluator = InteractionsEvaluator(rubric="Test rubric", model=model)
+
+    results = asyncio.run(evaluator.evaluate_async(data)) if run_async else evaluator.evaluate(data)
+
+    assert [result.score for result in results] == [1.0] * 4
+    last = model.seen[-1]
+    assert "the task input" in last[0]  # only the first prompt carries the input, and it stays
+    assert "[Dropped" in last[1]
+    assert "message 3" in last[-1]
+    assert not any("message 1" in message for message in last)  # an older interaction left the window
