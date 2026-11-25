@@ -115,7 +115,7 @@ const RUN = {
     ['No result yetNo candidate has been picked yet. The comparison appears once the run reaches its end phase.', true],
     'Result says there is no result yet, and why');
   eq(blank('opt-progress'), [true, 'The search has not startedNo candidate has been proposed and no iteration has '
-    + 'finished, so there is nothing to chart. This fills in as the run writes to its log.'],
+    + 'finished, so there is nothing to chart. The run is not finished.'],
   'Iterations says the search has not started, in place of its empty charts');
   eq([p.text('#opt-cands'), frog(p, '#opt-cands')], ['No candidate yetCandidates appear here as each iteration finishes.', true],
     'Candidates says none has been built');

@@ -1,6 +1,8 @@
 /* The Optimization section: Runs, Result, Setup (with its Tunables section), Iterations, Candidates, Trade-off.
    Driven from the generated fixture run, variants of it, and small logs written inline. */
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import path from 'node:path';
 import { SAMPLE, page, runner, served, tick } from './harness.mjs';
 
 const { ok, done } = runner('optimization');
@@ -756,9 +758,9 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
 {
   const cut = jsonl(EVENTS.slice(0, 40)) + JSON.stringify(EVENTS[40]).slice(0, 30);
   const running = await openFixture({ events: cut, tab: 'overview' });
-  ok(running.text('#opt-note') === '' && running.text('#facts') === 'still running'
+  ok(running.text('#opt-note') === '' && running.text('#facts') === 'not finished'
     && marks(running, '#opt-series-chart').length > 0,
-    'a half-written last line is not damage: the run reads as still running and draws what it has',
+    'a half-written last line is not damage: the run reads as not finished and draws what it has',
     running.text('#opt-note'));
   ok(/No result yet/.test(running.text('#opt-result'))
     && /Best feasible objective so far: 0\.\d+ \(c\d\), on the training split/.test(running.text('#opt-result'))
@@ -777,6 +779,38 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
   const logOnly = await open({ 'demo/events.jsonl': jsonl(EVENTS) });
   ok(logOnly.$('.tab[data-view="opt-runs"]').hidden && skips(logOnly).some(s => /no run\.json beside it/.test(s)),
     'an event log with no run.json is not one either, and says what it lacks', skips(logOnly).join(' | '));
+}
+
+// ── a run is running while a process holds its lock, not while its log lacks a stop ──
+{
+  const unfinished = jsonl(EVENTS.slice(0, 40));
+  const status = q => [q.text('#facts'), flat(q.$('#opt-runs-rows tr[data-opt-run]').children[4])];
+  const halted = await openFixture({
+    events: unfinished + jsonl([{ event: 'proposer_error', iteration: 3, block: 'text', error_type: 'ValueError' }]),
+    files: { 'demo/run.lock': '' }, tab: 'overview',
+  });
+  eq(status(halted), ['halted by a proposer error', 'halted by a proposer error resume it to continue'],
+    'a run a proposer halted says so, and that it can be resumed, though its log has no stop');
+
+  const q = await openFixture({ events: unfinished, files: { 'demo/run.lock': '' }, tab: 'overview' });
+  eq(status(q), ['interrupted', 'interrupted resume it to continue'],
+    'a run no process holds and that did not finish was interrupted, so it can be resumed');
+  if (process.platform !== 'win32') {
+    const locker = spawn(process.env.PYTHON || 'python3', ['-c',
+      'import fcntl, sys\nf = open(sys.argv[1], "a+b")\nfcntl.flock(f, fcntl.LOCK_EX)\nprint("held", flush=True)\nsys.stdin.read()',
+      path.join(q.root, 'demo', 'run.lock')], { stdio: ['pipe', 'pipe', 'inherit'] });
+    await new Promise(resolve => locker.stdout.once('data', resolve));
+    /* Polled as a visible tab is: the fingerprint is what tells the page the run moved. */
+    Object.defineProperty(q.window.document, 'hidden', { value: false, configurable: true });
+    await q.window.pollNow();
+    eq(status(q), ['still running', 'still running'], 'while a process holds the lock, the run is still running');
+    const exited = new Promise(resolve => locker.once('exit', resolve));
+    locker.kill('SIGKILL');
+    await exited;
+    await q.window.pollNow();
+    eq(status(q), ['interrupted', 'interrupted resume it to continue'],
+      'once that process dies, which changes no file, the next poll says the run was interrupted');
+  }
 }
 
 // ── two runs in one tree ──

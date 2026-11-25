@@ -12,8 +12,20 @@ const STOP_PHRASES = {
   budget: 'it used its rollout budget',
   iterations: 'it used its iteration cap',
   exhausted: 'the schedule had nothing left to try',
+  setup: 'its baseline could not be measured',
 };
 const stopPhrase = stop => STOP_PHRASES[stop.reason] || stop.reason;
+
+/* Where a run is, as the scan tells it from the run's lock and its log: `running` only while a process holds
+   the lock, so a run that was killed, cancelled or halted by a proposer error stops reading as running. */
+const RUN_STATES = {
+  running: 'still running',
+  finished: 'finished',
+  halted: 'halted by a proposer error',
+  interrupted: 'interrupted',
+  unknown: 'not finished',
+};
+const runState = run => RUN_STATES[(run || {}).state] || RUN_STATES.unknown;
 
 /* The case names of one split, in either shape a record writes them: `split.cases.<part>` or `split.<part>`. */
 const splitCases = (split, part) => {
