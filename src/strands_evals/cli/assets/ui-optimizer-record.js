@@ -134,6 +134,12 @@ function deriveOptimization(events, config) {
   const lastTrial = new Map();
   events.forEach((e, i) => { if (e && e.event === 'trial') lastTrial.set(trialKey(e.record || {}), i); });
 
+  /* What a trial cost the budget, as the optimizer's `spent` counts it: its last attempt and every one
+     it replaced. Records from before `rollouts` count one per attempt. */
+  const rolloutsOf = rec => [rec, ...(Array.isArray(rec.previous_attempts) ? rec.previous_attempts : [])]
+    .reduce((sum, a) => sum + (a && typeof a.rollouts === 'number' ? a.rollouts : 1), 0);
+
+  // Every trial's rollouts: the baseline and the end phase have no `iteration_end` of their own.
   let spent = 0;
   for (const [i, e] of events.entries()) {
     if (!e || typeof e !== 'object') continue;
@@ -146,6 +152,7 @@ function deriveOptimization(events, config) {
         const split = rec.split || 'unknown';
         bySplit[split] = (bySplit[split] || 0) + 1;
         addUsage(pending, rec);
+        spent += rolloutsOf(rec);
 
         const cid = rec.candidate_id;
         if (cid) {
@@ -188,9 +195,9 @@ function deriveOptimization(events, config) {
         break;
       case 'iteration_end': {
         const rec = e.record || {};
-        const rollouts = typeof rec.rollouts_spent === 'number' ? rec.rollouts_spent : 0;
+        // Since the iteration before, so the first one also carries the baseline's.
+        const rollouts = spent - (iterations.length ? iterations[iterations.length - 1].cumulative : 0);
         const iteration = rec.iteration != null ? rec.iteration : e.iteration;
-        spent += rollouts;
         iterations.push({ iteration, rollouts, cumulative: spent, usage: pending });
         pending = blankUsage();
         if (e.best_after && typeof e.best_after === 'object') bestAfter = e.best_after;
