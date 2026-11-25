@@ -953,7 +953,8 @@ class Optimizer:
             retry_cost=retry_cost,
             benchmark_cost=benchmark_cost,
             reports=_reports(
-                {c: self._with_trajectories(records, self._transcripts[c]) for c, records in self._records.items()},
+                self._records,
+                self._transcripts,
                 cases=self._cases,
                 evaluators=self._evaluators,
                 split=self._case_split,
@@ -992,6 +993,7 @@ class Optimizer:
             "case": _case_rows(
                 events,
                 self._records,
+                self._transcripts,
                 candidates=views,
                 split=self._case_split,
                 evaluators=[e.get_name() for e in self._evaluators],

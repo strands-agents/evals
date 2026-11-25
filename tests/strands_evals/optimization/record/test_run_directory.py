@@ -353,6 +353,28 @@ def test_a_session_saved_whole_still_loads_and_an_unknown_format_raises(tmp_path
         run.load_transcript({"hash": "0123456789abcdef", "format": "tree"})
 
 
+def test_a_transcript_reads_the_same_by_its_format_or_its_shape(tmp_path):
+    run = RunDirectory.create(tmp_path, CONFIG)
+    run.save_trial(_trial("c1", "a", trajectory=_conversation(2)))
+    run.save_trial(_trial("c1", "b", trajectory=["read", "x"]))
+    dump = _conversation(1).model_dump(mode="json")
+    (run.root / "transcripts" / "0123456789abcdef.json").write_text(json.dumps(dump))
+
+    for transcript in (run.transcript("c1", 0, "a"), run.transcript("c1", 0, "b")):
+        by_shape = run_directory_module.read_transcript(run.root, transcript["hash"])
+        assert by_shape == run.load_transcript(transcript)
+    assert run_directory_module.read_transcript(run.root, "0123456789abcdef") == Session.model_validate(dump)
+
+
+@pytest.mark.parametrize("digest", ["../../x", "0123456789ABCDEF", "0123456789abcde", "0123456789abcdef0", ""])
+def test_a_transcript_hash_not_in_the_saved_form_raises(tmp_path, digest):
+    run = RunDirectory.create(tmp_path, CONFIG)
+    with pytest.raises(ValueError, match="not a transcript hash"):
+        run.load_transcript({"hash": digest, "format": "list"})
+    with pytest.raises(ValueError, match="not a transcript hash"):
+        run_directory_module.read_transcript(run.root, digest)
+
+
 def test_a_later_trial_event_replaces_the_earlier_one_on_reload(tmp_path):
     run = RunDirectory.create(tmp_path, CONFIG)
     first = _trial("c1", score=0.0)
@@ -518,7 +540,8 @@ def test_effects_diffs_and_the_result_are_written(tmp_path):
     run.save_result({"run_id": run.run_id, "split": ("train",)})
     run.save_result({"run_id": run.run_id, "split": ("train", "test")})  # a resumed finished run rewrites it
 
-    assert json.loads((run.root / "result.json").read_text()) == {"run_id": run.run_id, "split": ["train", "test"]}
+    # Compact: no indentation, no spaces after separators.
+    assert (run.root / "result.json").read_text() == f'{{"run_id":"{run.run_id}","split":["train","test"]}}\n'
 
     assert json.loads((run.root / "effects.json").read_text()) == {"effects": [], "reason": "no fit"}
     assert (run.root / "best.diff").read_text() == "--- prompt\n"

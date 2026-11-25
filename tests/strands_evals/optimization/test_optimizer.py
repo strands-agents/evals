@@ -1,6 +1,7 @@
 import asyncio
 import dataclasses
 import hashlib
+import itertools
 import json
 import math
 import pickle
@@ -62,7 +63,7 @@ from strands_evals.optimization.search.blocks import _saved
 from strands_evals.optimization.selection.top_ranked import TopRanked
 from strands_evals.types.evaluation import NOT_APPLICABLE, EvaluationOutput
 from strands_evals.types.optimization import CaseSplit, Estimate, TrialRecord, TrialStatus
-from strands_evals.types.trace import InferenceSpan, Session
+from strands_evals.types.trace import InferenceSpan
 from tests.strands_evals.optimization.scripted_model import ScriptedModel
 
 
@@ -2752,7 +2753,9 @@ def test_reports_keep_a_re_judges_earlier_scores():
     )
     evaluators = [Score(), Score(name="Second")]
 
-    report = _reports({"c": {("a", 0): record}}, cases=[case], evaluators=evaluators, split=split)["c"]["train"]
+    report = _reports(
+        {"c": {("a", 0): record}}, {"c": {("a", 0): None}}, cases=[case], evaluators=evaluators, split=split
+    )["c"]["train"]
 
     assert report.scores == [1.0, 0.0]
     assert report.reasons == ["right", "An error occurred: can't dump"]
@@ -2841,6 +2844,62 @@ async def test_a_re_judge_that_leaves_the_candidate_unmeasured_saves_nothing(tmp
     assert any(e["event"] == "propose" and e["rescore"] for e in _events(optimizer))
     assert len(result.iterations) == 2 and result.stop_reason == "exhausted"  # the step saved nothing
     assert evaluator.raised == 16  # 8 train trials, judged twice
+
+
+async def test_a_failed_record_kept_on_resume_names_no_transcript_of_a_killed_rerun(tmp_path):
+    # temperature 0.5's trials hit infrastructure in step 1; step 2 re-runs them, saving transcripts, and is killed.
+    failing = {"left": 8}
+
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        if temperature == 0.5 and failing["left"] > 0:
+            failing["left"] -= 1
+            raise InfrastructureError("sandbox down")
+        return {"output": str(temperature), "trajectory": [case.name, temperature]}
+
+    def search(*updates):
+        return Search([Block(Scripted(*updates), "temperature"), Block(Scripted(), "manager")], schedule=Joint())
+
+    original = _optimizer(
+        _experiment(evaluators=[Temperature()]),
+        rollout_fn=rollout,
+        search=search({"temperature": 0.5}, {"temperature": 0.5}, {"temperature": 1.0}),
+        max_workers=64,
+        rerun_passes=0,
+        proposals_per_iteration=1,
+        base_dir=tmp_path / "runs",
+        budget=Budget(max_iterations=3),
+    )
+    await original.run_async()
+    copy = _killed(
+        original._run.root, tmp_path, lambda events: _index(events, "score", after=_index(events, "iteration_end"))
+    )
+    # Without the killed step's `draw` event, the resumed step 2 asks its proposers again (as a resumed step that
+    # is wider than the killed one does) and gets 1.0 instead, so 0.5 keeps step 1's failed records.
+    lines = (copy / "events.jsonl").read_text().splitlines()
+    draws = [i for i, line in enumerate(lines) if json.loads(line)["event"] == "draw"]
+    del lines[draws[-1]]
+    (copy / "events.jsonl").write_text("\n".join(lines) + "\n")
+    result = await Optimizer.resume(
+        copy,
+        experiment=_experiment(evaluators=[Temperature()]),
+        factory=create_agent,
+        rollout_fn=rollout,
+        search=search({"temperature": 1.0}),
+    ).run_async()
+
+    half = next(c for c, view in result.candidates.items() if view.values["temperature"] == 0.5)
+    last = {}
+    for event in _events_at(copy):
+        if event["event"] == "trial" and event["record"]["candidate_id"] == half:
+            last[(event["record"]["case_name"], event["record"]["run_index"])] = event["record"]
+    # The last trial events are the killed step's re-runs, which saved transcripts.
+    assert last and all(saved["transcript"] is not None for saved in last.values())
+    cases = [row for row in result.to_rows("case") if row["candidate_id"] == half]
+    assert len(cases) == len(last) and all(row["status"] == "infrastructure_invalid" for row in cases)
+    assert all(row["transcript"] is None for row in cases)
+    rows = result.reports[half]["train"].cases
+    assert len(rows) == len(cases) and all(row["transcript"] is None for row in rows)
 
 
 async def test_max_iterations_counts_candidate_slots_not_steps(tmp_path):
@@ -2956,7 +3015,9 @@ async def test_reports_match_what_experiment_returns_for_the_same_trials(tmp_pat
     report = result.reports[result.baseline_id]["train"]
     assert report.overall_score == pytest.approx(expected["overall_score"])
     assert report.scores == expected["scores"] and report.test_passes == expected["test_passes"]
-    assert [{k: v for k, v in row.items() if k != "run_index"} for row in report.cases] == expected["cases"]
+    assert all(row["transcript"] is None for row in report.cases)  # this rollout saves no trajectory
+    tags = ("run_index", "transcript")
+    assert [{k: v for k, v in row.items() if k not in tags} for row in report.cases] == expected["cases"]
     # Experiment keeps the evaluator's message; the trial record keeps only its type.
     reasons = [r.replace("flaky judge", "ValueError") for r in expected["reasons"]]
     assert report.reasons == reasons
@@ -2993,7 +3054,9 @@ async def test_reports_match_experiment_for_a_case_it_failed_on_after_the_task_r
     )
 
     split = CaseSplit(train=("a",), validation=(), test=())
-    report = _reports({"c": {("a", 0): record}}, cases=[case], evaluators=[Score()], split=split)["c"]["train"]
+    report = _reports(
+        {"c": {("a", 0): record}}, {"c": {("a", 0): None}}, cases=[case], evaluators=[Score()], split=split
+    )["c"]["train"]
 
     assert expected.reasons[0].startswith("An error occurred: keys must be str")
     assert (report.scores, report.test_passes, report.reasons) == (
@@ -3001,7 +3064,9 @@ async def test_reports_match_experiment_for_a_case_it_failed_on_after_the_task_r
         expected.test_passes,
         expected.reasons,
     )
-    assert [{k: v for k, v in row.items() if k != "run_index"} for row in report.cases] == expected.cases
+    assert [{k: v for k, v in row.items() if k not in ("run_index", "transcript")} for row in report.cases] == (
+        expected.cases
+    )
 
 
 async def _listing_rollout(agent_factory, case):
@@ -3051,6 +3116,7 @@ async def test_trial_records_drop_their_trajectories_and_proposers_read_the_pare
     assert all(r.trajectory is None for records in optimizer._records.values() for r in records.values())
     inputs = {case.name: case.input for case in optimizer._cases}
     assert proposer.requests
+    kept = dict(optimizer._transcripts[result.best.id])
     # Read only now, after the run: from the records as each step started, not as the optimizer holds them later.
     optimizer._records.clear()
     optimizer._transcripts.clear()
@@ -3058,9 +3124,15 @@ async def test_trial_records_drop_their_trajectories_and_proposers_read_the_pare
         temperature = str(request.parent.values["temperature"])
         assert sorted(t.case_name for t in request.trials) == sorted(optimizer._case_split.train)
         assert all(_texts(t.trajectory) == [inputs[t.case_name], temperature] for t in request.trials)
-    # The reports still show each trial's session.
+    # The reports name each trial's session by its transcript.
     rows = result.reports[result.best.id]["test"].cases
-    assert rows and all(_texts(Session.model_validate(r["actual_trajectory"])) == [r["input"], "1.0"] for r in rows)
+    assert rows and all(r["actual_trajectory"] is None for r in rows)
+    assert all(r["transcript"] == kept[(r["name"], r["run_index"])]["hash"] for r in rows)
+    sessions = [result.load_transcript(r["transcript"]) for r in rows]
+    assert all(_texts(session) == [r["input"], "1.0"] for session, r in zip(sessions, rows, strict=True))
+    # A whole `Session` dump, as earlier versions saved it, reads back too.
+    (result.run_dir / "transcripts" / "0123456789abcdef.json").write_text(sessions[0].model_dump_json())
+    assert result.load_transcript("0123456789abcdef") == sessions[0]
 
 
 async def test_resume_reads_no_transcript_and_proposers_still_get_the_parents(tmp_path, monkeypatch):
@@ -3169,6 +3241,108 @@ async def test_the_summary_names_the_flagged_metrics_or_why_there_are_no_effects
     empty = {"effects": [], "factors": [], "omitted": [], "metrics": metrics, "reason": "flagged: tokens, seconds"}
     assert effects_lines(empty) == ["flagged: tokens, seconds"]
     assert effects_lines({"metrics": {"tokens": {"diagnostics": {"flagged": False}}}, "reason": None}) == []
+
+
+def _with_transcripts(experiment=None):
+    """What a run passes, and resume passes again: two evaluators; each trial a distinct trajectory, except on a
+    crashed case and on a case whose rollout returns none (those two case names are returned too)."""
+    train = list(_optimizer()._case_split.train)  # the same seed and cases give the same split
+    crashes_on, bare = train[1], train[2]
+    calls = itertools.count()
+
+    async def rollout(agent_factory, case):
+        _, temperature = agent_factory()
+        if case.name == crashes_on:
+            raise ValueError("boom")
+        if case.name == bare:
+            return str(temperature)
+        return {"output": str(temperature), "trajectory": [f"only in the transcript {next(calls)}", temperature]}
+
+    passed = {
+        "experiment": _experiment(evaluators=[Temperature(), Score()]) if experiment is None else experiment,
+        "factory": create_agent,
+        "rollout_fn": rollout,
+        "objective": Maximize("Temperature"),
+        "search": Search(
+            [Block(Scripted({"temperature": 0.5}), "temperature"), Block(Scripted(), "manager")], schedule=Joint()
+        ),
+    }
+    return passed, {crashes_on, bare}
+
+
+def _run_with_transcripts(base_dir):
+    passed, without = _with_transcripts()
+    optimizer = Optimizer(
+        **passed,
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=1,
+        runs_per_candidate=2,
+        max_workers=64,
+        base_dir=base_dir,
+    )
+    return optimizer, without
+
+
+async def test_the_result_names_each_trajectory_by_its_transcript_hash_and_is_written_compact(tmp_path):
+    optimizer, without = _run_with_transcripts(tmp_path / "runs")
+    result = await optimizer.run_async()
+    root = result.run_dir
+    text = (root / "result.json").read_text(encoding="utf-8")
+    assert "only in the transcript" not in text
+    assert text.count("\n") == 1  # compact
+    assert result.to_file(tmp_path / "copy.json").read_text(encoding="utf-8") == text
+
+    hashes = {(r["candidate_id"], r["case_name"], r["run_index"]): r["transcript"] for r in result.to_rows("case")}
+    saved = [digest for digest in hashes.values() if digest is not None]
+    assert len(set(saved)) == len(saved)  # one distinct trajectory per trial
+    rows = [(c, row) for c, splits in result.reports.items() for report in splits.values() for row in report.cases]
+    assert len(rows) == 2 * len(hashes)  # one row per evaluator per trial
+    assert {row["name"] for _, row in rows if row["transcript"] is None} == without
+    for candidate_id, row in rows:
+        digest = hashes[(candidate_id, row["name"], row["run_index"])]
+        assert row.get("actual_trajectory") is None and row["transcript"] == digest  # a failed row has no key
+        if digest is not None:
+            kept = optimizer._transcripts[candidate_id][(row["name"], row["run_index"])]
+            assert kept == {"hash": digest, "format": "list"}  # the kept record's own transcript
+            trajectory = result.load_transcript(digest)
+            temperature = result.candidates[candidate_id].values["temperature"]
+            assert trajectory[0].startswith("only in the transcript") and trajectory[1] == temperature
+    assert OptimizationResult.from_file(root / "result.json") == result
+    assert result.load_transcript(None) is None
+    with pytest.raises(ValueError, match="not a transcript hash"):  # a result.json from elsewhere
+        result.load_transcript("../../run")
+
+    # Moved, the run folder is passed in.
+    moved = shutil.copytree(root, tmp_path / "moved")
+    shutil.rmtree(root)
+    reloaded = OptimizationResult.from_file(moved / "result.json")
+    with pytest.raises(FileNotFoundError):
+        reloaded.load_transcript(saved[0])
+    assert reloaded.load_transcript(saved[0], run_dir=moved)[0].startswith("only in the transcript")
+
+    # A result written with the trajectories inline still loads.
+    old = result.to_dict()
+    for splits in old["reports"].values():
+        for report in splits.values():
+            for row in report["cases"]:
+                row["actual_trajectory"] = ["inline"]
+                del row["transcript"]
+    (tmp_path / "old.json").write_text(json.dumps(old, indent=2), encoding="utf-8")
+    reloaded = OptimizationResult.from_file(tmp_path / "old.json")
+    assert reloaded.reports[result.baseline_id]["train"].cases[0]["actual_trajectory"] == ["inline"]
+
+
+async def test_a_finished_run_resumed_rewrites_the_same_transcript_hashes(tmp_path):
+    optimizer, _ = _run_with_transcripts(tmp_path)
+    original = await optimizer.run_async()
+
+    # Fresh proposers, as a new process would pass them; the same cases, since a failed trial's row holds the
+    # case's session id.
+    passed, _ = _with_transcripts(optimizer._experiment)
+    again = await Optimizer.resume(original.run_dir, **passed).run_async()
+    assert any(row["transcript"] for splits in again.reports.values() for r in splits.values() for row in r.cases)
+    assert again.reports == original.reports
+    assert OptimizationResult.from_file(original.run_dir / "result.json") == again
 
 
 # ---- concurrent vs. one-at-a-time scoring ---------------------------------------------------------------

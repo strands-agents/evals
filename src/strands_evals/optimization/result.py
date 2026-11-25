@@ -33,10 +33,12 @@ from ..types.optimization import (
     ValidationReport,
     Value,
 )
+from ..types.trace import Session
 from .candidate import Candidate, changed_keys, changed_values, diff
 from .declaration.files import _write_text_atomically
 from .declaration.space import Space
 from .end_phase import TEST_LEVEL
+from .record.run_directory import read_transcript
 from .scoring.metrics import USAGE_METRICS
 
 Grain = Literal["iteration", "proposal", "case"]
@@ -133,7 +135,8 @@ class OptimizationResult(BaseModel):
 
     Attributes:
         run_id: The run folder's name.
-        run_dir: The run folder; it may not exist on another machine, and nothing here reads it.
+        run_dir: The run folder; it may not exist on another machine. Only `load_transcript` reads it: the
+            trajectories that `reports` and the case rows name by hash are in its `transcripts/`.
         baseline_id: The baseline's id.
         candidates: Every candidate of the run's closed iterations by id, in display-number order (a killed
             iteration's candidate that the resumed run didn't propose again is left out).
@@ -177,8 +180,12 @@ class OptimizationResult(BaseModel):
             `agent_cost` or `retry_cost`. Zero when the agents can't be told apart (the `build_task` path, a
             factory that returned something else).
         reports: Candidate id -> split -> the `EvaluationReport` `Experiment` would have returned for those
-            trials (every run's rows, each tagged with `run_index`; failed trials as `Experiment`'s score-0
-            rows), for every candidate and split it has trials on. Display only: nothing in the run reads it.
+            trials (every run's rows, each tagged with `run_index` and `transcript`; failed trials as
+            `Experiment`'s score-0 rows), for every candidate and split it has trials on. Trajectories are
+            referenced, not inlined: `actual_trajectory` is None (a failed trial's row has no such key), and
+            `transcript` is the hash the case rows give, None when the row's trial record holds no trajectory;
+            `load_transcript(row["transcript"])` reads one back. So `display(include_actual_trajectory=True)`
+            shows None. Display only: nothing in the run reads it.
         rows: Every grain's rows (`to_rows`), computed when the result was built.
     """
 
@@ -530,15 +537,37 @@ class OptimizationResult(BaseModel):
         return cls.model_validate(data)
 
     def to_file(self, path: str | Path) -> Path:
-        """Write `to_dict()` as JSON to `path`; returns `path`."""
+        """Write `to_dict()` as compact JSON (no indentation) to `path`; returns `path`."""
         path = Path(path)
-        _write_text_atomically(path, json.dumps(self.to_dict(), indent=2, ensure_ascii=False, allow_nan=False) + "\n")
+        text = json.dumps(self.to_dict(), separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+        _write_text_atomically(path, text + "\n")
         return path
 
     @classmethod
     def from_file(cls, path: str | Path) -> OptimizationResult:
         """The result `to_file` wrote."""
         return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+
+    def load_transcript(
+        self, transcript: str | None, *, run_dir: str | Path | None = None
+    ) -> list[Any] | Session | None:
+        """The trajectory a report row or a case row names by its `transcript` hash, read from the run folder.
+
+        A `Session` comes back as one (its file stores each distinct message once); a trajectory the rollout
+        returned comes back as that list. None when `transcript` is None (the trial kept no trajectory).
+
+        Args:
+            transcript: A row's `transcript`.
+            run_dir: The run folder, when it isn't at `self.run_dir` (moved, or on another machine).
+
+        Raises:
+            FileNotFoundError: The run folder has no such transcript.
+            ValueError: `transcript` isn't 16 lowercase hex digits, the form the run names transcripts by (so a
+                `result.json` from elsewhere can't point it at another file).
+        """
+        if transcript is None:
+            return None
+        return read_transcript(Path(self.run_dir if run_dir is None else run_dir), transcript)
 
 
 _LEVEL = round(TEST_LEVEL * 100)
@@ -857,6 +886,7 @@ def _iteration_rows(
 def _case_rows(
     events: Sequence[Mapping[str, Any]],
     records: Mapping[str, Mapping[tuple[str, int], TrialRecord]],
+    transcripts: Mapping[str, Mapping[tuple[str, int], Mapping[str, str] | None]],
     *,
     candidates: Mapping[str, CandidateView],
     split: CaseSplit,
@@ -865,22 +895,17 @@ def _case_rows(
     """One row per trial (candidate x case x run), the last attempt per key (API.md section 10, "Result rows").
 
     Args:
-        events: The closed events (`closed_events`), for each trial's objective and transcript.
+        events: The closed events (`closed_events`), for each trial's objective.
         records: Candidate id -> (case name, run index) -> its last trial record.
+        transcripts: The same keys -> that record's transcript (`{hash, format}`), None without a trajectory.
         candidates: Every saved candidate's view, for the order (display number) and numbers.
         split: The run's split, for the case order.
         evaluators: Every evaluator's name, for the per-evaluator columns.
     """
     scores: dict[tuple[str, str], Mapping[str, Any]] = {}
-    transcripts: dict[tuple[str, int, str], str | None] = {}
     for event in events:
         if event["event"] == "score":
             scores[(event["candidate_id"], event["split"])] = event
-        elif event["event"] == "trial":
-            saved = event["record"]
-            transcript = saved.get("transcript")
-            key = (saved["candidate_id"], saved["run_index"], saved["case_name"])
-            transcripts[key] = None if transcript is None else transcript["hash"]
     rows = []
     for candidate_id, view in candidates.items():
         trials = records.get(candidate_id, {})
@@ -922,15 +947,27 @@ def _case_rows(
                         **{metric: getattr(usage, metric) for metric in USAGE_METRICS},
                         judge_tokens=sum(u.tokens for u in record.judge_usage.values()),
                         output=record.output,
-                        transcript=transcripts.get((candidate_id, index, case_name)),
+                        transcript=_transcript_hash(transcripts, candidate_id, case_name, index),
                     )
                     row["models"] = list(usage.models)  # a copy, not the record's list
                     rows.append(row)
     return rows
 
 
+def _transcript_hash(
+    transcripts: Mapping[str, Mapping[tuple[str, int], Mapping[str, str] | None]],
+    candidate_id: str,
+    case_name: str,
+    run_index: int,
+) -> str | None:
+    """The hash of the kept record's transcript; None when it has no trajectory."""
+    transcript = transcripts.get(candidate_id, {}).get((case_name, run_index))
+    return None if transcript is None else transcript["hash"]
+
+
 def _reports(
     records: Mapping[str, Mapping[tuple[str, int], TrialRecord]],
+    transcripts: Mapping[str, Mapping[tuple[str, int], Mapping[str, str] | None]],
     *,
     cases: Sequence[Case],
     evaluators: Sequence[Evaluator],
@@ -944,11 +981,16 @@ def _reports(
     any other trial with `error` set (`Experiment` failed on its case after the task returned, or in a
     re-judge, which keeps the first pass's scores); an evaluator in `evaluator_errors` gets a score-0 row
     with "Evaluator error: <exception type>" (the record keeps only the type). Each row is tagged
-    `evaluator`, `evaluator_type`, and `run_index`. So `overall_score` is what a plain eval run of the same
-    trials reports.
+    `evaluator`, `evaluator_type`, `run_index`, and `transcript`. So `overall_score` is what a plain eval
+    run of the same trials reports.
+
+    Trajectories are referenced, not inlined: `actual_trajectory` is None (a failed trial's row has no such
+    key, as in `Experiment`), and `transcript` is the hash of the trial's `<run>/transcripts/<hash>.json`
+    (None when the record holds no trajectory), as in the case rows.
 
     Args:
         records: Candidate id -> (case name, run index) -> its last trial record.
+        transcripts: The same keys -> that record's transcript (`{hash, format}`), None without a trajectory.
         cases: The experiment's cases.
         evaluators: The experiment's evaluators, in its order.
         split: The run's split, for the case order.
@@ -973,7 +1015,12 @@ def _reports(
                 name, type_name = evaluator.get_name(), evaluator.get_type_name()
                 for record in ordered:
                     case = by_name[record.case_name]
-                    tag = {"evaluator": name, "evaluator_type": type_name, "run_index": record.run_index}
+                    tag = {
+                        "evaluator": name,
+                        "evaluator_type": type_name,
+                        "run_index": record.run_index,
+                        "transcript": _transcript_hash(transcripts, candidate_id, record.case_name, record.run_index),
+                    }
                     raised = record.status in (TrialStatus.AGENT_FAILURE, TrialStatus.INFRASTRUCTURE_INVALID)
                     if raised or (record.error is not None and name not in record.evaluations):
                         rows.append({**case.model_dump(), **tag})
@@ -989,7 +1036,7 @@ def _reports(
                         expected_output=case.expected_output,
                         expected_assertion=case.expected_assertion,
                         expected_trajectory=case.expected_trajectory,
-                        actual_trajectory=record.trajectory,
+                        actual_trajectory=None,  # referenced by the `transcript` tag
                         metadata=case.metadata,
                         actual_interactions=record.interactions,
                         expected_interactions=case.expected_interactions,
