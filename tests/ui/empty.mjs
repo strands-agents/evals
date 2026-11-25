@@ -174,8 +174,8 @@ const RUN = {
   const p = await page({ fetchImpl: fakeServer(), url: 'http://127.0.0.1:9999/optimization' });
   eq([p.view(), p.window.location.pathname, p.text('#opt-runs-rows'), frog(p, '#opt-runs-rows'), p.$('.tab[data-view="opt-runs"]').hidden],
     ['v-opt-runs', '/optimization', 'No optimizer runs here yetNo directory under /served holds a run.json with an '
-      + 'events.jsonl beside it.', true, true],
-    'the address of the runs list in a folder with no run shows it empty, and says what a run is');
+      + 'events.jsonl beside it.', true, false],
+    'the address of the runs list in a folder with no run shows it empty, says what a run is, and keeps its tab');
 }
 
 // ── a report with no rows, an experiment with no cases ──

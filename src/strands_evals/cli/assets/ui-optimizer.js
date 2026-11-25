@@ -118,11 +118,11 @@ function runStateCell(r) {
 
 function renderOptimizerRuns() {
   const any = OPT_RUNS.length > 0;
-  /* The Optimization section, the Runs view in it, and the run's own page tabs: all of them wait
-     for a run to be found, so a folder with none is never told it has a section. */
-  $('sgroup-opt').hidden = !any;
+  /* The Optimization section and its Runs list show in every folder, as Reports and Experiments do, so a
+     folder with no run says so there. A run's own page tabs wait for a run to be found. */
   app.querySelectorAll('.tab[data-sec="optimization"]').forEach(t => {
-    t.hidden = !any || (t.dataset.multi !== undefined && !(OPT && OPT.goals.length >= 2));
+    t.hidden = t.dataset.view !== 'opt-runs'
+      && (!any || (t.dataset.multi !== undefined && !(OPT && OPT.goals.length >= 2)));
   });
 
   $('opt-runs-sub').textContent = any

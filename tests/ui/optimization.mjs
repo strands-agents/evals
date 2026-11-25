@@ -131,8 +131,10 @@ const blockDiff = root => {
 // ── section visibility ──
 {
   const none = await served(SAMPLE);
-  ok(none.$('#sgroup-opt').hidden && none.$$('.tab[data-sec="optimization"]').every(t => t.hidden),
-    'with no optimizer run there is no Optimization section, no Runs view and no tabs of a run');
+  ok(!none.$('#sgroup-opt').hidden && !none.$('.tab[data-view="opt-runs"]').hidden
+    && none.$$('.tab[data-sec="optimization"]:not([data-view="opt-runs"])').every(t => t.hidden),
+    'with no optimizer run the Optimization section and its Runs list still show, as Reports and Experiments do, '
+      + 'but no tabs of a run');
   ok(none.$('#runs-sub').hidden && !none.$('#runs-sub .runrow'),
     'and nothing is listed under the Runs row it does not have');
 }
@@ -774,10 +776,10 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
     'a broken line in the middle is reported by number, as a warning', broken.text('#opt-note'));
 
   const configOnly = await open({ 'demo/run.json': CONFIG });
-  ok(configOnly.$('.tab[data-view="opt-runs"]').hidden && skips(configOnly).some(s => /demo\/run\.json/.test(s)),
+  ok(!configOnly.$('#opt-runs-rows tr[data-opt-run]') && skips(configOnly).some(s => /demo\/run\.json/.test(s)),
     'a run.json with no event log is not a run, and is reported as unusable', skips(configOnly).join(' | '));
   const logOnly = await open({ 'demo/events.jsonl': jsonl(EVENTS) });
-  ok(logOnly.$('.tab[data-view="opt-runs"]').hidden && skips(logOnly).some(s => /no run\.json beside it/.test(s)),
+  ok(!logOnly.$('#opt-runs-rows tr[data-opt-run]') && skips(logOnly).some(s => /no run\.json beside it/.test(s)),
     'an event log with no run.json is not one either, and says what it lacks', skips(logOnly).join(' | '));
 }
 
@@ -811,16 +813,6 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
     eq(status(q), ['interrupted', 'interrupted resume it to continue'],
       'once that process dies, which changes no file, the next poll says the run was interrupted');
   }
-}
-
-// ── a folder of optimizer runs alone opens on them ──
-{
-  const alone = await open({ 'optimization/runs/r1/run.json': CONFIG, 'optimization/runs/r1/events.jsonl': jsonl(EVENTS) });
-  eq([alone.$('.view.on').id, alone.$$('#opt-runs-rows tr[data-opt-run]').length], ['v-opt-runs', 1],
-    'with no report, experiment or session, the page opens on the list of runs, not on an empty Reports list');
-  const withExperiment = await open({ 'experiment.json': fs.readFileSync(`${SAMPLE}experiment.json`, 'utf8'),
-    'optimization/runs/r1/run.json': CONFIG, 'optimization/runs/r1/events.jsonl': jsonl(EVENTS) });
-  eq(withExperiment.$('.view.on').id, 'v-experiments', 'beside an experiment it still opens on Experiments');
 }
 
 // ── two runs in one tree ──
