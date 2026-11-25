@@ -114,8 +114,9 @@ const found = p => {
   await p.openSession('a.json');
   ok(p.view() === 'v-session' && p.window.location.pathname === '/sessions/traces/a.json' && tab(p).classList.contains('on'),
     'a row opens the session on its own page, named in the address', `${p.view()} ${p.window.location.pathname}`);
-  eq([p.text('#crumbs'), p.text('#facts'), p.text('#path')],
-    ['Sessions/traces/a.json', '3 traces · 9 spans · 12s · session s-apart', 'traces/a.json'], 'the page header names it and says what it holds');
+  eq([p.text('#crumbs'), p.text('#facts'), p.window.document.title],
+    ['Sessions/traces/a.json', '3 traces · 9 spans · 12s · session s-apart', 'traces/a.json · Sessions · strands-evals'],
+    'the page header names it and says what it holds, and so does the browser’s tab');
   eq(p.text('#ses-trace .tr-count'), '3 traces · 9 spans of a recorded session', 'the session is counted as a whole');
   eq(texts(p, '#ses-trace .tr-head'), ['Trace 1 of 3t-0', 'Trace 2 of 3t-1', 'Trace 3 of 3t-2'], 'each trace has its own heading');
   eq(texts(p, '#ses-trace .tr-sum'), ['3 model calls · 3 tool calls · 12s', ...Array(3).fill('1 model call · 1 tool call · 4s')],
@@ -217,7 +218,7 @@ function serve(tree) {
   eq((await openAt('/sessions/traces/a.diagnosis.json'))[1], 'v-session /sessions/traces/a.json',
     'the address of a diagnosis opens the session it was made from');
   const [gone, lost] = await openAt('/sessions/gone.json');
-  eq([lost, gone.text('#missing b'), tab(gone).classList.contains('on')], ['v-missing /sessions/gone.json', 'That session hopped away', true],
+  eq([lost, gone.text('#missing b'), tab(gone).classList.contains('on')], ['v-missing /sessions/gone.json', 'Session not found', true],
     'the address of a session that is gone says so and stays, with Sessions still marked');
   eq((await openAt('/'))[1], 'v-sessions /sessions', 'a folder holding only sessions opens on them');
 
@@ -235,7 +236,7 @@ function serve(tree) {
   const p = await page({ fetchImpl: server, url: 'http://127.0.0.1:9999/sessions', visible: true });
   const poll = async () => { await p.window.pollNow(); await tick(); };
   eq([tab(p).hidden, p.view(), p.window.location.pathname, p.text('#sessions-rows')],
-    [true, 'v-sessions', '/sessions', 'No sessions in this pond yetNo recorded session or diagnosis under /served. '
+    [true, 'v-sessions', '/sessions', 'No sessions here yetNo recorded session or diagnosis under /served. '
       + 'Save one with strands-evals fetch ... -o FILE, then Rescan. CLI reference'],
     'the address of the list in a folder with no session shows it empty, and says how to fill it');
 

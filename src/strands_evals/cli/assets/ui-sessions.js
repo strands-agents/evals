@@ -26,26 +26,27 @@ function foundTag(s) {
   const made = madeOf(s);
   if (!made.length) return '';
   const failures = made.reduce((n, d) => n + d.failures, 0);
-  return ' · ' + (failures ? `<span class="tag warn">${plural(failures, 'failure')} found</span>`
+  return ' · ' + (failures ? `<span class="tag bad">${plural(failures, 'failure')} found</span>`
     : '<span class="tag ok">no failures found</span>');
 }
 
 function renderSessions() {
-  const rows = sessionRows();
-  const lone = rows.length - SESSIONS.length;
-  app.querySelector('.tab[data-view="sessions"]').hidden = !rows.length;
-  $('sessions-count').innerHTML = plural(SESSIONS.length, 'session')
+  const all = sessionRows(), rows = arranged('sessions', all);
+  const lone = all.length - SESSIONS.length;
+  app.querySelector('.tab[data-view="sessions"]').hidden = !all.length;
+  $('sessions-count').innerHTML = (LIST_STATE.sessions.q ? `${rows.length} of ` : '') + plural(SESSIONS.length, 'session')
     + (lone ? ` · ${lone} ${lone === 1 ? 'diagnosis' : 'diagnoses'} without ${lone === 1 ? 'its' : 'their'} session` : '')
     + (truncated ? ' · <span class="tag warn">scan hit the file cap</span>' : '');
   $('sessions-rows').innerHTML = rows.map(m =>
-    `<tr class="row${sesMeta && sesMeta.path === m.path ? ' on' : ''}" data-session="${esc(m.path)}" tabindex="0">
+    `<tr class="row${sesMeta && sesMeta.path === m.path ? ' on' : ''}" data-session="${esc(m.path)}" tabindex="0" aria-describedby="row-hint">
         <td>${filed(m)}</td>
         <td class="ev">` + (isSession(m) ? sessionHolds(m) + foundTag(m)
       : '<span class="tag" data-tip="A diagnosis whose session is not in this folder. It opens on its own.">diagnosis</span> '
         + diagnosisHolds(m)) + `</td>
         <td class="ev">${m.seconds == null ? '—' : secondsText(m.seconds)}</td>
         <td class="ev">${when(m.modified)}</td></tr>`).join('')
-    || blank('No sessions in this pond yet', `No recorded session or diagnosis under ${esc(ROOT)}. `
+    || (all.length ? noMatch('sessions', 4) : '')
+    || blank('No sessions here yet', `No recorded session or diagnosis under ${esc(ROOT)}. `
       + 'Save one with <code>strands-evals fetch ... -o FILE</code>, then Rescan. '
       + docLink('cli/', 'empty-sessions', 'CLI reference'));
   $('stores').innerHTML = STORES.length

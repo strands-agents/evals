@@ -10,7 +10,8 @@ function verdictGrid() {
   const tabbable = evaluators.length * BY_CASE.length <= TAB_MARKS;
   return heatmap(evaluators, BY_CASE.map(g => g.name), (e, c) => {
     const r = BY_CASE[c].rows.find(row => evaluatorName(row) === evaluators[e]);
-    return r && { cls: verdictOf(r), tip: `${rowTitle(r)} · ${verdictText(r)}`, attrs: rowLink(r, tabbable) };
+    return r && { cls: verdictOf(r), tip: `${rowTitle(r)} · ${verdictText(r)}`, attrs: rowLink(r, tabbable),
+      mark: verdictOf(r) === 'fail' };
   });
 }
 

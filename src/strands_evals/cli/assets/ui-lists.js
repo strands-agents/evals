@@ -13,7 +13,7 @@ const blank = (title, body) => `<tr><td colspan="4">${emptyState(title, body)}</
 const LINK_TAG = {
   verified: ['ok', 'pairing verified'],
   partial: ['warn', 'partial match'],
-  mismatch: ['warn', 'does not match'],
+  mismatch: ['bad', 'does not match'],
   unverified: ['', 'unverified pairing'],
 };
 const linkTag = link => (link && LINK_TAG[link.status]
@@ -33,8 +33,94 @@ const madeFrom = r => (r.experiment ? `${openLink('experiment', r.experiment)} $
 const reportsOf = e => e.reports.map(path => REPORTS.find(r => r.path === path)).filter(Boolean);
 const experimentSize = e => `${plural(e.cases, 'case')} · ${plural((e.evaluators || []).length, 'evaluator')}`;
 
-const filed = m => `${m.dir && m.dir !== '.' ? `<span class="dim">${esc(m.dir)} /</span> ` : ''}${esc(m.name)}`
-  + `<br><span class="path">${KB(m.size)}</span>`;
+const filed = m => `${m.dir && m.dir !== '.' ? `<span class="dim">${esc(m.dir)} /</span> ` : ''}${esc(m.name)}`;
+
+/* ══════════ arranging a list ══════════
+
+   A list comes in the order the scan found it. A column head sorts it and the box over it filters
+   it, each list on its own, until they are cleared. The lists under the sidebar's rows are not
+   arranged: they are every file, in the scan's order. */
+
+const LIST_STATE = Object.fromEntries(['reports', 'experiments', 'sessions', 'opt-runs'].map(list => [list, { q: '', sort: null }]));
+/* What each column that sorts orders its list by. */
+const LIST_SORTS = {
+  reports: { name: r => r.path, score: r => r.overall_score, experiment: r => r.experiment, modified: r => r.modified },
+  experiments: { name: e => e.path, cases: e => e.cases, modified: e => e.modified },
+  sessions: { name: m => m.path, duration: m => m.seconds, modified: m => m.modified },
+  'opt-runs': {
+    name: r => r.run_id, result: r => ((r.result || {}).objective || {}).mean_diff,
+    searched: r => r.candidates, modified: r => r.modified,
+  },
+};
+/* What the filter box is matched against, and what the list calls one of its rows. */
+const LIST_TEXT = {
+  reports: r => `${r.path} ${r.experiment || ''}`,
+  experiments: e => e.path,
+  sessions: m => `${m.path} ${m.session_id || ''}`,
+  'opt-runs': r => `${r.run_id} ${r.name || ''} ${r.dir || ''}`,
+};
+const LIST_NOUN = { reports: 'report', experiments: 'experiment', sessions: 'session', 'opt-runs': 'run' };
+
+/** The rows of a list as its filter and its sorted column leave them. */
+function arranged(list, rows) {
+  const { q, sort } = LIST_STATE[list];
+  const kept = q ? rows.filter(r => LIST_TEXT[list](r).toLowerCase().includes(q)) : rows.slice();
+  if (!sort) return kept;
+  const of = LIST_SORTS[list][sort.key];
+  const value = r => { const v = of(r); return typeof v === 'string' ? v.toLowerCase() : v; };
+  const none = v => v == null || v === '' || (typeof v === 'number' && !isFinite(v));
+  /* A row with nothing in the column goes last whichever way the column runs. */
+  return kept.sort((a, b) => {
+    const x = value(a), y = value(b);
+    if (none(x) || none(y)) return none(x) - none(y);
+    return (x < y ? -1 : x > y ? 1 : 0) * sort.dir;
+  });
+}
+
+/** How many rows a list shows: all of them, or how many of them its filter kept. */
+const listCount = (list, shown, total) => (LIST_STATE[list].q
+  ? `${shown} of ${plural(total, LIST_NOUN[list])}` : plural(total, LIST_NOUN[list]));
+/** The row a filter that matched nothing leaves, with the way back out of it. */
+const noMatch = (list, columns) => `<tr><td colspan="${columns}" class="empty">No ${LIST_NOUN[list]} matches `
+  + `<button class="btn" data-list-clear="${list}">Clear the filter</button></td></tr>`;
+
+function drawList(list) {
+  ({ reports: renderLists, experiments: renderLists, sessions: renderSessions, 'opt-runs': renderOptimizerRuns })[list]();
+  const sort = LIST_STATE[list].sort;
+  for (const th of app.querySelectorAll(`table[data-list="${list}"] th[data-sort]`)) {
+    th.setAttribute('aria-sort', sort && sort.key === th.dataset.sort ? (sort.dir > 0 ? 'ascending' : 'descending') : 'none');
+  }
+}
+
+/* A column head that sorts is a button in the head, so the keyboard reaches it and a screen reader names it. */
+app.querySelectorAll('table[data-list] th[data-sort]').forEach(th => {
+  th.innerHTML = `<button class="sort" type="button">${th.innerHTML}</button>`;
+  th.setAttribute('aria-sort', 'none');
+});
+app.addEventListener('click', e => {
+  const clear = e.target.closest('[data-list-clear]');
+  if (clear) {
+    const list = clear.dataset.listClear;
+    LIST_STATE[list].q = '';
+    app.querySelector(`[data-list-find="${list}"]`).value = '';
+    return drawList(list);
+  }
+  const head = e.target.closest('.sort') && e.target.closest('th[data-sort]');
+  if (!head) return;
+  const list = head.closest('table').dataset.list, state = LIST_STATE[list], key = head.dataset.sort;
+  /* First the way most often wanted: names from A, numbers and dates from the largest. Then the
+     other way, then the scan's own order again. */
+  const first = key === 'name' || key === 'experiment' ? 1 : -1;
+  state.sort = !state.sort || state.sort.key !== key ? { key, dir: first }
+    : state.sort.dir === first ? { key, dir: -first } : null;
+  drawList(list);
+});
+app.addEventListener('input', e => {
+  const list = e.target.dataset && e.target.dataset.listFind;
+  if (!list) return;
+  LIST_STATE[list].q = e.target.value.trim().toLowerCase();
+  drawList(list);
+});
 
 /* ── the files, under the views that name them ──
 
@@ -91,29 +177,34 @@ function renderLists() {
   $('experiments-sub').textContent = `${from} An experiment file holds the cases and evaluators a run uses.`;
 
   const capped = truncated ? ' · <span class="tag warn">scan hit the file cap</span>' : '';
-  $('reports-count').innerHTML = plural(REPORTS.length, 'report') + capped;
-  $('experiments-count').innerHTML = plural(EXPERIMENTS.length, 'experiment') + capped;
-  const failed = scanError ? `<tr><td colspan="4"><span class="tag warn">${esc(scanError)}</span></td></tr>` : '';
-  const nothing = (what, link) => (failed ? '' : blank(`No ${what}s in this pond yet`, `No ${what} JSON under ${esc(ROOT)}. ${link}`));
+  const reports = arranged('reports', REPORTS), experiments = arranged('experiments', EXPERIMENTS);
+  $('reports-count').innerHTML = listCount('reports', reports.length, REPORTS.length) + capped;
+  $('experiments-count').innerHTML = listCount('experiments', experiments.length, EXPERIMENTS.length) + capped;
+  const failed = scanError ? `<tr><td colspan="4"><span class="tag bad">${esc(scanError)}</span></td></tr>` : '';
+  /* A list the folder has nothing for says how to fill it; one its filter emptied says how to clear that. */
+  const nothing = (list, total, link) => (failed ? '' : total ? noMatch(list, 4)
+    : blank(`No ${LIST_NOUN[list]}s here yet`, `No ${LIST_NOUN[list]} JSON under ${esc(ROOT)}. ${link}`));
 
-  redraw($('reports-rows'), failed + (REPORTS.map(r => {
+  redraw($('reports-rows'), failed + (reports.map(r => {
     const open = !repCand && repMeta && repMeta.path === r.path;
-    return `<tr class="row${open ? ' on' : ''}" data-report="${esc(r.path)}" tabindex="0">
+    return `<tr class="row${open ? ' on' : ''}" data-report="${esc(r.path)}" tabindex="0" aria-describedby="row-hint">
         <td>${filed(r)}</td>
         <td class="ev">${scoreBar(r.overall_score)} · ${plural(r.rows, 'row')}`
       + (r.failing ? ` · <span class="vb fail"><i></i>${r.failing} failing</span>` : '') + `</td>
         <td class="ev">${madeFrom(r)}</td>
         <td class="ev">${when(r.modified)}</td></tr>`;
-  }).join('') || nothing('report', docLink('cli/run/#experiment-file-run', 'empty-reports', 'How to run an experiment'))));
+  }).join('') || nothing('reports', REPORTS.length,
+    docLink('cli/run/#experiment-file-run', 'empty-reports', 'How to run an experiment'))));
 
-  redraw($('experiments-rows'), failed + (EXPERIMENTS.map(e =>
-    `<tr class="row${expMeta && expMeta.path === e.path ? ' on' : ''}" data-experiment="${esc(e.path)}" tabindex="0">
+  redraw($('experiments-rows'), failed + (experiments.map(e =>
+    `<tr class="row${expMeta && expMeta.path === e.path ? ' on' : ''}" data-experiment="${esc(e.path)}" tabindex="0" aria-describedby="row-hint">
         <td>${filed(e)}</td>
         <td class="ev">${experimentSize(e)}</td>
         <td class="ev">${reportsOf(e).map(r => `${openLink('report', r.path, r.name)} ${fmt(r.overall_score)}`).join('<br>')
           || '<span class="empty">not run yet</span>'}</td>
         <td class="ev">${when(e.modified)}</td></tr>`).join('')
-    || nothing('experiment', docLink('quickstart/#run-your-first-evaluation', 'empty-experiments', 'Create your first experiment'))));
+    || nothing('experiments', EXPERIMENTS.length,
+      docLink('quickstart/#run-your-first-evaluation', 'empty-experiments', 'Create your first experiment'))));
 
   $('skips').innerHTML = skipped.length
     ? `<details class="skips"><summary>${plural(skipped.length, 'file')} skipped</summary><ul>`
@@ -163,7 +254,7 @@ async function rescan(keepOpen) {
 /* A file that will not load says so on a page of its own, at the address that names the file. */
 function openFailed(path, err) {
   const list = REPORTS.some(r => r.path === path) ? 'reports' : EXPERIMENTS.some(e => e.path === path) ? 'experiments' : 'sessions';
-  showMissing(`/${list}${idPath(path)}`, list, 'This one would not surface',
+  showMissing(`/${list}${idPath(path)}`, list, 'This file could not be read',
     `${named(path)} could not be read: ${esc(err.message)}`, [listWay(list)]);
 }
 

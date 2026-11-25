@@ -35,7 +35,6 @@ function clearReport() {
   const score = $('r-score');
   score.textContent = '—'; score.classList.add('none');
   $('r-stats').innerHTML = '';
-  $('r-passbar').hidden = true;
   $('rep-count').textContent = '';
   $('rep-more').hidden = true;
   $('rep-rows').innerHTML = '';
@@ -109,16 +108,16 @@ function renderHero() {
   const score = $('r-score');
   score.textContent = fmt(REP.overall_score); score.classList.remove('none');
   const n = verdictCounts(ROWS), applicable = n.pass + n.fail;
-  const bar = $('r-passbar');
-  bar.hidden = !applicable;
-  bar.title = `${n.pass} of ${plural(applicable, 'applicable row')} passing`;
-  bar.firstElementChild.style.width = `${applicable ? (n.pass / applicable) * 100 : 0}%`;
+  /* The share of applicable rows that passed, drawn in the tile that counts them: under the score it
+     read as the score, which is a mean and a different number. */
+  const share = applicable
+    ? `<div class="passbar" id="r-passbar"><span style="width:${(n.pass / applicable) * 100}%"></span></div>` : '';
   $('r-stats').innerHTML = [
-    [`${n.pass} / ${applicable}`, 'Rows passing', 'data-tip="A row is one case scored by one evaluator. It passes when that evaluator says so."'],
+    [`${n.pass} / ${applicable}`, 'Rows passing', 'data-tip="A row is one case scored by one evaluator. It passes when that evaluator says so."', share],
     [BY_CASE.length, 'Cases', 'data-term="case"'],
     [new Set(ROWS.map(evaluatorName)).size, 'Evaluators', 'data-term="evaluator"'],
     [n.na, 'Not applicable', 'data-term="not_applicable"'],
-  ].map(([v, k, tip]) => `<div class="stat" ${tip}><div class="v">${v}</div><div class="k">${k}</div></div>`).join('');
+  ].map(([v, k, tip, more]) => `<div class="stat" ${tip}><div class="v">${v}</div><div class="k">${k}</div>${more || ''}</div>`).join('');
 }
 
 const words = s => String(s == null ? '' : s).split(/\s+/);
@@ -255,7 +254,7 @@ function renderReport() {
     /* Nothing matching is always the filter, the search or one group: offer the way back out of all three. */
     || (ROWS.length ? '<tr><td colspan="4" class="empty">No rows match'
       + ' <button class="btn" data-act="rep-all">Show every row</button></td></tr>'
-      : `<tr><td colspan="4">${emptyState('Not a ripple in this report',
+      : `<tr><td colspan="4">${emptyState('No rows in this report',
         'The file holds no rows: the run that wrote it had no case to evaluate.')}</td></tr>`));
 }
 

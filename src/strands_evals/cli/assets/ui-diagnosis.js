@@ -23,7 +23,7 @@ function failureItem(f, spans) {
   if (!f || typeof f !== 'object') return `<li>${asWritten(f)}</li>`;
   const evidence = arrayOf(f.evidence), confidence = arrayOf(f.confidence);
   return `<li><div class="diag-at">at ${spanRef(f.span_id, spans)}</div>` + arrayOf(f.category).map((category, i) =>
-    `<div class="diag-cat"><span class="tag warn">${esc(categoryText(category))}</span>`
+    `<div class="diag-cat"><span class="tag bad">${esc(categoryText(category))}</span>`
     + (typeof confidence[i] === 'number'
       ? `<span class="path" data-tip="How sure the detector was of this failure.">${Math.round(confidence[i] * 100)}% sure</span>` : '')
     + (evidence[i] ? `<p>${esc(evidence[i])}</p>` : '') + '</div>').join('') + '</li>';

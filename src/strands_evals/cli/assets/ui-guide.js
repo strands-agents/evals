@@ -113,6 +113,7 @@ const VIEW_GUIDE = {
     steps: [
       'Each row is a <b>report</b>: the result of one run. It names the <b>experiment</b> file it was made from, or says it was run from code.',
       'Select a row to open the report. Select the experiment beside it to open its cases.',
+      'A column head sorts the list, and the box over it keeps the rows whose name holds what you type.',
       'No report yet? Run an experiment, then Rescan: <code>strands-evals run FILE --agent module:attr -o NAME.report.json</code>',
     ],
     terms: ['report', 'experiment', 'pairing'],
@@ -122,6 +123,7 @@ const VIEW_GUIDE = {
     steps: [
       'Each row is an <b>experiment</b> file: the cases and evaluators a run uses, and the reports made from it.',
       'Select a row to open its cases. Select a report beside it to open that report.',
+      'A column head sorts the list, and the box over it keeps the rows whose name holds what you type.',
       'An experiment built in code and never saved has no file here. Its reports are still under Reports.',
     ],
     terms: ['experiment', 'case', 'evaluator'],
@@ -129,10 +131,11 @@ const VIEW_GUIDE = {
   },
   experiment: {
     steps: [
-      'An experiment is a list of <b>cases</b> and the <b>evaluators</b> that score them. Evaluators are the chips above the cases.',
+      'An experiment is a list of <b>cases</b> and the <b>evaluators</b> that score them. The evaluators are the chips under that name, above the cases.',
       'Select a case to edit it. The ? beside each field says what it is for and what it accepts.',
       'Select an evaluator to see what it checks and change its settings.',
       'Save writes the file back. Cases marked draft can be accepted or dropped in one review pass.',
+      'A server started with <code>--read-only</code> shows the file and offers nothing that would change it.',
       '<b>Copy as Markdown</b> at the top copies the experiment as text for a coding agent. The selected case has its own copy, and the command that runs it alone.',
       'An experiment with no report offers <b>Copy run command</b> at the top: the command that runs it whole, once <code>--agent</code> names your agent.',
     ],
@@ -144,7 +147,7 @@ const VIEW_GUIDE = {
       'One row per case and evaluator. The score is the evaluator\'s number; the verdict is its own pass or fail.',
       'Open a row to see the input, the expected and actual output, and the reason the evaluator gave.',
       'Filter to Failing to see what to fix first. Rows marked not applicable are left out of the overall score.',
-      'The charts show where the failures sit, how scores are spread, and what each case took. Select a mark to open its row.',
+      'The charts show where the failures sit, how scores are spread, and what each case took. In the grid a failing cell is crossed as well as red. Select a mark to open its row.',
       'Group by lets you split the rows by anything the cases carry, such as a tag, a red-team category or a chaos condition. A row with a diagnosis says what failed, why, and what to change.',
       'To hand it to a coding agent, <b>Copy as Markdown</b> at the top copies the whole report and <b>Copy failing rows as a prompt</b> only what fails. An open row has its own copy actions and a link.',
     ],
@@ -155,6 +158,7 @@ const VIEW_GUIDE = {
     steps: [
       'Each row is a <b>session</b>: the recorded traces of one conversation, saved with <code>strands-evals fetch ... -o FILE</code> or from code.',
       'Select a row to read it, one trace after another.',
+      'A column head sorts the list, and the box over it keeps the rows whose name holds what you type.',
       'A <b>diagnosis</b> shows on the page of the session it was made from. One whose session is not in this folder is listed here on its own.',
     ],
     terms: ['session', 'trace', 'diagnosis'],
@@ -174,6 +178,7 @@ const VIEW_GUIDE = {
     steps: [
       'Each row is one optimizer run in this folder: what it achieved, the configuration it picked, and why it stopped.',
       'Select a run to open its result. Its other views are the tabs at the top of its page.',
+      'A column head sorts the list, and the box over it keeps the rows whose name holds what you type.',
     ],
     terms: ['champion', 'rollout'],
   },
@@ -188,7 +193,7 @@ const VIEW_GUIDE = {
   },
   'opt-overview': {
     steps: [
-      'The first card is the result: the champion against the baseline, on cases kept out of the search.',
+      'The first card is the result: the champion against the baseline, on cases kept out of the search. Why the run stopped is the line over it.',
       'Read the interval, not the gap. An interval that includes zero means the run has not shown a change.',
       'The second card is the configuration to take away. Copy it or download it.',
       'Case by case shows which cases the change came from, for each score and for tokens and time.',
@@ -323,8 +328,7 @@ app.addEventListener('click', e => {
     setGuide(on);
     remember(GUIDE_KEY, on ? 'on' : 'off');
     /* The content column just changed width, and charts are drawn to the width they have. */
-    if (REP) renderReportCharts();
-    if (OPT) renderOptimization();
+    redrawCharts();
   }
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeHelp(); });

@@ -30,7 +30,8 @@ function candAxis(items, x) {
     }
   });
   if (groups.length > 1) {
-    out += `<text class="itlab" x="0" y="${FLOOR + 31}">iteration</text>`;
+    /* Beside the axis, where the scale's own figures are, so it never runs into the first group's number. */
+    out += `<text class="itlab" x="${PAD.l - 10}" y="${FLOOR + 31}" text-anchor="end">iteration</text>`;
     groups.forEach((g, gi) => {
       if (gi) {
         const mid = (x(g.from) + x(groups[gi - 1].to)) / 2;
@@ -47,6 +48,7 @@ function objectiveChart(d) {
   if (!d.scored.length) {
     return '<div class="empty">No candidate has been scored yet, so there is no objective to plot.</div>';
   }
+  sized();
   const values = d.scored.map(p => p.objective);
   let lo = Math.min(...values), hi = Math.max(...values);
   // Small: the axis is rounded out to whole steps below, which supplies the headroom.
@@ -68,8 +70,9 @@ function objectiveChart(d) {
   const lead = d.bestCandidate;
   const xticks = candAxis(d.proposals, x)
     + (lead ? flag(x(d.proposals.indexOf(lead)), y(lead.objective),
-      // Named the way the axis under it names candidates, so the flag and the tick agree.
-      `${candLabel(lead, IN_W / Math.max(1, n))} · ${nice(lead.objective)}`) : '');
+      /* Named the way the axis under it names candidates, so the flag and the tick agree. On a card
+         too narrow for both, the figure alone: the name is on the axis under the mark. */
+      W < 420 ? nice(lead.objective) : `${candLabel(lead, IN_W / Math.max(1, n))} · ${nice(lead.objective)}`) : '');
 
   /* A step, not a slope: nothing was measured between two candidates. */
   const steps = [];
@@ -86,6 +89,7 @@ function objectiveChart(d) {
 
 function budgetChart(d) {
   if (!d.iterations.length) return '<div class="empty">No iteration has finished yet.</div>';
+  sized();
   const cap = d.maxRollouts;
   const hi = Math.max(d.spent, cap || 0) || 1;
   const { y, out: axis } = yAxis(0, hi, 'rollouts run, cumulative');
@@ -110,7 +114,7 @@ function budgetChart(d) {
   const xticks = d.iterations.map((p, i) =>
     `<text class="catlab" x="${x(i + 1)}" y="${FLOOR + 15}" text-anchor="middle">`
     + `${esc(p.iteration)}</text>`).join('')
-    + `<text class="axlab" x="${PAD.l + IN_W / 2}" y="${H - 6}" text-anchor="middle">iteration</text>`;
+    + `<text class="axlab" x="${PAD.l + IN_W / 2}" y="${H - 6}" text-anchor="middle">Iteration</text>`;
   return svg(axis + `<path class="budget-fill" d="${area}"/><path class="budget-line" d="${path}"/>`
     + capLine + marks + xticks + spentFlag);
 }
@@ -118,6 +122,7 @@ function budgetChart(d) {
 function metricChart(d, metric) {
   const values = d.proposals.map(p => p.measured[metric]).filter(v => v != null);
   if (!values.length) return '<div class="empty">Nothing measured this metric yet.</div>';
+  sized();
   let lo = Math.min(...values), hi = Math.max(...values);
   const pad = ((hi - lo) || Math.abs(hi) || 1) * 0.05;
   lo -= pad; hi += pad;
@@ -185,6 +190,7 @@ function tradeoffChart(d, plotted, xg, yg, frontIds) {
     return '<div class="empty">Fewer than two candidates have both goals measured, so there is '
       + 'nothing to trade off yet.</div>';
   }
+  sized();
   const span = goal => {
     const values = plotted.map(p => p.measured[goal.metric]);
     let lo = Math.min(...values), hi = Math.max(...values);
@@ -227,7 +233,9 @@ function tradeoffChart(d, plotted, xg, yg, frontIds) {
 /* ── which setting moved the metric ──
    Forest plot of `effects.json`: change from each key's reference level, with a 90% interval. */
 
-const EFF = { row: 22, head: 20, lab: 152, right: 104 };
+const EFF = { row: 24, head: 22, lab: 230, right: 124 };
+/* A key is written in the mono face: 12px of it runs 7.2px a glyph. */
+const MONO_GLYPH = 7.2;
 
 const signed = v => (v > 0 ? '+' : '') + fine(v);
 /* `p_positive` is the probability the metric went up, so it is flipped for a goal that wants less. */
@@ -253,16 +261,19 @@ function effectsChart(ef, goal) {
     else groups.push({ key: e.key, reference: e.reference, rows: [e] });
   }
 
+  sized();
   /* Zero is always in view: every bar is a change from the reference level. */
   const lo = Math.min(0, ...rows.map(e => e.ci90[0]));
   const hi = Math.max(0, ...rows.map(e => e.ci90[1]));
   const pad = ((hi - lo) || Math.abs(hi) || 1) * 0.08;
   const t = niceTicks(lo - pad, hi + pad, 5);
   const span = (t.hi - t.lo) || 1;
-  const left = EFF.lab, right = W - EFF.right;
+  /* The label column gives way on a narrow card, and what does not fit it is cut: the whole is in the tooltip. */
+  const left = Math.min(EFF.lab, Math.round(W * 0.36)), right = W - EFF.right;
   const x = v => left + ((v - t.lo) / span) * (right - left);
   const floor = EFF.head + groups.reduce((n, g) => n + g.rows.length + 1, 0) * EFF.row + 4;
-  const height = floor + 18;
+  const height = floor + 20;
+  const keyRoom = Math.floor((left - 6) / MONO_GLYPH), levelRoom = Math.floor((left - 20) / GLYPH);
 
   let ticks = '';
   for (const v of t.ticks) {
@@ -273,13 +284,16 @@ function effectsChart(ef, goal) {
       + `${esc(tickText(v, t.step))}</text>`;
   }
   ticks += `<line class="eff-zero" x1="${x(0)}" y1="${EFF.head - 4}" x2="${x(0)}" y2="${floor}"/>`
-    + `<text class="eff-foot" x="${x(0)}" y="${floor + 13}" text-anchor="middle">no change</text>`
-    + `<text class="eff-foot" x="${right + 6}" y="${EFF.head - 8}">change · P(better)</text>`;
+    + `<text class="eff-foot" x="${x(0)}" y="${floor + 14}" text-anchor="middle">no change</text>`
+    + `<text class="eff-foot" x="${right + 8}" y="${EFF.head - 8}">change · P(better)</text>`;
 
   let body = '', y = EFF.head;
   for (const g of groups) {
-    body += `<text class="eff-key" x="2" y="${y + EFF.row / 2}" dy="0.32em">${esc(g.key)}`
-      + `<tspan class="eff-ref"> vs ${esc(g.reference)}</tspan></text>`;
+    const key = clipText(String(g.key), keyRoom);
+    const against = clipText(` vs ${g.reference}`, Math.max(0, keyRoom - key.length));
+    body += `<text class="eff-key" x="2" y="${y + EFF.row / 2}" dy="0.32em">`
+      + `<title>${esc(`${g.key} vs ${g.reference}`)}</title>${esc(key)}`
+      + `<tspan class="eff-ref">${esc(against.length > 4 ? against : '')}</tspan></text>`;
     y += EFF.row;
     for (const e of g.rows) {
       const cy = y + EFF.row / 2;
@@ -289,18 +303,19 @@ function effectsChart(ef, goal) {
       body += `<g class="eff-row ${settled ? 'settled' : 'unsettled'}">`
         + `<title>${esc(`${e.key} = ${e.level} vs ${g.reference}: ${signed(e.mean)}`
           + ` [${fine(e.ci90[0])} – ${fine(e.ci90[1])}], P(better) ${p.toFixed(2)}`)}</title>`
-        + `<text class="eff-level" x="14" y="${cy}" dy="0.32em">${esc(e.level)}</text>`
+        + `<text class="eff-level" x="14" y="${cy}" dy="0.32em">${esc(clipText(String(e.level), levelRoom))}</text>`
         + `<line class="eff-ci" x1="${x(e.ci90[0])}" y1="${cy}" x2="${x(e.ci90[1])}" y2="${cy}"/>`
         + `<circle class="eff-dot" cx="${x(e.mean)}" cy="${cy}" r="4"/>`
-        + `<text class="tick" x="${right + 6}" y="${cy}" dy="0.32em">`
+        + `<text class="tick" x="${right + 8}" y="${cy}" dy="0.32em">`
         + `${esc(signed(e.mean))} · ${esc(p.toFixed(2))}</text></g>`;
     }
   }
-  return `<svg viewBox="0 0 ${W} ${height}" role="img">${ticks}${body}</svg>`;
+  return `<svg viewBox="0 0 ${W} ${height}" style="max-width:${Math.round(W * 1.15)}px" role="img">${ticks}${body}</svg>`;
 }
 
 function usageChart(d, key, label) {
   if (!d.iterations.length) return '<div class="empty">No iteration has finished yet.</div>';
+  sized();
   const values = d.iterations.map(it => it.usage[key] || 0);
   const hi = Math.max(...values) || 1;
   const { y, out: axis } = yAxis(0, hi, `${label.toLowerCase()} spent in that iteration`);
@@ -325,7 +340,7 @@ function usageChart(d, key, label) {
     xticks += `<text class="catlab" x="${centre}" y="${FLOOR + 15}" text-anchor="middle">`
       + `${esc(it.iteration)}</text>`;
   });
-  xticks += `<text class="axlab" x="${PAD.l + IN_W / 2}" y="${H - 6}" text-anchor="middle">iteration</text>`;
+  xticks += `<text class="axlab" x="${PAD.l + IN_W / 2}" y="${H - 6}" text-anchor="middle">Iteration</text>`;
   return svg(axis + bars + xticks);
 }
 
@@ -336,7 +351,9 @@ function statusChart(d) {
   if (!d.trials) return '<div class="empty">No trial has been recorded yet.</div>';
   /* The schema's statuses in its order, then any other the log holds. */
   const found = STATUSES.filter(s => d.statuses[s]).concat(Object.keys(d.statuses).filter(s => !STATUSES.includes(s)));
-  const bars = found.map(s => `<span class="${statusClass(s)}" style="width:${((d.statuses[s] / d.trials) * 100).toFixed(2)}%"`
+  /* Each part grows by its share, with a gap between two and a width no part falls under: one trial
+     in a thousand is still there to see, and no two parts touch. */
+  const bars = found.map(s => `<span class="${statusClass(s)}" style="flex-grow:${esc(d.statuses[s])}"`
     + ` title="${esc(s)}: ${esc(d.statuses[s])}"></span>`).join('');
   const legend = found.map(s =>
     `<span><i class="${statusClass(s)}"></i>`
