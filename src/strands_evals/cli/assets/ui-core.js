@@ -231,9 +231,9 @@ const LIST_OF = { report: 'reports', experiment: 'experiments', session: 'sessio
 const listOf = view => (view === 'missing' ? MISSING.list
   : (view === 'report' && repCand) || SECTION_OF[view] === 'optimization' ? 'opt-runs' : LIST_OF[view] || view);
 /* Reports when there are any, since most folders hold results; a folder of experiments alone opens on those,
-   and one of sessions alone on those. */
+   one of sessions alone on those, and one of optimizer runs alone on the list of runs. */
 const homeView = () => (REPORTS.length ? 'reports' : EXPERIMENTS.length ? 'experiments'
-  : sessionRows().length ? 'sessions' : 'reports');
+  : sessionRows().length ? 'sessions' : OPT_RUNS.length ? 'opt-runs' : 'reports');
 
 /* Counts the moves between views: a file that arrives after one is not opened over where the page went. */
 let moves = 0;

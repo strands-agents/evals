@@ -813,6 +813,16 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
   }
 }
 
+// ── a folder of optimizer runs alone opens on them ──
+{
+  const alone = await open({ 'optimization/runs/r1/run.json': CONFIG, 'optimization/runs/r1/events.jsonl': jsonl(EVENTS) });
+  eq([alone.$('.view.on').id, alone.$$('#opt-runs-rows tr[data-opt-run]').length], ['v-opt-runs', 1],
+    'with no report, experiment or session, the page opens on the list of runs, not on an empty Reports list');
+  const withExperiment = await open({ 'experiment.json': fs.readFileSync(`${SAMPLE}experiment.json`, 'utf8'),
+    'optimization/runs/r1/run.json': CONFIG, 'optimization/runs/r1/events.jsonl': jsonl(EVENTS) });
+  eq(withExperiment.$('.view.on').id, 'v-experiments', 'beside an experiment it still opens on Experiments');
+}
+
 // ── two runs in one tree ──
 {
   const q = await open({
