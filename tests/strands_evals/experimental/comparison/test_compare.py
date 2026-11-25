@@ -1,3 +1,5 @@
+from statistics import fmean
+
 import pytest
 
 import strands_evals.experimental.comparison as comparison_module
@@ -95,6 +97,22 @@ def _target_profile() -> CalibrationProfile:
     return calibrator.profile
 
 
+def _case_probabilities(
+    profile: CalibrationProfile,
+    report_runs: list[list[EvaluationReport]],
+) -> dict[str, float]:
+    application = Calibrator.from_profile(profile).apply_profile(report_runs)
+    case_names = {result.case_name for result in application.case_run_results}
+    return {
+        case_name: fmean(
+            result.calibrated_probability
+            for result in application.case_run_results
+            if result.case_name == case_name and result.calibrated_probability is not None
+        )
+        for case_name in case_names
+    }
+
+
 def test_compares_single_reports():
     baseline = _report({"correctness": [0.0] * 6})
     candidate = _report({"correctness": [0.1] * 6})
@@ -114,16 +132,20 @@ def test_compares_calibrated_target_probabilities_with_one_profile():
     profile = _target_profile()
     baseline = _report_runs(
         [
-            [0.49] * 6,
-            [0.49] * 6,
-        ]
+            [0.48, 0.485, 0.49, 0.495, 0.5, 0.505],
+            [0.49, 0.495, 0.5, 0.505, 0.51, 0.515],
+        ],
+        replay_offsets=(-0.02, 0.02),
     )
     candidate = _report_runs(
         [
-            [0.51] * 6,
-            [0.51] * 6,
-        ]
+            [0.58, 0.585, 0.59, 0.595, 0.6, 0.605],
+            [0.59, 0.595, 0.6, 0.605, 0.61, 0.615],
+        ],
+        replay_offsets=(-0.02, 0.02),
     )
+    expected_baseline = _case_probabilities(profile, baseline)
+    expected_candidate = _case_probabilities(profile, candidate)
 
     result = compare_calibrated(
         profile=profile,
@@ -139,23 +161,100 @@ def test_compares_calibrated_target_probabilities_with_one_profile():
     assert all(pair.evaluator == "target:task_success@1" for pair in result.pairs)
     assert all(pair.baseline_trial_count == 2 for pair in result.pairs)
     assert all(pair.candidate_trial_count == 2 for pair in result.pairs)
+    assert {pair.case_id: pair.baseline_score for pair in result.pairs} == pytest.approx(expected_baseline)
+    assert {pair.case_id: pair.candidate_score for pair in result.pairs} == pytest.approx(expected_candidate)
     assert result.evaluator_summaries[0].mean_delta > 0.0
 
 
 def test_calibrated_comparison_excludes_corrupted_runs_before_scoring():
     profile = _target_profile()
-    baseline = _report_runs([[0.2] * 6]) + [[]]
-    candidate = _report_runs([[0.3] * 6]) + [[]]
+    baseline = _report_runs(
+        [
+            [0.95] * 6,
+            [0.22, 0.32, 0.42, 0.52, 0.62, 0.72],
+            [0.25, 0.35, 0.45, 0.55, 0.65, 0.75],
+        ],
+        replay_offsets=(-0.01, 0.01),
+    )
+    candidate = _report_runs(
+        [
+            [0.05] * 6,
+            [0.32, 0.42, 0.52, 0.62, 0.72, 0.82],
+            [0.35, 0.45, 0.55, 0.65, 0.75, 0.85],
+        ],
+        replay_offsets=(-0.01, 0.01),
+    )
+    expected_baseline = _case_probabilities(profile, baseline[1:])
+    expected_candidate = _case_probabilities(profile, candidate[1:])
 
     result = compare_calibrated(
         profile=profile,
         baseline=baseline,
         candidate=candidate,
-        corrupted_trial_indices={1},
+        corrupted_trial_indices={0},
     )
 
-    assert result.trial_count == 1
-    assert result.corrupted_trial_indices == [1]
+    assert result.trial_count == 2
+    assert result.corrupted_trial_indices == [0]
+    assert {pair.case_id: pair.baseline_score for pair in result.pairs} == pytest.approx(expected_baseline)
+    assert {pair.case_id: pair.candidate_score for pair in result.pairs} == pytest.approx(expected_candidate)
+
+
+def test_calibrated_comparison_requires_matching_replay_designs():
+    profile = _target_profile()
+    one_replay = _report_runs([[0.4] * 6, [0.5] * 6])
+    two_replays = _report_runs(
+        [[0.4] * 6, [0.5] * 6],
+        replay_offsets=(-0.01, 0.01),
+    )
+
+    with pytest.raises(ValueError, match="same number of judge replays"):
+        compare_calibrated(
+            profile=profile,
+            baseline=one_replay,
+            candidate=two_replays,
+        )
+
+    with pytest.raises(ValueError, match="every usable agent run"):
+        compare_calibrated(
+            profile=profile,
+            baseline=[two_replays[0], one_replay[1]],
+            candidate=two_replays,
+        )
+
+
+def test_calibrated_comparison_errors_name_side_and_original_run():
+    profile = _target_profile()
+    baseline = _report_runs([[0.3] * 6, [0.4] * 6, [0.5] * 6], replay_offsets=(-0.01, 0.01))
+    candidate = _report_runs([[0.4] * 6, [0.5] * 6, [0.6] * 6], replay_offsets=(-0.01, 0.01))
+    candidate[2][1].cases[0]["name"] = "changed-case"
+
+    with pytest.raises(ValueError, match=r"candidate: run 2 replay 1 .*different case set"):
+        compare_calibrated(
+            profile=profile,
+            baseline=baseline,
+            candidate=candidate,
+            corrupted_trial_indices={0},
+        )
+
+
+def test_calibrated_comparison_forwards_statistical_settings():
+    profile = _target_profile()
+    baseline = _report_runs([[0.3] * 6, [0.35] * 6], replay_offsets=(-0.01, 0.01))
+    candidate = _report_runs([[0.4] * 6, [0.45] * 6], replay_offsets=(-0.01, 0.01))
+
+    result = compare_calibrated(
+        profile=profile,
+        baseline=baseline,
+        candidate=candidate,
+        confidence_level=0.9,
+        minimum_effect=0.5,
+    )
+
+    summary = result.evaluator_summaries[0]
+    assert summary.confidence_level == 0.9
+    assert summary.minimum_effect == 0.5
+    assert summary.verdict == "no_clear_change"
 
 
 def test_calibrated_comparison_requires_target_profile_and_matching_cases():
