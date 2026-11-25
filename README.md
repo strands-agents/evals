@@ -296,6 +296,37 @@ Limits of `ui`:
 
 Run any subcommand with `--help` for the full flag set (custom evaluators via `MODULE:CLASS`, trace attributes, `--fail-on` exit-code rules, output formats, etc.).
 
+### Anonymous usage telemetry
+
+The `strands-evals` console script sends one anonymous event per invocation, so the maintainers can see which
+subcommands people actually use and which releases are in the field. The event holds five values and nothing else:
+
+| Field | Value |
+| --- | --- |
+| `cli_version` | the installed version, as `MAJOR.MINOR.PATCH` (any prerelease label or build metadata is dropped) |
+| `os` | `linux`, `macos`, `windows` or `other` |
+| `interactive` | whether stdout is a terminal — the same check that picks between rich and JSON output |
+| `command` | the subcommand name only, never its arguments: `run --agent app:agent` is sent as `run` |
+| `outcome` | `completed`, `failed`, `interrupted`, or `started` for `ui`, which serves until you stop it |
+
+**There is no identifier of any kind** — no install id, machine id, user id, session id or run id — so no two events
+can be linked to each other or to you. **Nothing about what you evaluated is collected**: no dataset, experiment,
+case or evaluator names, no prompts, no model ids, and no score, pass rate or any other result. `outcome` describes
+the CLI process, not your evaluation: a suite where every case failed still reports `completed`. The receiving
+endpoint rejects any field that is not on the list above, so a value added by mistake is refused rather than stored.
+The full disclosure, including retention, is in
+[the telemetry service repository](https://github.com/strands-agents/telemetry-service/blob/main/docs/strands-evals-telemetry.md).
+
+To turn it off, set either environment variable:
+
+```bash
+export STRANDS_EVALS_TELEMETRY=0   # this CLI only
+export DO_NOT_TRACK=1              # the cross-tool convention, honored by other tools too
+```
+
+The send blocks for at most one second and is never retried; if it fails, the event is dropped and your exit code is
+unchanged. Using `strands_evals` as a Python library sends nothing — only the console script reports.
+
 ## Agent Skills
 
 The package ships skills for coding agents (source in [`.agents/skills/`](.agents/skills/)):
