@@ -1,11 +1,20 @@
 """Public orchestration for statistical evaluation-report comparison."""
 
+import re
 from collections.abc import Collection, Sequence
+from statistics import fmean
 from typing import Literal
 
 from pydantic import BaseModel
 
 from ...types.evaluation_report import EvaluationReport
+from ..calibrator import (
+    CalibratedEqualAlgorithm,
+    CalibrationCaseRunResult,
+    CalibrationProfile,
+    CalibrationTargetDefinition,
+    Calibrator,
+)
 from .pairing import PairedScore, aggregate_trial_pairs, pair_report_trials
 from .summary import EvaluatorSummary, summarize_pairs
 
@@ -37,6 +46,13 @@ class PairedComparisonResult(BaseModel):
     verdict: PairedComparisonVerdict
     trial_count: int
     corrupted_trial_indices: list[int]
+
+
+class CalibratedComparisonResult(PairedComparisonResult):
+    """Paired comparison of probabilities produced by one calibration profile."""
+
+    profile_id: str
+    target_definition: CalibrationTargetDefinition
 
 
 def compare_paired(
@@ -127,6 +143,83 @@ def compare_paired(
     )
 
 
+def compare_calibrated(
+    *,
+    profile: CalibrationProfile,
+    baseline: Sequence[Sequence[EvaluationReport]],
+    candidate: Sequence[Sequence[EvaluationReport]],
+    corrupted_trial_indices: Collection[int] = (),
+    confidence_level: float = 0.95,
+    minimum_effect: float = 0.0,
+) -> CalibratedComparisonResult:
+    """Compare baseline and candidate target probabilities from one profile.
+
+    The supplied profile is restored once and applied unchanged to both sides.
+    Each usable agent run must contain the same positive number of judge
+    replays on both sides. Judge replays are averaged before prediction, agent
+    runs are averaged within each case, and cases remain the independent
+    statistical unit. The target value `1` must represent the desirable
+    outcome, so a larger predicted probability is always treated as better.
+    `minimum_effect` is expressed on the calibrated probability's 0-to-1
+    scale.
+
+    Args:
+        profile: Fitted calibrated-equal profile with an external target.
+        baseline: Baseline reports grouped by agent run and judge replay.
+        candidate: Candidate reports grouped by agent run and judge replay.
+        corrupted_trial_indices: Agent-run indices to exclude from both sides.
+        confidence_level: Desired confidence interval coverage.
+        minimum_effect: Smallest meaningful probability change.
+
+    Returns:
+        A paired comparison carrying the profile and target provenance.
+
+    Raises:
+        ValueError: If the profile does not produce target probabilities or
+            the baseline and candidate evidence cannot be compared.
+    """
+    if profile.algorithm_id != CalibratedEqualAlgorithm.algorithm_id or profile.target_definition is None:
+        raise ValueError("compare_calibrated requires a calibrated-equal profile with an external target")
+
+    baseline_runs, candidate_runs, usable_run_indices, corrupted = _usable_report_runs(
+        baseline,
+        candidate,
+        corrupted_trial_indices,
+    )
+    calibrator = Calibrator.from_profile(profile)
+    baseline_results = _apply_profile_runs(
+        calibrator,
+        baseline_runs,
+        usable_run_indices,
+        side="baseline",
+    )
+    candidate_results = _apply_profile_runs(
+        calibrator,
+        candidate_runs,
+        usable_run_indices,
+        side="candidate",
+    )
+    pairs = _pair_calibrated_results(
+        baseline_results,
+        candidate_results,
+        target_definition=profile.target_definition,
+    )
+    summaries = summarize_pairs(
+        pairs,
+        confidence_level=confidence_level,
+        minimum_effect=minimum_effect,
+    )
+    return CalibratedComparisonResult(
+        pairs=pairs,
+        evaluator_summaries=summaries,
+        verdict=_comparison_verdict(summaries),
+        trial_count=len(baseline_runs),
+        corrupted_trial_indices=sorted(corrupted),
+        profile_id=profile.profile_id,
+        target_definition=profile.target_definition,
+    )
+
+
 def _as_reports(report_or_reports: EvaluationReport | Sequence[EvaluationReport]) -> tuple[EvaluationReport, ...]:
     if isinstance(report_or_reports, EvaluationReport):
         return (report_or_reports,)
@@ -140,6 +233,132 @@ def _as_evaluator_names(names: Collection[str]) -> set[str]:
     if any(not isinstance(name, str) or not name.strip() for name in materialized_names):
         raise TypeError("lower_is_better must contain only non-empty evaluator names")
     return set(materialized_names)
+
+
+def _usable_report_runs(
+    baseline: Sequence[Sequence[EvaluationReport]],
+    candidate: Sequence[Sequence[EvaluationReport]],
+    corrupted_trial_indices: Collection[int],
+) -> tuple[list[list[EvaluationReport]], list[list[EvaluationReport]], list[int], set[int]]:
+    baseline_runs = [list(reports) for reports in baseline]
+    candidate_runs = [list(reports) for reports in candidate]
+    if not baseline_runs or not candidate_runs:
+        raise ValueError("baseline and candidate must each contain at least one agent run")
+    if len(baseline_runs) != len(candidate_runs):
+        raise ValueError(
+            "baseline and candidate must contain the same number of agent runs: "
+            f"baseline={len(baseline_runs)}, candidate={len(candidate_runs)}"
+        )
+
+    trial_indices = set(range(len(baseline_runs)))
+    corrupted = set(corrupted_trial_indices)
+    unknown_corrupted = corrupted - trial_indices
+    if unknown_corrupted:
+        raise ValueError(
+            "corrupted_trial_indices contain unknown trials: "
+            f"unknown={sorted(unknown_corrupted)}, valid={sorted(trial_indices)}"
+        )
+    if corrupted == trial_indices:
+        raise ValueError("no usable trials remain after removing corrupted trials")
+    usable_run_indices = sorted(trial_indices - corrupted)
+    baseline_replay_counts = {len(baseline_runs[index]) for index in usable_run_indices}
+    candidate_replay_counts = {len(candidate_runs[index]) for index in usable_run_indices}
+    if 0 in baseline_replay_counts or 0 in candidate_replay_counts:
+        raise ValueError("each usable agent run must contain at least one judge replay")
+    if len(baseline_replay_counts) != 1 or len(candidate_replay_counts) != 1:
+        raise ValueError(
+            "every usable agent run on one side must contain the same number of judge replays: "
+            f"baseline={sorted(baseline_replay_counts)}, candidate={sorted(candidate_replay_counts)}"
+        )
+    if baseline_replay_counts != candidate_replay_counts:
+        raise ValueError(
+            "baseline and candidate must contain the same number of judge replays per usable agent run: "
+            f"baseline={next(iter(baseline_replay_counts))}, candidate={next(iter(candidate_replay_counts))}"
+        )
+    return (
+        [baseline_runs[index] for index in usable_run_indices],
+        [candidate_runs[index] for index in usable_run_indices],
+        usable_run_indices,
+        corrupted,
+    )
+
+
+def _apply_profile_runs(
+    calibrator: Calibrator,
+    report_runs: Sequence[list[EvaluationReport]],
+    original_run_indices: Sequence[int],
+    *,
+    side: str,
+) -> list[CalibrationCaseRunResult]:
+    try:
+        application = calibrator.apply_profile(list(report_runs))
+    except ValueError as error:
+        detail = re.sub(
+            r"\brun (\d+)\b",
+            lambda match: _original_run_label(match, original_run_indices),
+            str(error),
+        )
+        raise ValueError(f"{side}: {detail}") from error
+    return [
+        result.model_copy(update={"agent_run": original_run_indices[result.agent_run]})
+        for result in application.case_run_results
+    ]
+
+
+def _original_run_label(match: re.Match[str], original_run_indices: Sequence[int]) -> str:
+    filtered_index = int(match.group(1))
+    if filtered_index >= len(original_run_indices):
+        return match.group(0)
+    return f"run {original_run_indices[filtered_index]}"
+
+
+def _pair_calibrated_results(
+    baseline: Sequence[CalibrationCaseRunResult],
+    candidate: Sequence[CalibrationCaseRunResult],
+    *,
+    target_definition: CalibrationTargetDefinition,
+) -> list[PairedScore]:
+    baseline_scores = {(result.agent_run, result.case_name): _required_probability(result) for result in baseline}
+    candidate_scores = {(result.agent_run, result.case_name): _required_probability(result) for result in candidate}
+    if set(baseline_scores) != set(candidate_scores):
+        raise ValueError(
+            "baseline and candidate do not contain the same calibrated case-runs: "
+            f"baseline_only={_summarize_case_run_keys(set(baseline_scores) - set(candidate_scores))}, "
+            f"candidate_only={_summarize_case_run_keys(set(candidate_scores) - set(baseline_scores))}"
+        )
+
+    evaluator = f"target:{target_definition.name}@{target_definition.version}"
+    baseline_by_case: dict[str, list[float]] = {}
+    candidate_by_case: dict[str, list[float]] = {}
+    for (_, case_name), score in baseline_scores.items():
+        baseline_by_case.setdefault(case_name, []).append(score)
+    for (_, case_name), score in candidate_scores.items():
+        candidate_by_case.setdefault(case_name, []).append(score)
+
+    return [
+        PairedScore(
+            case_id=case_name,
+            evaluator=evaluator,
+            baseline_score=fmean(baseline_by_case[case_name]),
+            candidate_score=fmean(candidate_by_case[case_name]),
+            baseline_trial_count=len(baseline_by_case[case_name]),
+            candidate_trial_count=len(candidate_by_case[case_name]),
+        )
+        for case_name in sorted(baseline_by_case)
+    ]
+
+
+def _summarize_case_run_keys(keys: set[tuple[int, str]], limit: int = 10) -> str:
+    ordered = sorted(keys)
+    if len(ordered) <= limit:
+        return str(ordered)
+    return f"{ordered[:limit]} ... ({len(ordered) - limit} more)"
+
+
+def _required_probability(result: CalibrationCaseRunResult) -> float:
+    if result.calibrated_probability is None:
+        raise ValueError("the calibration profile did not produce target probabilities")
+    return result.calibrated_probability
 
 
 def _comparison_verdict(summaries: Sequence[EvaluatorSummary]) -> PairedComparisonVerdict:

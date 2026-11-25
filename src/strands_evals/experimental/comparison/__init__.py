@@ -11,7 +11,13 @@ except ImportError as error:
         "pip install 'strands-agents-evals[comparison]'"
     ) from error
 
-from .compare import PairedComparisonResult, PairedComparisonVerdict, compare_paired
+from .compare import (
+    CalibratedComparisonResult,
+    PairedComparisonResult,
+    PairedComparisonVerdict,
+    compare_calibrated,
+    compare_paired,
+)
 
 
 def _validate_scipy_api() -> None:
@@ -27,7 +33,9 @@ def _validate_scipy_api() -> None:
 _validate_scipy_api()
 
 __all__ = [
+    "CalibratedComparisonResult",
     "PairedComparisonResult",
     "PairedComparisonVerdict",
+    "compare_calibrated",
     "compare_paired",
 ]
