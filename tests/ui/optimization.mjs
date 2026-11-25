@@ -394,7 +394,7 @@ await click('#opt-winner [data-act="copy-winner"]');
 has(text('#opt-copied'), /could not reach the clipboard/, 'a copy that could not happen says so');
 
 // ── Progress: the figures and the objective chart ──
-eq(stats(p), ['Rollouts | 64 / 240 | spent of the budget',
+eq(stats(p), ['Rollouts | 83 / 240 | spent of the budget',
   'Best on training | 0.67 | the champion, on the cases it searched over'],
   'two figures under the champion; the training best is feasible c10, not infeasible c8');
 eq([text('#opt-search-sum'), text('#opt-cost-sum')], ['11 proposals over 6 iterations', '277k tokens · 82 trials'],
@@ -418,9 +418,10 @@ eq([texts(p, '#opt-series-chart text.itlab').join(), $$('#opt-series-chart line.
   ['iteration,0,1,2,3,4,5', 5], 'the iterations are a second row, divided where the search turned over');
 
 // ── Progress: budget and trial outcomes ──
-eq(titles(p, '#opt-budget-chart circle'), ['iteration 0: +8, 8 total', 'iteration 1: +16, 24 total',
-  'iteration 2: +8, 32 total', 'iteration 3: +16, 48 total', 'iteration 4: +8, 56 total', 'iteration 5: +8, 64 total'],
-  'the budget curve is cumulative, one mark per finished iteration');
+eq(titles(p, '#opt-budget-chart circle'), ['iteration 0: +8, 8 total', 'iteration 1: +17, 25 total',
+  'iteration 2: +8, 33 total', 'iteration 3: +16, 49 total', 'iteration 4: +8, 57 total', 'iteration 5: +8, 65 total',
+  'the end phase: +18, 83 total'],
+  'the budget curve is cumulative, one mark per finished iteration and one for the end phase; c2 ran a case twice');
 ok($('#opt-budget-chart line.cap-line') && /240-rollout budget/.test(text('#opt-budget-cap')),
   'the budget cap is drawn and named', text('#opt-budget-cap'));
 eq($$('#opt-status-chart .legend span').map(flat),
@@ -963,9 +964,22 @@ const WRITTEN = configWith(c => {
     iterationEnd(0, [prop('c0', 0, 0.4)], 4), iterationEnd(1, [prop('c1', 1, 0.9)], 4),
     { event: 'picked', iteration: 2,
       report: { champion_id: 'c0', measured: { c0: { H: { mean: 0.6 } }, c1: { H: { mean: 0.3 } } } } }]);
-  eq(stats(split), ['Rollouts | 8 | spent · no budget declared',
+  eq(stats(split), ['Rollouts | 0 | spent · no budget declared',
     'Best on training | 0.90 | c1 · highest here, not the pick'],
     'when validation picks another candidate, the training best names its own and says it was not the pick');
+
+  // As the optimizer writes a run: no `iteration_end` for the baseline or the end phase.
+  const ran = (candidate_id, case_name, split, iteration, previous_attempts = []) => ({ event: 'trial', iteration,
+    record: { candidate_id, case_name, run_index: 0, split, status: 'completed', rollouts: 1, previous_attempts } });
+  const whole = await openLog({ objective: 'Maximize(H)', budget: { max_rollouts: 500 } }, [START,
+    ...['a', 'b', 'c'].map(name => ran('c0', name, 'train', 0)),
+    ...['a', 'b', 'c'].map(name => ran('c1', name, 'train', 1)),
+    iterationEnd(1, [prop('c1', 1, 0.8)], 3),
+    ran('c0', 'v', 'validation', 1), ran('c1', 'v', 'validation', 1),
+    ran('c0', 't', 'test', 1, [{ status: 'infrastructure_invalid', rollouts: 1 }])]);
+  has(stats(whole)[0], /^Rollouts \| 10 \/ 500 \|/, 'the baseline, the end phase and a re-run count as the optimizer counts them');
+  eq(titles(whole, '#opt-budget-chart circle'), ['iteration 1: +6, 6 total', 'the end phase: +4, 10 total'],
+    'the first iteration carries the baseline, and the end phase gets its own mark');
 }
 
 // ── a run with nothing measured yet, on a Pareto objective ──

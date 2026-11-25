@@ -93,17 +93,22 @@ function budgetChart(d) {
   const cap = d.maxRollouts;
   const hi = Math.max(d.spent, cap || 0) || 1;
   const { y, out: axis } = yAxis(0, hi, 'rollouts run, cumulative');
-  /* The curve starts from nothing spent, a point before the first iteration. */
-  const pts = [{ cumulative: 0 }].concat(d.iterations);
+  /* The curve starts from nothing spent, a point before the first iteration, and ends with the end phase. */
+  const last = d.iterations[d.iterations.length - 1].cumulative;
+  const steps = d.spent > last
+    ? d.iterations.concat({ iteration: 'end', rollouts: d.spent - last, cumulative: d.spent })
+    : d.iterations;
+  const pts = [{ cumulative: 0 }].concat(steps);
   const n = pts.length;
   const x = i => PAD.l + (i / (n - 1)) * IN_W;
 
   const path = pts.map((p, i) => `${i ? 'L' : 'M'}${x(i)},${y(p.cumulative)}`).join(' ');
   const area = `${path} L${x(n - 1)},${y(0)} L${x(0)},${y(0)} Z`;
   let marks = '';
-  d.iterations.forEach((p, i) => {
+  steps.forEach((p, i) => {
+    const name = p.iteration === 'end' ? 'the end phase' : `iteration ${p.iteration}`;
     marks += `<circle class="pt data" cx="${x(i + 1)}" cy="${y(p.cumulative)}" r="3">`
-      + `<title>${esc(`iteration ${p.iteration}: +${p.rollouts}, ${p.cumulative} total`)}</title></circle>`;
+      + `<title>${esc(`${name}: +${p.rollouts}, ${p.cumulative} total`)}</title></circle>`;
   });
   const spentFlag = flag(x(n - 1), y(d.spent), cap != null ? `${d.spent} of ${cap}` : `${d.spent}`);
   const capLine = cap != null
@@ -111,7 +116,7 @@ function budgetChart(d) {
       + `<text class="tick" x="${PAD.l + IN_W}" y="${y(cap) - 5}" text-anchor="end">`
       + `budget ${esc(cap)}</text>`
     : '';
-  const xticks = d.iterations.map((p, i) =>
+  const xticks = steps.map((p, i) =>
     `<text class="catlab" x="${x(i + 1)}" y="${FLOOR + 15}" text-anchor="middle">`
     + `${esc(p.iteration)}</text>`).join('')
     + `<text class="axlab" x="${PAD.l + IN_W / 2}" y="${H - 6}" text-anchor="middle">Iteration</text>`;
