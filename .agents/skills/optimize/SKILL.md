@@ -16,7 +16,7 @@ Sets up and runs `strands-evals optimize run` on an agent built with strands-har
 
 ## Steps
 
-Ask in plain chat, one step at a time unless a step says to ask its questions together. Every list has at most three numbered options before a short "Your own" option, the default first and marked `(Default)`, except the knobs question (every tunable knob, step 2); always accept a free-form answer (ex. "2 steps", "drop effort", "tokens at most 4000"). When an answer breaks a rule of its step, say which and ask again.
+Ask in plain chat, one step at a time unless a step says to ask its questions together. Every list has at most three numbered options before a short "Your own" option, the default first and marked `(Default)`, except the knobs question (every tunable knob, step 2) and the budget's settings (step 5); always accept a free-form answer (ex. "2 steps", "drop effort", "tokens at most 4000"). When an answer breaks a rule of its step, say which and ask again.
 
 **Setting up from the request.** When the message that started the skill says how to optimize (ex. "make the support agent shorter without losing helpfulness, about 100 rollouts"), ask no setup question: take every value it gives (the experiment, steps 2 to 5, and the review rows), infer the rest from it and the files, give the others their defaults, and go to the review (step 6). Only a skill started without such a prompt (ex. `/optimize` alone, or "optimize my agent") goes step by step, skipping a question the user already answered. A value that breaks a rule becomes the closest valid one and is flagged in the review.
 
@@ -70,7 +70,7 @@ Skip this step with a tunable factory (step 1): its markers already say what may
 
 Read the agent's `create_harness(...)` or `createHarness(...)` call and offer the knobs below with their current values. An option the call doesn't pass has the harness default as its current value (effort and context manager auto; caching on; skills from the project's `.agent/skills` folder when it exists; background tasks off; the model the harness's own). In TypeScript, background tasks can be tuned only when the call writes them. The system prompt is a text knob only when the call passes one, and then replaces the instructions. Name in one not-tunable line a knob set in code (a variable, a call, a model instance). Memory and session aren't offered.
 
-**Switch each on or off.** For a list the agent loads, offer to switch its entries on or off one by one, never the whole list at once. That covers the skills (each skill folder), the tools, the built-in tools (unset: shell, read, write, edit, web_fetch, web_search, programmatic_tool_caller, subagent), the built-in plugins (unset: environment in Python; todos and environment in TypeScript), the plugins, and the MCP servers when the call writes them by name. Name the entries in the knob's line. An entry set in code that can't be named (ex. a tool without a name) can't be switched; with many entries, say that each switch is one more setting to search, so more steps help.
+**Switch each on or off.** For a list the agent loads, offer to switch its entries on or off one by one, never the whole list at once. That covers the skills (each skill folder), the tools, the built-in tools (unset: shell, read, write, edit, web_fetch, web_search, programmatic_tool_caller, subagent), the built-in plugins (unset: environment in Python; todos and environment in TypeScript), the plugins, and the MCP servers when the call writes them by name. Name the entries in the knob's line. An entry set in code that can't be named (ex. a tool without a name) can't be switched; with many entries, say that each switch is one more setting to search, so a larger budget helps.
 
 **Skills and tools** can also have their text rewritten by the proposer model; never write a new skill or tool, create a skills folder, or add skills to the call:
 
@@ -183,30 +183,31 @@ An evaluator with its own score range shows that range instead of 0 to 1.
 
 ### 5. Budget
 
-Ask all five settings in one message, with the rollout estimate for the case counts of the default split (step 6). A setting the reply leaves out keeps its default; recompute the estimate from the reply and show it before moving on.
+Ask all six settings in one message. A setting the reply leaves out keeps its default.
 
 ```text
-Budget: change any of these in one reply (ex. "2 steps, 2 runs"); the rest keep their default.
-1. Steps: rounds of proposing and testing new versions of the agent. Default 4.
-2. Candidates per step: new versions tried in each round. Default 4.
-3. Runs of each case: how often each case is repeated per version, to average out noise. Default 1.
-4. Finalists: the best versions re-checked on the validation cases to pick the winner. Default 3.
-5. Trials at once: how many runs go in parallel; changes speed, not cost. Default 4.
-
-With these values: about 61 rollouts and 61 judge calls.
+Budget: change any of these in one reply (ex. "200 rollouts, 2 runs"); the rest keep their default.
+1. Max rollouts: the most rollouts (one run of the agent on one case) the whole optimization may spend. Default 500.
+2. Steps: rounds of proposing and testing new versions of the agent. Default no limit: steps go on until the rollouts run out.
+3. Candidates per step: new versions tried in each round. Default 4.
+4. Runs of each case: how often each case is repeated per version, to average out noise. Default 1.
+5. Finalists: the best versions re-checked on the validation cases to pick the winner. Default 3.
+6. Trials at once: how many runs go in parallel; changes speed, not cost. Default 4.
 ```
 
-Work out the estimate yourself; show the user only the totals. Rollouts (one run of the agent on one case) are `runs × (train × (1 + steps × candidates) + validation × (finalists + 1) + test × tested)`, with `tested` 2 (the winner and the current agent), from the case counts of the split; judge calls are about rollouts × evaluators. Neither the judge's nor Reflection's own calls count against the budget. Under best trade-offs (step 3, balancing without weighing), at least 5 finalists are re-checked, so the finalists default is 5 and `tested` is the finalists plus 1; say so in step 3's follow-up.
+Don't show a rollout estimate. When the user asks how a setting relates to the max rollouts, use these, from the case counts of the split (step 6): a run spends `runs × (train × (1 + steps × candidates) + validation × (finalists + 1) + test × tested)` rollouts (one run of the agent on one case), with `tested` 2 (the winner and the current agent), and never more than the max rollouts. The least a run needs is that for 0 steps plus room to re-run failed trials: `2 × ceil(runs × validation ÷ 20)` for each of the finalists + 1, and `2 × ceil(runs × test ÷ 20)` for each of the `tested`. The steps that fit are `ceil(floor((max rollouts − the least a run needs) ÷ (runs × train)) ÷ candidates)`: the search stops when what's left can't pay for one more candidate, and the last step may try fewer. With a tunable factory whose markers hold a `choice(...)` of 2 or more components, each round's first step tries one candidate, so more steps fit than that. Judge calls are about rollouts × evaluators. Neither the judge's nor Reflection's own calls count against the budget. Under best trade-offs (step 3, balancing without weighing), at least 5 finalists are re-checked, so the finalists default is 5 and `tested` is the finalists plus 1; say so in step 3's follow-up.
 
-**Rules**, stated only when an answer breaks one: every setting is a whole number; steps are 0 or more, and 0 measures only the current agent (no new versions, no proposer model); the others are at least 1, and finalists at least 5 under best trade-offs. The cap is 500 rollouts: above it, suggest fewer steps, candidates, or runs, or raise the cap if the user asks; it must at least cover the estimate without the steps. When one step's trials (candidates × train cases × runs) exceed the trials at once, say that steps run in batches and take longer.
+**Rules**, stated only when an answer breaks one: every setting is a whole number; steps are 0 or more, and 0 measures only the current agent (no new versions, no proposer model); the others are at least 1, and finalists at least 5 under best trade-offs. The max rollouts must at least cover the least a run needs (the optimizer refuses less). When a step limit is more than the steps that fit, say that the rollouts run out first, after about the steps that fit. When one step's trials (candidates × train cases × runs) exceed the trials at once, say that steps run in batches and take longer.
 
-**Build.** Steps are `--max-iterations N`, candidates `--proposals-per-iteration N`, runs `--runs-per-candidate N`, finalists `--n-finalists N` (only when it isn't 3, and never with a cautious pick, step 6), trials at once `--max-workers N`, and the cap `--max-rollouts 500`. 0 steps passes no `--max-iterations` and no `--reflection-model`, but `--search "<hooks file>:baseline_only"` (step 7).
+**Build.** The max rollouts are `--max-rollouts N` (always passed), steps `--max-iterations N` (only with a step limit), candidates `--proposals-per-iteration N`, runs `--runs-per-candidate N`, finalists `--n-finalists N` (only when it isn't 3, and never with a cautious pick, step 6), and trials at once `--max-workers N`. 0 steps passes no `--max-iterations` and no `--reflection-model`, but `--search "<hooks file>:baseline_only"` (step 7).
 
 ### 6. Review
 
 **Skipping the confirmation.** When the run goes without questions (**Running without questions**, under **Steps**), don't wait for a reply here: show the summary, its warnings, and the command in one message, say the run is starting, and go to step 7.
 
 Otherwise, show the setup as one summary, then the command, and ask the user to start or to name a row to change. For a row of steps 2 to 5, go back to that step (a tunable factory's tune row changes only in its markers: propose the code edit, and make it only when the user agrees); for a default row, take the new value here and check it against its rules below. Then show the review again.
+
+For example (fill every row from this run's values; mark a row `(default)` only when it kept its default):
 
 ```text
 optimize · capitals · 6 cases · 3 train / 2 validation / 1 test
@@ -216,15 +217,14 @@ optimize · capitals · 6 cases · 3 train / 2 validation / 1 test
   goal         the mean of every evaluator
   constraints  none
   cases        3 train / 2 validation / 1 test (default split)
-  budget       4 steps × 4 candidates, 1 run of each case, 3 finalists
-  parallel     4 trials at once
+  budget       ≤500 rollouts, no step limit, 4 candidates per step, 1 run, 3 finalists (default)
+  parallel     4 trials at once (default)
   crashes      a crashed run scores the worst value (default)
   pick         the best average score of the 3 finalists (default)
-  ~61 rollouts · ~61 judge calls · price unknown
 You can change any row, including cases, crashes, and pick, before I start.
 ```
 
-With constraints, their row also says how sure each must be (ex. `tokens at most 4000, 90% sure each holds (default)`). Under the summary, list every warning from steps 2 to 5 and from the rows below, and say that the model, judge, and proposer calls are paid and use the user's credentials.
+With constraints, their row also says how sure each must be (ex. `tokens at most 4000, 90% sure each holds (default)`). Under the summary, list every warning from steps 2 to 5 and from the rows below, and say that the model, judge, and proposer calls are paid and use the user's credentials; with no step limit, add that the run usually spends nearly all of the max rollouts, with a proposer call per step.
 
 The default rows:
 
@@ -278,7 +278,7 @@ cd <project> && (strands-evals optimize run <experiment> \
 
 If you can't run a background process, run it in the foreground with a long timeout and show the output when it ends. `<RUN_DIR>`, the run folder, is the one folder the optimizer creates under `$F/record` once the run starts: find it with `ls -d "$F"/record/*/` on the first progress check, and tell the user. Don't wait for `run.log`'s `strands-evals optimize: run folder <RUN_DIR>` line to report it: that line can come only at the end, with the result.
 
-**Progress**: until `$F/run.exit` exists, about once a minute, relay each new `run.log` line that starts with `strands-evals optimize:` (ex. `iteration N (<blocks>): P proposals, R rollouts`) and any warning or error, in plain words (ex. "step 2 of 4 done: 4 new versions tried, 61 rollouts so far"). Read new lines with `tail -n +<next line> "$F/run.log"`.
+**Progress**: until `$F/run.exit` exists, about once a minute, relay each new `run.log` line that starts with `strands-evals optimize:` (ex. `iteration N (<blocks>): P proposals, R rollouts`, with R that step's rollouts, so keep a running total from the baseline's train cases) and any warning or error, in plain words (ex. "step 2 done: 4 new versions tried, 27 of 500 rollouts so far"). Read new lines with `tail -n +<next line> "$F/run.log"`.
 
 **Exit codes**, from `$F/run.exit`:
 
@@ -294,7 +294,7 @@ After a 3 with the `continue` line or a 130, say the user can ask to resume it (
 
 The report is `$F/summary.txt`, the optimizer's own summary: why the search stopped, what ships, every finalist on validation, the test check (the winner against the current agent on the test cases, with its 90% interval), the effects of each option, and the costs. Give the user its path and the headline in plain words: the version that ships, or that none beat the current agent; whether the test gain is likely real (the whole interval above 0), likely worse (below 0), or may be luck (it includes 0; more test cases narrow it).
 
-A run can exit 0 before its test check ran: skipped because the budget couldn't afford it, or waiting to re-run trials that hit infrastructure failures (ex. throttling). `jq -r '.test_reason // "done"' "<RUN_DIR>/result.json"` prints `done`, or why the test check didn't fully run. When it isn't `done`, tell the user in plain words: what ships is final; when the reason is the budget or trials waiting to re-run, resuming the run can still run the test check, with a larger rollout cap when the budget was the reason.
+A run can exit 0 before its test check ran: skipped because the budget couldn't afford it, or waiting to re-run trials that hit infrastructure failures (ex. throttling). `jq -r '.test_reason // "done"' "<RUN_DIR>/result.json"` prints `done`, or why the test check didn't fully run. When it isn't `done`, tell the user in plain words: what ships is final; when the reason is the budget or trials waiting to re-run, resuming the run can still run the test check, with more rollouts allowed when the budget was the reason.
 
 Nothing in the user's project changes. `<RUN_DIR>/best.diff` holds each changed text (ex. `instructions`) as a diff under its option name, and `<RUN_DIR>/best.values.json` each changed choice as `{"old": ..., "new": ...}`. A skill's rewritten wording is under its `SKILL.md` path in the skills folder, a factory's changed `JsonField` (a number or choice included) is a hunk on its JSON file's path in `best.diff` and under its key in `best.values.json`, and a switch turned off (ex. `skill_maps` false) means leaving that entry out of the call's list. Apply them to the agent's `create_harness` or `createHarness` call (and its skill and JSON files) only when the user asks, and suggest evaluating the agent again after.
 
