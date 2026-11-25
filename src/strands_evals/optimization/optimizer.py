@@ -80,7 +80,7 @@ from .selection.top_ranked import TopRanked
 from .setup.budget import Budget, BudgetTracker, end_phase_reserve
 from .setup.splits import Split
 
-_DEFAULT_BASE_DIR = Path(".strands-evals/optimization/runs")
+_DEFAULT_BASE_DIR = Path("optimization/runs")
 _BINDING = threading.Lock()  # one optimizer at a time checks and binds proposers, across threads
 
 
@@ -144,7 +144,7 @@ class Optimizer:
         name: str | None = None,
         on_iteration: Callable[[IterationRecord], Awaitable[None] | None] | None = None,
     ):
-        """`base_dir=None` puts runs under `.strands-evals/optimization/runs/`, relative to the working directory.
+        """`base_dir=None` puts runs under `optimization/runs/`, relative to the working directory.
 
         Args:
             experiment: Supplies the cases and evaluators; it is never run itself.
@@ -186,7 +186,7 @@ class Optimizer:
                 read_timeout=120)`; it sets the 120 s read timeout only when given no `boto_client_config`. More
                 attempts also mean longer throttling backoff and more retried timeouts.
             seed: Seeds the split (unless `Split(seed=)` is set), selection, TPE, and Thompson.
-            base_dir: Where run directories go.
+            base_dir: Where run directories go; a relative path is relative to the working directory.
             name: The run folder's prefix (lowercase letters, digits, `-`, `_`); for reading only.
             on_iteration: Called with each finished iteration, after its `iteration_end` event; an `async def`
                 callback is awaited, on the optimizer's own event loop under `run()` (use `run_async()` for

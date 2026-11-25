@@ -339,6 +339,13 @@ async def test_run_dir_is_set_before_the_baseline_is_scored(tmp_path):
     assert resumed.run_dir == optimizer.run_dir
 
 
+def test_runs_go_under_optimization_runs_in_the_working_directory_by_default(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    optimizer = _quiet(rollout_fn=_rollout())
+    optimizer._setup()
+    assert optimizer.run_dir.parent == (tmp_path / "optimization" / "runs").resolve()
+
+
 async def test_the_baseline_is_saved_and_scored_on_train(tmp_path):
     optimizer = _quiet(base_dir=tmp_path, rollout_fn=_rollout(), name="quick")
     optimizer._setup()
