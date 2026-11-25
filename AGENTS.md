@@ -41,7 +41,6 @@ strands-evals depends on **`strands-agents`** (the Python SDK) for all LLM inter
   - `strands.types.exceptions` (`EventLoopException`, `ModelThrottledException`)
   - `strands.Skill` (public, exported in `strands.__all__` from `strands.vended_plugins.skills.skill`), used by the skill extractors to read `SKILL.md` frontmatter
   - `strands.decisions` (`DecisionModel`, `DecisionResult`, `Question`, `Uncertain`), used by `TypedRubricEvaluator` (and through it `Cascade`); it reads the per-question `probabilities` in `DecisionResult.metadata`
-  - `strands.experimental.context_manager` (`Offload`, `ContextState`), used by the optimizer's `Reflection` for its agent's `context_manager=`; experimental upstream, so a Strands release can change it, and `import strands_evals.optimization` fails when it does
 - **Not used as SDK imports (do not add to the list without verifying a real import):**
   - `strands.types.traces` — this repo defines its own `strands_evals.types.trace` for session/span modeling; the SDK's trace types are not imported.
   - `strands.telemetry` — the evals repo has its own `strands_evals.telemetry` module. The only reference to `strands.telemetry` is the literal string `"strands.telemetry.tracer"` used as an OpenTelemetry scope name in `mappers/constants.py`.
