@@ -3,7 +3,7 @@ import threading
 
 import pytest
 from strands import tool
-from strands.agent.conversation_manager import SlidingWindowConversationManager
+from strands.context_manager import ContextManager
 
 from strands_evals.optimization import Float, Int, JsonChoice, OneOf, TextValue, choice, component, tool_descriptions
 from strands_evals.optimization.declaration.markers import _default_size_cap, _ValueMarker
@@ -314,13 +314,12 @@ def test_component_one_of_may_take_a_none_constructor_default_as_an_option():
         component(Optional, pin_first=OneOf(0, 1))  # None is not an option: pass default=
 
 
-def test_component_one_of_on_a_real_conversation_manager():
-    # strands' SlidingWindowConversationManager declares pin_first: int | None = None.
-    declared = component(SlidingWindowConversationManager, window_size=Int(4, 40), pin_first=OneOf(None, 1))
-    assert declared.tunable["window_size"].default == 40
-    assert declared.tunable["pin_first"].default is None
-    pinned = component(SlidingWindowConversationManager, pin_first=OneOf(0, 1, default=0))
-    assert pinned.tunable["pin_first"].default == 0
+def test_component_one_of_on_a_real_context_manager():
+    # strands' ContextManager declares archive: ArchiveConfig | bool | None = None.
+    assert component(ContextManager, archive=OneOf(None, False)).tunable["archive"].default is None
+    with pytest.raises(TypeError, match="doesn't fit"):
+        component(ContextManager, archive=OneOf(True, False))  # None is not an option: pass default=
+    assert component(ContextManager, archive=OneOf(True, False, default=True)).tunable["archive"].default is True
 
 
 def test_component_one_of_whose_constructor_default_is_not_an_option_fails():

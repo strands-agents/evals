@@ -345,7 +345,7 @@ def test_best_values_json_shows_a_key_active_on_one_side(experiment_path, tmp_pa
     assert result.best.values["manager"] == "summary"  # every sliding window is over the token limit
     values = json.loads((root / "best.values.json").read_text())
     assert values["manager"] == {"old": "window", "new": "summary"}
-    assert values["manager.window.window_size"] == {"old": 40}
+    assert values["manager.window.preserve_recent"] == {"old": 40}
 
 
 # MODULE:ATTR objects and the --build-task route

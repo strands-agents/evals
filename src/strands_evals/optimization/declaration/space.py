@@ -64,12 +64,12 @@ class ParamInfo:
     """One flat key of the space.
 
     `active_when` is `(choice key, label)` when the key exists only under one alternative of a
-    `choice()`, else None. E.g. `cm=choice(window=component(SlidingWindowConversationManager,
-    window_size=Int(4, 40)), summary=component(...))` gives `cm` (always active) and
-    `cm.window.window_size` with `active_when=("cm", "window")`. When a proposal switches `cm` to
-    `summary`, `Space.complete` drops `cm.window.window_size` (if it were kept, it would change the
-    candidate id without changing the agent) and fills the keys `summary` brings in. Validation,
-    TPE, the score model's design, and `Nested` read it too. Conditions are one level deep, since
+    `choice()`, else None. E.g. `cm=choice(recent=component(keep_recent, preserve_recent=Int(2, 20)),
+    summary=component(...))` gives `cm` (always active) and `cm.recent.preserve_recent` with
+    `active_when=("cm", "recent")`. When a proposal switches `cm` to `summary`, `Space.complete`
+    drops `cm.recent.preserve_recent` (if it were kept, it would change the candidate id without
+    changing the agent) and fills the keys `summary` brings in. Validation, TPE, the score model's
+    design, and `Nested` read it too. Conditions are one level deep, since
     `component()` takes no nested markers. Text keys can't sit under a `choice()`, so theirs is
     always None.
 
