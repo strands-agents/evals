@@ -245,7 +245,7 @@ The command is step 7's **Start**, with the flags of the **Build** notes of step
 
 ### 7. Run
 
-**Run folder.** `F` is `strands-dev/experiments/<name>/optimizations/<stamp>/` for an experiment of a strands-dev workspace, where the Strands CLI keeps its runs; otherwise `<project>/.strands-evals/runs/<stamp>/`, with `<stamp>` the UTC time as `YYYYMMDD-HHMMSS`. Suggest adding `.strands-evals/` to the project's `.gitignore` when it's a git repository that doesn't ignore it. Every case needs a unique `name`: when one doesn't have it, write a copy with every case named (keep existing names, add `case-<n>` to the rest, `-2`, `-3` to repeats) as `$F/experiment.json` and run that.
+**Run folder.** `F` is `strands-dev/experiments/<name>/optimizations/<stamp>/` for an experiment of a strands-dev workspace, where the Strands CLI keeps its runs; otherwise `<project>/optimization/runs/<stamp>/`, with `<stamp>` the UTC time as `YYYYMMDD-HHMMSS`. Suggest adding `optimization/runs/` to the project's `.gitignore` when it's a git repository that doesn't ignore it. Every case needs a unique `name`: when one doesn't have it, write a copy with every case named (keep existing names, add `case-<n>` to the rest, `-2`, `-3` to repeats) as `$F/experiment.json` and run that.
 
 **tunable_agent.py**, Python without its own tunable factory: copy [assets/tunable_agent.py](assets/tunable_agent.py) to `$F/tunable_agent.py` (`cp <skill_dir>/assets/tunable_agent.py "$F/tunable_agent.py"`) and edit the copy where its `# Edit:` comments say, with the knobs of step 2's **Build**; never edit the asset itself. Set `AGENT_FILE` to the agent file's absolute path and `CALL` to the position of the call that builds `agent` among the file's `create_harness` calls (0 when it has one); leave out what isn't tuned, with `SWITCHES = {}` when nothing is switched. Keep the file with the run folder: a resumed run loads it again.
 
@@ -300,7 +300,7 @@ Nothing in the user's project changes. `<RUN_DIR>/best.diff` holds each changed 
 
 ## Resuming a run
 
-Resume only when the user explicitly asks; never on your own. A run can be resumed when it was killed (130, or no `run.exit`), stopped on a proposer error (3 with the `continue` line), or finished before its test check ran (step 8); any other failed run starts over as a new run. Skip steps 1 to 6: take the run folder `$F` the user names, else the newest resumable one under the experiment's `optimizations/` (or `<project>/.strands-evals/runs/`), and confirm it with the user. `<RUN_DIR>` is the one folder under `$F/record` (step 7); without one the run never started, so there is nothing to resume. With `<project>` as in step 1, run:
+Resume only when the user explicitly asks; never on your own. A run can be resumed when it was killed (130, or no `run.exit`), stopped on a proposer error (3 with the `continue` line), or finished before its test check ran (step 8); any other failed run starts over as a new run. Skip steps 1 to 6: take the run folder `$F` the user names, else the newest resumable one under the experiment's `optimizations/` (or `<project>/optimization/runs/`), and confirm it with the user. `<RUN_DIR>` is the one folder under `$F/record` (step 7); without one the run never started, so there is nothing to resume. With `<project>` as in step 1, run:
 
 ```bash
 cd <project> && (strands-evals optimize resume "<RUN_DIR>" --rich \

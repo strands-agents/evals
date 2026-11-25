@@ -626,7 +626,7 @@ def test_a_folder_inside_another_is_copied_once(project, tmp_path_factory):
 def test_a_run_directory_inside_the_source_folder_is_not_copied(tmp_path):
     (tmp_path / "prompt.md").write_text("You help.", newline="")
     space = Space({"system": FileText(tmp_path / "prompt.md")})
-    workspace = tmp_path / ".strands-evals" / "runs" / "r1" / "candidates" / "abc" / "optimization_files"
+    workspace = tmp_path / "optimization" / "runs" / "r1" / "candidates" / "abc" / "optimization_files"
     space.create_candidate_copy({"system": "New."}, workspace)
     folder = copied(space, workspace, tmp_path / "prompt.md").parent
     assert sorted(p.name for p in folder.iterdir()) == ["prompt.md"]
@@ -932,7 +932,7 @@ def test_a_single_skill_is_copied_alone_with_its_directory_name(library):
 def test_a_run_directory_inside_a_single_skill_is_left_out_of_its_copy(library):
     skill = library / "triage"
     space = Space({"triage": SkillLibrary(skill)})
-    workspace = skill / ".strands-evals" / "runs" / "r1" / "candidates" / "abc" / "optimization_files"
+    workspace = skill / "optimization" / "runs" / "r1" / "candidates" / "abc" / "optimization_files"
     values = {"triage/SKILL.md": skill_text("triage", "Sort.", "New.\n")}
     space.create_candidate_copy(values, workspace)
     copy = space.resolve("triage", values, workspace)
