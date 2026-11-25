@@ -1029,7 +1029,9 @@ def test_turn_too_long_for_the_judge_is_not_applicable(mock_agent_class):
     assert result.test_pass is False
     assert result.reason == "turn 2 is too long for one judge call"
     # Turn 1's call is paid for; turn 2's failed.
+    assert result.could_not_evaluate
     assert result.metadata == {
+        "could_not_evaluate": "judge_context_window_exceeded",
         "too_long_turn": 2,
         "judge_calls": 2,
         "judge_input_tokens": 100,
@@ -1049,6 +1051,7 @@ async def test_a_turn_estimated_too_long_is_found_before_any_judge_call(mock_age
         result.metadata
         == async_result.metadata
         == {
+            "could_not_evaluate": "judge_context_window_exceeded",
             "too_long_turn": 2,
             "judge_calls": 0,
             "judge_input_tokens": 0,
@@ -1065,7 +1068,13 @@ def test_sync_evaluation_stops_at_the_first_turn_that_is_too_long(mock_agent_cla
 
     [result] = ContextUtilizationEvaluator(measured_tools=MEASURED).evaluate(_case(_two_turns()))
 
-    assert result.metadata == {"too_long_turn": 1, "judge_calls": 1, "judge_input_tokens": 0, "judge_output_tokens": 0}
+    assert result.metadata == {
+        "could_not_evaluate": "judge_context_window_exceeded",
+        "too_long_turn": 1,
+        "judge_calls": 1,
+        "judge_input_tokens": 0,
+        "judge_output_tokens": 0,
+    }
     assert mock_agent.call_count == 1  # turn 2 is not judged
 
 
@@ -1276,7 +1285,7 @@ def test_the_judges_token_usage_is_summed_over_its_calls(mock_agent_class):
 
 
 @patch(f"{MODULE}.Agent")
-def test_overall_score_leaves_out_nothing_measured_but_counts_rows_that_could_not_be_judged(mock_agent_class):
+def test_overall_score_counts_only_a_missing_trajectory_among_rows_without_a_score(mock_agent_class):
     _mock_judge(mock_agent_class, ["S1.1", "S2.1"])
     evaluator = ContextUtilizationEvaluator(measured_tools=MEASURED)
     scored = evaluator.evaluate(_case(_two_turns()))
@@ -1288,7 +1297,9 @@ def test_overall_score_leaves_out_nothing_measured_but_counts_rows_that_could_no
     overall = EvaluationReport.calculate_overall_score([r[0].score for r in rows], rows)
 
     assert scored[0].score == 1.0
-    assert overall == pytest.approx(1.0 / 3)  # nothing_measured left out; no_session and too_long count as 0
+    # nothing_measured and too_long (could not evaluate) are left out; no_session counts as 0
+    assert overall == pytest.approx(1.0 / 2)
+    assert [row[0].test_pass for row in rows] == [True, True, False, False]
 
 
 # ---- Cross-case rollups -------------------------------------------------------------------
@@ -1389,3 +1400,22 @@ def test_a_report_without_scored_rows_raises_rather_than_rolling_up_nothing():
 
     with pytest.raises(ValueError, match="no scored context utilization rows"):
         report.utilization()
+
+
+@patch(f"{MODULE}.Agent")
+def test_in_an_experiment_a_too_long_case_fails_but_stays_out_of_overall_score(mock_agent_class):
+    sessions = {
+        "ok": _session([_agent(0, "q1", "a1"), _tool(1, "search", "tiny hit")]),
+        "long": _session([_agent(0, "q2", "a2"), _tool(1, "search", "word " * 2000)]),
+    }
+    _mock_judge(mock_agent_class, ["S1.*"])
+
+    report = Experiment(
+        cases=[Case(name="ok", input="q1"), Case(name="long", input="q2")],
+        evaluators=[ContextUtilizationEvaluator(max_judge_input_tokens=900)],
+    ).run_evaluations(lambda case: {"output": "x", "trajectory": sessions[case.name]})
+
+    assert report.scores == [1.0, 0.0]
+    assert report.test_passes == [True, False]
+    assert report.detailed_results[1][0].could_not_evaluate
+    assert report.overall_score == 1.0

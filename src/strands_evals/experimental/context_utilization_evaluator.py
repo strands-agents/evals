@@ -16,7 +16,7 @@ from tenacity import AsyncRetrying, Retrying, retry_if_exception, stop_after_att
 
 from ..evaluators.evaluator import Evaluator
 from ..evaluators.prompt_templates.context_utilization import get_template
-from ..types.evaluation import NOT_APPLICABLE, EvaluationData, EvaluationOutput, InputT, OutputT
+from ..types.evaluation import COULD_NOT_EVALUATE, NOT_APPLICABLE, EvaluationData, EvaluationOutput, InputT, OutputT
 from ..types.evaluation_report import EvaluationReport
 from ..types.trace import (
     AgentInvocationSpan,
@@ -186,15 +186,17 @@ class ContextUtilizationEvaluator(Evaluator[InputT, OutputT]):
             reported it (0 when it reported none).
         assistant_replies: Distinct assistant replies in the session, in judged turns or not.
 
-    Not-applicable rows (`label="not_applicable"`, score 0.0). One that passes (nothing to judge) is
-    left out of `EvaluationReport.overall_score`; one that fails (the session could not be judged)
-    counts there as 0, so a failure to judge is not hidden:
-        - no `Session` trajectory (`test_pass=False`, counted);
-        - nothing gathered by a measured tool (`test_pass=True`, left out);
-        - a turn too long for one judge call (`test_pass=False`, counted; `metadata["too_long_turn"]`): its
-          estimated size is over `max_judge_input_tokens` (checked before any judge call, so it costs
-          nothing), or the judge raised `ContextWindowOverflowException`; the other turns alone would
-          count only part of what the agent gathered. `metadata` also has `judge_calls` (calls
+    Not-applicable rows (`label="not_applicable"`, score 0.0):
+        - no `Session` trajectory: `test_pass=False`, and `EvaluationReport.overall_score` counts it
+          as 0, so a missing trajectory is not hidden;
+        - nothing gathered by a measured tool: `test_pass=True`, and `overall_score` leaves it out;
+        - a turn too long for one judge call (`metadata["too_long_turn"]`): its estimated size is over
+          `max_judge_input_tokens` (checked before any judge call, so it costs nothing), or the judge
+          raised `ContextWindowOverflowException`; the other turns alone would count only part of what
+          the agent gathered. Like any judge whose context window overflowed, the row is marked
+          `metadata["could_not_evaluate"] = "judge_context_window_exceeded"`: it fails
+          (`test_pass=False`), so pass/fail gates still catch it, but `overall_score` leaves it out,
+          since its 0.0 is not a judgment of the agent. `metadata` also has `judge_calls` (calls
           started, the failing one and, in `evaluate_async`, cancelled ones included; 0 when the
           estimate caught it) and the token usage of the calls that finished. Any other judge error
           is raised.
@@ -458,7 +460,12 @@ class ContextUtilizationEvaluator(Evaluator[InputT, OutputT]):
     def _too_long_row(cls, turn: _Turn, judge_calls: int, results: list[AgentResult]) -> EvaluationOutput:
         """No verdict: the turn does not fit in a single judge call, so the session is not scored."""
         row = cls._not_applicable_row(f"turn {turn.number} is too long for one judge call", False)
-        row.metadata = {"too_long_turn": turn.number, "judge_calls": judge_calls, **cls._judge_usage(results)}
+        row.metadata = {
+            COULD_NOT_EVALUATE: "judge_context_window_exceeded",
+            "too_long_turn": turn.number,
+            "judge_calls": judge_calls,
+            **cls._judge_usage(results),
+        }
         return row
 
     @staticmethod
