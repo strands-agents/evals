@@ -1,4 +1,4 @@
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -255,6 +255,33 @@ def test_trajectory_evaluator_update_trajectory_description():
     evaluator.update_trajectory_description(new_description)
 
     assert evaluator.trajectory_description == new_description
+
+
+@patch("strands_evals.evaluators.trajectory_evaluator.Agent")
+def test_trajectory_evaluator_evaluate_includes_trajectory_description(mock_agent_class, evaluation_data, mock_agent):
+    """Test that trajectory_description is passed to the judge prompt"""
+    mock_agent_class.return_value = mock_agent
+    evaluator = TrajectoryEvaluator(rubric="Test rubric", trajectory_description={"calculator": "Performs arithmetic"})
+
+    evaluator.evaluate(evaluation_data)
+
+    prompt = mock_agent.call_args[0][0]
+    assert "<TrajectoryDescription>{'calculator': 'Performs arithmetic'}</TrajectoryDescription>" in prompt
+
+
+@pytest.mark.asyncio
+@patch("strands_evals.evaluators.trajectory_evaluator.Agent")
+async def test_trajectory_evaluator_evaluate_async_includes_trajectory_description(mock_agent_class, evaluation_data):
+    """Test that trajectory_description is passed to the judge prompt in async evaluation"""
+    mock_result = Mock()
+    mock_result.structured_output = EvaluationOutput(score=0.9, test_pass=True, reason="Mock async evaluation")
+    mock_agent_class.return_value.invoke_async = AsyncMock(return_value=mock_result)
+    evaluator = TrajectoryEvaluator(rubric="Test rubric", trajectory_description={"calculator": "Performs arithmetic"})
+
+    await evaluator.evaluate_async(evaluation_data)
+
+    prompt = mock_agent_class.return_value.invoke_async.call_args[0][0]
+    assert "<TrajectoryDescription>{'calculator': 'Performs arithmetic'}</TrajectoryDescription>" in prompt
 
 
 def test_trajectory_evaluator_init_with_tools_merges_with_defaults():
