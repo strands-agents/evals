@@ -443,6 +443,8 @@ def _validate_calibration_compatibility(
         return
     if expected_context is None and actual_context is None:
         return
+    if scoring and actual_context is None:
+        return
     if expected_context is None or actual_context is None:
         raise ValueError(
             f"{operation} calibration context must match the fitted context; "

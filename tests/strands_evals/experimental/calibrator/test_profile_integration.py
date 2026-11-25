@@ -234,6 +234,37 @@ def test_collection_creates_contextual_profile_that_restores() -> None:
     assert Calibrator.from_profile(profile).score(result.reports_by_run) == pytest.approx(result.score)
 
 
+def test_contextual_profile_scores_context_free_reports() -> None:
+    experiment = Experiment(
+        cases=[
+            Case(name="good-case", input="good"),
+            Case(name="bad-case", input="bad"),
+        ],
+        evaluators=[
+            _CountingEvaluator(name="first"),
+            _CountingEvaluator(name="second"),
+        ],
+    )
+    calibrator = Calibrator(step_sizes={"first": 0.5, "second": 0.5})
+    calibrator.run_evaluations(
+        experiment,
+        lambda case: case.input,
+        agent_runs=2,
+        judge_replays=2,
+    )
+    profile = calibrator.profile
+    context_free_report = _report(
+        {
+            "first": {"new-case": 0.2},
+            "second": {"new-case": 0.8},
+        }
+    )
+
+    assert profile is not None
+    application = Calibrator.from_profile(profile).apply_profile([[context_free_report]])
+    assert application.selected_score == pytest.approx(0.5)
+
+
 def test_contextual_profile_rejects_changed_evaluator_configuration() -> None:
     step_sizes = {"first": 0.5, "second": 0.5}
     cases = [
