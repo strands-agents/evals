@@ -14,6 +14,8 @@ Sets up and runs `strands-evals optimize run` on an agent built with strands-har
 
 `<skill_dir>` below is the folder holding this file. The skill uses the Python of the installed `strands-evals` command (step 1).
 
+The [optimization guide](https://strandsagents.com/docs/user-guide/evals-sdk/optimization/) is the source of truth for how the optimizer works (markers, search, budget, splits, and results): read it when this file doesn't answer a question about the optimizer, or when a user asks how it works.
+
 ## Steps
 
 Ask in plain chat, one step at a time unless a step says to ask its questions together. Every list has at most three numbered options before a short "Your own" option, the default first and marked `(Default)`, except the knobs question (every tunable knob, step 2) and the budget's settings (step 5); always accept a free-form answer (ex. "2 steps", "drop effort", "tokens at most 4000"). When an answer breaks a rule of its step, say which and ask again.
