@@ -3,9 +3,23 @@
 import statistics
 from pathlib import Path
 
-from strands_evals.optimization import AtMost, Criteria, LowerBound, Maximize, Mean, MetricRegistry, Minimize, Pareto
+import pytest
+
+from strands_evals.optimization import (
+    AgentSpend,
+    AtMost,
+    Criteria,
+    LowerBound,
+    Maximize,
+    Mean,
+    MetricRegistry,
+    Minimize,
+    Pareto,
+    RunCost,
+    Spend,
+)
 from strands_evals.optimization.end_phase import paired_interval, pick
-from strands_evals.optimization.result import CandidateView, OptimizationResult, _decimals, _value_cell
+from strands_evals.optimization.result import CandidateView, OptimizationResult, _decimals, _run_cost, _value_cell
 from strands_evals.optimization.score_model.effects import effects_json
 from strands_evals.types.optimization import (
     CandidateScores,
@@ -117,6 +131,20 @@ def _result(criteria, candidates, validation, *, test, steps, **fields):
     agent = fields.pop("agent", (43464, 29629, 9598))
     effects = effects_json(None, criteria)
     effects["reason"] = fields.pop("effects_reason", None)
+    proposers = fields.pop("proposers", {"text": "Reflection"})
+    # The proposers' tokens go to the first block, the others spent nothing.
+    proposer_tokens = dict.fromkeys(proposers, 0) | {next(iter(proposers)): fields.pop("proposer_tokens", 134023)}
+    splits = ("train", "validation", "test")
+    cost = RunCost(
+        agent={
+            s: AgentSpend(usage=_usage(n), failed=0, trials=0, attempts=0) for s, n in zip(splits, agent, strict=True)
+        },
+        judges={
+            s: Spend(usage=_usage(n), failed=0) for s, n in zip(splits, fields.pop("judges", (0, 0, 0)), strict=True)
+        },
+        proposers={block: Spend(usage=_usage(n), failed=0) for block, n in proposer_tokens.items()},
+        benchmark={s: _usage(0) for s in splits},
+    )
     return OptimizationResult(
         run_dir=Path("runs") / fields["run_id"],
         baseline_id=BASELINE,
@@ -129,7 +157,7 @@ def _result(criteria, candidates, validation, *, test, steps, **fields):
         objective=str(criteria.objective),
         constraints=[str(c) for c in criteria.constraints],
         feasibility_threshold=criteria.feasibility_threshold,
-        proposers=fields.pop("proposers", {"text": "Reflection"}),
+        proposers=proposers,
         iterations=[
             IterationRecord(
                 iteration=i + 1,
@@ -143,10 +171,7 @@ def _result(criteria, candidates, validation, *, test, steps, **fields):
             )
             for i in range(steps)
         ],
-        agent_cost=dict(zip(("train", "validation", "test"), map(_usage, agent), strict=True)),
-        search_cost=_usage(fields.pop("proposer_tokens", 134023)),
-        judge_cost=_usage(fields.pop("judge_tokens", 0)),
-        retry_cost=_usage(fields.pop("retry_tokens", 0)),
+        cost=cost,
         reports={},
         rows={},
         **fields,
@@ -227,13 +252,13 @@ def test_a_single_objective_run():
             "-----------------------------------------------------------------",
             "WordCount            0.000     1.000  +1.000  [+1.000, +1.000]  5",
             "=================================================================",
-            "Tokens         search  validation   test    total",
+            "Tokens          search  validation   test    total  failed",
             "-----------------------------------------------------------------",
-            "agent          43,464      29,629  9,598   82,691",
-            "proposers     134,023           0      0  134,023",
-            "judges              -           -      -        0",
-            "retries             -           -      -        0",
-            "other agents        -           -      -        0",
+            "agent           43,464      29,629  9,598   82,691       0",
+            "judges               0           0      0        0       0",
+            "proposer text  134,023           0      0  134,023       0",
+            "other agents         0           0      0        0       -",
+            "total          177,487      29,629  9,598  216,714       -",
             "=================================================================",
             "Notes:",
             "[1] estimate, sd: the validation fit's estimate of the mean and",
@@ -244,10 +269,13 @@ def test_a_single_objective_run():
             "[2] Test: baseline, champion, and diff (champion - baseline, with",
             "    its 90% interval) are over the n cases both measured;",
             "    reported only.",
-            "[3] Tokens: search is the train split; retries are the agent's",
-            "    and the judges' tokens in attempts run again; other agents",
-            "    are the rollouts' agents the factory didn't build (a",
-            "    simulated user).",
+            "[3] Tokens: search is the train split; every attempt counts, the",
+            "    ones run again included; failed: the agent's attempts that",
+            "    failed, infrastructure failures such as throttling included;",
+            "    the judges' attempts with a failed evaluator; a proposer's",
+            "    retried failures and requests that failed; other agents are",
+            "    the rollouts' agents the factory didn't build (a simulated",
+            "    user).",
         ]
     )
 
@@ -307,8 +335,7 @@ def _constrained_run():
         stop_reason="budget",
         agent=(1204331, 301877, 160402),
         proposer_tokens=88210,
-        judge_tokens=95112,
-        retry_tokens=4031,
+        judges=(71004, 16180, 7928),
     )
 
 
@@ -353,13 +380,14 @@ def test_a_constrained_run_has_a_row_per_candidate_and_goal():
             "--------------------------------------------------------------------------------------------------------",
             "temperature  0.7       0.2",
             "========================================================================================================",
-            "Tokens           search  validation     test      total",
+            "Tokens               search  validation     test      total  failed",
             "--------------------------------------------------------------------------------------------------------",
-            "agent         1,204,331     301,877  160,402  1,666,610",
-            "proposers        88,210           0        0     88,210",
-            "judges                -           -        -     95,112",
-            "retries               -           -        -      4,031",
-            "other agents          -           -        -          0",
+            "agent             1,204,331     301,877  160,402  1,666,610       0",
+            "judges               71,004      16,180    7,928     95,112       0",
+            "proposer text        88,210           0        0     88,210       0",
+            "proposer numbers          0           0        0          0       0",
+            "other agents              0           0        0          0       -",
+            "total             1,363,545     318,057  168,330  1,849,932       -",
             "========================================================================================================",
             "Notes:",
             "[1] estimate, sd: the validation fit's estimate of the mean and its posterior sd; measured: the mean",
@@ -367,8 +395,10 @@ def test_a_constrained_run_has_a_row_per_candidate_and_goal():
             "    constraint judged by its measured or adjusted mean; * the champion.",
             "[2] Test: baseline, champion, and diff (champion - baseline, with its 90% interval) are over the n cases",
             "    both measured; reported only.",
-            "[3] Tokens: search is the train split; retries are the agent's and the judges' tokens in attempts run",
-            "    again; other agents are the rollouts' agents the factory didn't build (a simulated user).",
+            "[3] Tokens: search is the train split; every attempt counts, the ones run again included; failed: the",
+            "    agent's attempts that failed, infrastructure failures such as throttling included; the judges'",
+            "    attempts with a failed evaluator; a proposer's retried failures and requests that failed; other",
+            "    agents are the rollouts' agents the factory didn't build (a simulated user).",
         ]
     )
 
@@ -461,13 +491,13 @@ def test_a_pareto_run_adds_the_front_on_test():
             "                                      Helpfulness         -       -        -                   -  -",
             "                                      tokens              -       -        -                   -  -",
             "===================================================================================================",
-            "Tokens         search  validation   test    total",
+            "Tokens          search  validation   test    total  failed",
             "---------------------------------------------------------------------------------------------------",
-            "agent          43,464      29,629  9,598   82,691",
-            "proposers     134,023           0      0  134,023",
-            "judges              -           -      -        0",
-            "retries             -           -      -        0",
-            "other agents        -           -      -        0",
+            "agent           43,464      29,629  9,598   82,691       0",
+            "judges               0           0      0        0       0",
+            "proposer text  134,023           0      0  134,023       0",
+            "other agents         0           0      0        0       -",
+            "total          177,487      29,629  9,598  216,714       -",
             "===================================================================================================",
             "Notes:",
             "[1] estimate, sd: the validation fit's estimate of the mean and its posterior sd; measured: the",
@@ -475,8 +505,10 @@ def test_a_pareto_run_adds_the_front_on_test():
             "    a constraint judged by its measured or adjusted mean; * the champion.",
             "[2] Test: baseline, champion, and diff (champion - baseline, with its 90% interval) are over the n",
             "    cases both measured; reported only.",
-            "[3] Tokens: search is the train split; retries are the agent's and the judges' tokens in attempts",
-            "    run again; other agents are the rollouts' agents the factory didn't build (a simulated user).",
+            "[3] Tokens: search is the train split; every attempt counts, the ones run again included; failed:",
+            "    the agent's attempts that failed, infrastructure failures such as throttling included; the",
+            "    judges' attempts with a failed evaluator; a proposer's retried failures and requests that",
+            "    failed; other agents are the rollouts' agents the factory didn't build (a simulated user).",
         ]
     )
 
@@ -529,13 +561,13 @@ def test_a_run_without_finalists_prints_the_recorded_reasons():
             "--------------------------------------------------------------",
             "baseline *  58dc753dfc0f         -   -     0.500  4",
             "==============================================================",
-            "Tokens        search  validation  test  total",
+            "Tokens         search  validation  test  total  failed",
             "--------------------------------------------------------------",
-            "agent          2,210       1,105     0  3,315",
-            "proposers          0           0     0      0",
-            "judges             -           -     -      0",
-            "retries            -           -     -      0",
-            "other agents       -           -     -      0",
+            "agent           2,210       1,105     0  3,315       0",
+            "judges              0           0     0      0       0",
+            "proposer text       0           0     0      0       0",
+            "other agents        0           0     0      0       -",
+            "total           2,210       1,105     0  3,315       -",
             "==============================================================",
             "Notes:",
             "[1] estimate, sd: the validation fit's estimate of the mean",
@@ -543,10 +575,13 @@ def test_a_run_without_finalists_prints_the_recorded_reasons():
             "    measured, n of them (the runs, when one case has a value);",
             "    P(met) is - for a constraint judged by its measured or",
             "    adjusted mean; * the champion.",
-            "[2] Tokens: search is the train split; retries are the agent's",
-            "    and the judges' tokens in attempts run again; other agents",
-            "    are the rollouts' agents the factory didn't build (a",
-            "    simulated user).",
+            "[2] Tokens: search is the train split; every attempt counts,",
+            "    the ones run again included; failed: the agent's attempts",
+            "    that failed, infrastructure failures such as throttling",
+            "    included; the judges' attempts with a failed evaluator; a",
+            "    proposer's retried failures and requests that failed;",
+            "    other agents are the rollouts' agents the factory didn't",
+            "    build (a simulated user).",
         ]
     )
 
@@ -679,6 +714,14 @@ def test_a_result_written_before_the_summary_fields_loads_and_summarizes():
     assert ["tokens", "2,480", "190", "2,512", "8", "-"] in lines
 
 
+def test_a_result_written_before_cost_names_the_resume_that_rewrites_it():
+    data = _constrained_run().to_dict()
+    del data["cost"]
+    data.update(agent_cost={}, search_cost={}, judge_cost={}, retry_cost={})
+    with pytest.raises(ValueError, match="resume the run to rewrite it"):
+        OptimizationResult.from_dict(data)
+
+
 def test_a_test_rows_means_cover_the_cases_its_difference_does():
     # The champion lost case e, so the baseline's own test mean (over a-e) and the difference (over a-d) disagree.
     baseline = {"a": 0.2, "b": 0.4, "c": 0.6, "d": 0.8, "e": 0.0}
@@ -738,3 +781,129 @@ def test_a_lone_minimized_objective_at_zero_leaves_its_column_out():
         stop_reason="iterations",
     )
     assert "objective" not in next(line for line in result.summary().splitlines() if line.startswith("Validation "))
+
+
+# The run's cost from its saved trials and events.
+
+
+def _usage_json(tokens, calls=1):
+    return Usage(
+        tokens=tokens,
+        input_tokens=tokens,
+        output_tokens=0,
+        cache_read_tokens=None,
+        cache_write_tokens=None,
+        model_calls=calls,
+        seconds=1.0,
+        models=[],
+    ).model_dump()
+
+
+def _attempt(status, *, usage=0, judges=0, rollouts=1):
+    return {
+        "status": status,
+        "error_type": None,
+        "error": None,
+        "usage": _usage_json(usage, calls=int(usage > 0)),
+        "judge_usage": _usage_json(judges, calls=int(judges > 0)),
+        "pass_index": 0,
+        "rollouts": rollouts,
+    }
+
+
+def _trial(split, status, *, usage, judges=None, errors=None, previous=()):
+    return {
+        "split": split,
+        "status": status,
+        "usage": _usage_json(usage),
+        "judge_usage": {name: _usage_json(tokens) for name, tokens in (judges or {}).items()},
+        "evaluator_errors": dict(errors or {}),
+        "previous_attempts": list(previous),
+    }
+
+
+def test_the_agent_and_the_judges_count_every_attempt_each_in_its_own_role():
+    trials = [
+        # A re-run pass replaced an infrastructure failure: the agent ran twice.
+        _trial(
+            "train", "completed", usage=100, judges={"J": 10}, previous=[_attempt("infrastructure_invalid", usage=30)]
+        ),
+        # Throttled once inside the attempt, then completed with one evaluator failed.
+        _trial(
+            "train",
+            "completed",
+            usage=60,
+            judges={"J": 10, "K": 4},
+            errors={"K": "ValueError"},
+            previous=[_attempt("infrastructure_invalid", usage=5, rollouts=0)],
+        ),
+        # A judge-only re-run: the output's usage stays on the new record; the replaced attempt keeps its failed
+        # judge's spend only.
+        _trial(
+            "validation", "completed", usage=50, judges={"J": 10, "K": 5}, previous=[_attempt("completed", judges=7)]
+        ),
+        # Every evaluator failed, and failed again when judged again.
+        _trial(
+            "validation",
+            "evaluator_invalid",
+            usage=40,
+            judges={"J": 3, "K": 3},
+            errors={"J": "ValueError", "K": "ValueError"},
+            previous=[_attempt("evaluator_invalid", judges=6)],
+        ),
+        _trial("test", "agent_failure", usage=20),
+        # Infrastructure failed, and failed again on its re-run pass.
+        _trial("test", "infrastructure_invalid", usage=15, previous=[_attempt("infrastructure_invalid", usage=15)]),
+    ]
+    cost = _run_cost(trials, [], blocks=[])
+
+    assert {split: (s.usage.tokens, s.trials, s.attempts, s.failed) for split, s in cost.agent.items()} == {
+        "train": (100 + 30 + 60 + 5, 2, 4, 2),
+        "validation": (50 + 40, 2, 2, 0),  # judge-only re-runs don't run the agent
+        "test": (20 + 15 + 15, 2, 3, 3),
+    }
+    assert {split: (s.usage.tokens, s.failed) for split, s in cost.judges.items()} == {
+        "train": (10 + 10 + 4, 1),
+        "validation": (10 + 5 + 7 + 3 + 3 + 6, 1 + 2),
+        "test": (0, 0),
+    }
+    assert cost.agent["train"].usage.model_calls == 4  # two trials, each with an earlier attempt
+    assert cost.proposers == {}
+
+
+def test_each_block_gets_its_proposers_spend_and_failed_attempts():
+    events = [
+        {"event": "proposer_usage", "block": "text", "usage": _usage_json(10)},  # the returned patches' usage
+        {"event": "proposer_retry", "block": "text", "error_type": "ValueError", "error": "bad"},
+        {"event": "proposer_usage", "block": "text", "usage": _usage_json(5)},  # spend on no returned patch
+        {"event": "proposer_error", "block": "text", "error_type": "ValueError", "error": "bad"},
+        {"event": "proposer_usage", "block": "structure", "usage": _usage_json(3)},
+        {"event": "proposer_retry", "block": "other", "error_type": "ValueError", "error": "bad"},
+        {"event": "trial", "record": {}},
+    ]
+    cost = _run_cost([], events, blocks=["numbers", "structure", "text"])
+
+    # Every block, in the search's order, then a block only the events name.
+    assert {block: (s.usage.tokens, s.failed) for block, s in cost.proposers.items()} == {
+        "numbers": (0, 0),
+        "structure": (3, 0),
+        "text": (15, 2),
+        "other": (0, 1),
+    }
+    assert list(cost.proposers) == ["numbers", "structure", "text", "other"]
+    assert cost.total.tokens == 18
+    assert cost.agent["train"] == AgentSpend(usage=Usage.zero(), failed=0, trials=0, attempts=0)
+
+
+def test_the_rollouts_other_agents_count_per_split_in_every_attempt():
+    retried = _attempt("infrastructure_invalid", usage=30) | {"benchmark_usage": _usage_json(4)}
+    trials = [
+        _trial("train", "completed", usage=100, previous=[retried]) | {"benchmark_usage": _usage_json(6)},
+        _trial("test", "completed", usage=50) | {"benchmark_usage": _usage_json(2)},
+        _trial("test", "completed", usage=50),  # saved before benchmark usage was recorded
+    ]
+    cost = _run_cost(trials, [], blocks=[])
+
+    assert {split: usage.tokens for split, usage in cost.benchmark.items()} == {"train": 10, "validation": 0, "test": 2}
+    assert cost.agent["train"].usage.tokens == 130  # never in the agent's
+    assert cost.total.tokens == 130 + 100 + 12

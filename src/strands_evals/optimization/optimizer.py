@@ -65,6 +65,7 @@ from .result import (
     _iteration_rows,
     _proposal_rows,
     _reports,
+    _run_cost,
 )
 from .score_model.bayesbench import BayesBenchModel
 from .score_model.effects import effects_json
@@ -577,8 +578,6 @@ class Optimizer:
             self._restore(self._resumed)
             return
         self._init_state(self._baseline)
-        if self._resumed is not None:  # killed in iteration 1: its proposers were already paid
-            self._search_cost = self._resumed.search_cost
         self._candidates[self._baseline.id] = self._baseline
         self._train[self._baseline.id] = scores
         self._refit(scored=True)
@@ -629,7 +628,6 @@ class Optimizer:
         self._build_errors: set[str] = set()  # infrastructure errors the build check has warned about
         self._saved: dict[str, Candidate] = {baseline.id: baseline}  # every saved candidate, by id
         self._open_rounds: list[OpenRound] = []
-        self._search_cost = Usage.zero()
         self._iteration = 0
 
     def _restore(self, state: ResumeState) -> None:
@@ -696,7 +694,6 @@ class Optimizer:
         self._iterations = list(state.iterations)
         self._history = list(state.history)
         self._open_rounds = list(state.open_rounds)
-        self._search_cost = state.search_cost
         self._iteration = state.iteration
 
     async def _run_search(self) -> StopReason:
@@ -910,21 +907,8 @@ class Optimizer:
         run.save_diff("best", champion.diff(), champion.changed_values())
         for c in report.front if criteria.is_pareto else []:
             run.save_diff(f"front/{views[c].number}-{c}", views[c].diff(), views[c].changed_values())
-        agent_cost: dict[SplitName, Usage] = {split: Usage.zero() for split in SPLIT_NAMES}
-        judge_cost = retry_cost = benchmark_cost = Usage.zero()
-        # Every saved trial, as `spent` counts them: after a resume, a killed iteration's trials too.
-        for saved in run._trials.values():
-            agent_cost[saved["split"]] = agent_cost[saved["split"]] + Usage.model_validate(saved["usage"])
-            for usage in saved["judge_usage"].values():
-                judge_cost = judge_cost + Usage.model_validate(usage)
-            for attempt in saved["previous_attempts"]:
-                retry_cost = (
-                    retry_cost + Usage.model_validate(attempt["usage"]) + Usage.model_validate(attempt["judge_usage"])
-                )
-            # Absent from trials saved before benchmark usage was recorded.
-            for spent in (saved, *saved["previous_attempts"]):
-                if spent.get("benchmark_usage") is not None:
-                    benchmark_cost = benchmark_cost + Usage.model_validate(spent["benchmark_usage"])
+        # Every saved trial, as `spent` counts them, and every event: after a resume, a killed iteration's too.
+        cost = _run_cost(run._trials.values(), run.events.read(), blocks=[_block_name(b) for b, _ in self._blocks])
         result = OptimizationResult(
             run_id=run.root.name,
             run_dir=run.root,
@@ -947,11 +931,7 @@ class Optimizer:
             if self._resumed is None or self._resumed.stop_max_rollouts is None
             else self._resumed.stop_max_rollouts,
             stop_reason=stop_reason,
-            agent_cost=agent_cost,
-            search_cost=self._search_cost,
-            judge_cost=judge_cost,
-            retry_cost=retry_cost,
-            benchmark_cost=benchmark_cost,
+            cost=cost,
             reports=_reports(
                 self._records,
                 self._transcripts,
@@ -1579,8 +1559,8 @@ class Optimizer:
                 raise ValueError(
                     f"a proposer may log only 'screened', 'proposer_retry', and 'proposer_usage' events, not {event!r}"
                 )
-            if event == "proposer_usage":  # spend on no returned patch: counted here, once
-                self._search_cost = self._search_cost + fields["usage"]
+            if event == "proposer_usage" and not isinstance(fields.get("usage"), Usage):
+                raise TypeError(f"a 'proposer_usage' event needs usage= a Usage, not {fields.get('usage')!r}")
             run.events.append(event, iteration=iteration, block=name, redraw=redraw, **fields)  # type: ignore[arg-type]
 
         train = list(self._case_split.train)
@@ -1646,7 +1626,6 @@ class Optimizer:
             usage = Usage.zero()
             for patch_usage in spent:
                 usage = usage + patch_usage
-            self._search_cost = self._search_cost + usage
             run.events.append("proposer_usage", iteration=iteration, block=name, redraw=redraw, usage=usage)
         return patches
 
