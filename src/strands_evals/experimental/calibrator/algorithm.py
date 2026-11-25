@@ -39,7 +39,11 @@ class CalibrationObservation:
 
 @dataclass(frozen=True)
 class CalibrationTargetDefinition:
-    """Stable identity of an external quality target."""
+    """Stable identity of an external quality target.
+
+    For binary probability calibration, target value `1` represents the
+    desirable outcome and target value `0` represents the undesirable outcome.
+    """
 
     name: str
     version: str
