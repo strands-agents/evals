@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import math
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rich.console import Console
@@ -47,11 +48,14 @@ def _render_result(result: PairedComparisonResult) -> None:
     console = Console()
     trial_label = "trial" if result.trial_count == 1 else "trials"
     target_definition = getattr(result, "target_definition", None)
-    prefix = (
-        "Comparison"
-        if target_definition is None
-        else f"Target comparison ({target_definition.name}@{target_definition.version})"
-    )
+    profile_id = getattr(result, "profile_id", None)
+    if target_definition is None:
+        prefix = "Comparison"
+    else:
+        target_label = f"{target_definition.name}@{target_definition.version}"
+        if profile_id is not None:
+            target_label = f"{target_label}, profile {profile_id[:12]}"
+        prefix = f"Target comparison ({target_label})"
     title = f"{prefix}: {result.verdict.replace('_', ' ')} ({result.trial_count} {trial_label})"
     if console.width < 100:
         console.print(Text(title, style="bold"))
@@ -75,7 +79,7 @@ def _render_result(result: PairedComparisonResult) -> None:
             console.print(details)
         return
 
-    table = Table(title=title)
+    table = Table(title=Text(title))
     table.add_column("Evaluator", overflow="fold")
     table.add_column("Cases", justify="right", no_wrap=True)
     table.add_column("Changed", justify="right", no_wrap=True)
@@ -123,10 +127,11 @@ def _run(args: argparse.Namespace) -> int:
                 lower_is_better=args.lower_is_better,
             )
         else:
+            profile_path = str(Path(args.calibration_profile).expanduser())
             try:
-                profile = CalibrationProfile.from_file(args.calibration_profile)
+                profile = CalibrationProfile.from_file(profile_path)
             except (OSError, ValueError) as error:
-                raise ValueError(f"invalid calibration profile at {args.calibration_profile}: {error}") from error
+                raise ValueError(f"invalid calibration profile at {profile_path}: {error}") from error
             result = compare_calibrated(
                 profile=profile,
                 baseline=[[report] for report in baseline_reports],
@@ -209,8 +214,8 @@ def add_subparser(
         default=None,
         metavar="PROFILE",
         help=(
-            "apply one calibrated target-probability profile to both sides; "
-            "each baseline/candidate report is treated as one agent run"
+            "JSON calibration profile path; requires calibrated_equal with a binary target where 1 is desirable; "
+            "applies target probabilities to both sides and treats each report as one agent run"
         ),
     )
     parser.add_argument(
@@ -234,7 +239,10 @@ def add_subparser(
         "--minimum-effect",
         default=0.0,
         type=float,
-        help="require the full confidence interval beyond this effect threshold (default: 0.0)",
+        help=(
+            "require the full confidence interval beyond this effect threshold; uses raw evaluator-score units, "
+            "or target-probability units with --calibration-profile (default: 0.0)"
+        ),
     )
     parser.add_argument(
         "--lower-is-better",
