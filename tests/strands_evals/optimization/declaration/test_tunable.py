@@ -3,7 +3,7 @@ import inspect
 
 import pytest
 from strands import Agent
-from strands.agent.conversation_manager import SlidingWindowConversationManager, SummarizingConversationManager
+from strands.context_manager import ContextManager
 from strands.hooks import BeforeModelCallEvent
 from strands.models.model import Model
 
@@ -328,46 +328,38 @@ def test_a_factory_without_a_name_takes_arguments():
 # --- a real component swap ---
 
 
-@tunable(
-    conversation_manager=choice(
-        component(SummarizingConversationManager, summary_ratio=Float(0.1, 0.8)),
-        component(SlidingWindowConversationManager, window_size=Int(4, 200)),
-    )
-)
-def make_strands_agent(conversation_manager=None):
-    return Agent(model=StubModel(), conversation_manager=conversation_manager, callback_handler=None)
+@tunable(context_manager=choice(custom=component(ContextManager, archive=OneOf(None, False)), off=False))
+def make_strands_agent(context_manager=None):
+    return Agent(model=StubModel(), context_manager=context_manager, callback_handler=None)
 
 
 def test_a_real_component_swap_builds_through_the_constructor_with_its_hooks_registered():
-    bound = make_strands_agent.bind(
-        {
-            "conversation_manager": "SlidingWindowConversationManager",
-            "conversation_manager.SlidingWindowConversationManager.window_size": 10,
-        }
-    )
+    bound = make_strands_agent.bind({"context_manager.custom.archive": False})
     agent, other = bound(), bound()
-    manager = agent.conversation_manager
-    assert isinstance(manager, SlidingWindowConversationManager)
-    assert manager.window_size == 10
-    assert manager is not other.conversation_manager
+    manager = agent.context_manager
+    assert isinstance(manager, ContextManager)
+    assert manager.archive is None  # archive=False reached the constructor
+    assert isinstance(other.context_manager, ContextManager) and manager is not other.context_manager
     callbacks = agent.hooks.get_callbacks_for(BeforeModelCallEvent(agent=agent, invocation_state={}))
-    assert any(getattr(callback, "__self__", None) is manager for callback in callbacks)
+    assert any(callback.__qualname__.startswith("ContextManager.") for callback in callbacks)
+    assert make_strands_agent.bind({"context_manager": "off"})().context_manager is None
 
 
-@tunable(conversation_manager=choice(on=component(SlidingWindowConversationManager, window_size=Int(4, 200)), off=None))
-def make_optional_agent(conversation_manager=None):
-    return {"conversation_manager": conversation_manager}
+@tunable(context_manager=choice(on=component(ContextManager, archive=OneOf(None, False)), off=None))
+def make_optional_agent(context_manager=None):
+    return {"context_manager": context_manager}
 
 
 def test_an_optional_component_builds_fresh_when_on_and_passes_none_when_off():
     on = make_optional_agent.bind({})
-    first, second = on()["conversation_manager"], on()["conversation_manager"]
-    assert isinstance(first, SlidingWindowConversationManager) and first is not second
-    assert make_optional_agent.bind({"conversation_manager": "off"})()["conversation_manager"] is None
+    first, second = on()["context_manager"], on()["context_manager"]
+    assert isinstance(first, ContextManager) and first is not second
+    assert make_optional_agent.bind({"context_manager": "off"})()["context_manager"] is None
 
 
 def test_the_plain_call_builds_the_baseline_component():
-    assert isinstance(make_strands_agent().conversation_manager, SummarizingConversationManager)
+    manager = make_strands_agent().context_manager
+    assert isinstance(manager, ContextManager) and manager.archive is not None  # the baseline keeps the archive
 
 
 class Configured:
@@ -377,10 +369,10 @@ class Configured:
 
 
 SETTINGS = {"threshold": 0.6, "seen": []}
-WINDOW = SlidingWindowConversationManager(window_size=20)
+FIXED = Configured(size=20, settings={"seen": []})
 
 
-@tunable(manager=choice(tuned=component(Configured, size=Int(1, 50), settings=SETTINGS), fixed=WINDOW))
+@tunable(manager=choice(tuned=component(Configured, size=Int(1, 50), settings=SETTINGS), fixed=FIXED))
 def make_configured(manager=None):
     return manager
 
@@ -397,10 +389,10 @@ def test_the_plain_call_and_every_bound_build_get_their_own_copy_of_a_fixed_kwar
 def test_every_bound_build_gets_its_own_copy_of_a_fixed_alternative():
     bound = make_configured.bind({"manager": "fixed"})
     first, second = bound(), bound()
-    assert isinstance(first, SlidingWindowConversationManager) and first.window_size == 20
-    assert first is not second and first is not WINDOW
-    first.removed_message_count = 3
-    assert second.removed_message_count == 0 and WINDOW.removed_message_count == 0
+    assert isinstance(first, Configured) and first.size == 20
+    assert first is not second and first is not FIXED
+    first.settings["seen"].append("first trial")
+    assert second.settings["seen"] == [] and FIXED.settings["seen"] == []
 
 
 def test_a_build_context_can_be_built_by_hand(tmp_path):

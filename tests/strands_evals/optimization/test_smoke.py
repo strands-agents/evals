@@ -1,7 +1,7 @@
 """The optimizer end to end on a real Strands agent: declaration -> run -> reviewable diff (#450).
 
 The agent is a real `Agent` whose model is scripted (no network): it answers a case right with a probability set
-by its temperature, its conversation manager, and whether its system prompt asks for the exact answer, and reports
+by its temperature, its context manager, and whether its system prompt asks for the exact answer, and reports
 token usage per call by manager. The judge is a real agent on a scripted model too, so its spans and usage are
 kept apart from the agent's. Every run gives the same numbers.
 
@@ -15,7 +15,7 @@ from collections import Counter
 from collections.abc import AsyncIterator
 
 from strands import Agent
-from strands.agent.conversation_manager import SlidingWindowConversationManager, SummarizingConversationManager
+from strands.context_manager import Offload
 from strands.models import Model
 
 from strands_evals import Case, Experiment
@@ -49,12 +49,21 @@ JUDGE_TOKENS = 40
 USER_TOKENS = 1000
 
 
+def context_manager(manager: dict) -> dict:
+    """The agent's `context_manager=` for a `manager` bundle: summarize at a utilization, else keep the newest."""
+    if "context_utilization" in manager:
+        strategy = Offload.summarize("*").when(context_utilization=manager["context_utilization"], preserve_recent=4)
+    else:
+        strategy = Offload.drop("*").when(preserve_recent=manager["preserve_recent"])
+    return {"strategies": [strategy], "archive": False}
+
+
 class World(Model):
     """The agent's scripted model."""
 
-    def __init__(self, temperature: float, manager: object) -> None:
-        self.temperature, self.manager = temperature, manager
-        self.config = {"model_id": "scripted-world"}
+    def __init__(self, temperature: float, manager: dict | None) -> None:
+        self.temperature, self.manager = temperature, manager or {}
+        self.config = {"model_id": "scripted-world", "context_window_limit": 200_000}
 
     def update_config(self, **config):
         self.config.update(config)
@@ -69,10 +78,10 @@ class World(Model):
     async def stream(self, messages, tool_specs=None, system_prompt=None, **kwargs) -> AsyncIterator[dict]:
         question = messages[-1]["content"][0]["text"]
         p = 0.95 - 0.8 * abs(self.temperature - 0.25)
-        if isinstance(self.manager, SummarizingConversationManager):
-            p, tokens = p + 0.03, int(300 + 100 * self.manager.summary_ratio)
+        if "context_utilization" in self.manager:
+            p, tokens = p + 0.03, int(300 + 100 * self.manager["context_utilization"])
         else:  # a sliding window, or none: always over the 450-token limit
-            tokens = 500 + 5 * getattr(self.manager, "window_size", 40)
+            tokens = 500 + 5 * self.manager.get("preserve_recent", 40)
         if EXACT not in (system_prompt or ""):
             p *= 0.4
         right = random.Random(f"{question}:{self.temperature:.4f}:{tokens}:{system_prompt}").random() < p
@@ -120,15 +129,18 @@ class Correct(Evaluator):
 
 @tunable(
     manager=choice(
-        window=component(SlidingWindowConversationManager, window_size=Int(4, 40)),
-        summary=component(SummarizingConversationManager, summary_ratio=Float(0.1, 0.8)),
+        window=component(dict, preserve_recent=Int(4, 40, default=40)),
+        summary=component(dict, context_utilization=Float(0.1, 0.8, default=0.3)),
     ),
     temperature=Float(0.0, 1.0, default=0.9),
 )
 def manager_agent(manager=None, temperature=0.9):
     """A space without text: the default search is TPE only."""
     return Agent(
-        model=World(temperature, manager), conversation_manager=manager, system_prompt=EXACT, callback_handler=None
+        model=World(temperature, manager),
+        context_manager=context_manager(manager),
+        system_prompt=EXACT,
+        callback_handler=None,
     )
 
 
@@ -174,7 +186,7 @@ def test_a_component_swap_under_a_token_limit_ships_with_its_values_and_files(tm
     root = result.run_dir
     changed = json.loads((root / "best.values.json").read_text())
     assert changed["manager"] == {"old": "window", "new": "summary"}
-    assert changed["manager.window.window_size"] == {"old": 40}  # active on one side only
+    assert changed["manager.window.preserve_recent"] == {"old": 40}  # active on one side only
     assert (root / "best.diff").read_text() == ""  # nothing textual is tunable here
     assert json.loads((root / "effects.json").read_text())["reason"] is None
     assert OptimizationResult.from_file(root / "result.json") == result
@@ -340,7 +352,7 @@ def test_a_weakened_prompt_file_is_improved_into_a_diff_on_the_real_file(tmp_pat
     @tunable(prompt=FileText("prompt.md"), temperature=Float(0.0, 1.0, default=0.3))
     def prompt_agent(prompt, temperature=0.3):
         return Agent(
-            model=World(temperature, SummarizingConversationManager()), system_prompt=prompt, callback_handler=None
+            model=World(temperature, {"context_utilization": 0.3}), system_prompt=prompt, callback_handler=None
         )
 
     optimizer, result = _run(tmp_path, prompt_agent, search=Search([Block(AddInstruction(), "prompt")]))

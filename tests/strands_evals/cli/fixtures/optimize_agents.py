@@ -10,7 +10,7 @@ import random
 from collections.abc import AsyncIterator
 
 from strands import Agent
-from strands.agent.conversation_manager import SlidingWindowConversationManager, SummarizingConversationManager
+from strands.context_manager import Offload
 from strands.models import Model
 
 from strands_evals import Case
@@ -39,11 +39,20 @@ from strands_evals.types import EvaluationOutput
 EXACT = "Give the exact answer."
 
 
+def context_manager(manager: dict) -> dict:
+    """The agent's `context_manager=` for a `manager` bundle: summarize at a utilization, else keep the newest."""
+    if "context_utilization" in manager:
+        strategy = Offload.summarize("*").when(context_utilization=manager["context_utilization"], preserve_recent=4)
+    else:
+        strategy = Offload.drop("*").when(preserve_recent=manager["preserve_recent"])
+    return {"strategies": [strategy], "archive": False}
+
+
 class World(Model):
     """The agent's scripted model."""
 
-    def __init__(self, temperature: float, manager: object) -> None:
-        self.temperature, self.manager = temperature, manager
+    def __init__(self, temperature: float, manager: dict | None) -> None:
+        self.temperature, self.manager = temperature, manager or {}
         self.config = {"model_id": "scripted-world", "context_window_limit": 200_000}
 
     def update_config(self, **config):
@@ -59,10 +68,10 @@ class World(Model):
     async def stream(self, messages, tool_specs=None, system_prompt=None, **kwargs) -> AsyncIterator[dict]:
         question = messages[-1]["content"][0]["text"]
         p = 0.95 - 0.8 * abs(self.temperature - 0.25)
-        if isinstance(self.manager, SummarizingConversationManager):
-            p, tokens = p + 0.03, int(300 + 100 * self.manager.summary_ratio)
+        if "context_utilization" in self.manager:
+            p, tokens = p + 0.03, int(300 + 100 * self.manager["context_utilization"])
         else:
-            tokens = 500 + 5 * getattr(self.manager, "window_size", 40)
+            tokens = 500 + 5 * self.manager.get("preserve_recent", 40)
         if EXACT not in (system_prompt or ""):
             p *= 0.4
         right = random.Random(f"{question}:{self.temperature:.4f}:{tokens}:{system_prompt}").random() < p
@@ -88,15 +97,18 @@ class Correct(Evaluator):
 
 @tunable(
     manager=choice(
-        window=component(SlidingWindowConversationManager, window_size=Int(4, 40)),
-        summary=component(SummarizingConversationManager, summary_ratio=Float(0.1, 0.8)),
+        window=component(dict, preserve_recent=Int(4, 40, default=40)),
+        summary=component(dict, context_utilization=Float(0.1, 0.8, default=0.3)),
     ),
     temperature=Float(0.0, 1.0, default=0.9),
 )
 def manager_agent(manager=None, temperature=0.9):
     """A space without text: the default search is TPE only, so no proposer calls a model."""
     return Agent(
-        model=World(temperature, manager), conversation_manager=manager, system_prompt=EXACT, callback_handler=None
+        model=World(temperature, manager),
+        context_manager=context_manager(manager),
+        system_prompt=EXACT,
+        callback_handler=None,
     )
 
 
@@ -172,8 +184,8 @@ async def record_iteration(record: IterationRecord) -> None:
 
 space = {
     "manager": choice(
-        window=component(SlidingWindowConversationManager, window_size=Int(4, 40)),
-        summary=component(SummarizingConversationManager, summary_ratio=Float(0.1, 0.8)),
+        window=component(dict, preserve_recent=Int(4, 40, default=40)),
+        summary=component(dict, context_utilization=Float(0.1, 0.8, default=0.3)),
     ),
     "temperature": Float(0.0, 1.0, default=0.9),
 }
@@ -186,7 +198,7 @@ def build_task(ctx):
         manager = ctx.resolve("manager")
         agent = Agent(
             model=World(ctx.values["temperature"], manager),
-            conversation_manager=manager,
+            context_manager=context_manager(manager),
             system_prompt=EXACT,
             callback_handler=None,
         )
