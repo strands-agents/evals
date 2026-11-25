@@ -10,7 +10,8 @@ let openTrial = null;
    there) or `error`. Identical trials share one hash. */
 const TRANSCRIPTS = new Map();
 
-const OUTCOME_TAG = { feasible: 'ok', infeasible: 'warn', invalid: 'warn' };
+/* A candidate that broke a constraint or could not be built is red, as its mark on the charts is. */
+const OUTCOME_TAG = { feasible: 'ok', infeasible: 'bad', invalid: 'bad' };
 
 /** Why a candidate that ran cannot ship, in plain words, or '' for one that can. Its cases may all
     pass: the outcome is about the candidate as a whole, which a report of its cases does not show. */
@@ -116,7 +117,7 @@ function candidateDetail(p, d, run) {
         + `${esc(t.case_name == null ? '—' : t.case_name)}${nth}</td>`
         + `<td class="path">${esc(t.split || '')}</td>`
         + `<td>${scored || '<span class="path">not judged</span>'}</td>`
-        + `<td>${trialFailed(t) ? `<span class="tag warn">${esc(t.status)}</span>`
+        + `<td>${trialFailed(t) ? `<span class="tag bad">${esc(t.status)}</span>`
           : verdict == null ? '<span class="vb na"><i></i>completed</span>' : verdictTag({ pass: verdict })}</td></tr>`;
       return on
         ? head + `<tr class="tdetail"><td colspan="4">${trialPanel(t, run)}</td></tr>`
@@ -136,7 +137,7 @@ function renderCandidates() {
   const shown = d.proposals.filter(candidateMatches);
   const unscored = d.proposals.length - d.scored.length;
   $('opt-cand-count').textContent = `${shown.length} of ${plural(d.proposals.length, 'candidate')}`
-    + (unscored ? `, ${unscored} never scored` : '');
+    + (unscored ? `, ${unscored} not scored` : '');
 
   const run = OPT_RUNS[optSel];
 
@@ -265,7 +266,7 @@ function transcriptSlot(run, t) {
 function trialPanel(t, run) {
   const kv = [];
   kv.push(['Ended as', (trialFailed(t)
-    ? `<span class="tag warn">${esc(t.status)}</span>`
+    ? `<span class="tag bad">${esc(t.status)}</span>`
     : `<span class="tag ok">${esc(t.status || 'completed')}</span>`)
     + (t.error_type ? ` <span class="mono">${esc(t.error_type)}</span>` : '')
     + (t.error ? `<div class="why">${esc(t.error)}</div>` : '')]);
@@ -293,7 +294,7 @@ function trialPanel(t, run) {
   if (errors.length) {
     kv.push(['Evaluator errors', errors.map(([m, why]) =>
       `<div class="setting"><span class="skey">${esc(m)}</span> `
-      + `<span class="tag warn">raised</span><div class="why">${esc(typeof why === 'string'
+      + `<span class="tag bad">raised</span><div class="why">${esc(typeof why === 'string'
         ? why : JSON.stringify(why))}</div></div>`).join('')]);
   }
 

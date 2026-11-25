@@ -36,7 +36,7 @@ async function goTo(want, force) {
 function unserved() {
   app.classList.add('unserved');
   MISSING = { route: currentRoute(), list: 'reports' };
-  $('missing').innerHTML = emptyState('No pond to look in',
+  $('missing').innerHTML = emptyState('No server is answering',
     'This page is served by <code>strands-evals ui</code>, and nothing is answering it. '
       + 'Run <code>strands-evals ui FOLDER</code> and open the link it prints.');
   show('missing', { silent: true });

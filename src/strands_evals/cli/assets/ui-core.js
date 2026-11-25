@@ -259,19 +259,17 @@ function show(view, opts) {
   const lists = view === 'reports' || view === 'experiments' || view === 'sessions';
   $('skips').hidden = !lists;
   $('stores').hidden = !lists;
-  /* The bar names the file behind a page, and the folder behind anything else: the one place the
-     path is written, so the line over the lists carries only what acts on them. */
-  const run = OPT_RUNS[optSel] || {};
-  const config = run.dir === '.' ? 'run.json' : `${run.dir}/run.json`, log = run.events_path;
-  $('path').textContent = {
-    report: repMeta && repMeta.path, experiment: expMeta && expMeta.path, session: sesMeta && sesMeta.path,
-    'opt-setup': config,
-    'opt-overview': log, 'opt-progress': log, 'opt-candidates': log, 'opt-trade': log,
-  }[view] || ROOT;
+  /* The bar names the folder being read, on every page: the file a page shows is named once, in
+     the page's own header. */
+  $('path').textContent = ROOT;
+  /* A page of a run marks that run in the Runs list from then on. */
+  if (view !== 'opt-runs' && view !== 'missing' && listOf(view) === 'opt-runs' && OPT_RUNS[optSel]) optSeen = OPT_RUNS[optSel].id;
   renderPageHead(view);
   renderGuide(view);
   markRunList();
+  markRunRows();
   markFileTrees();
+  setNav(false);
   if (opts && opts.silent) return;
   /* A view moved to starts at its top, where its heading and any notice are. */
   if (moved) window.scrollTo(0, 0);
@@ -295,6 +293,25 @@ app.addEventListener('click', e => {
   const fold = e.target.closest('.fold[data-fold]');
   if (fold) setFolded(fold.dataset.fold, fold.getAttribute('aria-expanded') === 'true');
 });
+/* On a narrow window the sidebar is a drawer, opened by the button in the bar. Going anywhere, Escape,
+   or a click outside it puts it away again. On a wide one the button is not shown and this does nothing. */
+function setNav(open) {
+  app.dataset.nav = open ? 'open' : 'closed';
+  app.querySelector('[data-nav-toggle]').setAttribute('aria-expanded', String(open));
+}
+app.addEventListener('click', e => {
+  if (e.target.closest('[data-nav-toggle]')) return setNav(app.dataset.nav !== 'open');
+  /* The caret folds a list without going anywhere, so the drawer stays for what it unfolded. */
+  if (app.dataset.nav === 'open' && !e.target.closest('.sections')) setNav(false);
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && app.dataset.nav === 'open') setNav(false); });
+
+/* The first stop for the keyboard: past the bar and the sidebar, to what the page is showing. */
+app.querySelector('[data-skip]').onclick = e => {
+  e.preventDefault();
+  app.querySelector('main').focus();
+};
+
 /* Rows, chips and chart marks that act as buttons carry tabindex="0": Enter or Space clicks them. */
 app.addEventListener('keydown', e => {
   if ((e.key !== 'Enter' && e.key !== ' ') || e.target.getAttribute('tabindex') !== '0') return;

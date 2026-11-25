@@ -59,6 +59,15 @@ function note(msg, kind, offer) {
   }
 }
 
+/* A server started with `--read-only` saves nothing, so the editor shows the file and offers no way to
+   change it: a field can be read and copied from, and nothing typed is lost to a Save that cannot work. */
+function lock(box) {
+  if (!READONLY) return;
+  for (const el of box.querySelectorAll('input, textarea')) {
+    if (el.type === 'checkbox') el.disabled = true; else el.readOnly = true;
+  }
+}
+
 /* A parser drops one line break right after `<textarea>`: this one is spent so the value's own survives. */
 const areaText = v => '\n' + esc(v == null ? '' : v);
 /** A box to edit a value of any shape as JSON. With no `rows` it is as tall as the value, up to ten lines. */
@@ -96,7 +105,8 @@ function renderEvaluators() {
     const worst = notes.some(n => n.level === 'error') ? 'error' : (notes.length ? 'warning' : '');
     return `<span class="evchip edit${i === evOpen ? ' on' : ''}${worst ? ' ' + worst : ''}" tabindex="0" role="button"`
       + ` aria-expanded="${i === evOpen}" data-ev="${i}"`
-      + ` title="${worst ? esc(notes.map(n => n.message).join('; ')) : 'Select to read and edit its settings'}">`
+      + ` title="${worst ? esc(notes.map(n => n.message).join('; '))
+        : READONLY ? 'Select to read its settings' : 'Select to read and edit its settings'}">`
       + `<b>${esc(e.name || type)}</b>`
       + (e.name ? `<span class="t">${esc(type)}</span>` : '')
       + (cfg ? `<span class="c mono">${cfg}</span>` : '')   // already escaped, per key and value
@@ -106,7 +116,7 @@ function renderEvaluators() {
 
   const errs = evalNotes().filter(n => n.level === 'error');
   $('evnotes').innerHTML = errs.length
-    ? `<span class="tag warn">${plural(errs.length, 'evaluator problem')}</span> `
+    ? `<span class="tag bad">${plural(errs.length, 'evaluator problem')}</span> `
       + errs.map(n => `<code>${esc(n.evaluator_type)}</code> ${esc(n.message)}`).join(' · ')
       + '. <span class="path">The file saves, but <code>run</code> and <code>validate</code>'
       + ' will fail to load it until this is fixed.</span>'
@@ -155,6 +165,7 @@ function renderEvalForm() {
       : '')
     + '<div class="hint">Only keys already in the file are shown; a key the '
     + 'constructor never accepted would make the experiment fail to load.</div>';
+  lock(box);
 }
 
 $('evs').onclick = e => {
@@ -169,7 +180,7 @@ $('evform').addEventListener('click', e => {
 });
 $('evform').addEventListener('input', e => {
   const el = e.target, k = el.dataset.evk;
-  if (k == null) return;
+  if (k == null || READONLY) return;
   /* A number box holding text that is no number reads as empty, which is not the same as cleared. */
   const bad = el.type === 'number' && el.validity.badInput;
   el.classList.toggle('invalid', bad);
@@ -234,7 +245,8 @@ function renderForm() {
     $('form-title').textContent = '—';
     $('form-sid').textContent = '';
     $('form').innerHTML = EXP
-      ? emptyState('No cases on this lily pad yet', 'This experiment’s case list is empty. Use <b>+ Case</b> to add one.')
+      ? emptyState('No cases yet', READONLY ? 'This experiment’s case list is empty.'
+        : 'This experiment’s case list is empty. Use <b>+ Case</b> to add one.')
       : '';
     return;
   }
@@ -261,6 +273,7 @@ function renderForm() {
       + (structured ? '<div class="hint">This value is structured, so it is edited as JSON.</div>' : '')
       + (f.hint ? `<div class="hint">${f.hint}</div>` : '') + '</div>';
   }).join('');
+  lock($('form'));
 }
 
 /* `expected_trajectory` is `list[Any]`: strings, recorded calls, or not a list at all. */
@@ -417,6 +430,7 @@ function clearField(k) {
 }
 
 $('form').addEventListener('input', e => {
+  if (READONLY) return;
   const el = e.target, k = el.dataset.k, raw = el.value;
   const box = el.closest('[data-meta]');
   if (box) return applyMetaRows(box);
@@ -441,7 +455,7 @@ $('form').addEventListener('input', e => {
 $('form').addEventListener('change', e => { if (e.target.dataset.k === 'name') followName(true); });
 
 $('form').addEventListener('click', e => {
-  if (!cases[sel]) return;
+  if (!cases[sel] || READONLY) return;
   /* Added in the DOM only: an empty row must not reach the case as a `""` key. */
   const metaAdd = e.target.closest('[data-meta-add]');
   if (metaAdd) {
@@ -524,14 +538,16 @@ $('del-case').onclick = () => {
 function refreshDirty() {
   const d = countDirty();
   const el = $('dirty');
-  el.textContent = d ? plural(d, 'unsaved change') : 'No unsaved changes';
+  el.textContent = READONLY ? 'Read-only: nothing here can be changed' : d ? plural(d, 'unsaved change') : 'No unsaved changes';
   el.classList.toggle('yes', !!d);
+  /* What changes the file is not offered where the file cannot be changed. */
+  $('v-experiment').classList.toggle('locked', READONLY);
   $('save').textContent = d ? `Save (${d})` : 'Save';
   $('save').disabled = !d || !EXP || READONLY;
   $('save').title = READONLY ? 'the server was started with --read-only' : '';
   $('revert').disabled = !d;
-  $('add-case').disabled = !EXP;
-  $('del-case').disabled = !cases.length;
+  $('add-case').disabled = !EXP || READONLY;
+  $('del-case').disabled = !cases.length || READONLY;
   renderList();
 }
 

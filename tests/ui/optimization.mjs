@@ -210,17 +210,22 @@ eq($$('.tab.on').map(t => t.dataset.view).join(), 'opt-runs', 'which opens the l
 ok($('#pagehead').hidden, 'which is a list, so no page header names anything');
 eq(rows(p, '#opt-runs-rows tr[data-opt-run]').map(r => r.slice(0, 5)),
   [[`${RUN_ID} / support-tuning demo`, '+0.143 held out · clear of zero', 'c10', '10 candidates 6 iterations',
-    'iterations']],
-  'one row: the run, its result, champion, search size and stop reason');
+    'used its iteration cap']],
+  'one row: the run, its result, champion, search size and why it stopped, in the words its own page uses');
+ok(!$('#opt-runs-rows tr.on'), 'no row is marked before the reader has opened a run');
 const delta = $('#opt-runs-rows .delta');
 ok(delta.className === 'delta up' && /\[0\.061, 0\.225\]/.test(delta.title),
   'the result is coloured by its interval, which is on hover', delta.outerHTML);
 
 await click('#opt-runs-rows tr[data-opt-run]');
-ok($('#v-opt-overview').classList.contains('on') && text('#path') === 'demo/events.jsonl',
-  'a run row opens Result on its event log', text('#path'));
+ok($('#v-opt-overview').classList.contains('on') && text('#path') === p.root,
+  'a run row opens its Result view, and the bar goes on naming the folder', text('#path'));
+eq(p.window.document.title, `${RUN_ID} · Result · Runs · strands-evals`, 'the browser’s tab is named for the run and the view of it');
+await click('.tab[data-view="opt-runs"]');
+eq($$('#opt-runs-rows tr.on').length, 1, 'back on the list, the run that was opened is the one marked');
+await click('#opt-runs-rows tr[data-opt-run]');
 eq([text('#crumbs'), text('#facts'), $$('#opt-tabs .tab:not([hidden])').map(t => t.dataset.view).join(), text('#opt-tabs .tab.on')],
-  [`Runs/${RUN_ID}`, 'finished: it used its iteration cap · champion c10', 'opt-overview,opt-setup,opt-progress,opt-candidates,opt-trade',
+  [`Runs/${RUN_ID}`, 'finished · champion c10', 'opt-overview,opt-setup,opt-progress,opt-candidates,opt-trade',
     'Result'],
   'the page header names the run and holds its five views as a tab strip, Result first and marked');
 eq([$$('#sections .tab.on').map(t => t.dataset.view).join(), $('.tab[aria-current="page"]').dataset.view], ['opt-runs', 'opt-overview'],
@@ -233,8 +238,8 @@ eq(text('#opt-method-sum'),
 
 // ── Setup and Tunables ──
 await go(p, 'setup');
-ok($('#v-opt-setup').classList.contains('on') && text('#path') === 'demo/run.json', 'Setup reads run.json',
-  text('#path'));
+ok($('#v-opt-setup').classList.contains('on') && /as its run\.json records it/.test(text('#opt-setup-sub')), 'Setup reads run.json',
+  text('#opt-setup-sub'));
 ok($('#opt-source').hidden, 'no experiment is named when the folder holds none');
 has(text('#opt-explain'), /built 10 versions .* searched on train, picked the champion once on validation/,
   'the account counts the candidates built, not the 11 proposals, and says what each split was for');
@@ -256,8 +261,8 @@ eq(lines(p, '#opt-result .rtab tbody tr'),
   'a row per goal metric; one with no interval stops at the change');
 ok($$('#opt-result .delta').every(td => td.classList.contains('flat')),
   'no per-metric change is coloured: only the objective states a direction');
-eq(said(p), 'Objective +0.143, 95% interval [0.061, 0.225]: clear of zero on cases the search never saw.',
-  'the verdict is the reading of the objective interval');
+eq(said(p), '95% interval [0.061, 0.225]: clear of zero on cases the search never saw.',
+  'the verdict is the reading of the objective interval, and leaves its size to the card that heads the page');
 eq(strip(p), ['Helpfulness ↑ / good / right of zero'],
   'one bar: the goal with an interval, the objective not drawn twice');
 eq($('#opt-result .rs-row title').textContent,
@@ -339,9 +344,10 @@ ok(/held-out cases/.test(stripNote(p)) && /nothing to draw for tokens \(no inter
     ['champ won', 'c10', 'against c0, the baseline, on 3 held-out cases', '+0.143', 'clear of zero'],
     'the Result view opens on the champion: who won, against what, by how much, and how that reads');
   await pick(q, '#opt-cases-pick', 'm:Helpfulness');
-  eq([q.$$('#opt-hero .win').map(w => w.classList[1]).join(), hero(q, '.win-nums'), hero(q, '.win-delta'), hero(q, '.win-cases')],
-    ['up,down', '0.521 → 0.664 | 3190 → 3340', '▲ +0.143 | ▼ +150', 'better on 11 of 11 cases | better on 0 of 11 cases'],
+  eq([q.$$('#opt-hero .win').map(w => w.classList[1]).join(), hero(q, '.win-nums'), hero(q, '.win-cases')],
+    ['up,down', '0.521 → 0.664 | 3190 → 3340', 'better on 11 of the 11 cases both ran | better on 0 of the 11 cases both ran'],
     'with each goal beside the baseline: a gain the goal wanted is a win, more tokens is not');
+  ok(!q.$('#opt-hero .win-delta'), 'the size of each change is in the table under the card, and is not said twice');
   eq([kept.$('#opt-hero .champ').className, hero(kept, '.champ-name'), kept.$('#opt-hero .champ-gain')],
     ['champ held', 'c0', null], 'a run that kept its baseline says the baseline held, and claims no gain');
   const unshown = await openFixture({ tab: 'overview', events: eventsWith(e => {
@@ -420,6 +426,9 @@ ok($('#opt-budget-chart line.cap-line') && /240-rollout budget/.test(text('#opt-
 eq($$('#opt-status-chart .legend span').map(flat),
   ['completed 80', 'agent failure 1', 'evaluator invalid 1', 'test 6 · train 64 · validation 12'],
   'trials by how they ended and by split');
+eq($$('#opt-status-chart .bars span').map(part => `${part.className} ${part.style.flexGrow}`),
+  ['completed 80', 'agent_failure 1', 'evaluator_invalid 1'],
+  'the bar has a part for each ending, as wide as its share, in the order the key under it lists them');
 
 // ── Progress: one chart, with a picker over the objective and each metric ──
 const series = () => marks(p, '#opt-series-chart');
@@ -445,7 +454,7 @@ eq($$('#opt-series-chart path.metric-line').map(el => pathPoints(el).length), [4
 await pick(p, '#opt-series-pick', 'm:tokens');
 eq([series()[0].title, series()[6].title, series()[6].cls], ['c0 · tokens 3180', 'c8 · tokens 4210', 'infeasible'],
   'a count keeps its decimals off, and c8 is infeasible here too');
-ok(axis().label === 'tokens, lower is better' && Math.min(...axis().ticks) > 1000,
+ok(axis().label === 'Tokens, lower is better' && Math.min(...axis().ticks) > 1000,
   'the axis follows the picker, direction and units', JSON.stringify(axis()));
 
 // ── Progress: what each iteration cost ──
@@ -482,7 +491,7 @@ eq(texts(p, '#opt-eff-goal button'), ['Helpfulness · higher is better', 'tokens
   'each goal is offered with the direction it wants');
 has(text('#opt-eff-cap'), /for Helpfulness, fitted to 48 observations/,
   'the caption says how much the estimate rests on');
-eq($$('#opt-eff-chart .eff-key').map(flat),
+eq($$('#opt-eff-chart .eff-key > title').map(flat),
   ['system_prompt vs default', 'temperature vs (0.45, 0.75]', 'max_tokens vs (256, 1024]'],
   'a group per key in declared order, each naming its reference level');
 const helpful = effects();
@@ -607,7 +616,7 @@ for (const [filter, ids] of [
   ['feasible', 'c0,c1,c2,c3,c5,c6,c10'], ['infeasible', 'c8'], ['unscored', 'c4,invalid-7,c9'], ['all', ALL],
 ]) {
   await click(`#opt-seg button[data-f="${filter}"]`);
-  eq([shown(p), text('#opt-cand-count')], [ids, `${ids.split(',').length} of 11 candidates, 3 never scored`],
+  eq([shown(p), text('#opt-cand-count')], [ids, `${ids.split(',').length} of 11 candidates, 3 not scored`],
     `filter "${filter}", with the count following it`);
 }
 for (const [query, ids] of [['NW-000000', 'c5,c8,c10'], ['clarifying', 'c2'], ['zzz', '']]) {
@@ -620,8 +629,8 @@ await p.type('#opt-find', '');
 // ── Candidates: open as report ──
 const repDetail = () => flat($('#rep-rows tr.detail'));
 await click('#opt-cands [data-open]');
-eq([$('.view.on').id, text('#path'), text('#rep-count'), text('#r-score')],
-  ['v-report', `${RUN_ID} · c10`, '15 of 15 rows', '0.67'],
+eq([$('.view.on').id, text('#crumbs'), text('#rep-count'), text('#r-score')],
+  ['v-report', `Runs/${RUN_ID}/Candidates/c10`, '15 of 15 rows', '0.67'],
   'a candidate opens in the report page over its trials, named by run and candidate');
 eq(lines(p, '#rep-rows tr.case')[0], 'train_case_01 | Helpfulness | 0.49 | fail',
   'a row per trial: case, evaluator, score, verdict');
@@ -674,9 +683,9 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
     ['8 train · 4 validation · 3 test', '8 train · 4 validation · 3 test split with seed 0', whole],
     'a split recorded as fractions, with the names under split.cases, is counted and matched by those names');
   await q.click('#opt-source a[data-experiment]');
-  ok(q.$('#v-experiment').classList.contains('on') && q.text('#path') === 'cases/experiment.json'
+  ok(q.$('#v-experiment').classList.contains('on') && q.text('#crumbs') === 'Experiments/cases/experiment.json'
     && q.$$('#case-list li[data-i]').length === 15 && !!q.$('#experiments-rows tr.row.on'),
-    'the named experiment is a link to its cases, with its row marked in Experiments', q.text('#path'));
+    'the named experiment is a link to its cases, with its row marked in Experiments', q.text('#crumbs'));
 }
 
 // ── a candidate's cases take the report page, under the run they came from ──
@@ -716,8 +725,8 @@ eq(text('#opt-note'), '', 'a clean log raises no warning');
   ok(q.$('#v-opt-candidates').classList.contains('on') && !q.$('#opt-tabs').hidden, 'the Candidates crumb goes back to the run’s candidates',
     q.$('.view.on').id);
   await q.openReport();
-  eq([q.text('#rep-count'), q.text('#crumbs'), q.text('#path'), q.$('#reports-rows tr.row').classList.contains('on')],
-    ['2 of 2 rows', 'Reports/evals/report.json', 'evals/report.json', true],
+  eq([q.text('#rep-count'), q.text('#crumbs'), q.$('#reports-rows tr.row').classList.contains('on')],
+    ['2 of 2 rows', 'Reports/evals/report.json', true],
     'opening the folder’s report again shows it, with its path, its row marked and the candidate gone');
 
   const q2 = await openFixture({ files: experiment });
@@ -1063,17 +1072,17 @@ const openResult = (report, { objective = 'Maximize(H)', extra, ...config } = {}
 
 for (const [name, objective, verdict, bar, listed, read] of [
   ['straddles zero', interval(0.1, -0.04, 0.24),
-    /\+0\.1, 95% interval \[-0\.04, 0\.24\]: includes zero, so this run has not shown an improvement/,
+    /^95% interval \[-0\.04, 0\.24\]: includes zero, so this run has not shown an improvement/,
     'H ↑ / flat / across zero', '+0.1 held out · includes zero (flat)', 'not shown'],
   ['is below zero', interval(-0.08, -0.19, -0.02),
-    /Objective -0\.08, .* below zero, so shipping the champion would be a regression/,
+    /^95% interval \[-0\.19, -0\.02\]: below zero, so shipping the champion would be a regression/,
     'H ↑ / bad / left of zero', '-0.08 held out · below zero (down)', 'a regression'],
   ['is narrowly clear', interval(0.1071, 0.004, 0.2103), /\[0\.004, 0\.2103\]: clear of zero/,
     'H ↑ / good / right of zero', '+0.1071 held out · clear of zero (up)', 'clear of zero'],
-  ['is absent', { mean_diff: 0.1, n_cases: 6 }, /\+0\.1 against the baseline, with no interval in the report/,
+  ['is absent', { mean_diff: 0.1, n_cases: 6 }, /^The report gives the objective’s change with no interval, so how certain/,
     null, '+0.1 held out · no interval (flat)', 'no interval'],
   ['has no width', interval(0.7, 0.7, 0.7),
-    /\+0\.7 against the baseline, the same on every one of 6 test cases, so its 95% interval has no width/,
+    /^The objective changed by the same amount on every one of 6 test cases, so its 95% interval has no width/,
     null, '+0.7 held out · no width (flat)', 'no width'],
 ]) {
   const q = await openResult(testReport(objective));
@@ -1225,7 +1234,7 @@ const TWO_GOALS = 'Pareto(Maximize(Quality), Minimize(tokens))';
   ok(!two.$('#opt-tradeoff').hidden && !two.$('.tab[data-view="opt-trade"]').hidden && two.$('#opt-to-none').hidden
     && two.$('#opt-to-x').hidden && two.$('#opt-to-y').hidden,
     'two goals: the chart and its tab are there, with no axis pickers');
-  eq([two.text('#opt-to-sum'), two.text('#opt-to-head')], ['Quality ↑ against tokens ↓', 'tokens against Quality'],
+  eq([two.text('#opt-to-sum'), two.text('#opt-to-head')], ['Quality ↑ against tokens ↓', 'Tokens against Quality'],
     'named by its goals and their directions, the first goal across and the second up');
   eq([Object.keys(at).sort().join(), two.text('#opt-to-stats')],
     ['c0,c1,c2,c3', '4 candidates plotted. 1 other was not measured on both goals: c4.'],
@@ -1233,7 +1242,7 @@ const TWO_GOALS = 'Pareto(Maximize(Quality), Minimize(tokens))';
   ok(at.c2.cy < at.c1.cy && at.c1.cx > at.c2.cx && at.c3.cx < at.c2.cx && at.c3.cy > at.c2.cy,
     'both axes are turned so better is up and right: fewer tokens is higher, and c3, worse on both, is below c2',
     JSON.stringify(at));
-  has(two.text('#opt-to-chart'), /fewer tokens is better, upward along this axis/,
+  has(two.text('#opt-to-chart'), /Fewer tokens is better, upward along this axis/,
     'the minimised axis says which way better is');
   eq([ringed(two), at.c0.cls, at.c1.cls], ['c1,c2', 'baseline', 'champion'],
     'the recorded front is ringed, and the baseline and champion are marked');
@@ -1276,7 +1285,7 @@ const TWO_GOALS = 'Pareto(Maximize(Quality), Minimize(tokens))';
     'the front of the pair is computed with each goal\'s direction, and said to be',
     `${ringed(three)}: ${three.text('#opt-to-cap')}`);
   await pick(three, '#opt-to-y', 'seconds');
-  eq([three.text('#opt-to-head'), ringed(three)], ['seconds against Quality', 'c1'],
+  eq([three.text('#opt-to-head'), ringed(three)], ['Seconds against Quality', 'c1'],
     'picking another goal redraws the pair and its front');
 }
 
@@ -1344,6 +1353,24 @@ const TWO_GOALS = 'Pareto(Maximize(Quality), Minimize(tokens))';
   await tick(4);
   eq(saved && saved.modified, 5,
     'reading the tuned-against experiment for a candidate\'s cases leaves the editor\'s save guard on the copy it loaded');
+}
+
+// ── a chart is drawn at the width of the card it sits in, and again when that width changes ──
+{
+  const q = await openFixture({ tab: 'overview' });
+  const widths = () => ['#opt-cases-chart', '#opt-usage-chart', '#opt-series-chart', '#opt-budget-chart']
+    .map(chart => Number(q.$(`${chart} svg`).getAttribute('viewBox').split(' ')[2]));
+  const unlaid = widths();
+  /* jsdom lays nothing out, so the content column is given a width here, as a window would give it one. */
+  Object.defineProperty(q.$('main'), 'clientWidth', { configurable: true, value: 600 });
+  q.window.dispatchEvent(new q.window.Event('resize'));
+  await new Promise(resolve => setTimeout(resolve, 250));
+  const laid = widths();
+  ok(new Set(laid).size === 1 && laid[0] >= 280 && laid[0] < 600 && !unlaid.includes(laid[0]),
+    'every chart of a run is drawn as wide as its card, so none is stretched to fit and their type is one size',
+    `${unlaid.join()} then ${laid.join()}`);
+  ok(q.$$('#opt-series-chart svg, #opt-budget-chart svg').every(svg => !svg.querySelector('rect.plot')),
+    'and a plot has no frame drawn round it: the axis and the grid are enough');
 }
 
 done();

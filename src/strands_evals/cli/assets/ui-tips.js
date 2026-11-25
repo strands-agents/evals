@@ -8,12 +8,17 @@ const LEGEND_KINDS = ['feasible', 'infeasible', 'ineligible', 'champion'];
 
 const tip = document.createElement('div');
 tip.className = 'tip';
+tip.id = 'tip';
 tip.setAttribute('role', 'tooltip');
 tip.hidden = true;
 app.appendChild(tip);
 
 let tipFrom = null;
 let tipWait = null, tipNext = null; /* a tip not yet shown: its timer, and the element it waits on */
+/* The element a press landed on, and whether a press is the last thing that happened. A tooltip says
+   what a control does before it is used: once it is pressed it has nothing left to say, so it stays
+   quiet until the pointer leaves. A press also moves focus, and that is not the keyboard arriving. */
+let tipQuiet = null, pressed = false;
 const isMark = el => el.namespaceURI === SVG_NS;
 
 function tipTarget(node) {
@@ -53,6 +58,9 @@ function showTip(el) {
   if (isMark(el)) {
     el.classList.add('hot');
     el.ownerSVGElement.classList.add('hovering');
+  } else if (!el.hasAttribute('aria-describedby')) {
+    /* While it shows, the tooltip is what describes the element to a screen reader too. */
+    el.setAttribute('aria-describedby', 'tip');
   }
 }
 
@@ -61,6 +69,7 @@ function hideTip() {
   tip.hidden = true;
   tipFrom.classList.remove('hot');
   if (tipFrom.ownerSVGElement) tipFrom.ownerSVGElement.classList.remove('hovering');
+  if (tipFrom.getAttribute('aria-describedby') === 'tip') tipFrom.removeAttribute('aria-describedby');
   tipFrom = null;
 }
 
@@ -85,9 +94,10 @@ const cancelTip = () => { clearTimeout(tipWait); tipNext = null; hideTip(); };
 
 app.addEventListener('mouseover', e => {
   const el = tipTarget(e.target);
+  if (el !== tipQuiet) tipQuiet = null;
   if (el !== tipFrom) hideTip();
   if (el !== tipNext) { clearTimeout(tipWait); tipNext = null; }
-  if (el && el !== tipFrom && el !== tipNext) {
+  if (el && el !== tipFrom && el !== tipNext && el !== tipQuiet) {
     /* A chart mark explains at once: its tip is the reading of a point. Writing waits for the
        pointer to rest on the element, so crossing a page pops nothing. */
     if (isMark(el)) { showTip(el); placeTip(e.clientX, e.clientY); } else {
@@ -103,19 +113,34 @@ app.addEventListener('mouseover', e => {
   if (kind) entry.closest('.chart').dataset.focus = kind;
 });
 app.addEventListener('mousemove', e => { if (tipFrom && isMark(tipFrom)) placeTip(e.clientX, e.clientY); });
-app.addEventListener('mouseleave', cancelTip);
+app.addEventListener('mouseleave', () => { tipQuiet = null; cancelTip(); });
+app.addEventListener('mousedown', e => {
+  cancelTip();
+  tipQuiet = tipTarget(e.target);
+  pressed = true;
+}, true);
 
 /* What is reached by keyboard shows the same tooltip, at once: focus is already a rest. */
 app.addEventListener('focusin', e => {
   const el = tipTarget(e.target);
   cancelTip();
-  if (!el) return;
+  if (!el || pressed) return;
   showTip(el);
   anchorTip(el);
 });
 app.addEventListener('focusout', hideTip);
-document.addEventListener('keydown', e => { if (e.key === 'Escape') cancelTip(); });
+/* Escape dismisses a tooltip, and so does using what it describes. */
+document.addEventListener('keydown', e => {
+  pressed = false;
+  if (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ') cancelTip();
+});
 window.addEventListener('scroll', cancelTip, { passive: true });
+
+/* A column head cannot take focus, so what its tooltip says is also its description. */
+app.querySelectorAll('th[data-term], th[data-tip]').forEach(th => {
+  const term = TERMS[th.dataset.term];
+  th.setAttribute('aria-description', term ? term.slice(0, 2).join(': ') : th.dataset.tip);
+});
 
 /* ── chart marks ── */
 

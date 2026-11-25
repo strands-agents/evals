@@ -5,17 +5,25 @@
 
 /* The last crumb is where the page is; the ones before it lead back. */
 const crumbs = trail => trail.map(([label, view], i) => (i < trail.length - 1
-  ? `<a data-go="${view}" tabindex="0" role="link">${esc(label)}</a>` : `<b>${esc(label)}</b>`))
+  ? `<a data-go="${view}" tabindex="0" role="link">${esc(label)}</a>`
+  : `<b role="heading" aria-level="1">${esc(label)}</b>`))
   .join('<span class="sep">/</span>');
+
+/** What the browser's tab and its history call the page: what is open first, then where it sits. */
+function pageTitle(view, trail) {
+  const names = trail ? trail.map(([label]) => label).reverse() : [VIEW_NAME[view]];
+  /* A run has several views under one name: the view is said after the run. */
+  if (trail && SECTION_OF[view] === 'optimization') names.splice(1, 0, VIEW_NAME[view]);
+  return names.concat('strands-evals').join(' · ');
+}
 
 /* The listing knows what the folder holds now; the open copy is what was loaded. */
 const listed = (list, meta) => list.find(m => m.path === meta.path) || meta;
 
+/* The score and the row counts are the page's own first lines, so the header says only where the report came from. */
 function reportHead() {
   const r = listed(REPORTS, repMeta);
-  return [[['Reports', 'reports'], [r.path]],
-    `<b>${fmt(r.overall_score)}</b> overall · ${plural(r.rows, 'row')} · ${r.failing || 0} failing · `
-      + (r.experiment ? `of ${madeFrom(r)}` : madeFrom(r))];
+  return [[['Reports', 'reports'], [r.path]], r.experiment ? `Made from ${madeFrom(r)}` : madeFrom(r)];
 }
 
 function experimentHead() {
@@ -35,9 +43,10 @@ function runHead(view) {
   if (view === 'report') {
     const p = OPT && OPT.proposals.find(c => c.candidate_id === repCand), why = p && outcomeWhy(p);
     return [trail.concat([['Candidates', 'opt-candidates'], [repCand]]), 'The cases this candidate ran, as a report.'
-      + (why ? ` <span class="tag warn">${esc(p.outcome)}</span> ${esc(why)}` : '')];
+      + (why ? ` <span class="tag ${OUTCOME_TAG[p.outcome] || 'warn'}">${esc(p.outcome)}</span> ${esc(why)}` : '')];
   }
-  const status = !OPT ? '' : OPT.stop ? `finished: ${stopPhrase(OPT.stop)}` : 'still running';
+  /* Why it stopped is said once, on the Result view. */
+  const status = !OPT ? '' : OPT.stop ? 'finished' : 'still running';
   return [trail.slice(0, 1).concat([[run.run_id]]),
     [status, OPT && OPT.champion ? `champion ${OPT.champion}` : ''].filter(Boolean).map(esc).join(' · ')];
 }
@@ -50,6 +59,7 @@ function renderPageHead(view) {
     : view === 'session' && sesMeta ? sessionHead() : null;
   $('pagehead').hidden = !head;
   $('opt-tabs').hidden = !run || view === 'report';
+  document.title = pageTitle(view, head && head[0]);
   if (!head) return;
   $('crumbs').innerHTML = crumbs(head[0]);
   $('facts').innerHTML = head[1];

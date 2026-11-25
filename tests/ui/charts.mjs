@@ -39,6 +39,10 @@ same(p.tips('#rep-heat rect.cell'), [
 ], 'the grid has a cell per case and evaluator that ran, saying what it scored');
 same(p.$$('#rep-heat rect.cell').map(c => c.classList[1]), ['pass', 'fail', 'pass', 'fail', 'na'],
   'coloured by the verdict, not applicable apart from both');
+same([p.$$('#rep-heat path.cell-mark').length, !!p.$('#v-report .legend .cellkey.fail'), !!p.$('#v-report .legend .cellkey.pass')],
+  [2, true, true], 'a failing cell is crossed as well as red, so it is told from a passing one without its colour, and the key shows both');
+ok(p.$$('#rep-heat rect.cell.fail').every(cell => cell.nextElementSibling.matches('path.cell-mark')),
+  'and the cross is drawn on the cell that failed');
 
 await p.type('#rep-find', 'matches nothing');
 ok(!p.$('#rep-rows tr.case'), 'with the table filtered down to nothing');
