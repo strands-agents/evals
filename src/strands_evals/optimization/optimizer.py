@@ -457,7 +457,11 @@ class Optimizer:
             "final_pick": self._final_pick.config(),
             "proposals_per_iteration": self._proposals_per_iteration,
             "rerun_passes": self._rerun_passes,
-            "budget": {"max_rollouts": budget.max_rollouts, "max_iterations": budget.max_iterations},
+            "budget": {
+                "max_rollouts": budget.max_rollouts,
+                "max_iterations": budget.max_iterations,
+                "patience": budget.patience,
+            },
             "max_workers": self._max_workers,
             "agent": {
                 "factory": qualified(getattr(self._factory, "__wrapped__", None)),
@@ -560,7 +564,11 @@ class Optimizer:
                     "resume",
                     iteration=self._resumed.iteration,
                     spent=self._resumed.spent,
-                    budget={"max_rollouts": budget.max_rollouts, "max_iterations": budget.max_iterations},
+                    budget={
+                        "max_rollouts": budget.max_rollouts,
+                        "max_iterations": budget.max_iterations,
+                        "patience": budget.patience,
+                    },
                     code=code_version(),
                 )
             if not (self._resumed is not None and self._resumed.candidates):
@@ -631,11 +639,14 @@ class Optimizer:
         self._open_rounds: list[OpenRound] = []
         self._search_cost = Usage.zero()
         self._iteration = 0
+        self._best: frozenset[str] = frozenset({baseline.id})  # what `Budget.patience` watches (`_watch`)
+        self._unchanged = 0  # steps in a row since `_best` last changed
 
     def _restore(self, state: ResumeState) -> None:
         """Rebuild the search from the closed iterations: candidates and their scores from the saved trials,
-        the fits replayed in order (a replayed refit that raises is caught as a live one), and each block's
-        `observe` / `evidence` history told to its proposer again."""
+        the fits replayed in order (a replayed refit that raises is caught as a live one), each block's
+        `observe` / `evidence` history told to its proposer again, and the patience count replayed from each
+        closed iteration's `best_after`."""
         assert self._run is not None
         run = self._run
         self._baseline = run.load_candidate(state.candidates[0])
@@ -694,13 +705,16 @@ class Optimizer:
                 else:
                     proposer.evidence(item)
         self._iterations = list(state.iterations)
+        for best_after in state.best_after:
+            self._watch(best_after)
         self._history = list(state.history)
         self._open_rounds = list(state.open_rounds)
         self._search_cost = state.search_cost
         self._iteration = state.iteration
 
     async def _run_search(self) -> StopReason:
-        """Run iterations until a stop: budget, iteration cap, or the schedule's None.
+        """Run iterations until a stop: patience, iteration cap, budget, or the schedule's None. Patience is
+        checked first, so it names the stop when a cap is reached at the same step.
 
         Raises:
             ProposerError: A proposer raised (from its error): the search stops where it is, with no `stop` event.
@@ -711,6 +725,8 @@ class Optimizer:
         keys = {_block_name(block): list(block_keys) for block, block_keys in self._blocks}
         while True:
             budget = self._budget.budget
+            if budget.patience is not None and self._unchanged >= budget.patience:
+                return "patience"
             room = None  # candidate slots the iteration cap leaves: max_iterations steps' worth
             if budget.max_iterations is not None:
                 room = budget.max_iterations * self._proposals_per_iteration - _slots_used(self._iterations)
@@ -771,10 +787,12 @@ class Optimizer:
         assert self._run is not None
         ranking, assessments = self._rank()
         self._close_rounds(None, ranking, assessments)
-        cap = self._budget.budget.max_iterations
+        cap, patience = self._budget.budget.max_iterations, self._budget.budget.patience
         messages = {
             "budget": "the rollout budget left after the end phase's reserve can't score another candidate",
             "iterations": f"used Budget(max_iterations={cap})'s candidate slots ({cap} steps' worth)",
+            "patience": f"the best hasn't changed for {patience} step{'' if patience == 1 else 's'} in a row"
+            f" (Budget(patience={patience}))",
             "exhausted": "the schedule has nothing left to try",
         }
         self._run.events.append(
@@ -1473,6 +1491,7 @@ class Optimizer:
             best_after=best_after,
             best_objective=assessments[best_after[0]].objective if best_after else None,
         )
+        self._watch(best_after)
         return record
 
     def _recorded_draws(self, step: Step, parent: Candidate, n: int) -> list[list[dict[str, Patch]]] | None:
@@ -1489,6 +1508,12 @@ class Optimizer:
         ):
             return None
         return recorded.draws
+
+    def _watch(self, best_after: Sequence[str]) -> None:
+        """Count a closed step for `Budget.patience`: the top-ranked candidate, or under `Pareto` the set of
+        front members in `best_after`, compared with the previous step's. An empty `Pareto` front (nothing
+        feasible) counts as a change."""
+        self._best, self._unchanged = _patience_step(self._best, self._unchanged, best_after, self._criteria.is_pareto)
 
     async def _draw(
         self,
@@ -2162,6 +2187,8 @@ class Optimizer:
             budget: A new budget for a killed or stopped search, or for a test report that wasn't saved as done
                 (its reason names the `max_rollouts` it needs); None keeps the one in `run.json`, the first
                 run's, so pass a larger budget again on every later resume.
+                It replaces the saved one whole, so give every limit to keep (`patience` included); a new
+                `patience` applies to the count the closed iterations replay.
             max_workers: None keeps the saved value.
             on_iteration: Called only for iterations run after the resume.
 
@@ -2261,8 +2288,11 @@ class Optimizer:
                 UserWarning,
                 stacklevel=2,
             )
-        if requested is not None and state.stop_reason in ("budget", "iterations"):
-            # The search loop's own stop tests, on the train spend it stopped at, under the given budget.
+        if requested is not None and state.stop_reason in ("budget", "iterations", "patience"):
+            # The search loop's own stop tests, on the train spend and patience count it stopped at.
+            best, unchanged = frozenset(state.candidates[:1]), 0  # the baseline, as `_init_state` starts the count
+            for best_after in state.best_after:
+                best, unchanged = _patience_step(best, unchanged, best_after, optimizer._criteria.is_pareto)
             searched = sum(
                 r["rollouts"] + sum(a["rollouts"] for a in r["previous_attempts"])
                 for r in state.trials.values()
@@ -2273,8 +2303,10 @@ class Optimizer:
             )
             per_candidate = len(optimizer._case_split.train) * optimizer._runs_per_candidate
             cap = requested.max_iterations
-            if (cap is None or cap * optimizer._proposals_per_iteration > _slots_used(state.iterations)) and (
-                at_stop.allowance(phase="train") >= per_candidate
+            if (
+                (requested.patience is None or unchanged < requested.patience)
+                and (cap is None or cap * optimizer._proposals_per_iteration > _slots_used(state.iterations))
+                and at_stop.allowance(phase="train") >= per_candidate
             ):
                 warnings.warn(
                     f"budget= would let run {run.run_id} search further, but its search already stopped "
@@ -2295,6 +2327,14 @@ def _same_name(saved: str | None, given: str | None) -> bool:
         return saved == given
     (saved_module, _, saved_name), (given_module, _, given_name) = saved.partition(":"), given.partition(":")
     return saved_name == given_name and (saved_module == given_module or "__main__" in (saved_module, given_module))
+
+
+def _patience_step(
+    best: frozenset[str], unchanged: int, best_after: Sequence[str], pareto: bool
+) -> tuple[frozenset[str], int]:
+    """`Optimizer._watch`'s count after one closed step: the step's best and its unchanged-step count."""
+    after = frozenset(best_after if pareto else best_after[:1])
+    return after, unchanged + 1 if after and after == best else 0
 
 
 def _slots_used(records: Sequence[IterationRecord]) -> int:

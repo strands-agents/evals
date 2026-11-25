@@ -17,17 +17,31 @@ class Budget:
     a `Nested` round charges its own. A step that saved a candidate uses the `n_candidates` it was given, a round's
     opener 1 (none when it repeats a measured candidate), and a step that saved nothing (every proposal a
     duplicate or invalid) none, so a run can have more than n steps. The last step is cut to the slots left.
+
+    `patience=k` stops the search (stop reason `patience`) once the best hasn't changed for k steps in a row.
+    The best is the top of the search ranking, the baseline included (while nothing meets the constraints, the
+    candidate that misses them least). Under `Pareto` it is the set of the first
+    `max(n_finalists, PARETO_MIN_FINALISTS)` (`end_phase.py`) front members in ranking order, the baseline
+    included when it ranks there, as each step's `iteration_end` event lists them in `best_after`. A `Pareto`
+    step with no feasible candidate counts as a change, so patience doesn't stop a `Pareto` run before
+    something is feasible. The first step is compared with the baseline, and every step counts, one that saved
+    nothing included. A step's refit can reorder the ranking, so the best can also change to an earlier
+    candidate. Like any other stop, it closes open `Nested` rounds early, and it is final: resume doesn't
+    continue a finished search. `None` means no patience stop.
     """
 
     max_rollouts: int = 500
     max_iterations: int | None = None
+    patience: int | None = None
 
     def __post_init__(self) -> None:
-        """`max_rollouts` >= 1 and `max_iterations` None or >= 1, else `ValueError`."""
+        """`max_rollouts` >= 1, `max_iterations` and `patience` None or >= 1, else `ValueError`."""
         if self.max_rollouts < 1:
             raise ValueError(f"Budget: max_rollouts must be at least 1, got {self.max_rollouts}")
         if self.max_iterations is not None and self.max_iterations < 1:
             raise ValueError(f"Budget: max_iterations must be None or at least 1, got {self.max_iterations}")
+        if self.patience is not None and self.patience < 1:
+            raise ValueError(f"Budget: patience must be None or at least 1, got {self.patience}")
 
 
 def end_phase_reserve(arms: int, trials: int, rerun_passes: int) -> int:

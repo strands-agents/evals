@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict
 
 from .search import ObservationOutcome
 
-StopReason = Literal["setup", "budget", "iterations", "exhausted"]
+StopReason = Literal["setup", "budget", "iterations", "patience", "exhausted"]
 
 
 class ProposalOutcome(BaseModel):

@@ -560,10 +560,12 @@ def test_a_run_file_gives_the_same_inputs_as_the_flags(experiment_path, tmp_path
 
 def test_command_line_flags_override_the_run_file(experiment_path, tmp_path, capsys):
     path = _write_run_file(tmp_path, RUN_FILE)
-    assert main(["--json", "optimize", "run", str(path), "--max-iterations", "1", "--name", "override"]) == 0
+    args = ["--max-iterations", "1", "--patience", "5", "--name", "override"]
+    assert main(["--json", "optimize", "run", str(path), *args]) == 0
     root = _only_run(tmp_path)
     assert root.name.startswith("override-")
-    assert json.loads((root / "run.json").read_text())["budget"]["max_iterations"] == 1
+    budget = json.loads((root / "run.json").read_text())["budget"]
+    assert budget["max_iterations"] == 1 and budget["patience"] == 5
 
 
 def test_an_agent_flag_replaces_the_run_files_agent_route(experiment_path, tmp_path, capsys):
@@ -875,11 +877,12 @@ def test_resume_overrides_a_killed_run_and_warns_on_a_finished_one(experiment_pa
         return real(cls, *args, **kwargs)
 
     monkeypatch.setattr(Optimizer, "resume", classmethod(spy))
-    assert main(["--json", "optimize", "resume", str(killed), "--max-workers", "8", "--max-rollouts", "400"]) == 0
+    args = ["--max-workers", "8", "--max-rollouts", "400", "--patience", "3"]
+    assert main(["--json", "optimize", "resume", str(killed), *args]) == 0
     assert "change nothing" not in capsys.readouterr().err
     events = [json.loads(line) for line in (killed / "events.jsonl").read_text().splitlines()]
     (resumed,) = [event for event in events if event["event"] == "resume"]
-    assert resumed["budget"]["max_rollouts"] == 400  # the override reached the run
+    assert resumed["budget"]["max_rollouts"] == 400 and resumed["budget"]["patience"] == 3  # the overrides reached it
     assert given["max_workers"] == 8
     # a finished run only prints its result: an override that wouldn't fit the spend is ignored, not an error
     assert main(["--json", "optimize", "resume", str(root), "--max-rollouts", "1"]) == 0

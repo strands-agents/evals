@@ -169,7 +169,7 @@ def _run(args: argparse.Namespace) -> int:
         "base_dir",
         "name",
     )
-    budget = _given(args, "max_rollouts", "max_iterations")
+    budget = _given(args, "max_rollouts", "max_iterations", "patience")
     try:
         if args.split is not None:
             settings["split"] = _optimize.parse_split(args.split)
@@ -262,8 +262,8 @@ def _resume(args: argparse.Namespace) -> int:
     with _optimize.working_directory(saved["workdir"]):
         try:
             budget = None
-            if args.max_rollouts is not None or args.max_iterations is not None:
-                given = _given(args, "max_rollouts", "max_iterations")
+            if any(v is not None for v in (args.max_rollouts, args.max_iterations, args.patience)):
+                given = _given(args, "max_rollouts", "max_iterations", "patience")
                 budget = Budget(**{**saved["budget"], **given})
             optimizer = Optimizer.resume(
                 run_dir, **_optimize.agent_arguments(inputs), budget=budget, max_workers=args.max_workers
@@ -302,7 +302,7 @@ def _test_saved_as_done(run_dir: Path) -> bool:
 
 def _print_finished(run_dir: Path, args: argparse.Namespace) -> int:
     """A finished run: print its `result.json`, building no agent, so a config edited (or deleted) since, for
-    instance by applying the champion, doesn't matter. `--max-*` overrides change nothing, and say so."""
+    instance by applying the champion, doesn't matter. Budget overrides change nothing, and say so."""
     from ...optimization import OptimizationResult
 
     overrides = [
@@ -310,6 +310,7 @@ def _print_finished(run_dir: Path, args: argparse.Namespace) -> int:
         for flag, value in (
             ("--max-rollouts", args.max_rollouts),
             ("--max-iterations", args.max_iterations),
+            ("--patience", args.patience),
             ("--max-workers", args.max_workers),
         )
         if value is not None
@@ -484,6 +485,13 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
         help="stop after N x --proposals-per-iteration candidate slots (default: no limit)",
     )
     settings.add_argument(
+        "--patience",
+        type=int,
+        default=None,
+        metavar="N",
+        help="stop once the best candidate hasn't changed for N steps in a row (default: no limit)",
+    )
+    settings.add_argument(
         "--runs-per-candidate", type=int, default=None, metavar="N", help="repetitions per case (default 1)"
     )
     settings.add_argument(
@@ -559,6 +567,7 @@ def add_subparser(subparsers: argparse._SubParsersAction, parent: argparse.Argum
     resume.add_argument(
         "--max-iterations", type=int, default=None, metavar="N", help="a new iteration limit (default: the run's)"
     )
+    resume.add_argument("--patience", type=int, default=None, metavar="N", help="a new patience (default: the run's)")
     resume.add_argument(
         "--max-workers", type=int, default=None, metavar="N", help="parallel trials (default: the run's)"
     )

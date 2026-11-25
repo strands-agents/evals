@@ -114,7 +114,7 @@ def test_defaults_build():
     assert config["selection"] == {"name": "top_ranked", "config": {}}
     assert config["score_model"]["name"] == "bayesbench"
     assert config["final_pick"] == {"n_finalists": 3, "rule": {"kind": "Mean"}}
-    assert config["budget"] == {"max_rollouts": 500, "max_iterations": None}
+    assert config["budget"] == {"max_rollouts": 500, "max_iterations": None, "patience": None}
     assert config["split"]["seed"] == 0
     assert {role: len(names) for role, names in config["split"]["cases"].items()} == {
         "train": 8,
@@ -3520,3 +3520,201 @@ async def test_resume_inside_a_two_level_nested_matches_the_uninterrupted_run(tm
         search=_two_structural_search(),
     ).run_async()
     _assert_same(resumed, original, rerun=killed)
+
+
+# ---- patience -------------------------------------------------------------------------------------------
+
+# 0.5, then 1.0, each become the best; the three after them are worse.
+_PATIENCE_UPDATES = (
+    {"temperature": 0.5},
+    {"temperature": 1.0},
+    {"temperature": 0.5, "manager.Window.size": 20},
+    {"temperature": 0.0, "manager.Window.size": 30},
+    {"temperature": 0.5, "manager.Window.size": 40},
+)
+
+
+def _patience_search(*updates):
+    """One scripted update per step over temperature and the window size; the manager block proposes nothing."""
+    return Search(
+        [Block(Scripted(*updates), "temperature", "manager.Window.size"), Block(Scripted(), "manager")],
+        schedule=Joint(),
+    )
+
+
+def _patient(search, *, base_dir, evaluators=None, **kwargs):
+    """One candidate per step, ranked by measured means (the score model returns no fit), so ties are exact."""
+    kwargs.setdefault("budget", Budget(max_iterations=10, patience=2))
+    return _optimizer(
+        _experiment(evaluators=[Temperature()] if evaluators is None else evaluators),
+        rollout_fn=_temperature_rollout,
+        search=search,
+        score_model=_Sequence(),
+        proposals_per_iteration=1,
+        max_workers=64,
+        base_dir=base_dir,
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize(
+    "caps",
+    [
+        {"max_iterations": 10},
+        {"max_iterations": 4},  # the iteration cap is reached at the same step
+        {"max_rollouts": 88},  # the same: 8 for the baseline, 32 for 4 steps, 48 held for the end phase
+    ],
+    ids=["before any cap", "with the iteration cap", "with the rollout cap"],
+)
+async def test_patience_stops_once_the_best_hasnt_changed_for_k_steps_since_its_last_change(tmp_path, caps):
+    search = _patience_search(*_PATIENCE_UPDATES)
+    optimizer = _patient(search, base_dir=tmp_path, budget=Budget(patience=2, **caps))
+    result = await optimizer.run_async()
+    events = _events(optimizer)
+    best = [e["best_after"][0] for e in events if e["event"] == "iteration_end"]
+    # patience=2 stops after step 4 and never asks for the fifth update.
+    assert result.stop_reason == "patience" and len(best) == 4 and len(search.blocks[0].proposer.updates) == 1
+    assert best[0] != best[1] == best[2] == best[3]
+    (stop,) = [e for e in events if e["event"] == "stop"]
+    assert stop["message"] == "the best hasn't changed for 2 steps in a row (Budget(patience=2))"
+    # The end phase runs as after any other stop.
+    assert result.best.values["temperature"] == 1.0 and result.test is not None
+
+
+async def test_patience_compares_the_first_step_with_the_baseline(tmp_path):
+    optimizer = _patient(
+        _patience_search({"temperature": 0.5}, {"temperature": 1.0}),
+        base_dir=tmp_path,
+        objective=Minimize("Temperature"),  # nothing beats the baseline's 0.0
+        budget=Budget(max_iterations=10, patience=1),
+    )
+    reason, events = await _search(optimizer)
+    (stop,) = [e for e in events if e["event"] == "stop"]
+    assert reason == "patience" and len(optimizer._iterations) == 1
+    assert stop["message"] == "the best hasn't changed for 1 step in a row (Budget(patience=1))"
+
+
+async def test_while_nothing_is_feasible_patience_watches_the_candidate_closest_to_the_bounds(tmp_path):
+    # The baseline (0.0) and both 0.5 candidates miss the bound; the second 0.5 is no closer, so patience=1 stops.
+    optimizer = _patient(
+        _patience_search({"temperature": 0.5}, {"temperature": 0.5, "manager.Window.size": 20}, {"temperature": 1.0}),
+        base_dir=tmp_path,
+        evaluators=[Temperature(), Cool()],
+        objective=Maximize("Cool"),
+        constraints=[AtLeast("Temperature", 0.75)],
+        budget=Budget(max_iterations=10, patience=1),
+    )
+    reason, events = await _search(optimizer)
+    best = [e["best_after"][0] for e in events if e["event"] == "iteration_end"]
+    assert reason == "patience" and len(best) == 2 and best[0] == best[1] != optimizer._baseline.id
+
+
+def _pareto_patience(*updates, base_dir, **kwargs):
+    """Temperature against Cool, so every temperature is on the front; Temperature weighs 2."""
+    return _patient(
+        _patience_search(*updates),
+        base_dir=base_dir,
+        evaluators=[Temperature(), Cool()],
+        objective=Pareto(Maximize("Temperature", weight=2), Maximize("Cool")),
+        budget=Budget(max_iterations=20, patience=1),
+        **kwargs,
+    )
+
+
+async def test_under_pareto_patience_watches_the_first_front_members_in_ranking_order(tmp_path):
+    # Steps 2-5 add front members below the ranking's top, each a change. Step 5 pushes the baseline out of the
+    # first max(n_finalists, 5) = 5; step 6's member ranks after it, so nothing changes.
+    optimizer = _pareto_patience(
+        {"temperature": 1.0},
+        {"temperature": 0.5},
+        {"temperature": 1.0, "manager.Window.size": 20},
+        {"temperature": 0.5, "manager.Window.size": 20},
+        {"temperature": 1.0, "manager.Window.size": 30},
+        {"temperature": 0.0, "manager.Window.size": 20},
+        base_dir=tmp_path,
+    )
+    reason, events = await _search(optimizer)
+    fronts = [e["best_after"] for e in events if e["event"] == "iteration_end"]
+    assert reason == "patience" and len(fronts) == 6
+    assert len({front[0] for front in fronts}) == 1 and [len(front) for front in fronts] == [2, 3, 4, 5, 5, 5]
+    assert optimizer._baseline.id not in fronts[4] and fronts[5] == fronts[4]
+
+
+async def test_under_pareto_patience_counts_a_step_with_nothing_feasible_as_a_change(tmp_path):
+    # The baseline (0.0) and the next two candidates (0.5) miss the bound: their steps' front is empty.
+    optimizer = _pareto_patience(
+        {"temperature": 0.5},
+        {"temperature": 0.5, "manager.Window.size": 20},
+        {"temperature": 1.0},
+        base_dir=tmp_path,
+        constraints=[AtLeast("Temperature", 0.75)],
+    )
+    reason, events = await _search(optimizer)
+    fronts = [e["best_after"] for e in events if e["event"] == "iteration_end"]
+    # The fourth step proposes nothing, so it is the first unchanged one.
+    assert reason == "patience" and fronts[:2] == [[], []] and len(fronts) == 4 and fronts[2] == fronts[3] != []
+
+
+def test_under_pareto_patience_ignores_the_order_within_the_front():
+    optimizer = _optimizer(
+        _experiment(evaluators=[Temperature(), Cool()]), objective=Pareto(Maximize("Temperature"), Maximize("Cool"))
+    )
+    optimizer._best, optimizer._unchanged = frozenset({"a", "b"}), 0
+    optimizer._watch(["b", "a"])
+    assert optimizer._unchanged == 1
+
+
+async def test_a_resumed_run_keeps_counting_patience_where_the_killed_one_was(tmp_path):
+    original_optimizer = _patient(_patience_search(*_PATIENCE_UPDATES), base_dir=tmp_path / "runs")
+    original = await original_optimizer.run_async()
+    assert original.stop_reason == "patience" and len(original.iterations) == 4
+    root = original_optimizer._run.root
+
+    def resume(label, where, *updates, **kwargs):
+        """A copy of the run killed at `where`, resumed with the updates its proposer has left at that point."""
+        return _resume(
+            _killed(root, tmp_path / label, where),
+            search=_patience_search(*updates),
+            score_model=_Sequence(),
+            **kwargs,
+        )
+
+    def in_step_4(events):  # step 3, the first unchanged one, is closed: the resumed run must count it
+        return _index(events, "score", after=_index(events, "iteration_end", nth=3))
+
+    def before_the_stop(events):
+        return _index(events, "iteration_end", nth=4)
+
+    _assert_same(await resume("step 4", in_step_4, *_PATIENCE_UPDATES[3:]).run_async(), original, rerun=4)
+    _assert_same(await resume("stop", before_the_stop, *_PATIENCE_UPDATES[4:]).run_async(), original)
+
+    # A smaller patience on resume applies to the replayed count: the search stops without proposing again.
+    shorter = resume("smaller", in_step_4, *_PATIENCE_UPDATES[3:], budget=Budget(max_iterations=10, patience=1))
+    cut = len(shorter._run.events.read())
+    result = await shorter.run_async()
+    assert result.stop_reason == "patience" and len(result.iterations) == 3
+    assert not [e for e in shorter._run.events.read()[cut:] if e["event"] == "propose"]
+
+
+async def test_a_larger_patience_after_a_patience_stop_warns(tmp_path):
+    optimizer = _patient(_patience_search(*_PATIENCE_UPDATES), base_dir=tmp_path)
+    await optimizer.run_async()
+    root = optimizer._run.root
+    with pytest.warns(UserWarning, match=r"search already stopped \(patience\)"):
+        _resume(root, search=_patience_search(), score_model=_Sequence(), budget=Budget(max_iterations=10, patience=3))
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="budget= would let")  # the patience it stopped under
+        _resume(root, search=_patience_search(), score_model=_Sequence(), budget=Budget(max_iterations=10, patience=2))
+
+
+async def test_a_run_recorded_without_patience_resumes_with_none(tmp_path):
+    original_optimizer = _patient(_patience_search(*_PATIENCE_UPDATES), base_dir=tmp_path / "runs")
+    await original_optimizer.run_async()
+    copy = _killed(original_optimizer._run.root, tmp_path, lambda events: _index(events, "iteration_end"))
+    # `run.config` is the `config` event, which `run.json` repeats.
+    first, *rest = (copy / "events.jsonl").read_text().splitlines()
+    config = json.loads(first)
+    del config["config"]["budget"]["patience"]
+    (copy / "events.jsonl").write_text("\n".join([json.dumps(config), *rest]) + "\n")
+    resumed = _resume(copy, search=_patience_search(*_PATIENCE_UPDATES[1:]), score_model=_Sequence())
+    assert resumed._budget.budget == Budget(max_iterations=10)
