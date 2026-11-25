@@ -28,11 +28,13 @@ const NAV_DEFAULT = 248, NAV_MIN = 180, NAV_MAX = 560;
     edge.classList.add('held');
   });
   edge.addEventListener('pointermove', e => { if (from) size(from[1] + e.clientX - from[0]); });
+  /* The content column is as wide as the sidebar leaves it, and charts are drawn to the width they have. */
   const drop = () => {
     if (!from) return;
     from = null;
     edge.classList.remove('held');
     remember(NAV_KEY, width);
+    redrawCharts();
   };
   edge.addEventListener('pointerup', drop);
   edge.addEventListener('pointercancel', drop);
@@ -41,6 +43,7 @@ const NAV_DEFAULT = 248, NAV_MIN = 180, NAV_MAX = 560;
     width = NAV_DEFAULT;
     edge.setAttribute('aria-valuenow', width);
     remember(NAV_KEY, '');
+    redrawCharts();
   });
   edge.addEventListener('keydown', e => {
     const step = { ArrowLeft: -16, ArrowRight: 16 }[e.key];
@@ -48,5 +51,6 @@ const NAV_DEFAULT = 248, NAV_MIN = 180, NAV_MAX = 560;
     e.preventDefault();
     size(width + step);
     remember(NAV_KEY, width);
+    redrawCharts();
   });
 }

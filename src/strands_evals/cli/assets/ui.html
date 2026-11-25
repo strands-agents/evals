@@ -11,7 +11,12 @@
 </head>
 <body>
 <div class="app">
+  <a class="skip" href="#main" data-skip>Skip to content</a>
   <header class="bar">
+    <!-- Shown only where the sidebar is a drawer: a window too narrow to keep it beside the content. -->
+    <button class="nav-toggle" type="button" data-nav-toggle aria-controls="sections" aria-expanded="false" aria-label="Show the views and files">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/></svg>
+    </button>
     <div class="brand" role="img" aria-label="Strands">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1512 217" fill="currentColor" aria-hidden="true"><g transform="translate(0 0)"><path d="M30.2558 216.833V186.914H0V148.926H36.9794V179.182H121.023V127.075H30.2558V97.1548H0V29.9197H30.2558V0H127.747V29.9197H158.339V67.5714H121.023V37.9879H36.9794V89.759H127.747V119.006H158.339V186.914H127.747V216.833H30.2558Z"/></g><g transform="translate(30 0)"><path d="M252.894 216.833V37.9879H229.361V67.5714H192.382V29.9197H222.638V0H320.129V29.9197H350.721V67.5714H313.405V37.9879H289.873V216.833H252.894Z"/></g><g transform="translate(60 0)"><path d="M377.87 216.833V29.9197H408.125V0H505.617V29.9197H536.208V127.075H505.617V156.994H490.825V179.182H520.744V216.833H484.101V186.914H453.509V156.994H414.849V216.833H377.87ZM414.849 119.006H498.893V37.9879H414.849V119.006Z"/></g><g transform="translate(90 0)"><path d="M576.818 216.833V59.5031H607.073V29.9197H637.329V0H674.309V29.9197H704.564V59.5031H735.156V216.833H697.841V156.994H613.797V216.833H576.818ZM613.797 119.006H697.841V67.5714H667.921V37.9879H643.717V67.5714H613.797V119.006Z"/></g><g transform="translate(120 0)"><path d="M775.765 216.833V0H812.745V29.9197H842.664V59.5031H873.256V148.926H896.789V0H934.104V216.833H896.789V186.914H866.869V156.994H836.277V67.5714H812.745V216.833H775.765Z"/></g><g transform="translate(150 0)"><path d="M974.713 216.833V0H1072.2V29.9197H1102.46V59.5031H1133.05V156.994H1102.46V186.914H1072.2V216.833H974.713ZM1011.69 179.182H1065.82V148.926H1095.74V67.5714H1065.82V37.9879H1011.69V179.182Z"/></g><g transform="translate(180 0)"><path d="M1203.92 216.833V186.914H1173.66V148.926H1210.64V179.182H1294.68V127.075H1203.92V97.1548H1173.66V29.9197H1203.92V0H1301.41V29.9197H1332V67.5714H1294.68V37.9879H1210.64V89.759H1301.41V119.006H1332V186.914H1301.41V216.833H1203.92Z"/></g></svg>
     </div>
@@ -22,7 +27,7 @@
     </nav>
     <div class="grow"></div>
     <span class="mode" id="read-only" hidden data-tip="Served with --read-only. Cases can be read but not saved.">read-only</span>
-    <div class="path mono" id="path"></div>
+    <div class="path mono" id="path" data-tip="The folder this page is reading."></div>
     <a class="navicon" href="https://github.com/strands-agents/evals" target="_blank" rel="noopener" aria-label="strands-agents/evals on GitHub">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 31.0442 29.9737" fill="none" aria-hidden="true"><path fill="currentColor" d="M13.1271 21.9088C9.12527 21.4253 6.30585 18.5545 6.30585 14.8376C6.30585 13.3266 6.85154 11.6948 7.76104 10.6069C7.36691 9.60966 7.42754 7.49433 7.88231 6.61799C9.09497 6.46688 10.7321 7.1015 11.7022 7.97783C12.8542 7.61521 14.0669 7.43389 15.5524 7.43389C17.0379 7.43389 18.2506 7.61521 19.342 7.94763C20.2818 7.1015 21.9492 6.46688 23.1619 6.61799C23.5863 7.43389 23.6469 9.54923 23.2528 10.5767C24.2229 11.725 24.7383 13.2662 24.7383 14.8376C24.7383 18.5545 21.9189 21.3649 17.8564 21.8786C18.8872 22.5434 19.5845 23.9939 19.5845 25.656V28.7989C19.5845 29.7053 20.3424 30.2191 21.2519 29.8564C26.7392 27.7712 31.0442 22.3017 31.0442 15.5326C31.0442 6.98062 24.0714 0 15.4917 0C6.91218 0 0 6.98059 0 15.5326C0 22.2412 4.27462 27.8015 10.0348 29.8867C10.8533 30.1888 11.6416 29.645 11.6416 28.8292V26.4115C11.2171 26.5928 10.6714 26.7137 10.1864 26.7137C8.18547 26.7137 7.00311 25.6258 6.15425 23.6011C5.82078 22.7852 5.45698 22.3017 4.75968 22.211C4.39589 22.1808 4.27462 22.0297 4.27462 21.8484C4.27462 21.4858 4.88095 21.2138 5.48728 21.2138C6.36648 21.2138 7.12438 21.7577 7.91261 22.8759C8.51894 23.7522 9.1556 24.1451 9.9135 24.1451C10.6714 24.1451 11.1565 23.8731 11.8538 23.178C12.3692 22.6643 12.7633 22.211 13.1271 21.9088Z"/></svg>
     </a>
@@ -85,7 +90,9 @@
   <div class="nav-resize" id="nav-resize" role="separator" aria-orientation="vertical"
        aria-label="Sidebar width" tabindex="0" aria-valuemin="180" aria-valuemax="560"></div>
 
-  <main>
+  <main id="main" tabindex="-1">
+    <!-- What a row of a list does, for a screen reader: the row itself is a table row, which says nothing of it. -->
+    <span id="row-hint" hidden>Press Enter to open.</span>
     <!-- What is open: where it came from, what it is, and the views that belong to it. -->
     <header class="pagehead" id="pagehead" hidden>
       <nav class="crumbs" id="crumbs" aria-label="Where this is"></nav>
@@ -105,18 +112,19 @@
     </header>
 
     <section class="view on" id="v-reports">
-      <h2>Reports</h2>
+      <h2 aria-level="1">Reports</h2>
       <p class="sub" id="reports-sub"></p>
       <div class="ctl">
+        <input class="find" id="reports-find" data-list-find="reports" placeholder="Filter reports" aria-label="Filter reports" autocomplete="off">
         <button class="btn" data-act="rescan" data-tip="Read the folder again for new or changed files.">Rescan</button>
         <span class="grow"></span>
         <span class="path" id="reports-count"></span>
       </div>
       <div class="scroll">
-        <table class="rep">
+        <table class="rep" data-list="reports">
           <thead><tr>
-            <th style="width:34%" data-term="report">Report</th><th style="width:26%" data-term="score">Score</th>
-            <th style="width:26%" data-tip="The experiment file this report was made from. A report made in code has none.">Experiment</th><th data-tip="When the report last changed on disk.">Modified</th>
+            <th style="width:34%" data-term="report" data-sort="name">Report</th><th style="width:26%" data-term="score" data-sort="score">Score</th>
+            <th style="width:26%" data-tip="The experiment file this report was made from. A report made in code has none." data-sort="experiment">Experiment</th><th data-tip="When the report last changed on disk." data-sort="modified">Modified</th>
           </tr></thead>
           <tbody id="reports-rows"></tbody>
         </table>
@@ -124,18 +132,19 @@
     </section>
 
     <section class="view" id="v-experiments">
-      <h2>Experiments</h2>
+      <h2 aria-level="1">Experiments</h2>
       <p class="sub" id="experiments-sub"></p>
       <div class="ctl">
+        <input class="find" id="experiments-find" data-list-find="experiments" placeholder="Filter experiments" aria-label="Filter experiments" autocomplete="off">
         <button class="btn" data-act="rescan" data-tip="Read the folder again for new or changed files.">Rescan</button>
         <span class="grow"></span>
         <span class="path" id="experiments-count"></span>
       </div>
       <div class="scroll">
-        <table class="rep">
+        <table class="rep" data-list="experiments">
           <thead><tr>
-            <th style="width:34%" data-term="experiment">Experiment</th><th style="width:22%" data-term="case">Cases</th>
-            <th style="width:30%" data-tip="The reports made from this experiment, newest first.">Reports</th><th data-tip="When the experiment last changed on disk.">Modified</th>
+            <th style="width:34%" data-term="experiment" data-sort="name">Experiment</th><th style="width:22%" data-term="case" data-sort="cases">Cases</th>
+            <th style="width:30%" data-tip="The reports made from this experiment, newest first.">Reports</th><th data-tip="When the experiment last changed on disk." data-sort="modified">Modified</th>
           </tr></thead>
           <tbody id="experiments-rows"></tbody>
         </table>
@@ -146,7 +155,8 @@
       <h2>Cases</h2>
       <p class="sub" id="exp-sub"></p>
       <div class="evhead">
-        <div class="evs" id="evs" style="margin:0"></div>
+        <span class="evs-label" id="evs-label">Evaluators</span>
+        <div class="evs" id="evs" style="margin:0" role="group" aria-labelledby="evs-label"></div>
         <div class="evnotes" id="evnotes"></div>
       </div>
       <div class="evform" id="evform" hidden></div>
@@ -186,7 +196,6 @@
         <div>
           <div class="big none" id="r-score">&mdash;</div>
           <div class="cap" data-term="overall">Overall score · mean of applicable rows</div>
-          <div class="passbar" id="r-passbar" hidden><span></span></div>
         </div>
         <div class="stats" id="r-stats"></div>
       </div>
@@ -197,7 +206,7 @@
             <h3>Verdict by case and evaluator</h3>
             <p class="cap">Cases across, evaluators down. A column of fails is one case failing everywhere; a row of fails is one evaluator. Select a cell to open its row.</p>
             <div id="rep-heat"></div>
-            <div class="legend"><span><i class="pass"></i>pass</span><span><i class="fail"></i>fail</span><span data-term="not_applicable"><i class="na"></i>not applicable</span></div>
+            <div class="legend"><span><i class="cellkey pass"></i>pass</span><span><i class="cellkey fail"></i>fail</span><span data-term="not_applicable"><i class="cellkey na"></i>not applicable</span></div>
           </div>
         </div>
         <div class="charts">
@@ -249,18 +258,19 @@
     </section>
 
     <section class="view" id="v-sessions">
-      <h2>Sessions</h2>
+      <h2 aria-level="1">Sessions</h2>
       <p class="sub">A session is the recorded traces of one conversation with an agent. A diagnosis made of one is shown on its page.</p>
       <div class="ctl">
+        <input class="find" id="sessions-find" data-list-find="sessions" placeholder="Filter sessions" aria-label="Filter sessions" autocomplete="off">
         <button class="btn" data-act="rescan" data-tip="Read the folder again for new or changed files.">Rescan</button>
         <span class="grow"></span>
         <span class="path" id="sessions-count"></span>
       </div>
       <div class="scroll">
-        <table class="rep">
+        <table class="rep" data-list="sessions">
           <thead><tr>
-            <th style="width:34%" data-term="session">Session</th><th style="width:34%" data-tip="How many traces and spans the session holds, and what a diagnosis of it found.">Recorded</th>
-            <th style="width:14%" data-tip="How long its traces ran for, added up. The time between traces is not counted.">Duration</th><th data-tip="When the session last changed on disk.">Modified</th>
+            <th style="width:34%" data-term="session" data-sort="name">Session</th><th style="width:34%" data-tip="How many traces and spans the session holds, and what a diagnosis of it found.">Recorded</th>
+            <th style="width:14%" data-tip="How long its traces ran for, added up. The time between traces is not counted." data-sort="duration">Duration</th><th data-tip="When the session last changed on disk." data-sort="modified">Modified</th>
           </tr></thead>
           <tbody id="sessions-rows"></tbody>
         </table>
@@ -274,18 +284,19 @@
 
     <!-- ── Optimization · Runs ── -->
     <section class="view" id="v-opt-runs">
-      <h2>Optimization runs in this folder</h2>
+      <h2 aria-level="1">Runs</h2>
       <p class="sub" id="opt-runs-sub"></p>
       <div class="ctl">
+        <input class="find" id="opt-runs-find" data-list-find="opt-runs" placeholder="Filter runs" aria-label="Filter runs" autocomplete="off">
         <button class="btn" data-act="rescan" data-tip="Read the folder again for new or changed files.">Rescan</button>
         <span class="grow"></span>
         <span class="path" id="opt-runs-count"></span>
       </div>
       <div class="scroll">
-        <table class="rep">
+        <table class="rep" data-list="opt-runs">
           <thead><tr>
-            <th style="width:28%" data-tip="The directory holding the run's run.json and events.jsonl.">Run</th><th style="width:15%" data-tip="The change in the objective against the baseline. Green or red only when the 95% interval is clear of zero.">Result</th><th style="width:13%" data-term="champion">Champion</th>
-            <th style="width:16%" data-tip="How many candidates the search tried, over how many iterations.">Searched</th><th style="width:15%" data-tip="Why the run stopped.">Finished</th><th data-tip="When the run last wrote to its log.">Modified</th>
+            <th style="width:28%" data-tip="The directory holding the run's run.json and events.jsonl." data-sort="name">Run</th><th style="width:15%" data-tip="The change in the objective against the baseline. Green or red only when the 95% interval is clear of zero." data-sort="result">Result</th><th style="width:13%" data-term="champion">Champion</th>
+            <th style="width:16%" data-tip="How many candidates the search tried, over how many iterations." data-sort="searched">Searched</th><th style="width:15%" data-tip="Why the run stopped.">Finished</th><th data-tip="When the run last wrote to its log." data-sort="modified">Modified</th>
           </tr></thead>
           <tbody id="opt-runs-rows"></tbody>
         </table>
@@ -294,7 +305,7 @@
 
     <!-- ── Optimization · Setup ── -->
     <section class="view" id="v-opt-setup">
-      <h2>Setup</h2>
+      <h2 class="vh">Setup</h2>
       <div class="optnone"></div>
       <p class="sub" id="opt-setup-sub"></p>
       <p class="explain" id="opt-explain"></p>
@@ -340,7 +351,7 @@
 
     <!-- ── Optimization · Result ── -->
     <section class="view" id="v-opt-overview">
-      <h2>Result</h2>
+      <h2 class="vh">Result</h2>
       <div class="optnone"></div>
       <p class="sub" id="opt-sub"></p>
       <p class="sub methodline" id="opt-method-sum"></p>
@@ -387,7 +398,7 @@
 
     <!-- ── Optimization · Iterations ── -->
     <section class="view" id="v-opt-progress">
-      <h2>Iterations</h2>
+      <h2 class="vh">Iterations</h2>
       <div class="optnone"></div>
       <p class="sub">What the search did, in the order it did it: <span id="opt-search-sum"></span>.</p>
       <div class="charts">
@@ -412,16 +423,16 @@
 
     <!-- ── Optimization · Candidates ── -->
     <section class="view" id="v-opt-candidates">
-      <h2>Candidates</h2>
+      <h2 class="vh">Candidates</h2>
       <div class="optnone"></div>
       <p class="sub" id="opt-cand-sub"></p>
       <div class="ctl">
         <input class="find" id="opt-find" placeholder="Search candidates, settings and rationales" aria-label="Search candidates, settings and rationales" autocomplete="off">
         <div class="seg" id="opt-seg">
           <button class="on" data-f="all">All</button>
-          <button data-f="feasible" data-term="feasible">Could ship</button>
-          <button data-f="infeasible" data-term="infeasible">Broke a constraint</button>
-          <button data-f="unscored" data-tip="Candidates with no objective: the budget ran out, the change was invalid, or it duplicated another.">Never scored</button>
+          <button data-f="feasible" data-term="feasible">Feasible</button>
+          <button data-f="infeasible" data-term="infeasible">Infeasible</button>
+          <button data-f="unscored" data-tip="Candidates with no objective: the budget ran out, the change was invalid, or it duplicated another.">Not scored</button>
         </div>
         <span class="grow"></span>
         <span class="path" id="opt-cand-count"></span>
@@ -441,7 +452,7 @@
 
     <!-- ── Optimization · Trade-off ── -->
     <section class="view" id="v-opt-trade">
-      <h2>Trade-off</h2>
+      <h2 class="vh">Trade-off</h2>
       <div class="optnone"></div>
       <div id="opt-to-none" hidden></div>
       <div id="opt-tradeoff" hidden>

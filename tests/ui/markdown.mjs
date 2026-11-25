@@ -635,7 +635,7 @@ Expected interactions:
   ok(tied.includes('- Experiment: not paired: 2 experiments hold every case of this report and are equally near: tie/left/e.json, tie/right/e.json\n'),
     'a report two experiments tie for says which, and is not called run from code', tied);
   is(tied, await fromServer('/reports/tie/shared.report.json.md'), 'as the server writes it');
-  is(p.text('#facts'), '1.00 overall · 1 row · 0 failing · not paired', 'and its page header says not paired');
+  is(p.text('#facts'), 'not paired', 'and its page header says not paired');
 
   // ── an experiment and one case of it ──
   await p.click('.tab[data-view="experiments"]');
@@ -847,7 +847,7 @@ ${JSON.stringify(LOST, null, 2)}
 
   // ── what only the page holds is sent to be written ──
   const candidates = await p.copy('#actions [data-md="report"]');
-  ok(candidates.startsWith(`# Report: ${p.text('#path')}\n\n- Overall score: `) && !candidates.includes('\n- Experiment: '),
+  ok(candidates.startsWith(`# Report: ${p.$$('#crumbs a')[1].textContent} · ${p.text('#crumbs b')}\n\n- Overall score: `) && !candidates.includes('\n- Experiment: '),
     'a candidate’s cases are written as a report under the name the page gives them, with nothing said of an experiment no scan looked for',
     candidates.slice(0, 300));
 

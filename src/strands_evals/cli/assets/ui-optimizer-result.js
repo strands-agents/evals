@@ -4,7 +4,7 @@
 
 /* Each row is scaled to its own interval, so widths do not compare across rows. Only
    intervals with width are drawn: `[149, 149]` has no spread to show. */
-const RS = { row: 24, head: 22, lab: 112, right: 112, foot: 32 };
+const RS = { row: 26, head: 24, lab: 124, right: 112, foot: 8, wide: 640 };
 
 /** The goals the objective expression states plus the metrics the constraints name. */
 function aimedMetrics(d) {
@@ -33,8 +33,13 @@ const GAIN_READING = {
   above: ['good', 'clear of zero'], below: ['bad', 'a regression'], across: ['flat', 'not shown'],
 };
 
-/* One goal metric under the baseline and under the champion: bars to compare, the change, and how
-   many cases went the goal's way. */
+/** Whether the champion card states the size of the objective's change: it does once a champion that
+    is not the baseline has a comparison. The result card under it then says only how sure that is. */
+const gainShown = d => !!(d.champion && d.result && d.champion !== d.baselineId
+  && GAIN_READING[intervalSide(d.result.objective)]);
+
+/* One goal metric under the baseline and under the champion: bars to compare, and how many cases
+   went the goal's way. The size of each change is in the table under this card, once. */
 function winRow(d, m) {
   const dir = goalDir(d, m.metric);
   const delta = m.after - m.before;
@@ -48,8 +53,8 @@ function winRow(d, m) {
     + `${dir ? `<span class="win-dir">${dir === 'max' ? '↑ higher' : '↓ lower'} is better</span>` : ''}</span>`
     + `<span class="win-bars">${bar('was', m.before)}${bar('now', m.after)}</span>`
     + `<span class="win-nums">${esc(show(m.before))} → <b>${esc(show(m.after))}</b></span>`
-    + `<span class="win-delta">${won === 'up' ? '▲' : won === 'down' ? '▼' : ''} ${esc((delta > 0 ? '+' : '') + show(delta))}</span>`
-    + `<span class="win-cases">${moves && moves.both ? `better on ${moves.better} of ${plural(moves.both, 'case')}` : ''}</span></div>`;
+    /* Every case the two both ran, on any split: not the held-out ones alone, which the card's first line counts. */
+    + `<span class="win-cases">${moves && moves.both ? `better on ${moves.better} of the ${plural(moves.both, 'case')} both ran` : ''}</span></div>`;
 }
 
 function championHero(d) {
@@ -110,7 +115,9 @@ function resultStrip(d) {
   const missWhy = m => `${m.metric} (${m.diff && typeof m.diff.ci_low === 'number'
     && typeof m.diff.ci_high === 'number' ? 'the same on every case' : 'no interval reported'})`;
 
-  const left = RS.lab, right = W - RS.right;
+  /* As wide as the card, up to a width past which one interval a row is only stretched. */
+  const width = Math.min(RS.wide, cardWidth(RS.wide));
+  const left = Math.min(RS.lab, Math.round(width * 0.3)), right = width - Math.min(RS.right, Math.round(width * 0.26));
   const zero = (left + right) / 2;
   const half = (right - left) / 2 - 10;
   const height = RS.head + rows.length * RS.row + RS.foot;
@@ -138,22 +145,21 @@ function resultStrip(d) {
       + `<text class="rs-lab" x="0" y="${cy}" dy="0.32em">${esc(row.label)}${arrow}</text>`
       + `<line class="rs-ci" x1="${x(row.lo)}" y1="${cy}" x2="${x(row.hi)}" y2="${cy}"/>`
       + `<circle class="rs-dot" cx="${x(row.mean)}" cy="${cy}" r="4"/>`
-      + `<text class="rs-read" x="${W - RS.right + 14}" y="${cy}" dy="0.32em">${esc(verdict)}</text>`
+      + `<text class="rs-read" x="${right + 14}" y="${cy}" dy="0.32em">${esc(verdict)}</text>`
       + '</g>';
   });
 
   return `<div class="rstrip${r.heldOut ? '' : ' weak'}">`
-    + `<svg viewBox="0 0 ${W} ${height}" role="img" aria-label="the change in each goal metric, `
+    + `<svg viewBox="0 0 ${width} ${height}" style="max-width:${width}px" role="img" aria-label="the change in each goal metric, `
     + 'against a line at no change">'
     + `<line class="rs-zero" x1="${zero}" y1="${RS.head - 5}" x2="${zero}" y2="${height - RS.foot + 3}"/>`
     + `<text class="rs-note" x="${zero}" y="${RS.head - 9}" text-anchor="middle">no change</text>`
-    + `<text class="rs-note" x="0" y="${height - 17}">`
-    + `${r.heldOut ? 'champion against baseline, on the held-out cases' : 'champion against baseline'}`
-    + `${missing.length ? esc(` · nothing to draw for ${missing.map(missWhy).join(', ')}`) : ''}`
-    + '</text>'
-    + `<text class="rs-note" x="0" y="${height - 4}">each bar is the 95% interval of the change,`
-    + ' scaled to its own row, so widths do not compare</text>'
-    + body + '</svg></div>';
+    + body + '</svg>'
+    /* Under the picture as text of the page, so a long note wraps on a narrow card. */
+    + `<p class="rs-note">${r.heldOut ? 'champion against baseline, on the held-out cases' : 'champion against baseline'}`
+    + `${missing.length ? esc(` · nothing to draw for ${missing.map(missWhy).join(', ')}`) : ''}</p>`
+    + '<p class="rs-note">each bar is the 95% interval of the change, scaled to its own row, so widths do not compare</p>'
+    + '</div>';
 }
 
 function resultCard(d) {
@@ -210,16 +216,20 @@ function resultCard(d) {
       : '');
 
   const o = r.objective, side = intervalSide(o);
+  /* The champion card over this one heads the page with the size of the change, so it is not said again. */
+  const headed = gainShown(d);
   let verdict;
   if (!side) {
     verdict = 'This report records no overall comparison against the baseline, only the per-metric '
       + 'means above, so how much of the gap is real cannot be read off it.';
   } else if (side === 'none') {
-    verdict = `Objective <b>${esc(signed(o.mean_diff))}</b> against the baseline, with no interval `
-      + 'in the report, so how certain that is cannot be read off it.';
+    verdict = (headed ? 'The report gives the objective’s change with no interval'
+      : `Objective <b>${esc(signed(o.mean_diff))}</b> against the baseline, with no interval in the report`)
+      + ', so how certain that is cannot be read off it.';
   } else if (side === 'point') {
     /* Every case reported the same difference: that is no interval, not a narrow one. */
-    verdict = `Objective <b>${esc(signed(o.mean_diff))}</b> against the baseline, the same on every `
+    verdict = (headed ? 'The objective changed by the same amount on every '
+      : `Objective <b>${esc(signed(o.mean_diff))}</b> against the baseline, the same on every `)
       + `one of ${plural(r.cases || 0, 'test case')}, so its 95% interval has no width and says `
       + 'nothing about how far this would carry to other cases.';
   } else {
@@ -230,7 +240,7 @@ function resultCard(d) {
         ? 'below zero, so shipping the champion would be a regression.'
         : 'includes zero, so <b>this run has not shown an improvement</b>. More cases or more '
           + 'runs per case would narrow it.';
-    verdict = `Objective <b>${esc(signed(o.mean_diff))}</b>, ${span}: ${reading}`;
+    verdict = `${headed ? '' : `Objective <b>${esc(signed(o.mean_diff))}</b>, `}${span}: ${reading}`;
   }
   if (!r.heldOut && r.baselineId) {
     verdict += ' The gap is likely flattering.';

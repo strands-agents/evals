@@ -23,8 +23,14 @@ ok($('#pagehead').hidden && caseCount() === 0 && text('#r-score') === '—', 'no
 await openReport();
 ok(on() === 'v-report' && text('#crumbs') === 'Reports/report.json' && text('#r-score') === '0.92' && caseCount() === 0,
   'opening a report shows it under a header that says what it is, and loads nothing else', text('#crumbs'));
-ok(text('.tab.on') === 'Reports' && /^0\.92 overall · 39 rows · 5 failing · of experiment\.json ?pairing verified$/.test(text('#facts')),
-  'the sidebar still marks the list it came from, and the header says how it went', text('#facts'));
+ok(text('.tab.on') === 'Reports' && /^Made from experiment\.json ?pairing verified$/.test(text('#facts')),
+  'the sidebar still marks the list it came from, and the header says what the report was made from', text('#facts'));
+ok(/Rows passing$/.test(text('#r-stats .stat')) && !/overall|failing/.test(text('#facts')),
+  'how it went is said once, in the page’s own first lines', `${text('#r-stats .stat')} | ${text('#facts')}`);
+ok(!!$('#r-stats .stat .passbar') && !$('.hero > div:first-child .passbar'),
+  'and the bar of rows passing sits in the tile that counts them, not under the score, which is a different number');
+ok(sample.window.document.title === 'report.json · Reports · strands-evals',
+  'the browser’s tab is named for the report that is open', sample.window.document.title);
 const stats = $$('#r-stats .stat').map(s => `${s.querySelector('.v').textContent} ${s.querySelector('.k').textContent}`);
 ok(stats[0] === '31 / 36 Rows passing' && stats[3] === '3 Not applicable',
   'rows an evaluator declined are counted apart from the rows passing', stats.join(', '));
@@ -106,16 +112,27 @@ await click('#revert');
   ok(!shut.$('#read-only').hidden && shut.text('#read-only') === 'read-only', 'a server started with --read-only says so in the bar',
     shut.text('#read-only'));
   await shut.openExperiment();
+  ok(shut.text('#exp-sub') === 'Read-only: the server was started with --read-only.'
+    && shut.text('#dirty') === 'Read-only: nothing here can be changed'
+    && shut.$('#v-experiment').classList.contains('locked') && shut.$('#save').disabled && shut.$('#add-case').disabled
+    && shut.$('#del-case').disabled && shut.$('#review-case').disabled,
+  'and the editor says so, and offers nothing that would change the file', `${shut.text('#exp-sub')} ${shut.text('#dirty')}`);
+  ok(shut.$$('#form input.f, #form textarea.f').length > 0 && shut.$$('#form input.f, #form textarea.f').every(el => el.readOnly),
+    'every field can be read and copied from, and none can be typed in');
+  /* A page script, or a browser that ignores `readonly`, still changes nothing. */
   await shut.type('#form [data-k="input"]', 'an edit with nowhere to go');
-  ok(shut.text('#exp-sub') === 'Read-only: the server was started with --read-only.' && shut.text('#dirty') === '1 unsaved change'
-    && shut.$('#save').disabled && shut.$('#save').title === 'the server was started with --read-only' && shut.$('#review-case').disabled,
-  'and the editor says why an edit cannot be saved', `${shut.text('#exp-sub')} ${shut.text('#dirty')}`);
+  ok(shut.text('#dirty') === 'Read-only: nothing here can be changed' && !shut.$('#case-list .dot.edited'),
+    'so no edit is made that a Save could never keep', shut.text('#dirty'));
+  await shut.click('#evs .evchip');
+  const settings = shut.$$('#evform input, #evform textarea');
+  ok(!shut.$('#evform').hidden && settings.length > 0 && settings.every(el => el.readOnly || el.disabled),
+    'an evaluator’s settings open to be read, not edited', settings.length);
 }
 
 // ── opened without its server ──
 {
   const lone = await page();
-  ok(lone.view() === 'v-missing' && lone.text('#missing') === 'No pond to look inThis page is served by strands-evals ui, and nothing is '
+  ok(lone.view() === 'v-missing' && lone.text('#missing') === 'No server is answeringThis page is served by strands-evals ui, and nothing is '
     + 'answering it. Run strands-evals ui FOLDER and open the link it prints.' && !!lone.$('#missing svg.frog'),
   'a page with no server behind it says how to start one', lone.text('#missing'));
   ok(lone.$('.app').classList.contains('unserved') && !lone.$('#reports-rows tr.row'), 'and shows nothing else');

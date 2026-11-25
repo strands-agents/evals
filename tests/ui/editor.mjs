@@ -68,7 +68,7 @@ const state = p => [p.text('#dirty'), p.$('#save').disabled];
   const reviewing = !p.$('#review-bar').hidden;
   await p.click('.tab[data-view="experiments"]');
   await p.openExperiment('two');
-  same([reviewing, p.$('#review-bar').hidden, p.text('#path')], [true, true, 'two/experiment.json'],
+  same([reviewing, p.$('#review-bar').hidden, p.text('#crumbs b')], [true, true, 'two/experiment.json'],
     'opening another experiment does not carry the review over to its drafts');
 }
 

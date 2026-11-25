@@ -95,7 +95,7 @@ const report = (score, ...cases) => ({
     p.text('#facts'));
   ok(!p.$('#copy-acts [data-md="run-command"]'), 'an experiment with a report does not offer the run command');
   await p.click('#facts a[data-report]');
-  ok(on() === 'v-report' && p.text('#facts') === '0.25 overall · 1 row · 1 failing · of paired/experiment.json pairing verified',
+  ok(on() === 'v-report' && p.text('#facts') === 'Made from paired/experiment.json pairing verified',
     'and the report’s header links back to the experiment it is of', p.text('#facts'));
 
   await p.click('#facts a[data-experiment]');
@@ -411,7 +411,7 @@ const badges = p =>
   await p.openReport('adhoc');
   ok(p.view() === 'v-report' && p.text('#crumbs') === 'Reports/code/adhoc.report.json' && p.text('#r-score') === '0.25',
     'a report made in code opens on its own, named in the page header', `${p.text('#crumbs')} ${p.text('#r-score')}`);
-  ok(p.text('#facts') === '0.25 overall · 1 row · 1 failing · run from code' && !p.$('#facts a'),
+  ok(p.text('#facts') === 'run from code' && !p.$('#facts a'),
     'which says it was run from code and links no experiment', p.text('#facts'));
   await p.click('.tab[data-view="experiments"]');
   ok(!p.$('#experiments-rows tr.row.on') && p.text('#experiments-count') === '5 experiments', 'and opens no experiment with it',
@@ -477,7 +477,8 @@ const badges = p =>
     'two/experiment.json': experiment(two),
   });
   const history = p.window.history;
-  const at = () => `${p.view()} ${p.text('#path')}`;
+  /* The view, and the file its header names when it is a page of one. */
+  const at = () => [p.view(), p.$('#pagehead').hidden ? '' : p.text('#crumbs b')].filter(Boolean).join(' ');
   const travel = async delta => { await p.travel(delta); return at(); };
   const experiments = () => p.click('.tab[data-view="experiments"]');
   const start = history.length;
@@ -492,7 +493,7 @@ const badges = p =>
   ok(history.length === start + 4, 'each move between pages adds a step', history.length - start);
   const retraced = [await travel(-1), await travel(-1), await travel(-1), await travel(3)];
   ok(retraced.join() === `${list},v-report one/report.json,v-experiment one/experiment.json,v-experiment two/experiment.json`
-    && /^v-experiments /.test(list),
+    && list === 'v-experiments',
   'Back walks them in reverse, across reports and experiments, and Forward returns', retraced.join());
 
   await travel(-3);
@@ -694,6 +695,103 @@ const fake = put => fakeServer({
   await tick();
   ok(!width() && !/strands-evals-nav=\d/.test(p.d.cookie),
     'double-click puts the stylesheet back in charge and forgets the kept width', `${width()} ${p.d.cookie}`);
+}
+
+// ── a list is sorted by its column heads and filtered by the box over it ──
+{
+  const p = await served({
+    'a/experiment.json': experiment(CASE), 'a/report.json': report(0.9, CASE),
+    'b/experiment.json': experiment(CASE), 'b/report.json': report(0.2, CASE),
+    'c/report.json': report(0.5, CASE),
+  });
+  const names = () => p.$$('#reports-rows tr.row').map(r => r.dataset.report).join();
+  const head = key => p.$(`#v-reports th[data-sort="${key}"]`);
+  const sort = key => p.click(head(key).querySelector('.sort'));
+  const scanned = names();
+  ok(scanned.split(',').length === 3 && p.$$('#v-reports th[data-sort]').every(th => th.getAttribute('aria-sort') === 'none'
+    && th.querySelector('button.sort')),
+  'a list starts in the order the scan found it, and each column that sorts is a button in its head', scanned);
+
+  await sort('score');
+  ok(names() === 'a/report.json,c/report.json,b/report.json' && head('score').getAttribute('aria-sort') === 'descending',
+    'a figure sorts from the largest first', names());
+  await sort('score');
+  ok(names() === 'b/report.json,c/report.json,a/report.json' && head('score').getAttribute('aria-sort') === 'ascending',
+    'then the other way', names());
+  await sort('score');
+  ok(names() === scanned && head('score').getAttribute('aria-sort') === 'none', 'then back as the scan found it', names());
+  await sort('name');
+  await sort('experiment');
+  ok(names().endsWith('c/report.json') && head('name').getAttribute('aria-sort') === 'none'
+    && head('experiment').getAttribute('aria-sort') === 'ascending',
+  'another column takes the sort over, and a report with no experiment goes last', names());
+  await sort('experiment');
+  ok(names().endsWith('c/report.json'), 'whichever way that column runs', names());
+  await sort('experiment');
+
+  await p.type('#reports-find', 'B/');
+  ok(names() === 'b/report.json' && p.text('#reports-count') === '1 of 3 reports',
+    'the box over a list keeps the rows that name what was typed, whatever its case, and counts them', p.text('#reports-count'));
+  ok(p.$$('#reports-tree .runrow').length === 3, 'the files under the sidebar row are still all of them');
+  await p.type('#reports-find', 'no such report');
+  ok(/^No report matches/.test(p.text('#reports-rows')) && !p.$('#reports-rows .frog'),
+    'a filter that matches nothing says so, and is not mistaken for an empty folder', p.text('#reports-rows'));
+  await p.click('#reports-rows [data-list-clear]');
+  ok(names() === scanned && p.$('#reports-find').value === '' && p.text('#reports-count') === '3 reports',
+    'and offers the way back to every row', names());
+  ok(p.$$('#reports-rows tr.row').every(r => r.getAttribute('aria-describedby') === 'row-hint')
+    && /Enter/.test(p.$('#row-hint').textContent),
+  'each row tells a screen reader that it opens');
+
+  await p.click('.tab[data-view="experiments"]');
+  await p.type('#experiments-find', 'b/');
+  ok(p.$$('#experiments-rows tr.row').map(r => r.dataset.experiment).join() === 'b/experiment.json'
+    && p.text('#experiments-count') === '1 of 2 experiments' && names() === scanned,
+  'each list keeps its own filter', p.text('#experiments-count'));
+}
+
+// ── the browser's tab is named for what is open ──
+{
+  const p = await served({ 'a/experiment.json': experiment(CASE), 'a/report.json': report(0.5, CASE) });
+  const title = () => p.window.document.title;
+  ok(title() === 'Reports · strands-evals', 'a list is named for what it lists', title());
+  await p.openReport();
+  ok(title() === 'a/report.json · Reports · strands-evals', 'a page is named for its file, then the list it is from', title());
+  await p.click('#crumbs a');
+  await p.click('.tab[data-view="experiments"]');
+  await p.openExperiment();
+  ok(title() === 'a/experiment.json · Experiments · strands-evals', 'and so is an experiment', title());
+  await p.visit('/reports/gone.json');
+  ok(title() === 'Not found · strands-evals', 'an address with nothing behind it says so in the tab too', title());
+}
+
+// ── the sidebar as a drawer, and the way past it ──
+{
+  const p = await served({ 'a/experiment.json': experiment(CASE), 'a/report.json': report(0.5, CASE) });
+  const app = p.$('.app'), toggle = p.$('[data-nav-toggle]');
+  const open = () => `${app.dataset.nav} ${toggle.getAttribute('aria-expanded')}`;
+  ok(open() === 'closed false', 'the sidebar’s drawer starts put away', open());
+  await p.click(toggle);
+  ok(open() === 'open true', 'the button in the bar opens it', open());
+  await p.click('.fold[data-fold="reports-tree"]');
+  ok(open() === 'open true', 'unfolding a list in it goes nowhere, so it stays', open());
+  await p.click('.tab[data-view="experiments"]');
+  ok(open() === 'closed false' && p.view() === 'v-experiments', 'going somewhere puts it away', `${open()} ${p.view()}`);
+  await p.click(toggle);
+  await p.key('Escape');
+  ok(open() === 'closed false', 'and so does Escape', open());
+  await p.click(toggle);
+  await p.click('main');
+  ok(open() === 'closed false', 'and a click outside it', open());
+
+  await p.click('.skip');
+  ok(p.d.activeElement === p.$('main'), 'the first link on the page puts the keyboard on the content, past the bar and the sidebar',
+    p.d.activeElement.tagName);
+  ok(p.$('#path').textContent === p.root && p.$('#path').dataset.tip, 'the bar names the folder on every page and says what it is');
+  await p.openExperiment();
+  ok(p.$('#path').textContent === p.root && p.$('#crumbs b').getAttribute('aria-level') === '1',
+    'a page of one file names the file in its own header, as the page’s heading, and the bar still names the folder',
+    p.$('#path').textContent);
 }
 
 done();

@@ -1,6 +1,9 @@
 'use strict';
 
 let OPT_RUNS = [], optSel = -1, OPT = null;
+/* The run the reader last had a page of open, by id. The page keeps one run selected from the start,
+   so that every view has a run to draw: that is not the reader having opened it. */
+let optSeen = null;
 let optError = '';                            // why the selected run could not be read, if it could not
 /* The run's `effects.json`, or null when it has none that can be read. */
 let EFFECTS = null;
@@ -18,7 +21,7 @@ let optCases = null;
 
 const baseOf = path => path.slice(path.lastIndexOf('/') + 1);
 
-/** Every run, in the order the Runs list has them, so the two agree. A run is a directory, so it is
+/** Every run, in the order the scan found them, which is the order the Runs list starts in. A run is a directory, so it is
     named by that directory; since this is one flat list rather than a tree, two runs whose
     directories share a name are named by the whole path instead.
 
@@ -117,26 +120,35 @@ function renderOptimizerRuns() {
   $('opt-runs-sub').textContent = any
     ? 'Each one is a directory holding a run.json and the events.jsonl the run appended to.'
     : '';
-  $('opt-runs-count').textContent = any ? plural(OPT_RUNS.length, 'run') : '';
-  $('opt-runs-rows').innerHTML = any ? OPT_RUNS.map((r, i) => {
+  const runs = arranged('opt-runs', OPT_RUNS);
+  $('opt-runs-count').textContent = any ? listCount('opt-runs', runs.length, OPT_RUNS.length) : '';
+  $('opt-runs-rows').innerHTML = any ? runs.map(r => {
     const alias = r.name && r.name !== r.run_id ? ` <span class="dim">/ ${esc(r.name)}</span>` : '';
     const at = r.dir && r.dir !== '.' ? r.dir : r.events_path;
-    return `<tr class="run${i === optSel ? ' on' : ''}" data-opt-run="${i}" tabindex="0">
+    /* A row is named by its place among every run, whatever order or filter the list is showing. */
+    return `<tr class="run${r.id === optSeen ? ' on' : ''}" data-opt-run="${OPT_RUNS.indexOf(r)}" tabindex="0" aria-describedby="row-hint">
         <td>${esc(r.run_id)}${alias}<br><span class="path">${esc(at)}</span></td>
         <td class="ev">${runResultCell(r)}</td>
         <td class="ev">${r.champion_id ? esc(r.champion_id) : '<span class="empty">none picked</span>'}</td>
         <td class="ev">${plural(r.candidates, 'candidate')}`
       + `<br><span class="path">${plural(r.iterations, 'iteration')}</span></td>
         <td class="ev">${r.stop_reason
-        ? `<span class="tag">${esc(r.stop_reason)}</span>`
+        ? esc(stopPhrase({ reason: r.stop_reason }).replace(/^it /, ''))
         : '<span class="empty">still running</span>'}</td>
         <td class="ev">${when(r.modified)}</td></tr>`;
-  }).join('') : `<tr><td colspan="6">${emptyState('No optimizer runs in this pond yet',
+  }).join('') || noMatch('opt-runs', 6) : `<tr><td colspan="6">${emptyState('No optimizer runs here yet',
     `No directory under ${esc(ROOT)} holds a run.json with an events.jsonl beside it.`)}</td></tr>`;
 
   renderRunList();
   /* The list can be shown empty; a view of one run cannot outlive the run. */
   if (!any && SECTION_OF[currentView()] === 'optimization' && currentView() !== 'opt-runs') show(homeView());
+}
+
+/** Mark the run the reader last opened in the Runs list. Called on every view change, like the mark in the sidebar. */
+function markRunRows() {
+  for (const tr of $('opt-runs-rows').querySelectorAll('tr[data-opt-run]')) {
+    tr.classList.toggle('on', (OPT_RUNS[Number(tr.dataset.optRun)] || {}).id === optSeen);
+  }
 }
 
 $('opt-runs-rows').onclick = e => {
@@ -224,7 +236,7 @@ function renderOptimization() {
     ['opt-setup-sub', 'opt-cand-sub', 'opt-cand-count'].forEach(id => { $(id).textContent = ''; });
     ['opt-source', 'opt-mech', 'opt-tradeoff', 'opt-to-none', 'opt-effects', 'opt-space-wrap', 'opt-cost', 'opt-cases']
       .forEach(id => { $(id).hidden = true; });
-    Object.keys(OPT_SEGMENT).forEach(view => optNothing(view, optError && emptyState('This run would not surface',
+    Object.keys(OPT_SEGMENT).forEach(view => optNothing(view, optError && emptyState('This run could not be read',
       `${esc(optError)}<span class="ways">${listWay('opt-runs')}</span>`)));
     return;
   }
@@ -273,11 +285,11 @@ function renderOptimization() {
   renderEffects();
   Object.keys(OPT_SEGMENT).forEach(view => optNothing(view, ''));
   if (!Object.keys(d.config).length) {
-    optNothing('opt-setup', emptyState('No setup on this lily pad',
+    optNothing('opt-setup', emptyState('No setup recorded',
       'This run’s run.json is empty, so there is no record of what the run was told to do.'));
   }
   if (!d.proposals.length && !d.iterations.length) {
-    optNothing('opt-progress', emptyState('The search has not made its first hop',
+    optNothing('opt-progress', emptyState('The search has not started',
       'No candidate has been proposed and no iteration has finished, so there is nothing to chart. '
         + (d.stop ? `The run finished: ${esc(stopPhrase(d.stop))}.` : 'This fills in as the run writes to its log.')));
   }
@@ -384,7 +396,7 @@ function renderSeries(d) {
   optSeries = fillPick('opt-series-pick', series, optSeries);
   $('opt-series-pick').hidden = series.length < 2;
   const metric = optSeries.startsWith('m:') ? optSeries.slice(2) : null;
-  $('opt-series-head').textContent = `${metric || 'Objective'} by candidate`;
+  $('opt-series-head').textContent = axisName(`${metric || 'Objective'} by candidate`);
   $('opt-series-cap').textContent = metric
     ? `The mean recorded for ${metric} on each candidate it was measured on: the metric itself, `
       + 'not its contribution to the objective.'
@@ -428,7 +440,7 @@ function renderTradeoff(d) {
   }[d.front.source];
   const short = { report: 'the recorded front', champion: 'the champion', snapshot: 'best so far' };
 
-  $('opt-to-head').textContent = `${yg.metric} against ${xg.metric}`;
+  $('opt-to-head').textContent = axisName(`${yg.metric} against ${xg.metric}`);
   $('opt-to-sum').textContent = many
     ? `${d.goals.length} goals`
     : d.goals.map(g => `${g.metric} ${g.dir === 'min' ? '↓' : '↑'}`).join(' against ');

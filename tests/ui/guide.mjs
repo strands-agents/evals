@@ -59,7 +59,7 @@ const helpLink = p => parse(p.$('.help-pop a'));
   await p.click('[data-guide-toggle]');
   ok(state() === 'false,on,true' && p.d.cookie.includes('strands-evals-guide=on'),
     'the Guide switch opens it beside the content and remembers', `${state()} ${p.d.cookie}`);
-  ok(p.text('#guide-body h2') === 'Reports' && p.$$('#guide-body ol li').length === 3 && p.$$('#guide-body dt').length === 3
+  ok(p.text('#guide-body h2') === 'Reports' && p.$$('#guide-body ol li').length === 4 && p.$$('#guide-body dt').length === 3
     && parse(p.$('#guide-body a')) === 'quickstart/|guide-reports|',
   'it explains the view that is open: what to do, the terms it uses, and where the docs say more', p.text('#guide-body').slice(0, 120));
   await p.openReport();
@@ -177,12 +177,30 @@ const helpLink = p => parse(p.$('.help-pop a'));
   tab.dispatchEvent(new p.window.FocusEvent('focusin', { bubbles: true }));
   await tick();
   ok(!tip.hidden && /Every experiment file found in this folder/.test(tip.textContent), 'focus shows it too', tip.textContent);
+  ok(tab.getAttribute('aria-describedby') === 'tip', 'and while it shows, the tooltip is the control’s description',
+    tab.getAttribute('aria-describedby'));
   await p.key('Escape');
-  ok(tip.hidden, 'and Escape dismisses it');
+  ok(tip.hidden && !tab.hasAttribute('aria-describedby'), 'and Escape dismisses it', tab.getAttribute('aria-describedby'));
+
+  /* A press says the reader knows what the control does: it stays quiet until the pointer leaves. */
+  await over(tab);
+  tab.dispatchEvent(new p.window.MouseEvent('mousedown', { bubbles: true }));
+  tab.dispatchEvent(new p.window.FocusEvent('focusin', { bubbles: true }));
+  await rested();
+  ok(tip.hidden, 'a control that was just pressed says nothing, though the pointer rests on it and it took focus',
+    tip.textContent);
+  await over(p.$('#case-find'));
+  await over(tab);
+  await rested();
+  ok(!tip.hidden, 'it explains itself again once the pointer has left and come back', tip.textContent);
+  await p.key('Enter', tab);
+  ok(tip.hidden, 'and using it from the keyboard puts the tooltip away');
 
   const explained = sel => p.$$(sel).every(el => el.dataset.term || el.dataset.tip || el.title);
   ok(explained('main th') && explained('.sections .tab') && explained('.ctl .seg button:not([data-f="all"])'),
     'every column head, view and filter says what it is');
+  ok(p.$$('main th[data-term], main th[data-tip]').every(th => th.getAttribute('aria-description')),
+    'and a column head, which cannot take focus, carries its explanation as its description');
 }
 
 done();

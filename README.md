@@ -266,8 +266,11 @@ A diagnosis written by `strands-evals diagnose -o` is shown on the page of the s
 or listed on its own when that session is not in the folder. The directory of a `LocalFileTaskResultStore`
 is named on the lists and its files are left out of the scan.
 
-Pass `--read-only` to browse without the Save path at all, and `--host` to serve beyond this machine
-(for example `0.0.0.0` inside a container).
+Pass `--read-only` to browse without the Save path at all: the cases editor then shows each file and offers
+nothing that changes it. Pass `--host` to serve beyond this machine (for example `0.0.0.0` inside a container).
+
+A list is sorted by its column heads and filtered by the box over it. In a window narrower than 1080 px the
+sidebar is a drawer, opened by the button in the top bar.
 
 Limits of `ui`:
 
@@ -277,7 +280,7 @@ Limits of `ui`:
   cap. On a folder of tens of thousands of files that takes a noticeable part of a second each time.
 - Each `.md` request scans the whole folder, to find what the file is paired with.
 - The page works only when `strands-evals ui` serves it. Opened from disk, it says how to start the server.
-- A comparison, an optimizer result and a candidate are written by the page and copied from it. They have no
+- An optimizer result and a candidate are written by the page and copied from it. They have no
   `.md` address. Neither do a candidate's report and the failing-rows prompt, which the server writes from
   what the page sends to `POST /api/markdown`.
 - A document nested more than 200 levels deep is listed, but is not written as Markdown: `.md` and
