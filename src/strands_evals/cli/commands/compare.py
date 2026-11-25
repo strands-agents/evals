@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import math
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
+from ...experimental.calibrator import CalibrationProfile
 from ...types.evaluation_report import EvaluationReport
 from .._common import EXIT_BAD_INPUT, EXIT_OK, emit_error, resolve_format
 from .._io import read_text_input, write_text_output
@@ -45,7 +47,16 @@ def _load_reports(paths: list[str], excluded_indices: set[int]) -> list[Evaluati
 def _render_result(result: PairedComparisonResult) -> None:
     console = Console()
     trial_label = "trial" if result.trial_count == 1 else "trials"
-    title = f"Comparison: {result.verdict.replace('_', ' ')} ({result.trial_count} {trial_label})"
+    target_definition = getattr(result, "target_definition", None)
+    profile_id = getattr(result, "profile_id", None)
+    if target_definition is None:
+        prefix = "Comparison"
+    else:
+        target_label = f"{target_definition.name}@{target_definition.version}"
+        if profile_id is not None:
+            target_label = f"{target_label}, profile {profile_id[:12]}"
+        prefix = f"Target comparison ({target_label})"
+    title = f"{prefix}: {result.verdict.replace('_', ' ')} ({result.trial_count} {trial_label})"
     if console.width < 100:
         console.print(Text(title, style="bold"))
         for summary in result.evaluator_summaries:
@@ -68,7 +79,7 @@ def _render_result(result: PairedComparisonResult) -> None:
             console.print(details)
         return
 
-    table = Table(title=title)
+    table = Table(title=Text(title))
     table.add_column("Evaluator", overflow="fold")
     table.add_column("Cases", justify="right", no_wrap=True)
     table.add_column("Changed", justify="right", no_wrap=True)
@@ -102,16 +113,33 @@ def _run(args: argparse.Namespace) -> int:
         corrupted = _validate_args(args)
 
         # optional extra: comparison
-        from ...experimental.comparison import compare_paired
+        from ...experimental.comparison import compare_calibrated, compare_paired
 
-        result = compare_paired(
-            baseline=_load_reports(args.baseline, corrupted),
-            candidate=_load_reports(args.candidate, corrupted),
-            corrupted_trial_indices=corrupted,
-            confidence_level=args.confidence_level,
-            minimum_effect=args.minimum_effect,
-            lower_is_better=args.lower_is_better,
-        )
+        baseline_reports = _load_reports(args.baseline, corrupted)
+        candidate_reports = _load_reports(args.candidate, corrupted)
+        if args.calibration_profile is None:
+            result = compare_paired(
+                baseline=baseline_reports,
+                candidate=candidate_reports,
+                corrupted_trial_indices=corrupted,
+                confidence_level=args.confidence_level,
+                minimum_effect=args.minimum_effect,
+                lower_is_better=args.lower_is_better,
+            )
+        else:
+            profile_path = str(Path(args.calibration_profile).expanduser())
+            try:
+                profile = CalibrationProfile.from_file(profile_path)
+            except (OSError, ValueError) as error:
+                raise ValueError(f"invalid calibration profile at {profile_path}: {error}") from error
+            result = compare_calibrated(
+                profile=profile,
+                baseline=[[report] for report in baseline_reports],
+                candidate=[[report] for report in candidate_reports],
+                corrupted_trial_indices=corrupted,
+                confidence_level=args.confidence_level,
+                minimum_effect=args.minimum_effect,
+            )
     except (ImportError, ValueError) as error:
         message = str(error)
         if message.startswith("lower_is_better "):
@@ -137,6 +165,8 @@ def _validate_args(args: argparse.Namespace) -> set[int]:
         raise ValueError("--confidence-level must be greater than 0 and less than 1")
     if not math.isfinite(args.minimum_effect) or args.minimum_effect < 0.0:
         raise ValueError("--minimum-effect must be finite and greater than or equal to 0")
+    if args.calibration_profile is not None and args.lower_is_better:
+        raise ValueError("--lower-is-better cannot be used with --calibration-profile")
 
     trial_indices = set(range(len(args.baseline)))
     corrupted = set(args.corrupted_trial)
@@ -180,6 +210,15 @@ def add_subparser(
         help="candidate EvaluationReport JSON file, or - for stdin; repeat once per trial",
     )
     parser.add_argument(
+        "--calibration-profile",
+        default=None,
+        metavar="PROFILE",
+        help=(
+            "JSON calibration profile path; requires calibrated_equal with a binary target where 1 is desirable; "
+            "applies target probabilities to both sides and treats each report as one agent run"
+        ),
+    )
+    parser.add_argument(
         "--corrupted-trial",
         action="append",
         default=[],
@@ -200,7 +239,10 @@ def add_subparser(
         "--minimum-effect",
         default=0.0,
         type=float,
-        help="require the full confidence interval beyond this effect threshold (default: 0.0)",
+        help=(
+            "require the full confidence interval beyond this effect threshold; uses raw evaluator-score units, "
+            "or target-probability units with --calibration-profile (default: 0.0)"
+        ),
     )
     parser.add_argument(
         "--lower-is-better",
