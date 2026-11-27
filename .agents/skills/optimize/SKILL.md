@@ -145,7 +145,7 @@ Follow-ups, in plain words:
 
 - **Maximize**: which metric; default the mean of every evaluator, or the one evaluator the request names.
 - **Minimize**: which usage metric; default tokens, output tokens when the request is about answer length, or seconds when it's about speed.
-- **Balance**: which metrics, at least two (ex. "OutputEvaluator and tokens"); whether to weigh them (default), with how much each counts (ex. "OutputEvaluator twice as much as tokens"), or find the best trade-offs; for tokens or time, how big a change matters (default 1000 tokens, 10 seconds).
+- **Balance**: which metrics, at least two (ex. "OutputEvaluator and tokens"); whether to weigh them (default), with how much each counts (ex. "OutputEvaluator twice as much as tokens"), or find the best trade-offs; for tokens or time, how big a change matters (default 1000 tokens, 10 seconds), said as the trade it makes: with 1000 tokens, 100 more tokens per case cost as much as 0.1 of an evaluator's 0 to 1 score. When a text knob is tuned, add that a rewritten text often adds a few hundred tokens to every case, so at 1000 a rewrite must gain about as many tenths of a score to win; suggest a larger size (ex. 5000) unless cost matters most.
 
 **Default**: the mean of every evaluator. When the request is about length or cost, balancing the evaluators and tokens (output tokens when it's about answer length); about speed, the evaluators and seconds.
 
@@ -177,6 +177,20 @@ An evaluator with its own score range shows that range instead of 0 to 1.
 
 **Default**: none, or option 2 when the objective only minimizes a usage metric (step 3, option 2); then say why: with only tokens or time to improve, an agent that answers badly, or not at all, can look best.
 
+**The current agent's scores.** A constraint the current agent already misses changes the search: until a version meets it, versions are ranked by how close they come, not by the goal (ex. minimizing tokens is ignored while the search chases a score), and when no version meets it on validation, the current agent ships though it misses it too. So before asking, read the current agent's scores from the newest earlier run of this experiment, when there is one (`<runs>` is the run folders' parent of step 7, `<experiment>` the experiment file's absolute path):
+
+```bash
+for D in $(ls -d <runs>/*/record/*/ 2>/dev/null | sort -r); do
+  [ "$(jq -r .experiment_file "$D/cli.json" 2>/dev/null)" = "<experiment>" ] || continue
+  jq -r 'select(.event=="label" and .iteration==0) | .label.measured | to_entries[] | "\(.key) \(.value.mean)"' "$D/events.jsonl"
+  break
+done
+```
+
+With a score, show it under each metric of the list (ex. `OutputEvaluator: its score, from 0 (worst) to 1 (best); your agent scored 0.70 last time`), and make option 2 "every evaluator at least its current score minus 0.05" (ex. `OutputEvaluator at least 0.65`), so the constraint guards against getting worse. Say the score comes from that run, so it is stale if the agent changed since. Without an earlier run, keep option 2 as written and say that a limit above what the agent scores today has this effect; a run with 0 steps (step 5) measures it.
+
+When a constraint is at or above the current agent's score, or above it minus 0.05 (judges vary that much between runs on a few cases), warn in the review: the search ignores the goal until a version meets it, and the current agent may ship. A limit the user wants to reach rather than keep (ex. "get it to 0.9") fits the objective better (step 3, maximize).
+
 **Rules.** Each constraint is one metric from the list, "at least" or "at most", and a number; a metric name with `<`, `>`, or `=` can't be used.
 
 **Build.** Each constraint is `--constraint 'METRIC>=X'` or `--constraint 'METRIC<=X'`.
@@ -194,6 +208,8 @@ Budget: change any of these in one reply (ex. "200 rollouts, 2 runs"); the rest 
 5. Finalists: the best versions re-checked on the validation cases to pick the winner. Default 3.
 6. Trials at once: how many runs go in parallel; changes speed, not cost. Default 4.
 ```
+
+When the experiment has fewer than 20 cases and an evaluator is an LLM judge (any but the deterministic `Equals`, `Contains`, `StartsWith`, `ToolCalled`, `SkillInvoked`, `StateEquals`, `StructuredOutputSimilarity`), add under the list: "With N cases and an LLM judge, 2 runs of each case average out the judge's noise, at twice the rollouts." The default stays 1.
 
 Don't show a rollout estimate. When the user asks how a setting relates to the max rollouts, use these, from the case counts of the split (step 6): a run spends `runs × (train × (1 + steps × candidates) + validation × (finalists + 1) + test × tested)` rollouts (one run of the agent on one case), with `tested` 2 (the winner and the current agent), and never more than the max rollouts. The least a run needs is that for 0 steps plus room to re-run failed trials: `2 × ceil(runs × validation ÷ 20)` for each of the finalists + 1, and `2 × ceil(runs × test ÷ 20)` for each of the `tested`. The steps that fit are `ceil(floor((max rollouts − the least a run needs) ÷ (runs × train)) ÷ candidates)`: the search stops when what's left can't pay for one more candidate, and the last step may try fewer. With a tunable factory whose markers hold a `choice(...)` of 2 or more components, each round's first step tries one candidate, so more steps fit than that. Judge calls are about rollouts × evaluators. Neither the judge's nor Reflection's own calls count against the budget. Under best trade-offs (step 3, balancing without weighing), at least 5 finalists are re-checked, so the finalists default is 5 and `tested` is the finalists plus 1; say so in step 3's follow-up.
 
@@ -228,7 +244,7 @@ With constraints, their row also says how sure each must be (ex. `tokens at most
 
 The default rows:
 
-- **Cases**: train guides the search, validation picks the winner, and test checks it on cases nothing else saw. Default: half train, and half of the rest test; when that leaves fewer than 2 validation cases or, with test cases, fewer than 2 test cases, the nearest of: train 30%, 40%, 50%, 60%, 70%, or 80%, with the rest split half test, a third test, or no test, that doesn't. Show case counts: each share times the case count, rounded down, with the leftover cases going to the largest remainders. The user's own split may be shares or counts (ex. "4 train, 1 validation, 1 test"). Rules: at least 1 train and 1 validation case; with fewer than 2 validation or test cases, warn that the scores can be luck and say how many cases to add to reach 2 of each.
+- **Cases**: train guides the search, validation picks the winner, and test checks it on cases nothing else saw. Default: half train, and half of the rest test; when that leaves fewer than 2 validation cases or, with test cases, fewer than 2 test cases, the nearest of: train 30%, 40%, 50%, 60%, 70%, or 80%, with the rest split half test, a third test, or no test, that doesn't. Show case counts: each share times the case count, rounded down, with the leftover cases going to the largest remainders. The user's own split may be shares or counts (ex. "4 train, 1 validation, 1 test"). Rules: at least 1 train and 1 validation case; with fewer than 2 validation or test cases, warn that the scores can be luck and say how many cases to add to reach 2 of each. With fewer than 10 train or 5 validation cases, warn that differences smaller than about a tenth of a score can be noise, so the winner may be luck; with constraints, add that a constraint is hard to confirm 90% sure on so few cases, so the current agent often ships. Say how many cases to add to reach 10 train and 5 validation (ex. 20 cases with the default split).
 - **How sure each constraint must be**, only with constraints: default 90%; the user's own is above 0% and below 100%.
 - **Crashes**: default, a crashed run scores each evaluator's worst value. The user may instead leave crashed runs out of the scores, or give them a score (ex. 0.5).
 - **Pick**: how the winner is chosen from the finalists on validation. Default, the best average score. The user may instead pick cautiously, by a low estimate of each score that it reaches with a sureness above 50% and below 100% (ex. 75% or 90% sure).
