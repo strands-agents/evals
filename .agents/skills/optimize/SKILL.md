@@ -20,7 +20,7 @@ Ask in plain chat, one step at a time unless a step says to ask its questions to
 
 **Setting up from the request.** When the message that started the skill says how to optimize (ex. "make the support agent shorter without losing helpfulness, about 100 rollouts"), ask no setup question: take every value it gives (the experiment, steps 2 to 5, and the review rows), infer the rest from it and the files, give the others their defaults, and go to the review (step 6). Only a skill started without such a prompt (ex. `/optimize` alone, or "optimize my agent") goes step by step, skipping a question the user already answered. A value that breaks a rule becomes the closest valid one and is flagged in the review.
 
-**Running without questions.** When the user explicitly asks to run, in any message (ex. "just run it", "2 steps, then start it", "no need to confirm"; "optimize my agent" isn't one), or you can't wait for a reply (a headless run, ex. `claude -p` or a scheduled job; Claude Code sets `CLAUDE_CODE_SESSION_ATTENDED=0`, so check `printenv CLAUDE_CODE_SESSION_ATTENDED` before asking anything), stop asking: give every value still missing its default and skip the review's wait (step 6). Still stop at exit code 2 (step 7).
+**Running without questions.** When the user explicitly asks to run, in any message (ex. "just run it", "2 steps, then start it", "no need to confirm"; "optimize my agent" isn't one), or you can't wait for a reply (a headless run, ex. `claude -p` or a scheduled job; Claude Code sets `CLAUDE_CODE_SESSION_ATTENDED=0`, so check `printenv CLAUDE_CODE_SESSION_ATTENDED` before asking anything), stop asking: give every value still missing its default and skip only the review's wait (step 6). The review itself, with its warnings, is still written to the user before the run starts. Still stop at exit code 2 (step 7).
 
 In every setup, what has no default (the agent or experiment file when none is found, the model ids for a model choice, an install step) is asked for, or in a headless run named as missing before stopping.
 
@@ -63,6 +63,17 @@ The first line lists the agent files; the rest lists the workspace's experiments
 - **Experiments.** The files the second line lists. For each, read only its counts: `jq '{cases: (.cases | length), evaluators: [.evaluators[].evaluator_type]}' <file>` (each `evaluator_type` is a metric name); skip a file `jq` can't read that way.
 
 Then, in a step-by-step setup, ask which experiment to use: up to three, by name with their cases and evaluators (ex. `capitals: 6 cases, scored by OutputEvaluator`), the most cases first as the default, then "Your own: another experiment's name or path", naming any others found in one line under the list. With none found, ask for the path of an experiment file (the JSON file with cases and evaluators that `strands-evals run` reads), and stop if there is none.
+
+**Few cases.** Once the experiment is known, check its case count. With fewer than 20 cases, say that the optimizer splits them into train, validation, and test, so a few cases per part can't tell versions apart (a judge's score moves by a tenth or more between runs on 3 cases), and ask:
+
+```text
+This experiment has N cases; 20 or more give the optimizer enough to compare versions.
+1. Add cases first: write more like the current ones (Default)
+2. Add cases from past conversations with the agent
+3. Continue with N cases
+```
+
+Option 1 uses the `strands-evals` skill (its experiment generator, or cases written from the existing ones), option 2 the `session-converter` skill; either writes a new experiment file, then come back here with it. Running without questions, continue with the cases there are and put this in the review's warnings.
 
 ### 2. Knobs: what may change
 
@@ -177,6 +188,8 @@ An evaluator with its own score range shows that range instead of 0 to 1.
 
 **Default**: none, or option 2 when the objective only minimizes a usage metric (step 3, option 2); then say why: with only tokens or time to improve, an agent that answers badly, or not at all, can look best.
 
+**A limit guards, the goal improves.** A constraint keeps the winner from getting worse; it doesn't make the search try to raise the score. So when a constraint sets an evaluator's lowest score and the objective only minimizes usage metrics, also maximize that evaluator: the objective becomes a balance of the evaluator and the usage metric (step 3, with the usage metric's default size), and say so (ex. "I'll also maximize Helpfulness, so the search tries to keep answers good while cutting tokens, not only stay above the limit").
+
 **The current agent's scores.** A constraint the current agent already misses changes the search: until a version meets it, versions are ranked by how close they come, not by the goal (ex. minimizing tokens is ignored while the search chases a score), and when no version meets it on validation, the current agent ships though it misses it too. So before asking, read the current agent's scores from the newest earlier run of this experiment, when there is one (`<run folders>` is `optimization/runs/*/` from the project, or `strands-dev/experiments/<name>/optimizations/*/record/*/` in a strands-dev workspace, step 7; `<experiment>` the experiment file's absolute path):
 
 ```bash
@@ -219,7 +232,7 @@ Don't show a rollout estimate. When the user asks how a setting relates to the m
 
 ### 6. Review
 
-**Skipping the confirmation.** When the run goes without questions (**Running without questions**, under **Steps**), don't wait for a reply here: show the summary, its warnings, and the command in one message, say the run is starting, and go to step 7.
+**Skipping the confirmation.** When the run goes without questions (**Running without questions**, under **Steps**), don't wait for a reply here, but don't skip the review either: before starting the run, write the summary, every warning (the case counts, a constraint at or near the current agent's score or with no score known, the runs of each case), and the command as a message, say the run is starting, and only then go to step 7. A warning given only in the final report comes too late to act on. In a headless run, where nobody reads until the end, put the review's warnings first in the final report (step 8) instead.
 
 Otherwise, show the setup as one summary, then the command, and ask the user to start or to name a row to change. For a row of steps 2 to 5, go back to that step (a tunable factory's tune row changes only in its markers: propose the code edit, and make it only when the user agrees); for a default row, take the new value here and check it against its rules below. Then show the review again.
 
@@ -251,7 +264,7 @@ The default rows:
 
 **Build.**
 
-- Cases: `--split TRAIN,VALIDATION,TEST`, validation `(1 - TRAIN) × (1 - test part)` and test `(1 - TRAIN) × test part`, summing to 1 within 1e-9, so write enough digits (ex. `0.6,0.266666666667,0.133333333333`); counts become shares by dividing by the case count.
+- Cases: always `--split TRAIN,VALIDATION,TEST` with the shares the row shows, the default included (the optimizer's own default, 0.4 / 0.3 / 0.3, differs from this row's); validation `(1 - TRAIN) × (1 - test part)` and test `(1 - TRAIN) × test part`, summing to 1 within 1e-9, so write enough digits (ex. `0.6,0.266666666667,0.133333333333`); counts become shares by dividing by the case count.
 - Sureness: `--feasibility-threshold X`, only when it isn't 0.9.
 - Crashes: nothing by default, `--agent-failure-score none` to leave crashed runs out, `--agent-failure-score X` for a score.
 - Pick: nothing by default; X% sure writes `final_pick` into the hooks file (step 7) with `q = 1 - X` (ex. 75% is 0.25) and N the finalists, and passes `--final-pick "<hooks file>:final_pick"`.
@@ -289,7 +302,7 @@ baseline_only = Search([], schedule=BaselineOnly())
 final_pick = FinalPick(n_finalists=N, rule=LowerBound(q=Q))  # a cautious pick
 ```
 
-**Start.** Run in the background from the project, with stdout, stderr, and the exit code in their own files:
+**Start.** Only after the review (step 6) is written to the user, in a message of its own, also when running without questions. Run in the background from the project, with stdout, stderr, and the exit code in their own files:
 
 ```bash
 cd <project> && touch "$F/run.started" && (strands-evals optimize run <experiment> \
@@ -297,7 +310,7 @@ cd <project> && touch "$F/run.started" && (strands-evals optimize run <experimen
   > "$F/summary.txt" 2> "$F/run.log"; echo $? > "$F/run.exit") &
 ```
 
-`--base-dir "$F/record"` only in a strands-dev workspace. If you can't run a background process, run it in the foreground with a long timeout and show the output when it ends. `<RUN_DIR>` is the folder the optimizer creates under `<runs>` once the run starts, before it measures anything: on the first progress check, take it from `run.log`'s `strands-evals optimize: run folder <RUN_DIR>` line, else the folder `find <runs> -mindepth 1 -maxdepth 1 -type d -newer "$F/run.started"` lists (with several, the one whose `cli.json` `agent` is this run's). Write its absolute path to `$F/run_dir` and tell the user.
+`--base-dir "$F/record"` only in a strands-dev workspace. If you can't run a background process, run it in the foreground with a long timeout and show the output when it ends. `<RUN_DIR>` is the folder the optimizer creates under `<runs>` once the run starts, before it measures anything: within a few seconds of starting, before any other progress check, take it from `run.log`'s `strands-evals optimize: run folder <RUN_DIR>` line, else the folder `find <runs> -mindepth 1 -maxdepth 1 -type d -newer "$F/run.started"` lists (with several, the one whose `cli.json` `agent` is this run's). Write its absolute path to `$F/run_dir` right away (a run killed later is resumed through it) and tell the user.
 
 **Progress**: until `$F/run.exit` exists, about once a minute, relay each new `run.log` line that starts with `strands-evals optimize:` (ex. `iteration N (<blocks>): P proposals, R rollouts`, with R that step's rollouts, so keep a running total from the baseline's train cases) and any warning or error, in plain words (ex. "step 2 done: 4 new versions tried, 27 of 500 rollouts so far"). Read new lines with `tail -n +<next line> "$F/run.log"`.
 
