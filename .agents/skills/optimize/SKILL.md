@@ -177,10 +177,10 @@ An evaluator with its own score range shows that range instead of 0 to 1.
 
 **Default**: none, or option 2 when the objective only minimizes a usage metric (step 3, option 2); then say why: with only tokens or time to improve, an agent that answers badly, or not at all, can look best.
 
-**The current agent's scores.** A constraint the current agent already misses changes the search: until a version meets it, versions are ranked by how close they come, not by the goal (ex. minimizing tokens is ignored while the search chases a score), and when no version meets it on validation, the current agent ships though it misses it too. So before asking, read the current agent's scores from the newest earlier run of this experiment, when there is one (`<runs>` is the run folders' parent of step 7, `<experiment>` the experiment file's absolute path):
+**The current agent's scores.** A constraint the current agent already misses changes the search: until a version meets it, versions are ranked by how close they come, not by the goal (ex. minimizing tokens is ignored while the search chases a score), and when no version meets it on validation, the current agent ships though it misses it too. So before asking, read the current agent's scores from the newest earlier run of this experiment, when there is one (`<run folders>` is `optimization/runs/*/` from the project, or `strands-dev/experiments/<name>/optimizations/*/record/*/` in a strands-dev workspace, step 7; `<experiment>` the experiment file's absolute path):
 
 ```bash
-for D in $(ls -d <runs>/*/record/*/ 2>/dev/null | sort -r); do
+for D in $(ls -td <run folders> 2>/dev/null); do
   [ "$(jq -r .experiment_file "$D/cli.json" 2>/dev/null)" = "<experiment>" ] || continue
   jq -r 'select(.event=="label" and .iteration==0) | .label.measured | to_entries[] | "\(.key) \(.value.mean)"' "$D/events.jsonl"
   break
@@ -261,7 +261,12 @@ The command is step 7's **Start**, with the flags of the **Build** notes of step
 
 ### 7. Run
 
-**Run folder.** `F` is `strands-dev/experiments/<name>/optimizations/<stamp>/` for an experiment of a strands-dev workspace, where the Strands CLI keeps its runs; otherwise `<project>/optimization/runs/<stamp>/`, with `<stamp>` the UTC time as `YYYYMMDD-HHMMSS`. Suggest adding `optimization/runs/` to the project's `.gitignore` when it's a git repository that doesn't ignore it. Every case needs a unique `name`: when one doesn't have it, write a copy with every case named (keep existing names, add `case-<n>` to the rest, `-2`, `-3` to repeats) as `$F/experiment.json` and run that.
+**Folders.** Two folders per run: the optimizer's run folder `<RUN_DIR>` (`run.json`, `events.jsonl`, the result), which the optimizer creates and names under `<runs>`, and the skill's folder `F` (`summary.txt`, `run.log`, `run.exit`, `tunable_agent.py`, the hooks file, the path of `<RUN_DIR>` in `run_dir`), with `<stamp>` the UTC time as `YYYYMMDD-HHMMSS`:
+
+- For an experiment of a strands-dev workspace, where the Strands CLI keeps its runs: `F` is `strands-dev/experiments/<name>/optimizations/<stamp>/` and `<runs>` is `$F/record`.
+- Otherwise: `<runs>` is the optimizer's default, `<project>/optimization/runs/` (the run passes no `--base-dir`), so a run sits where `strands-evals optimize` and `strands-evals ui` put and look for runs; `F` is `<project>/optimization/skill/<stamp>/`.
+
+Suggest adding `optimization/` to the project's `.gitignore` when it's a git repository that doesn't ignore it. Every case needs a unique `name`: when one doesn't have it, write a copy with every case named (keep existing names, add `case-<n>` to the rest, `-2`, `-3` to repeats) as `$F/experiment.json` and run that.
 
 **tunable_agent.py**, Python without its own tunable factory: copy [assets/tunable_agent.py](assets/tunable_agent.py) to `$F/tunable_agent.py` (`cp <skill_dir>/assets/tunable_agent.py "$F/tunable_agent.py"`) and edit the copy where its `# Edit:` comments say, with the knobs of step 2's **Build**; never edit the asset itself. Set `AGENT_FILE` to the agent file's absolute path and `CALL` to the position of the call that builds `agent` among the file's `create_harness` calls (0 when it has one); leave out what isn't tuned, with `SWITCHES = {}` when nothing is switched. Keep the file with the run folder: a resumed run loads it again.
 
@@ -287,12 +292,12 @@ final_pick = FinalPick(n_finalists=N, rule=LowerBound(q=Q))  # a cautious pick
 **Start.** Run in the background from the project, with stdout, stderr, and the exit code in their own files:
 
 ```bash
-cd <project> && (strands-evals optimize run <experiment> \
-  --agent <agent, as above> --base-dir "$F/record" --rich <flags of steps 2 to 6> \
+cd <project> && touch "$F/run.started" && (strands-evals optimize run <experiment> \
+  --agent <agent, as above> [--base-dir "$F/record"] --rich <flags of steps 2 to 6> \
   > "$F/summary.txt" 2> "$F/run.log"; echo $? > "$F/run.exit") &
 ```
 
-If you can't run a background process, run it in the foreground with a long timeout and show the output when it ends. `<RUN_DIR>`, the run folder, is the one folder the optimizer creates under `$F/record` once the run starts: find it with `ls -d "$F"/record/*/` on the first progress check, and tell the user. Don't wait for `run.log`'s `strands-evals optimize: run folder <RUN_DIR>` line to report it: that line can come only at the end, with the result.
+`--base-dir "$F/record"` only in a strands-dev workspace. If you can't run a background process, run it in the foreground with a long timeout and show the output when it ends. `<RUN_DIR>` is the folder the optimizer creates under `<runs>` once the run starts, before it measures anything: on the first progress check, take it from `run.log`'s `strands-evals optimize: run folder <RUN_DIR>` line, else the folder `find <runs> -mindepth 1 -maxdepth 1 -type d -newer "$F/run.started"` lists (with several, the one whose `cli.json` `agent` is this run's). Write its absolute path to `$F/run_dir` and tell the user.
 
 **Progress**: until `$F/run.exit` exists, about once a minute, relay each new `run.log` line that starts with `strands-evals optimize:` (ex. `iteration N (<blocks>): P proposals, R rollouts`, with R that step's rollouts, so keep a running total from the baseline's train cases) and any warning or error, in plain words (ex. "step 2 done: 4 new versions tried, 27 of 500 rollouts so far"). Read new lines with `tail -n +<next line> "$F/run.log"`.
 
@@ -306,7 +311,7 @@ If you can't run a background process, run it in the foreground with a long time
 
 After a 3 with the `continue` line or a 130, say the user can ask to resume it (see "Resuming a run").
 
-**The UI.** To browse a run, its progress included, start `strands-evals ui` from the project with `--depth 7`: the UI scans 3 folders deep by default, and the skill's runs sit 5 deep (`optimization/runs/<stamp>/record/<run>/`), 7 in a strands-dev workspace (`strands-dev/experiments/<name>/optimizations/<stamp>/record/<run>/`), so without it the run isn't listed.
+**The UI.** To browse a run, its progress included, start `strands-evals ui` from the project. It scans 3 folders deep by default, which finds `optimization/runs/<run>/`; when `<RUN_DIR>` sits deeper below the project (a strands-dev workspace: `strands-dev/experiments/<name>/optimizations/<stamp>/record/<run>/`, 7 deep), pass `--depth N` with N its number of folders below the project, or the run isn't listed.
 
 ### 8. Report
 
@@ -318,7 +323,7 @@ Nothing in the user's project changes. `<RUN_DIR>/best.diff` holds each changed 
 
 ## Resuming a run
 
-Resume only when the user explicitly asks; never on your own. A run can be resumed when it was killed (130, or no `run.exit`), stopped on a proposer error (3 with the `continue` line), or finished before its test check ran (step 8); any other failed run starts over as a new run. Skip steps 1 to 6: take the run folder `$F` the user names, else the newest resumable one under the experiment's `optimizations/` (or `<project>/optimization/runs/`), and confirm it with the user. `<RUN_DIR>` is the one folder under `$F/record` (step 7); without one the run never started, so there is nothing to resume. With `<project>` as in step 1, run:
+Resume only when the user explicitly asks; never on your own. A run can be resumed when it was killed (130, or no `run.exit`), stopped on a proposer error (3 with the `continue` line), or finished before its test check ran (step 8); any other failed run starts over as a new run. Skip steps 1 to 6: take the folder the user names (the skill's `F`, or the run folder `<RUN_DIR>`), else the newest resumable run of the experiment's `optimizations/` (or `<project>/optimization/skill/`), and confirm it with the user. `<RUN_DIR>` is the path in `$F/run_dir`, or in a strands-dev workspace the one folder under `$F/record` (step 7); without one the run never started, so there is nothing to resume. Given a `<RUN_DIR>`, `F` is the skill folder whose `run_dir` names it; a run started without the skill has none, so write its logs to a new `<project>/optimization/skill/<stamp>/`. With `<project>` as in step 1, run:
 
 ```bash
 cd <project> && (strands-evals optimize resume "<RUN_DIR>" --rich \
