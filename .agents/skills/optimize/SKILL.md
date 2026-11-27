@@ -160,10 +160,10 @@ Ask which constraints the winner must also meet, with what can be constrained li
 ```text
 Which constraints should the winner also meet?
 1. None (Default)
-2. Every evaluator at least 0.8: OutputEvaluator at least 0.8
-3. Your own, for example "OutputEvaluator at least 0.9" or "tokens at most 4000"
+2. No evaluator more than 0.05 below your agent today: OutputEvaluator at least its current score minus 0.05
+3. Your own, for example "tokens at most 20% more than today", "OutputEvaluator at least 0.9", or "tokens at most 4000"
 
-A constraint is "at least" or "at most" a number, on the average per run of one case:
+A constraint is "at least" or "at most" a number, or a number relative to your agent today (measured at the start of the run), on the average per run of one case:
 - OutputEvaluator: its score, from 0 (worst) to 1 (best)
 - tokens: all tokens the agent's model used to answer one case (input plus output)
 - input tokens, output tokens: the tokens it read (cached ones included) and the tokens it wrote
@@ -175,11 +175,13 @@ The judge's own calls don't count toward tokens, seconds, or model calls.
 
 An evaluator with its own score range shows that range instead of 0 to 1.
 
-**Default**: none, or option 2 when the objective only minimizes a usage metric (step 3, option 2); then say why: with only tokens or time to improve, an agent that answers badly, or not at all, can look best.
+**Default**: none, or option 2 when the objective only minimizes a usage metric (step 3, option 2); then say why: with only tokens or time to improve, an agent that answers badly, or not at all, can look best. When a text knob is tuned and the objective doesn't minimize tokens, also offer "tokens at most 20% more than today" under option 3: rewritten texts often add tokens to every case.
 
-**Rules.** Each constraint is one metric from the list, "at least" or "at most", and a number; a metric name with `<`, `>`, or `=` can't be used.
+**Guards, not targets.** A limit relative to today keeps the winner from getting worse, and today's agent always meets it, so the search goes for the objective from the start. A fixed limit can sit above what the agent scores today; then, until a version meets it, the search ranks versions by how close they come and ignores the objective, and the current agent ships when none meets it on validation, though it misses it too. So suggest a relative limit when the user names a fixed one on an evaluator, and to raise a score, maximize it (step 3).
 
-**Build.** Each constraint is `--constraint 'METRIC>=X'` or `--constraint 'METRIC<=X'`.
+**Rules.** Each constraint is one metric from the list, "at least" or "at most", and a number or a number relative to today: "no more than D below today", "at most D above today", or "at most P% more than today" (P above -100); a metric name with `<`, `>`, or `=` can't be used.
+
+**Build.** Each constraint is `--constraint 'METRIC>=X'` or `--constraint 'METRIC<=X'`, with X a number, or relative to the current agent's train mean: `baseline-D` / `baseline+D`, or `baseline*R` with R = 1 + P/100 (ex. `--constraint 'OutputEvaluator>=baseline-0.05'`, `--constraint 'tokens<=baseline*1.2'`). The summary shows the limit it set (ex. `OutputEvaluator >= 0.65 (baseline 0.7 - 0.05)`); say so in the report (step 8).
 
 ### 5. Budget
 
