@@ -157,6 +157,8 @@ strands-evals/
 │   │   └── (data records in types/optimization/)
 │   │
 │   ├── experimental/                         # Experimental features (no stability guarantees)
+│   │   └── context_utilization_evaluator.py  # Useful / gathered tokens over a Session
+│   │                                         # (prompt in evaluators/prompt_templates/)
 │   │
 │   ├── detectors/                            # Failure detection + RCA
 │   │   ├── failure_detector.py               # detect_failures (model.stream text mode)

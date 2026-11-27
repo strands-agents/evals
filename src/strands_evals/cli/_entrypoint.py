@@ -36,6 +36,7 @@ from ..evaluators import (
     ToolSelectionAccuracyEvaluator,
 )
 from ..evaluators.evaluator import Evaluator
+from ..experimental import ContextUtilizationEvaluator
 
 # Built-in evaluator shortnames for `--evaluator NAME`. Only evaluators that
 # instantiate cleanly with no required arguments are listed here — anything
@@ -46,6 +47,7 @@ from ..evaluators.evaluator import Evaluator
 BUILTIN_EVALUATOR_SHORTNAMES: dict[str, type[Evaluator]] = {
     "coherence": CoherenceEvaluator,
     "conciseness": ConcisenessEvaluator,
+    "context-utilization": ContextUtilizationEvaluator,
     "correctness": CorrectnessEvaluator,
     "equals": Equals,
     "faithfulness": FaithfulnessEvaluator,
