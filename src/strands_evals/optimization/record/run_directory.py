@@ -12,7 +12,7 @@ import secrets
 import subprocess
 import sys
 import urllib.parse
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
@@ -121,6 +121,14 @@ class RunDirectory:
         run = cls(root, contents, EventLog(root / "events.jsonl"))
         run.events.append("config", iteration=0, config=contents)
         return run
+
+    def save_constraint_bounds(self, bounds: Sequence[str]) -> None:
+        """Add `constraint_bounds` to `run.json`: each constraint as the run set it from the baseline (e.g.
+        "HelpfulnessEvaluator >= 0.65 (baseline 0.7 - 0.05)"). For people and the UI only: resume compares
+        the `config` event, which keeps the unset form."""
+        path = self.root / "run.json"
+        contents = {**json.loads(path.read_text()), "constraint_bounds": list(bounds)}
+        _write_text_atomically(path, json.dumps(contents, indent=2, ensure_ascii=False) + "\n")
 
     @classmethod
     def open(cls, path: Path) -> RunDirectory:

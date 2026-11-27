@@ -65,7 +65,8 @@ CLI_FILE = "cli.json"
 # ignores it with a warning (`load_inputs`).
 SCHEMA_VERSION = 1
 
-_CONSTRAINT = re.compile(r"^\s*(?P<metric>[^<>=\s][^<>=]*?)\s*(?P<op><=|>=)\s*(?P<bound>\S+)\s*$")
+_CONSTRAINT = re.compile(r"^\s*(?P<metric>[^<>=\s][^<>=]*?)\s*(?P<op><=|>=)\s*(?P<bound>\S.*?)\s*$")
+_BASELINE_BOUND = re.compile(r"^baseline\s*(?:(?P<op>[-+*])\s*(?P<number>\S+))?$")
 
 
 @dataclass(frozen=True)
@@ -201,16 +202,29 @@ def parse_constraints(spec: str) -> list[Constraint]:
 
 
 def parse_constraint(spec: str) -> Constraint:
-    """`METRIC<=X` (`AtMost`) or `METRIC>=X` (`AtLeast`)."""
+    """`METRIC<=X` (`AtMost`) or `METRIC>=X` (`AtLeast`); X is a number, or set from the baseline's mean:
+    `baseline-D` / `baseline+D` (`baseline_offset`), `baseline*R` (`baseline_ratio`), or `baseline` (offset 0)."""
     match = _CONSTRAINT.match(spec)
     if match is None:
         raise ValueError(f"--constraint must be METRIC<=X or METRIC>=X (got '{spec}')")
-    try:
-        bound = float(match["bound"])
-    except ValueError as error:
-        raise ValueError(f"--constraint bound must be a number (got '{match['bound']}')") from error
     kind = AtMost if match["op"] == "<=" else AtLeast
-    return kind(match["metric"], bound)
+    text = match["bound"]
+    relative = _BASELINE_BOUND.match(text)
+    number_text = text if relative is None else relative["number"]
+    try:
+        number = 0.0 if number_text is None else float(number_text)
+    except ValueError as error:
+        raise ValueError(
+            f"--constraint bound must be a number, or baseline, baseline+D, baseline-D, or baseline*R (got '{text}')"
+        ) from error
+    try:
+        if relative is None:
+            return kind(match["metric"], number)
+        if relative["op"] == "*":
+            return kind(match["metric"], baseline_ratio=number)
+        return kind(match["metric"], baseline_offset=-number if relative["op"] == "-" else number)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"--constraint '{spec}': {error}") from error
 
 
 def parse_split(spec: str) -> Split:
@@ -697,11 +711,16 @@ def _objective_spec(where: str, entry: dict[str, Any]) -> str:
 
 
 def _constraint_spec(where: str, entry: dict[str, Any]) -> str:
-    """`{metric = METRIC, at_most | at_least = X}` -> `METRIC<=X` / `METRIC>=X`."""
+    """`{metric = METRIC, at_most | at_least = X}` -> `METRIC<=X` / `METRIC>=X`; X is a number or a
+    `"baseline..."` string as `--constraint` takes it (e.g. `at_least = "baseline-0.05"`)."""
     if not isinstance(entry.get("metric"), str):
         raise ValueError(f'{where} needs metric = "METRIC"')
-    bound = _one_of(where, entry, ("at_most", "at_least"), (int, float), "X")
-    return f"{entry['metric']}{'<=' if bound == 'at_most' else '>='}{_number(where, entry, bound)}"
+    bound = _one_of(where, entry, ("at_most", "at_least"), (int, float, str), "X")
+    value = entry[bound]
+    if isinstance(value, str) and not _BASELINE_BOUND.match(value.strip()):
+        raise ValueError(f'{where}: {bound} must be a number or "baseline", "baseline+D", "baseline-D", "baseline*R"')
+    text = value.strip() if isinstance(value, str) else _number(where, entry, bound)
+    return f"{entry['metric']}{'<=' if bound == 'at_most' else '>='}{text}"
 
 
 def _tune_spec(where: str, entry: dict[str, Any]) -> str:

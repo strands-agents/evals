@@ -37,6 +37,7 @@ from ..types.optimization import (
     ValidationReport,
     Value,
     Values,
+    near,
 )
 from .candidate import Candidate, changed_keys
 from .declaration.space import Marker, Space
@@ -72,7 +73,17 @@ from .score_model.effects import effects_json
 from .score_model.protocols import Fit, FitData, ScoreModel
 from .score_model.ranking import Assessment, Mean, assess, label_candidate, pareto_front, rank
 from .scoring.metrics import USAGE_METRICS, MetricRegistry
-from .scoring.objectives import Constraint, Criteria, Maximize, Objective, Pareto, WeightedSum, measured_metrics, score
+from .scoring.objectives import (
+    AtLeast,
+    Constraint,
+    Criteria,
+    Maximize,
+    Objective,
+    Pareto,
+    WeightedSum,
+    measured_metrics,
+    score,
+)
 from .search.blocks import Block, ScheduleContext, Search, Step
 from .search.proposer import ProposalRequest, Proposer
 from .selection.base import Selection, SelectionContext
@@ -578,6 +589,7 @@ class Optimizer:
             self._restore(self._resumed)
             return
         self._init_state(self._baseline)
+        self._set_baseline_bounds(scores)
         self._candidates[self._baseline.id] = self._baseline
         self._train[self._baseline.id] = scores
         self._refit(scored=True)
@@ -585,9 +597,45 @@ class Optimizer:
         _, assessments = self._rank()
         assessment = assessments.get(self._baseline.id)
         label = label_candidate(scores, assessment, criteria=self._criteria)
-        self._run.events.append("label", iteration=0, candidate_id=self._baseline.id, label=label)
+        baseline_bounds = [str(c) for c in self._criteria.constraints if c.is_relative]
+        self._run.events.append(
+            "label",
+            iteration=0,
+            candidate_id=self._baseline.id,
+            label=label,
+            **({"constraints": baseline_bounds} if baseline_bounds else {}),
+        )
         for block, _ in self._blocks:
             self._share(_block_name(block), self._baseline, label.outcome, assessment)
+
+    def _set_baseline_bounds(self, scores: CandidateScores) -> None:
+        """Set each baseline constraint's bound from the baseline's measured train mean (`Criteria.at_baseline`),
+        before anything is ranked or labeled; warn for a bound outside its metric's range, which nothing can meet.
+
+        Runs on resume too, from the saved baseline trials, so the bounds are the run's again.
+        """
+        if not self._criteria.has_baseline_constraints:
+            return
+        means = {metric: m.mean for metric, m in measured_metrics(scores, self._criteria.registry).items()}
+        self._criteria = self._criteria.at_baseline(means)
+        assert self._run is not None
+        self._run.save_constraint_bounds([str(c) for c in self._criteria.constraints])
+        for constraint in self._criteria.constraints:
+            if not constraint.is_relative:
+                continue
+            low, high = self._criteria.registry.range(constraint.metric)
+            never = (
+                high is not None and constraint.bound > high and not near(constraint.bound, high)
+                if isinstance(constraint, AtLeast)
+                else low is not None and constraint.bound < low and not near(constraint.bound, low)
+            )
+            if never:
+                warnings.warn(
+                    f"{constraint}: the bound is outside {constraint.metric}'s range [{low}, {high}], so no candidate "
+                    "can meet it and the baseline ships",
+                    UserWarning,
+                    stacklevel=2,
+                )
 
     def _bind_proposers(self, *, claim: bool) -> None:
         """Check that no other optimizer has run with this one's proposers; with `claim`, then bind them all to
@@ -660,6 +708,14 @@ class Optimizer:
                 scores = score(candidate_id, train, self._criteria, self._case_split).train
                 assert scores is not None
                 self._train[candidate_id] = scores
+                if candidate_id == self._baseline.id:
+                    self._set_baseline_bounds(scores)
+        if self._criteria.has_baseline_constraints:
+            raise RuntimeError(
+                f"{run.root}: the baseline has no saved train trials, so the bounds set from it "
+                f"({', '.join(str(c) for c in self._criteria.constraints if c.is_relative)}) can't be set again; "
+                "start a new run"
+            )
         for replay in state.fits:  # each on exactly its listed candidates, with the previous replayed fit
             if replay.error is not None:
                 self._fit, self._fit_error = None, replay.error

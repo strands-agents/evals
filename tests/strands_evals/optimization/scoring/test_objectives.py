@@ -685,3 +685,53 @@ def test_a_usage_value_that_is_not_finite_is_taken_out():
     assert "seconds" not in train.metrics_by_case["a"]
     assert train.objective == pytest.approx(-3.0)
     assert not train.is_eligible  # case a has no seconds
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error", "match"),
+    [
+        ({}, TypeError, "exactly one of bound, baseline_offset, baseline_ratio, got none"),
+        ({"bound": 1, "baseline_offset": 0.1}, TypeError, "got bound, baseline_offset"),
+        ({"baseline_offset": math.nan}, TypeError, "baseline_offset must be a finite number"),
+        ({"baseline_ratio": True}, TypeError, "baseline_ratio must be a finite number"),
+        ({"baseline_ratio": 0}, ValueError, "baseline_ratio must be > 0"),
+    ],
+)
+def test_a_constraint_takes_exactly_one_bound(kwargs, error, match):
+    with pytest.raises(error, match=match):
+        AtMost("tokens", **kwargs)
+
+
+def test_a_baseline_constraint_has_its_bound_once_set_from_the_baseline():
+    offset = AtLeast("Helpfulness", baseline_offset=-0.05)
+    ratio = AtMost("tokens", baseline_ratio=1.2)
+    assert offset.is_relative and ratio.is_relative and not AtMost("tokens", 4000).is_relative
+    assert (str(offset), str(ratio)) == ("Helpfulness >= baseline - 0.05", "tokens <= baseline * 1.2")
+    with pytest.raises(RuntimeError, match="hasn't been measured yet"):
+        _ = offset.bound
+    assert offset.at_baseline(0.7).bound == pytest.approx(0.65)
+    assert ratio.at_baseline(1500.0).bound == pytest.approx(1800.0)
+    assert str(ratio.at_baseline(1500.0)) == "tokens <= 1800 (baseline 1500 * 1.2)"
+    assert str(AtLeast("Stars", baseline_offset=0.5).at_baseline(3.0)) == "Stars >= 3.5 (baseline 3 + 0.5)"
+    fixed = AtMost("tokens", 4000)
+    assert fixed.at_baseline(1500.0) is fixed and str(fixed) == "tokens <= 4000"
+
+
+def test_criteria_set_baseline_bounds_from_the_baselines_means():
+    criteria = Criteria(
+        Maximize("Helpfulness"), [AtLeast("Helpfulness", baseline_offset=-0.05), AtMost("tokens", 4000)], REGISTRY
+    )
+    assert criteria.has_baseline_constraints
+    assert criteria.constraints[0].metric == "HelpfulnessEvaluator"  # resolved, still relative
+    pinned = criteria.at_baseline({"HelpfulnessEvaluator": 0.7, "tokens": 900.0})
+    assert not pinned.has_baseline_constraints and criteria.has_baseline_constraints  # a copy
+    assert [c.bound for c in pinned.constraints] == [pytest.approx(0.65), 4000.0]
+    assert pinned.unmet_constraints({"HelpfulnessEvaluator": 0.6, "tokens": 900.0}) == [
+        "HelpfulnessEvaluator >= 0.65 (baseline 0.7 - 0.05): mean 0.6 violates by 0.05"
+    ]
+
+
+@pytest.mark.parametrize("kwargs", [{"baseline_offset": 0}, {"baseline_ratio": 1}])
+def test_a_bound_at_the_baseline_warns(kwargs):
+    with pytest.warns(UserWarning, match="puts the bound at the baseline"):
+        AtLeast("Helpfulness", **kwargs)
