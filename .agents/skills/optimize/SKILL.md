@@ -306,6 +306,8 @@ If you can't run a background process, run it in the foreground with a long time
 
 After a 3 with the `continue` line or a 130, say the user can ask to resume it (see "Resuming a run").
 
+**The UI.** To browse a run, its progress included, start `strands-evals ui` from the project with `--depth 7`: the UI scans 3 folders deep by default, and the skill's runs sit 5 deep (`optimization/runs/<stamp>/record/<run>/`), 7 in a strands-dev workspace (`strands-dev/experiments/<name>/optimizations/<stamp>/record/<run>/`), so without it the run isn't listed.
+
 ### 8. Report
 
 The report is `$F/summary.txt`, the optimizer's own summary: why the search stopped, what ships, every finalist on validation, the test check (the winner against the current agent on the test cases, with its 90% interval), the effects of each option, and the costs. Give the user its path and the headline in plain words: the version that ships, or that none beat the current agent; whether the test gain is likely real (the whole interval above 0), likely worse (below 0), or may be luck (it includes 0; more test cases narrow it).
