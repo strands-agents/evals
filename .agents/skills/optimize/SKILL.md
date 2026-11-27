@@ -20,7 +20,7 @@ Ask in plain chat, one step at a time unless a step says to ask its questions to
 
 **Setting up from the request.** When the message that started the skill says how to optimize (ex. "make the support agent shorter without losing helpfulness, about 100 rollouts"), ask no setup question: take every value it gives (the experiment, steps 2 to 5, and the review rows), infer the rest from it and the files, give the others their defaults, and go to the review (step 6). Only a skill started without such a prompt (ex. `/optimize` alone, or "optimize my agent") goes step by step, skipping a question the user already answered. A value that breaks a rule becomes the closest valid one and is flagged in the review.
 
-**Running without questions.** When the user explicitly asks to run, in any message (ex. "just run it", "2 steps, then start it", "no need to confirm"; "optimize my agent" isn't one), or you can't wait for a reply (a headless run, ex. `claude -p` or a scheduled job; Claude Code sets `CLAUDE_CODE_SESSION_ATTENDED=0`, so check `printenv CLAUDE_CODE_SESSION_ATTENDED` before asking anything), stop asking: give every value still missing its default and skip the review's wait (step 6). Still stop at exit code 2 (step 7).
+**Running without questions.** When the user explicitly asks to run, in any message (ex. "just run it", "2 steps, then start it", "no need to confirm"; "optimize my agent" isn't one), or you can't wait for a reply (a headless run, ex. `claude -p` or a scheduled job; Claude Code sets `CLAUDE_CODE_SESSION_ATTENDED=0`, so check `printenv CLAUDE_CODE_SESSION_ATTENDED` before asking anything), stop asking: give every value still missing its default and skip only the review's wait (step 6). The review itself, with its warnings, is still written to the user before the run starts. Still stop at exit code 2 (step 7).
 
 In every setup, what has no default (the agent or experiment file when none is found, the model ids for a model choice, an install step) is asked for, or in a headless run named as missing before stopping.
 
@@ -63,6 +63,17 @@ The first line lists the agent files; the rest lists the workspace's experiments
 - **Experiments.** The files the second line lists. For each, read only its counts: `jq '{cases: (.cases | length), evaluators: [.evaluators[].evaluator_type]}' <file>` (each `evaluator_type` is a metric name); skip a file `jq` can't read that way.
 
 Then, in a step-by-step setup, ask which experiment to use: up to three, by name with their cases and evaluators (ex. `capitals: 6 cases, scored by OutputEvaluator`), the most cases first as the default, then "Your own: another experiment's name or path", naming any others found in one line under the list. With none found, ask for the path of an experiment file (the JSON file with cases and evaluators that `strands-evals run` reads), and stop if there is none.
+
+**Few cases.** Once the experiment is known, check its case count. With fewer than 20 cases, say that the optimizer splits them into train, validation, and test, so a few cases per part can't tell versions apart (a judge's score moves by a tenth or more between runs on 3 cases), and ask:
+
+```text
+This experiment has N cases; 20 or more give the optimizer enough to compare versions.
+1. Add cases first: write more like the current ones (Default)
+2. Add cases from past conversations with the agent
+3. Continue with N cases
+```
+
+Option 1 uses the `strands-evals` skill (its experiment generator, or cases written from the existing ones), option 2 the `session-converter` skill; either writes a new experiment file, then come back here with it. Running without questions, continue with the cases there are and put this in the review's warnings.
 
 ### 2. Knobs: what may change
 
@@ -145,7 +156,7 @@ Follow-ups, in plain words:
 
 - **Maximize**: which metric; default the mean of every evaluator, or the one evaluator the request names.
 - **Minimize**: which usage metric; default tokens, output tokens when the request is about answer length, or seconds when it's about speed.
-- **Balance**: which metrics, at least two (ex. "OutputEvaluator and tokens"); whether to weigh them (default), with how much each counts (ex. "OutputEvaluator twice as much as tokens"), or find the best trade-offs; for tokens or time, how big a change matters (default 1000 tokens, 10 seconds).
+- **Balance**: which metrics, at least two (ex. "OutputEvaluator and tokens"); whether to weigh them (default), with how much each counts (ex. "OutputEvaluator twice as much as tokens"), or find the best trade-offs; for tokens or time, how big a change matters (default 1000 tokens, 10 seconds), said as the trade it makes: with 1000 tokens, 100 more tokens per case cost as much as 0.1 of an evaluator's 0 to 1 score. When a text knob is tuned, add that a rewritten text often adds a few hundred tokens to every case, so at 1000 a rewrite must gain about as many tenths of a score to win; suggest a larger size (ex. 5000) unless cost matters most.
 
 **Default**: the mean of every evaluator. When the request is about length or cost, balancing the evaluators and tokens (output tokens when it's about answer length); about speed, the evaluators and seconds.
 
@@ -160,7 +171,7 @@ Ask which constraints the winner must also meet, with what can be constrained li
 ```text
 Which constraints should the winner also meet?
 1. None (Default)
-2. Every evaluator at least 0.8: OutputEvaluator at least 0.8
+2. Every evaluator at least its current score minus 0.05: OutputEvaluator at least 0.65
 3. Your own, for example "OutputEvaluator at least 0.9" or "tokens at most 4000"
 
 A constraint is "at least" or "at most" a number, on the average per run of one case:
@@ -175,7 +186,26 @@ The judge's own calls don't count toward tokens, seconds, or model calls.
 
 An evaluator with its own score range shows that range instead of 0 to 1.
 
-**Default**: none, or option 2 when the objective only minimizes a usage metric (step 3, option 2); then say why: with only tokens or time to improve, an agent that answers badly, or not at all, can look best.
+**Default**: none.
+
+**A limit guards, the goal improves.** A constraint keeps the winner from getting worse; it doesn't make the search try to raise the score. So when the objective only minimizes usage metrics, also maximize the evaluators (those a constraint names, else the mean of every evaluator): the objective becomes a balance of them and the usage metric (step 3, with the usage metric's default size), and say why (ex. "I'll also maximize Helpfulness: with only tokens to improve, an agent that answers badly, or not at all, can look best"). Leave it out only when the user says so.
+
+**The current agent's scores.** A constraint the current agent already misses changes the search: until a version meets it, versions are ranked by how close they come, not by the goal (ex. minimizing tokens is ignored while the search chases a score), and when no version meets it on validation, the current agent ships though it misses it too. So before asking, read the current agent's scores from the newest earlier run of this experiment that measured it, when there is one (`<run folders>` is `optimization/runs/*/ optimization/runs/*/record/*/` from the project, the second for runs from before the skill used the default folder, or `strands-dev/experiments/<name>/optimizations/*/record/*/` in a strands-dev workspace, step 7; `<experiment>` the experiment file's absolute path). A run of a copy the skill wrote with every case named (step 7) matches through the `experiment_source` file next to the copy; a run with no setup `label` (killed before the baseline was scored, stopped at setup, or still running) is skipped; a resumed run's setup `label` may be written twice, so the first is read:
+
+```bash
+for D in $(ls -td <run folders> 2>/dev/null); do
+  E=$(jq -r .experiment_file "$D/cli.json" 2>/dev/null)
+  [ "$E" = "<experiment>" ] || [ "$(cat "$(dirname "$E")/experiment_source" 2>/dev/null)" = "<experiment>" ] || continue
+  S=$(jq -rn 'first(inputs | select(.event=="label" and .iteration==0)) | .label.measured | to_entries[] | "\(.key) \(.value.mean)"' "$D/events.jsonl" 2>/dev/null)
+  [ -n "$S" ] && { echo "$S"; break; }
+done
+```
+
+The score comes from that run's own train cases, which may have been split differently, so it is a rough guide.
+
+With a score, show it under each metric of the list (ex. `OutputEvaluator: its score, from 0 (worst) to 1 (best); your agent scored 0.70 last time`), with option 2 filled in from it (ex. `OutputEvaluator at least 0.65`), so the constraint guards against getting worse. Say the score comes from that run, so it is stale if the agent changed since. Without an earlier run, there is no score to guard: leave option 2 out (None, then Your own), and say that a limit is best set from what the agent scores today, which this run measures, so the next run can offer it; a limit chosen now that turns out above that score has the effect above.
+
+When a constraint is at or above the current agent's score, or above it minus 0.05 (judges vary that much between runs on a few cases), warn in the review: the search ignores the goal until a version meets it, and the current agent may ship. A limit the user wants to reach rather than keep (ex. "get it to 0.9") fits the objective better (step 3, maximize).
 
 **Rules.** Each constraint is one metric from the list, "at least" or "at most", and a number; a metric name with `<`, `>`, or `=` can't be used.
 
@@ -195,6 +225,8 @@ Budget: change any of these in one reply (ex. "200 rollouts, 2 runs"); the rest 
 6. Trials at once: how many runs go in parallel; changes speed, not cost. Default 4.
 ```
 
+When the experiment has fewer than 20 cases and an evaluator is an LLM judge (any but the deterministic `Equals`, `Contains`, `StartsWith`, `ToolCalled`, `SkillInvoked`, `StateEquals`, `StructuredOutputSimilarity`), add under the list: "With N cases and an LLM judge, 2 runs of each case average out the judge's noise, at twice the rollouts." The default stays 1.
+
 Don't show a rollout estimate. When the user asks how a setting relates to the max rollouts, use these, from the case counts of the split (step 6): a run spends `runs × (train × (1 + steps × candidates) + validation × (finalists + 1) + test × tested)` rollouts (one run of the agent on one case), with `tested` 2 (the winner and the current agent), and never more than the max rollouts. The least a run needs is that for 0 steps plus room to re-run failed trials: `2 × ceil(runs × validation ÷ 20)` for each of the finalists + 1, and `2 × ceil(runs × test ÷ 20)` for each of the `tested`. The steps that fit are `ceil(floor((max rollouts − the least a run needs) ÷ (runs × train)) ÷ candidates)`: the search stops when what's left can't pay for one more candidate, and the last step may try fewer. With a tunable factory whose markers hold a `choice(...)` of 2 or more components, each round's first step tries one candidate, so more steps fit than that. Judge calls are about rollouts × evaluators. Neither the judge's nor Reflection's own calls count against the budget. Under best trade-offs (step 3, balancing without weighing), at least 5 finalists are re-checked, so the finalists default is 5 and `tested` is the finalists plus 1; say so in step 3's follow-up.
 
 **Rules**, stated only when an answer breaks one: every setting is a whole number; steps are 0 or more, and 0 measures only the current agent (no new versions, no proposer model); the others are at least 1, and finalists at least 5 under best trade-offs. The max rollouts must at least cover the least a run needs (the optimizer refuses less). When a step limit is more than the steps that fit, say that the rollouts run out first, after about the steps that fit. When one step's trials (candidates × train cases × runs) exceed the trials at once, say that steps run in batches and take longer.
@@ -203,7 +235,7 @@ Don't show a rollout estimate. When the user asks how a setting relates to the m
 
 ### 6. Review
 
-**Skipping the confirmation.** When the run goes without questions (**Running without questions**, under **Steps**), don't wait for a reply here: show the summary, its warnings, and the command in one message, say the run is starting, and go to step 7.
+**Skipping the confirmation.** When the run goes without questions (**Running without questions**, under **Steps**), don't wait for a reply here, but don't skip the review either: before starting the run, write the summary, every warning (the case counts, a constraint at or near the current agent's score or with no score known, the runs of each case), and the command as a message, say the run is starting, and only then go to step 7. A warning given only in the final report comes too late to act on. In a headless run, where nobody reads until the end, put the review's warnings first in the final report (step 8) instead.
 
 Otherwise, show the setup as one summary, then the command, and ask the user to start or to name a row to change. For a row of steps 2 to 5, go back to that step (a tunable factory's tune row changes only in its markers: propose the code edit, and make it only when the user agrees); for a default row, take the new value here and check it against its rules below. Then show the review again.
 
@@ -228,14 +260,14 @@ With constraints, their row also says how sure each must be (ex. `tokens at most
 
 The default rows:
 
-- **Cases**: train guides the search, validation picks the winner, and test checks it on cases nothing else saw. Default: half train, and half of the rest test; when that leaves fewer than 2 validation cases or, with test cases, fewer than 2 test cases, the nearest of: train 30%, 40%, 50%, 60%, 70%, or 80%, with the rest split half test, a third test, or no test, that doesn't. Show case counts: each share times the case count, rounded down, with the leftover cases going to the largest remainders. The user's own split may be shares or counts (ex. "4 train, 1 validation, 1 test"). Rules: at least 1 train and 1 validation case; with fewer than 2 validation or test cases, warn that the scores can be luck and say how many cases to add to reach 2 of each.
+- **Cases**: train guides the search, validation picks the winner, and test checks it on cases nothing else saw. Default: half train, and half of the rest test; when that leaves fewer than 2 validation cases or, with test cases, fewer than 2 test cases, the nearest of: train 30%, 40%, 50%, 60%, 70%, or 80%, with the rest split half test, a third test, or no test, that doesn't. Show case counts: each share times the case count, rounded down, with the leftover cases going to the largest remainders. The user's own split may be shares or counts (ex. "4 train, 1 validation, 1 test"). Rules: at least 1 train and 1 validation case; with fewer than 2 validation or test cases, warn that the scores can be luck and say how many cases to add to reach 2 of each. With fewer than 10 train or 5 validation cases, warn that differences smaller than about a tenth of a score can be noise, so the winner may be luck; with constraints, add that a constraint is hard to confirm 90% sure on so few cases, so the current agent often ships. Say how many cases to add to reach 10 train and 5 validation (ex. 20 cases with the default split).
 - **How sure each constraint must be**, only with constraints: default 90%; the user's own is above 0% and below 100%.
 - **Crashes**: default, a crashed run scores each evaluator's worst value. The user may instead leave crashed runs out of the scores, or give them a score (ex. 0.5).
 - **Pick**: how the winner is chosen from the finalists on validation. Default, the best average score. The user may instead pick cautiously, by a low estimate of each score that it reaches with a sureness above 50% and below 100% (ex. 75% or 90% sure).
 
 **Build.**
 
-- Cases: `--split TRAIN,VALIDATION,TEST`, validation `(1 - TRAIN) × (1 - test part)` and test `(1 - TRAIN) × test part`, summing to 1 within 1e-9, so write enough digits (ex. `0.6,0.266666666667,0.133333333333`); counts become shares by dividing by the case count.
+- Cases: always `--split TRAIN,VALIDATION,TEST` with the shares the row shows, the default included (the optimizer's own default, 0.4 / 0.3 / 0.3, differs from this row's); validation `(1 - TRAIN) × (1 - test part)` and test `(1 - TRAIN) × test part`, summing to 1 within 1e-9, so write enough digits (ex. `0.6,0.266666666667,0.133333333333`); counts become shares by dividing by the case count.
 - Sureness: `--feasibility-threshold X`, only when it isn't 0.9.
 - Crashes: nothing by default, `--agent-failure-score none` to leave crashed runs out, `--agent-failure-score X` for a score.
 - Pick: nothing by default; X% sure writes `final_pick` into the hooks file (step 7) with `q = 1 - X` (ex. 75% is 0.25) and N the finalists, and passes `--final-pick "<hooks file>:final_pick"`.
@@ -245,7 +277,12 @@ The command is step 7's **Start**, with the flags of the **Build** notes of step
 
 ### 7. Run
 
-**Run folder.** `F` is `strands-dev/experiments/<name>/optimizations/<stamp>/` for an experiment of a strands-dev workspace, where the Strands CLI keeps its runs; otherwise `<project>/optimization/runs/<stamp>/`, with `<stamp>` the UTC time as `YYYYMMDD-HHMMSS`. Suggest adding `optimization/runs/` to the project's `.gitignore` when it's a git repository that doesn't ignore it. Every case needs a unique `name`: when one doesn't have it, write a copy with every case named (keep existing names, add `case-<n>` to the rest, `-2`, `-3` to repeats) as `$F/experiment.json` and run that.
+**Folders.** Two folders per run: the optimizer's run folder `<RUN_DIR>` (`run.json`, `events.jsonl`, the result), which the optimizer creates and names under `<runs>`, and the skill's folder `F` (`summary.txt`, `run.log`, `run.exit`, `tunable_agent.py`, the hooks file, the path of `<RUN_DIR>` in `run_dir`), with `<stamp>` the UTC time as `YYYYMMDD-HHMMSS`:
+
+- For an experiment of a strands-dev workspace, where the Strands CLI keeps its runs: `F` is `strands-dev/experiments/<name>/optimizations/<stamp>/` and `<runs>` is `$F/record`.
+- Otherwise: `<runs>` is the optimizer's default, `<project>/optimization/runs/` (the run passes no `--base-dir`), so a run sits where `strands-evals optimize` and `strands-evals ui` put and look for runs; `F` is `<project>/optimization/skill/<stamp>/`.
+
+Suggest adding `optimization/` to the project's `.gitignore` when it's a git repository that doesn't ignore it. Create `F` first (`mkdir -p "$F"`), before writing anything in it. Every case needs a unique `name`: when one doesn't have it, write a copy with every case named (keep existing names, add `case-<n>` to the rest, `-2`, `-3` to repeats) as `$F/experiment.json`, write the original file's absolute path to `$F/experiment_source` (so a later run finds this one's scores, step 4), and run the copy.
 
 **tunable_agent.py**, Python without its own tunable factory: copy [assets/tunable_agent.py](assets/tunable_agent.py) to `$F/tunable_agent.py` (`cp <skill_dir>/assets/tunable_agent.py "$F/tunable_agent.py"`) and edit the copy where its `# Edit:` comments say, with the knobs of step 2's **Build**; never edit the asset itself. Set `AGENT_FILE` to the agent file's absolute path and `CALL` to the position of the call that builds `agent` among the file's `create_harness` calls (0 when it has one); leave out what isn't tuned, with `SWITCHES = {}` when nothing is switched. Keep the file with the run folder: a resumed run loads it again.
 
@@ -268,15 +305,15 @@ baseline_only = Search([], schedule=BaselineOnly())
 final_pick = FinalPick(n_finalists=N, rule=LowerBound(q=Q))  # a cautious pick
 ```
 
-**Start.** Run in the background from the project, with stdout, stderr, and the exit code in their own files:
+**Start.** Only after the review (step 6) is written to the user, in a message of its own, also when running without questions. Run in the background from the project, with stdout, stderr, and the exit code in their own files:
 
 ```bash
-cd <project> && (strands-evals optimize run <experiment> \
-  --agent <agent, as above> --base-dir "$F/record" --rich <flags of steps 2 to 6> \
+cd <project> && touch "$F/run.started" && (strands-evals optimize run <experiment> \
+  --agent <agent, as above> [--base-dir "$F/record"] --rich <flags of steps 2 to 6> \
   > "$F/summary.txt" 2> "$F/run.log"; echo $? > "$F/run.exit") &
 ```
 
-If you can't run a background process, run it in the foreground with a long timeout and show the output when it ends. `<RUN_DIR>`, the run folder, is the one folder the optimizer creates under `$F/record` once the run starts: find it with `ls -d "$F"/record/*/` on the first progress check, and tell the user. Don't wait for `run.log`'s `strands-evals optimize: run folder <RUN_DIR>` line to report it: that line can come only at the end, with the result.
+`--base-dir "$F/record"` only in a strands-dev workspace. If you can't run a background process, run it in the foreground with a long timeout and show the output when it ends. `<RUN_DIR>` is the folder the optimizer creates under `<runs>` once the run starts, before it measures anything: within a few seconds of starting, before any other progress check, take it from `run.log`'s `strands-evals optimize: run folder <RUN_DIR>` line, else the folder `find <runs> -mindepth 1 -maxdepth 1 -type d -newer "$F/run.started"` lists (with several, the one whose `cli.json` `agent` is this run's). Write its absolute path to `$F/run_dir` right away (a run killed later is resumed through it) and tell the user.
 
 **Progress**: until `$F/run.exit` exists, about once a minute, relay each new `run.log` line that starts with `strands-evals optimize:` (ex. `iteration N (<blocks>): P proposals, R rollouts`, with R that step's rollouts, so keep a running total from the baseline's train cases) and any warning or error, in plain words (ex. "step 2 done: 4 new versions tried, 27 of 500 rollouts so far"). Read new lines with `tail -n +<next line> "$F/run.log"`.
 
@@ -290,9 +327,11 @@ If you can't run a background process, run it in the foreground with a long time
 
 After a 3 with the `continue` line or a 130, say the user can ask to resume it (see "Resuming a run").
 
+**The UI.** To browse a run, its progress included, start `strands-evals ui` from the project. It scans 3 folders deep by default, which finds `optimization/runs/<run>/`; when `<RUN_DIR>` sits deeper below the project (a strands-dev workspace: `strands-dev/experiments/<name>/optimizations/<stamp>/record/<run>/`, 7 deep), pass `--depth N` with N its number of folders below the project, or the run isn't listed.
+
 ### 8. Report
 
-The report is `$F/summary.txt`, the optimizer's own summary: why the search stopped, what ships, every finalist on validation, the test check (the winner against the current agent on the test cases, with its 90% interval), the effects of each option, and the costs. Give the user its path and the headline in plain words: the version that ships, or that none beat the current agent; whether the test gain is likely real (the whole interval above 0), likely worse (below 0), or may be luck (it includes 0; more test cases narrow it).
+The report is `$F/summary.txt`, the optimizer's own summary: why the search stopped, what ships, every finalist on validation, the test check (the winner against the current agent on the test cases, with its 90% interval), the effects of each option, and the costs. In a headless run, start the report with the review's warnings (step 6), as warnings about this setup (nobody saw them before the run) and any change the skill made to the request (ex. also maximizing a guarded evaluator, step 4). When the current agent misses a constraint on validation, say the limit is above what it scores today and suggest its measured score minus 0.05 as the limit (a guard, step 4), not a search for a version that reaches it. Then give the user its path and the headline in plain words: the version that ships, or that none beat the current agent; whether the test gain is likely real (the whole interval above 0), likely worse (below 0), or may be luck (it includes 0; more test cases narrow it).
 
 A run can exit 0 before its test check ran: skipped because the budget couldn't afford it, or waiting to re-run trials that hit infrastructure failures (ex. throttling). `jq -r '.test_reason // "done"' "<RUN_DIR>/result.json"` prints `done`, or why the test check didn't fully run. When it isn't `done`, tell the user in plain words: what ships is final; when the reason is the budget or trials waiting to re-run, resuming the run can still run the test check, with more rollouts allowed when the budget was the reason.
 
@@ -300,7 +339,7 @@ Nothing in the user's project changes. `<RUN_DIR>/best.diff` holds each changed 
 
 ## Resuming a run
 
-Resume only when the user explicitly asks; never on your own. A run can be resumed when it was killed (130, or no `run.exit`), stopped on a proposer error (3 with the `continue` line), or finished before its test check ran (step 8); any other failed run starts over as a new run. Skip steps 1 to 6: take the run folder `$F` the user names, else the newest resumable one under the experiment's `optimizations/` (or `<project>/optimization/runs/`), and confirm it with the user. `<RUN_DIR>` is the one folder under `$F/record` (step 7); without one the run never started, so there is nothing to resume. With `<project>` as in step 1, run:
+Resume only when the user explicitly asks; never on your own. A run can be resumed when it was killed (130, or no `run.exit`), stopped on a proposer error (3 with the `continue` line), or finished before its test check ran (step 8); any other failed run starts over as a new run. Skip steps 1 to 6: take the folder the user names (the skill's `F`, or the run folder `<RUN_DIR>`), else the newest resumable run of the experiment's `optimizations/` (or `<project>/optimization/skill/`, or an older run's `<project>/optimization/runs/<stamp>/` holding a `record/` folder), and confirm it with the user. `<RUN_DIR>` is the path in `$F/run_dir`, else the one folder under `$F/record` (a strands-dev workspace, or a run from before the skill wrote `run_dir`; step 7); without one the run never started, so there is nothing to resume. Given a `<RUN_DIR>`, `F` is the skill folder whose `run_dir` names it; a run started without the skill has none, so write its logs to a new `<project>/optimization/skill/<stamp>/`. With `<project>` as in step 1, run:
 
 ```bash
 cd <project> && (strands-evals optimize resume "<RUN_DIR>" --rich \
