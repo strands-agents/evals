@@ -210,19 +210,21 @@ def parse_constraint(spec: str) -> Constraint:
     kind = AtMost if match["op"] == "<=" else AtLeast
     text = match["bound"]
     relative = _BASELINE_BOUND.match(text)
+    number_text = text if relative is None else relative["number"]
     try:
-        if relative is None:
-            return kind(match["metric"], float(text))
-        if relative["op"] is None:
-            return kind(match["metric"], baseline_offset=0.0)
-        number = float(relative["number"])
-        if relative["op"] == "*":
-            return kind(match["metric"], baseline_ratio=number)
-        return kind(match["metric"], baseline_offset=number if relative["op"] == "+" else -number)
+        number = 0.0 if number_text is None else float(number_text)
     except ValueError as error:
         raise ValueError(
             f"--constraint bound must be a number, or baseline, baseline+D, baseline-D, or baseline*R (got '{text}')"
         ) from error
+    try:
+        if relative is None:
+            return kind(match["metric"], number)
+        if relative["op"] == "*":
+            return kind(match["metric"], baseline_ratio=number)
+        return kind(match["metric"], baseline_offset=-number if relative["op"] == "-" else number)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"--constraint '{spec}': {error}") from error
 
 
 def parse_split(spec: str) -> Split:

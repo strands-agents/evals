@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import math
 import statistics
+import warnings
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -145,7 +146,15 @@ class _Bound:
     (`AtLeast("Helpfulness", baseline_offset=-0.05)`: no more than 0.05 below it), `baseline_ratio` multiplies
     it (`AtMost("tokens", baseline_ratio=1.2)`: at most 20% more tokens than it). The baseline's mean is its
     measured mean on the train cases, read once, right after the baseline is scored; from then on the
-    bound is that fixed number for the search, the labels, and the final pick on validation.
+    bound is that fixed number for the search, the labels, and the final pick on validation. Each run measures
+    its own baseline, so with an LLM judge two runs of the same setup can set different bounds; `run.json`
+    `constraint_bounds` and `OptimizationResult.constraints` show the one set.
+
+    Leave room for noise: a constraint counts as met only at P(met) >= `feasibility_threshold` (0.9), so a
+    bound at the baseline (`baseline_offset=0`, `baseline_ratio=1`) is met by the baseline itself only about
+    half the time, and a candidate must be clearly better than it to count as meeting it. A guard a few
+    standard errors below the baseline (e.g. `baseline_offset=-0.1` for a 0-1 judge on a few cases) reads as
+    "no worse than the current agent".
 
     Attributes:
         metric: The metric's name.
@@ -197,6 +206,15 @@ class _Bound:
             raise TypeError(f"{name} {kind} must be a finite number, got {value!r}")
         if kind == "baseline_ratio" and value <= 0:
             raise ValueError(f"{name} baseline_ratio must be > 0, got {value!r}")
+        if (kind, value) in (("baseline_offset", 0), ("baseline_ratio", 1)):
+            warnings.warn(
+                f"{name}({_metric_name(target)!r}, {kind}={value!r}) puts the bound at the baseline: a constraint "
+                "counts as met only at P(met) >= feasibility_threshold, so the baseline meets it only about half the "
+                "time and a candidate must be clearly better than it; for 'no worse than the baseline', leave room "
+                "for noise (e.g. baseline_offset=-0.1 on a 0-1 score)",
+                UserWarning,
+                stacklevel=2,
+            )
         object.__setattr__(self, "metric", _metric_name(target))
         object.__setattr__(self, "baseline_offset", float(value) if kind == "baseline_offset" else None)
         object.__setattr__(self, "baseline_ratio", float(value) if kind == "baseline_ratio" else None)

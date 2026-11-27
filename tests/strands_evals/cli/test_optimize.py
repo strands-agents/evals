@@ -1316,7 +1316,6 @@ def test_a_list_choice_missing_the_configs_value_is_rejected(tmp_path):
         ("Correct>=baseline-0.05", "Correct >= baseline - 0.05"),
         ("Correct >= baseline + 0.1", "Correct >= baseline + 0.1"),
         ("tokens<=baseline*1.2", "tokens <= baseline * 1.2"),
-        ("tokens<=baseline", "tokens <= baseline + 0"),
         ("tokens<=450", "tokens <= 450"),
     ],
 )
@@ -1326,12 +1325,42 @@ def test_a_constraint_bound_may_be_set_from_the_baseline(spec, expected):
     assert str(_optimize.parse_constraint(spec)) == expected
 
 
-@pytest.mark.parametrize("spec", ["tokens<=baseline/2", "tokens<=baseline*x", "tokens<=baseline*0"])
-def test_a_bad_baseline_bound_is_an_error(spec):
+def test_a_constraint_bound_at_the_baseline_warns():
     from strands_evals.cli import _optimize
 
-    with pytest.raises(ValueError, match="baseline"):
+    with pytest.warns(UserWarning, match="puts the bound at the baseline"):
+        assert str(_optimize.parse_constraint("tokens<=baseline")) == "tokens <= baseline + 0"
+
+
+@pytest.mark.parametrize(
+    ("spec", "message"),
+    [
+        ("tokens<=baseline/2", "must be a number, or baseline"),
+        ("tokens<=baseline*x", "must be a number, or baseline"),
+        ("tokens<=baseline*0", "--constraint 'tokens<=baseline\\*0': AtMost baseline_ratio must be > 0"),
+        ("tokens<=baseline-inf", "--constraint 'tokens<=baseline-inf': AtMost baseline_offset must be a finite"),
+        ("tokens<=baseline+nan", "--constraint 'tokens<=baseline\\+nan': AtMost baseline_offset must be a finite"),
+        ("tokens<=inf", "--constraint 'tokens<=inf': AtMost bound must be a finite"),
+    ],
+)
+def test_a_bad_baseline_bound_is_a_value_error_with_its_reason(spec, message):
+    from strands_evals.cli import _optimize
+
+    with pytest.raises(ValueError, match=message):
         _optimize.parse_constraint(spec)
+
+
+def test_resume_sets_a_baseline_bound_again_from_cli_json(experiment_path, tmp_path, capsys):
+    assert main(_run_args(experiment_path, tmp_path, "--constraint", "tokens<=baseline*1.5")) == 0
+    original = OptimizationResult.from_file(_only_run(tmp_path) / "result.json")
+    assert original.constraints[1].startswith("tokens <= ") and "(baseline " in original.constraints[1]
+    killed = _killed_copy(original.run_dir, tmp_path)
+    capsys.readouterr()
+    assert main(["--json", "optimize", "resume", str(killed)]) == 0
+    resumed = OptimizationResult.from_dict(json.loads(capsys.readouterr().out))
+    assert resumed.constraints == original.constraints
+    assert resumed.best.id == original.best.id and resumed.rollouts_spent == original.rollouts_spent
+    assert json.loads((killed / "run.json").read_text())["constraint_bounds"] == original.constraints
 
 
 def test_a_constraint_table_may_set_its_bound_from_the_baseline(experiment_path, tmp_path, capsys):

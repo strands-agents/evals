@@ -729,3 +729,9 @@ def test_criteria_set_baseline_bounds_from_the_baselines_means():
     assert pinned.unmet_constraints({"HelpfulnessEvaluator": 0.6, "tokens": 900.0}) == [
         "HelpfulnessEvaluator >= 0.65 (baseline 0.7 - 0.05): mean 0.6 violates by 0.05"
     ]
+
+
+@pytest.mark.parametrize("kwargs", [{"baseline_offset": 0}, {"baseline_ratio": 1}])
+def test_a_bound_at_the_baseline_warns(kwargs):
+    with pytest.warns(UserWarning, match="puts the bound at the baseline"):
+        AtLeast("Helpfulness", **kwargs)

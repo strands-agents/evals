@@ -751,7 +751,8 @@ def _optimizer_run_summary(
         "run_id": config.get("run_id") or ("this folder" if directory == "." else directory.rsplit("/", 1)[-1]),
         "name": config.get("name"),
         "objective": config.get("objective"),
-        "constraints": config.get("constraints") or [],
+        # As the run set them from the baseline when it did (`constraint_bounds`), else as declared.
+        "constraints": config.get("constraint_bounds") or config.get("constraints") or [],
         # A multi-objective run says so in its objective string; older records carried a flag.
         "is_pareto": bool(config.get("is_pareto")) or str(config.get("objective") or "").startswith("Pareto("),
         "budget": config.get("budget") or {},

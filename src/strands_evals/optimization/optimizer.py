@@ -618,6 +618,8 @@ class Optimizer:
             return
         means = {metric: m.mean for metric, m in measured_metrics(scores, self._criteria.registry).items()}
         self._criteria = self._criteria.at_baseline(means)
+        assert self._run is not None
+        self._run.save_constraint_bounds([str(c) for c in self._criteria.constraints])
         for constraint in self._criteria.constraints:
             if not constraint.is_relative:
                 continue
@@ -708,6 +710,12 @@ class Optimizer:
                 self._train[candidate_id] = scores
                 if candidate_id == self._baseline.id:
                     self._set_baseline_bounds(scores)
+        if self._criteria.has_baseline_constraints:
+            raise RuntimeError(
+                f"{run.root}: the baseline has no saved train trials, so the bounds set from it "
+                f"({', '.join(str(c) for c in self._criteria.constraints if c.is_relative)}) can't be set again; "
+                "start a new run"
+            )
         for replay in state.fits:  # each on exactly its listed candidates, with the previous replayed fit
             if replay.error is not None:
                 self._fit, self._fit_error = None, replay.error

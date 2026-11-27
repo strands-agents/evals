@@ -444,7 +444,8 @@ def _add_run(subparsers: argparse._SubParsersAction, parent: argparse.ArgumentPa
         default=None,
         help=(
             "repeatable, e.g. 'tokens<=4000'; X may be set from the current agent's train mean, e.g. "
-            "'Helpfulness>=baseline-0.05' or 'tokens<=baseline*1.2'; MODULE:ATTR names a constraint or a list of them"
+            "'Helpfulness>=baseline-0.1' or 'tokens<=baseline*1.2' (leave room for noise: a bound at the baseline is "
+            "met only when clearly beaten); MODULE:ATTR names a constraint or a list of them"
         ),
     )
 
