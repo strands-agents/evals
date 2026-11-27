@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import copy
 import math
 import statistics
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, TypeVar
 
 from scipy import stats
 
@@ -28,6 +29,7 @@ from ...types.optimization import (
 from .metrics import USAGE_METRICS, MetricRegistry
 
 MetricTarget = str | Evaluator | type[Evaluator]
+_BoundT = TypeVar("_BoundT", bound="_Bound")
 
 
 @dataclass(frozen=True, init=False)
@@ -137,38 +139,128 @@ Objective = Maximize | Minimize | WeightedSum | Pareto
 
 @dataclass(frozen=True, init=False)
 class _Bound:
-    """A bound on one metric's mean; during the search it only ranks, at the final pick it decides."""
+    """A bound on one metric's mean; during the search it only ranks, at the final pick it decides.
+
+    The bound is a fixed number, or set from the baseline: `baseline_offset` adds to the baseline's mean
+    (`AtLeast("Helpfulness", baseline_offset=-0.05)`: no more than 0.05 below it), `baseline_ratio` multiplies
+    it (`AtMost("tokens", baseline_ratio=1.2)`: at most 20% more tokens than it). The baseline's mean is its
+    measured mean on the train cases, read once, right after the baseline is scored; from then on the
+    bound is that fixed number for the search, the labels, and the final pick on validation.
+
+    Attributes:
+        metric: The metric's name.
+        baseline_offset: Added to the baseline's mean; None for a fixed bound or a ratio.
+        baseline_ratio: Multiplies the baseline's mean; None for a fixed bound or an offset.
+        baseline: The baseline's mean the bound was set from; None for a fixed bound, or before it is set.
+    """
 
     metric: str
-    bound: float
+    baseline_offset: float | None
+    baseline_ratio: float | None
+    baseline: float | None
+    _bound: float | None
 
-    def __init__(self, target: MetricTarget, /, bound: float):
-        """Name the metric as in `Maximize`.
+    def __init__(
+        self,
+        target: MetricTarget,
+        /,
+        bound: float | None = None,
+        *,
+        baseline_offset: float | None = None,
+        baseline_ratio: float | None = None,
+    ):
+        """Name the metric as in `Maximize`, and give exactly one of `bound`, `baseline_offset`, `baseline_ratio`.
 
         Args:
             target: A metric name, an evaluator class, or an evaluator instance.
             bound: The limit on the mean; by position or keyword (`AtMost("tokens", bound=4000)`).
+            baseline_offset: The limit is the baseline's mean plus this (negative for below it).
+            baseline_ratio: The limit is the baseline's mean times this, > 0.
 
         Raises:
-            TypeError: `bound` is not a finite number.
+            TypeError: Not exactly one of the three is given, or the one given is not a finite number.
+            ValueError: `baseline_ratio` is not > 0.
         """
-        if isinstance(bound, bool) or not isinstance(bound, (int, float)) or not math.isfinite(bound):
-            raise TypeError(f"{type(self).__name__} bound must be a finite number, got {bound!r}")
+        name = type(self).__name__
+        given = {
+            k: v
+            for k, v in (("bound", bound), ("baseline_offset", baseline_offset), ("baseline_ratio", baseline_ratio))
+            if v is not None
+        }
+        if len(given) != 1:
+            raise TypeError(
+                f"{name} takes exactly one of bound, baseline_offset, baseline_ratio, got "
+                f"{', '.join(given) if given else 'none'}"
+            )
+        ((kind, value),) = given.items()
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise TypeError(f"{name} {kind} must be a finite number, got {value!r}")
+        if kind == "baseline_ratio" and value <= 0:
+            raise ValueError(f"{name} baseline_ratio must be > 0, got {value!r}")
         object.__setattr__(self, "metric", _metric_name(target))
-        object.__setattr__(self, "bound", float(bound))
+        object.__setattr__(self, "baseline_offset", float(value) if kind == "baseline_offset" else None)
+        object.__setattr__(self, "baseline_ratio", float(value) if kind == "baseline_ratio" else None)
+        object.__setattr__(self, "baseline", None)
+        object.__setattr__(self, "_bound", float(value) if kind == "bound" else None)
+
+    @property
+    def bound(self) -> float:
+        """The limit on the mean.
+
+        Raises:
+            RuntimeError: The bound is set from the baseline, which hasn't been scored yet.
+        """
+        if self._bound is None:
+            raise RuntimeError(f"{self}: the bound is set from the baseline's mean, which hasn't been measured yet")
+        return self._bound
+
+    @property
+    def is_relative(self) -> bool:
+        """The bound is set from the baseline (`baseline_offset` or `baseline_ratio`)."""
+        return self.baseline_offset is not None or self.baseline_ratio is not None
+
+    def at_baseline(self: _BoundT, mean: float) -> _BoundT:
+        """This constraint with its bound set from the baseline's mean; a fixed bound is returned as is."""
+        if not self.is_relative:
+            return self
+        if self.baseline_offset is not None:
+            bound = mean + self.baseline_offset
+        else:
+            assert self.baseline_ratio is not None
+            bound = mean * self.baseline_ratio
+        return self._copy(baseline=float(mean), _bound=float(bound))
+
+    def _copy(self: _BoundT, **fields: object) -> _BoundT:
+        clone = object.__new__(type(self))
+        for name in ("metric", "baseline_offset", "baseline_ratio", "baseline", "_bound"):
+            object.__setattr__(clone, name, fields.get(name, getattr(self, name)))
+        return clone
 
     def __str__(self) -> str:
-        """E.g. `"tokens <= 4000"`; stored in `run.json`."""
+        """E.g. `"tokens <= 4000"`, `"tokens <= baseline * 1.2"`, or once set `"tokens <= 1840 (baseline 1533 *
+        1.2)"`; the unset form is stored in `run.json`."""
         operator = "<=" if isinstance(self, AtMost) else ">="
-        return f"{self.metric} {operator} {_number(self.bound)}"
+        if not self.is_relative:
+            return f"{self.metric} {operator} {_number(self.bound)}"
+        if self.baseline_ratio is not None:
+            relation = f"* {_number(self.baseline_ratio)}"
+        else:
+            offset = self.baseline_offset
+            assert offset is not None
+            relation = f"{'-' if offset < 0 else '+'} {_number(abs(offset))}"
+        if self._bound is None:
+            return f"{self.metric} {operator} baseline {relation}"
+        return f"{self.metric} {operator} {self._bound:.6g} (baseline {self.baseline:.6g} {relation})"
 
 
 class AtMost(_Bound):
-    """The metric's mean must not exceed `bound`, e.g. `AtMost("tokens", 4000)`."""
+    """The metric's mean must not exceed `bound`, e.g. `AtMost("tokens", 4000)`, or a limit set from the
+    baseline, e.g. `AtMost("tokens", baseline_ratio=1.2)`."""
 
 
 class AtLeast(_Bound):
-    """The metric's mean must not fall below `bound`, e.g. `AtLeast("Correctness", 0.8)`."""
+    """The metric's mean must not fall below `bound`, e.g. `AtLeast("Correctness", 0.8)`, or a limit set from the
+    baseline, e.g. `AtLeast("Correctness", baseline_offset=-0.05)`."""
 
 
 Constraint = AtMost | AtLeast
@@ -384,6 +476,24 @@ class Criteria:
                 sentences.append(f"{constraint}: mean {mean:.4g} violates by {excess:.4g}")
         return sentences
 
+    @property
+    def has_baseline_constraints(self) -> bool:
+        """Some constraint's bound is set from the baseline and isn't set yet (`at_baseline` sets it)."""
+        return any(c.is_relative and c.baseline is None for c in self.constraints)
+
+    def at_baseline(self, means: Mapping[str, float]) -> Criteria:
+        """These criteria with each baseline constraint's bound set from the baseline's mean of its metric.
+
+        Args:
+            means: Metric name -> the baseline's measured mean on the train cases.
+
+        Raises:
+            KeyError: A baseline constraint's metric has no mean.
+        """
+        pinned = copy.copy(self)
+        pinned.constraints = tuple(c.at_baseline(means[c.metric]) if c.is_relative else c for c in self.constraints)
+        return pinned
+
     def _resolve_objective(self, objective: Objective | None) -> Objective:
         """The objective as the run uses it: the default filled in, metric names resolved, and checked.
 
@@ -440,7 +550,7 @@ class Criteria:
     def _resolve_constraint(self, constraint: Constraint) -> Constraint:
         if not isinstance(constraint, (AtMost, AtLeast)):
             raise TypeError(f"constraints must be AtMost or AtLeast, got {type(constraint).__name__}")
-        return type(constraint)(self.registry.resolve(constraint.metric), constraint.bound)
+        return constraint._copy(metric=self.registry.resolve(constraint.metric))
 
     def _build_terms(self, objective: Objective) -> tuple[_Term, ...]:
         if isinstance(objective, (Maximize, Minimize)):

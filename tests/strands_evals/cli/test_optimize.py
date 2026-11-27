@@ -1308,3 +1308,37 @@ def test_a_list_choice_missing_the_configs_value_is_rejected(tmp_path):
     config = _write_config(tmp_path, builtinTools=["read"])
     with pytest.raises(ValueError, match="the config's value .* must be one of the options"):
         _harness.declare(config, ['builtinTools=[[],["write"]]'], tune_instructions=False)
+
+
+@pytest.mark.parametrize(
+    ("spec", "expected"),
+    [
+        ("Correct>=baseline-0.05", "Correct >= baseline - 0.05"),
+        ("Correct >= baseline + 0.1", "Correct >= baseline + 0.1"),
+        ("tokens<=baseline*1.2", "tokens <= baseline * 1.2"),
+        ("tokens<=baseline", "tokens <= baseline + 0"),
+        ("tokens<=450", "tokens <= 450"),
+    ],
+)
+def test_a_constraint_bound_may_be_set_from_the_baseline(spec, expected):
+    from strands_evals.cli import _optimize
+
+    assert str(_optimize.parse_constraint(spec)) == expected
+
+
+@pytest.mark.parametrize("spec", ["tokens<=baseline/2", "tokens<=baseline*x", "tokens<=baseline*0"])
+def test_a_bad_baseline_bound_is_an_error(spec):
+    from strands_evals.cli import _optimize
+
+    with pytest.raises(ValueError, match="baseline"):
+        _optimize.parse_constraint(spec)
+
+
+def test_a_constraint_table_may_set_its_bound_from_the_baseline(experiment_path, tmp_path, capsys):
+    body = RUN_FILE.replace('constraint = ["tokens<=450"]\n', "") + (
+        '[constraint.c]\nmetric = "tokens"\nat_most = "baseline*1.5"\n'
+    )
+    assert main(["--json", "optimize", "run", str(_write_run_file(tmp_path, body))]) == 0
+    root = _only_run(tmp_path)
+    assert json.loads((root / "cli.json").read_text())["constraints"] == ["tokens<=baseline*1.5"]
+    assert json.loads((root / "run.json").read_text())["constraints"] == ["tokens <= baseline * 1.5"]

@@ -22,6 +22,7 @@ from strands_evals.optimization import (
     TPE,
     Alternate,
     AtLeast,
+    AtMost,
     Block,
     Budget,
     Evidence,
@@ -3717,3 +3718,60 @@ async def test_resume_inside_a_two_level_nested_matches_the_uninterrupted_run(tm
         search=_two_structural_search(),
     ).run_async()
     _assert_same(resumed, original, rerun=killed)
+
+
+def _baseline_bound_search():
+    return Search(
+        [Block(Scripted({"temperature": 0.5}, {"temperature": 1.0}), "temperature"), Block(Scripted(), "manager")],
+        schedule=Alternate(),
+    )
+
+
+def _baseline_bound(base_dir, constraint):
+    return _optimizer(
+        _experiment(evaluators=[Temperature()]),
+        rollout_fn=_temperature_rollout,
+        search=_baseline_bound_search(),
+        objective=Maximize("Temperature"),
+        constraints=[constraint],
+        base_dir=base_dir,
+        budget=Budget(max_iterations=1),
+        proposals_per_iteration=2,
+        max_workers=64,
+    )
+
+
+async def test_a_baseline_constraint_takes_its_bound_from_the_baselines_train_mean(tmp_path):
+    # The baseline's temperature is 0, so the bound is 0 + 0.6: 0.5 meets it and 1.0 doesn't.
+    optimizer = _baseline_bound(tmp_path, AtMost("Temperature", baseline_offset=0.6))
+    result = await optimizer.run_async()
+    assert result.best.values["temperature"] == 0.5
+    assert result.constraints == ["Temperature <= 0.6 (baseline 0 + 0.6)"]
+    assert json.loads((optimizer.run_dir / "run.json").read_text())["constraints"] == ["Temperature <= baseline + 0.6"]
+    (setup_label,) = [e for e in _events(optimizer) if e["event"] == "label" and e["iteration"] == 0]
+    assert setup_label["constraints"] == ["Temperature <= 0.6 (baseline 0 + 0.6)"]
+
+
+async def test_resume_sets_a_baseline_bound_again_from_the_saved_baseline(tmp_path):
+    optimizer = _baseline_bound(tmp_path, AtMost("Temperature", baseline_offset=0.6))
+    await _search(optimizer)  # killed before the end phase: resume restores the search and runs it
+    optimizer._run.unlock()
+    resumed = Optimizer.resume(
+        optimizer.run_dir,
+        experiment=_experiment(evaluators=[Temperature()]),
+        factory=create_agent,
+        rollout_fn=_temperature_rollout,
+        search=_baseline_bound_search(),
+        objective=Maximize("Temperature"),
+        constraints=[AtMost("Temperature", baseline_offset=0.6)],
+    )
+    result = await resumed.run_async()
+    assert result.best.values["temperature"] == 0.5
+    assert result.constraints == ["Temperature <= 0.6 (baseline 0 + 0.6)"]
+
+
+async def test_a_baseline_bound_outside_the_metrics_range_warns(tmp_path):
+    optimizer = _baseline_bound(tmp_path, AtLeast("Temperature", baseline_offset=1.5))
+    with pytest.warns(UserWarning, match=r"Temperature >= 1.5 \(baseline 0 \+ 1.5\): the bound is outside"):
+        result = await optimizer.run_async()
+    assert result.best.id == result.baseline_id
