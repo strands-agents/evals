@@ -171,7 +171,7 @@ Ask which constraints the winner must also meet, with what can be constrained li
 ```text
 Which constraints should the winner also meet?
 1. None (Default)
-2. Every evaluator at least 0.8: OutputEvaluator at least 0.8
+2. Every evaluator at least its current score minus 0.05: OutputEvaluator at least 0.65
 3. Your own, for example "OutputEvaluator at least 0.9" or "tokens at most 4000"
 
 A constraint is "at least" or "at most" a number, on the average per run of one case:
@@ -186,9 +186,9 @@ The judge's own calls don't count toward tokens, seconds, or model calls.
 
 An evaluator with its own score range shows that range instead of 0 to 1.
 
-**Default**: none, or option 2 when the objective only minimizes a usage metric (step 3, option 2); then say why: with only tokens or time to improve, an agent that answers badly, or not at all, can look best.
+**Default**: none.
 
-**A limit guards, the goal improves.** A constraint keeps the winner from getting worse; it doesn't make the search try to raise the score. So when a constraint sets an evaluator's lowest score and the objective only minimizes usage metrics, also maximize that evaluator: the objective becomes a balance of the evaluator and the usage metric (step 3, with the usage metric's default size), and say so (ex. "I'll also maximize Helpfulness, so the search tries to keep answers good while cutting tokens, not only stay above the limit").
+**A limit guards, the goal improves.** A constraint keeps the winner from getting worse; it doesn't make the search try to raise the score. So when the objective only minimizes usage metrics, also maximize the evaluators (those a constraint names, else the mean of every evaluator): the objective becomes a balance of them and the usage metric (step 3, with the usage metric's default size), and say why (ex. "I'll also maximize Helpfulness: with only tokens to improve, an agent that answers badly, or not at all, can look best"). Leave it out only when the user says so.
 
 **The current agent's scores.** A constraint the current agent already misses changes the search: until a version meets it, versions are ranked by how close they come, not by the goal (ex. minimizing tokens is ignored while the search chases a score), and when no version meets it on validation, the current agent ships though it misses it too. So before asking, read the current agent's scores from the newest earlier run of this experiment, when there is one (`<run folders>` is `optimization/runs/*/` from the project, or `strands-dev/experiments/<name>/optimizations/*/record/*/` in a strands-dev workspace, step 7; `<experiment>` the experiment file's absolute path):
 
@@ -200,7 +200,7 @@ for D in $(ls -td <run folders> 2>/dev/null); do
 done
 ```
 
-With a score, show it under each metric of the list (ex. `OutputEvaluator: its score, from 0 (worst) to 1 (best); your agent scored 0.70 last time`), and make option 2 "every evaluator at least its current score minus 0.05" (ex. `OutputEvaluator at least 0.65`), so the constraint guards against getting worse. Say the score comes from that run, so it is stale if the agent changed since. Without an earlier run, keep option 2 as written and say that a limit above what the agent scores today has this effect; a run with 0 steps (step 5) measures it.
+With a score, show it under each metric of the list (ex. `OutputEvaluator: its score, from 0 (worst) to 1 (best); your agent scored 0.70 last time`), with option 2 filled in from it (ex. `OutputEvaluator at least 0.65`), so the constraint guards against getting worse. Say the score comes from that run, so it is stale if the agent changed since. Without an earlier run, there is no score to guard: leave option 2 out (None, then Your own), and say that a limit is best set from what the agent scores today, which this run measures, so the next run can offer it; a limit chosen now that turns out above that score has the effect above.
 
 When a constraint is at or above the current agent's score, or above it minus 0.05 (judges vary that much between runs on a few cases), warn in the review: the search ignores the goal until a version meets it, and the current agent may ship. A limit the user wants to reach rather than keep (ex. "get it to 0.9") fits the objective better (step 3, maximize).
 
